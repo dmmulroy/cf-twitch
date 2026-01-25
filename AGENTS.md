@@ -2,8 +2,8 @@
 
 Instructions for AI coding agents working with this codebase.
 
-**Generated:** 2026-01-14
-**Change:** uxoyxrql (jj)
+**Generated:** 2026-01-25
+**Change:** pqzwzzno (jj)
 
 ## Overview
 
@@ -20,7 +20,9 @@ cf-twitch/
 │   │   │   ├── durable-objects/  # DO implementations
 │   │   │   ├── lib/          # Shared utilities
 │   │   │   ├── routes/       # Route handlers (oauth.ts)
-│   │   │   └── services/     # External API services
+│   │   │   ├── workflows/    # Workflow implementations
+│   │   │   ├── services/     # External API services
+│   │   │   └── __tests__/    # Vitest tests
 │   │   └── wrangler.jsonc
 │   └── tail/                 # Error monitoring tail worker
 ├── docs/                     # Architecture docs, PRD
@@ -36,19 +38,24 @@ cf-twitch/
 | Add error type     | `apps/api/src/lib/errors.ts`          | Extend TaggedError                        |
 | Environment vars   | `apps/api/wrangler.jsonc`             | Secrets in `.dev.vars`                    |
 | DO stub utilities  | `apps/api/src/lib/durable-objects.ts` | getStub() for typed stubs w/ Result serde |
-| Analytics          | `apps/api/src/lib/analytics.ts`       | writeDataPoint helper                     |
+| Add workflow       | `apps/api/src/workflows/`             | Use warm pool + cf-workflow-rollback      |
+| Add route          | `apps/api/src/routes/`                | Hono router, mount in index.ts            |
 
 ## Code Map
 
-| Symbol              | Location                                 | Role                                                   |
-| ------------------- | ---------------------------------------- | ------------------------------------------------------ |
-| `Env`               | `index.ts:15-53`                         | Environment interface (DOs, queues, services, secrets) |
-| `app`               | `index.ts:55`                            | Hono app instance                                      |
-| `default`           | `index.ts:65`                            | Worker export                                          |
-| `queue`             | `index.ts:127-132`                       | Queue consumer (stub)                                  |
-| `SpotifyTokenDO`    | `durable-objects/spotify-token-do.ts`    | OAuth token management                                 |
-| `TwitchTokenDO`     | `durable-objects/twitch-token-do.ts`     | OAuth token management                                 |
-| `StreamLifecycleDO` | `durable-objects/stream-lifecycle-do.ts` | Stream state, viewer tracking                          |
+| Symbol              | Location                 | Role                                   |
+| ------------------- | ------------------------ | -------------------------------------- |
+| `Env`               | `index.ts:26`            | Environment interface (extends CF.Env) |
+| `app`               | `index.ts:28`            | Hono app instance                      |
+| `default`           | `index.ts:53-55`         | Worker export                          |
+| `SongQueueDO`       | `index.ts:59`            | Song request queue management          |
+| `SpotifyTokenDO`    | `index.ts:60-61`         | Spotify OAuth token management         |
+| `StreamLifecycleDO` | `index.ts:62-63`         | Stream state, viewer tracking          |
+| `TwitchTokenDO`     | `index.ts:64`            | Twitch OAuth token management          |
+| `KeyboardRaffleDO`  | `index.ts:65-66`         | Raffle system                          |
+| `WorkflowPoolDO`    | `index.ts:67-68`         | Warm workflow pool management          |
+| `AchievementsDO`    | `index.ts:69-70`         | Achievement tracking                   |
+| `getStub()`         | `lib/durable-objects.ts` | Typed stub with Result deserialization |
 
 ## Project-Specific Conventions
 
@@ -79,7 +86,15 @@ cf-twitch/
 - **Use `getStub()`** from `lib/durable-objects.ts` for typed stubs with Result hydration + error handling
 - **`blockConcurrencyWhile` in constructors**: Use `void this.ctx.blockConcurrencyWhile(...)` to mark intentional fire-and-forget
 - **`DurableObjectNamespace<T>`** in Env interface - T must be the DO class for RPC methods to be typed
+- **`withResultSerialization()`** wrapper - ALL DO exports use this for RPC Result serialization
 - Recreate stubs after infrastructure errors
+
+### Workflow Patterns
+
+- **Extend `WorkflowEntrypoint<Env, Params | undefined>`** - support warm pool pattern
+- **Warm pool**: Use `waitForActivation()` helper, activated via `triggerWarmWorkflow()`
+- **Rollback**: Use `cf-workflow-rollback` for saga pattern with compensating actions
+- **Fulfilled = point of no return**: After Twitch redemption fulfill, no rollback possible
 
 ### Services (Plain Classes)
 
@@ -99,6 +114,7 @@ cf-twitch/
 - **Parse ALL external data with Zod** - never cast `as Type` at IO boundaries
 - Response JSON, request bodies, OAuth responses, API responses - ALL parsed with schemas
 - Use `z.parse()` or `z.safeParse()` - never type assertions on external data
+- **Zod v4** in use - some API differences from v3
 
 ### Timestamps
 
@@ -113,16 +129,17 @@ cf-twitch/
 ### Linting & Formatting
 
 - **oxlint** for linting, **oxfmt** for formatting (NOT biome/eslint/prettier)
-- **Type-aware linting** via `oxlint-tsgolint` - uses `typescript-go` for type info
 - Config files: `.oxlintrc.json`, `.oxfmtrc.json`
-- **tsconfig compatibility**: No `baseUrl` - removed in TS 7+ / tsgolint
-- Run `pnpm check` for full CI validation (lint + typecheck + format)
+- **Formatting**: Tabs, double quotes, 100 char width
+- **Banned**: `any` (error), `!` non-null assertion (error)
+- Run `pnpm check` for CI validation (lint + fmt:check)
 
 ### TypeScript
 
 - **No type assertions** (`as Type`, `as unknown as T`) - use proper typing or Zod parse
 - **No `any`** - use `unknown` with narrowing or proper generics
 - **No non-null assertion** (`!`) - handle nullability explicitly
+- **`noUncheckedIndexedAccess`**: Array/object access returns `T | undefined`
 
 ## Anti-Patterns (This Project)
 
@@ -134,59 +151,39 @@ cf-twitch/
 - **INTEGER timestamps** - use TEXT with ISO8601
 - **`throw` in RPC methods** - return `Result.err()` instead
 - **`@deprecated` annotations** - refactor and delete old code, never deprecate
+- **`return null`** for not found - return typed error instead
 
 ## CRITICAL: Pattern Violations (ACTIVE)
 
-### fetch() Handlers in DOs
+### fetch() Handler in StreamLifecycleDO
 
-- **StreamLifecycleDO** (`stream-lifecycle-do.ts:268-329`) - Has `fetch()` handler with if/else routing
+- **StreamLifecycleDO** (`stream-lifecycle-do.ts:247-314`) - Has `fetch()` handler with if/else routing
 - Callers should use `stub.myMethod()` instead of `stub.fetch('http://do/path')`
+- Test file uses `stub.fetch()` because it's testing this legacy handler
 
 ### Type Casts at IO Boundaries
 
-| File                     | Line     | Cast                                          | Notes          |
-| ------------------------ | -------- | --------------------------------------------- | -------------- |
-| `stream-lifecycle-do.ts` | 288      | `(await request.json()) as { count: number }` | Use Zod        |
-| `stream-lifecycle-do.ts` | 162, 359 | `this.ctx.getWebSockets() as WebSocket[]`     | CF types issue |
+| File                     | Line     | Cast                                      | Notes          |
+| ------------------------ | -------- | ----------------------------------------- | -------------- |
+| `stream-lifecycle-do.ts` | 125, 410 | `this.ctx.getWebSockets() as WebSocket[]` | CF types issue |
+| `twitch-service.ts`      | 721      | `response.json() as Promise<...>`         | Use Zod        |
+| `song-request.ts`        | 128      | `trackId as string`                       | Narrow instead |
 
-### RPC Method Pattern (MOSTLY IMPLEMENTED)
+### AI TODO Comments (Pending Refactors)
 
-- All public DO methods should return `Result<T, E>`, not throw
-- **Token DOs**: Return `Result<string, TokenError>` from `getValidToken()` - DONE
-- **SongQueueDO**: All public methods return `Result<T, E>` - DONE
-- **StreamLifecycleDO**: `getStreamState()` returns Result, but lifecycle methods (`onStreamOnline`, `onStreamOffline`) return `Promise<void>` - PARTIAL
+| File                | Line | Note                                         |
+| ------------------- | ---- | -------------------------------------------- |
+| `webhooks.ts`       | 165  | Create Hono middleware for header validation |
+| `webhooks.ts`       | 274  | Create smaller handler functions             |
+| `twitch-service.ts` | 192  | Return StreamOfflineError not Ok(null)       |
+| `eventsub-setup.ts` | 232  | Blocking await in for loop                   |
+| `oauth.ts`          | 123  | Add static .fromEnv on all classes           |
 
 ### Token DOs Direct Fetch (BY DESIGN)
 
 - Token DOs call OAuth endpoints directly via `fetch()` for token refresh
 - This is intentional - token refresh is a core DO responsibility
 - Services fetch tokens via `getStub("TOKEN_DO").getValidToken()`
-
-### Dead Code
-
-| Location           | Item                                                                        | Status             |
-| ------------------ | --------------------------------------------------------------------------- | ------------------ |
-| `lib/errors.ts`    | `SpotifyError`, `TwitchError`, `ValidationError`, `InvalidSpotifyUrl`       | Defined but unused |
-| `lib/analytics.ts` | `writeSongRequestMetric()`, `writeRaffleRollMetric()`, `writeErrorMetric()` | Defined but unused |
-
-### Stub Code
-
-| Stub                     | Location           | Status      |
-| ------------------------ | ------------------ | ----------- |
-| `SongQueueDO`            | `index.ts:72-76`   | Returns 501 |
-| `AchievementsDO`         | `index.ts:78-82`   | Returns 501 |
-| `KeyboardRaffleDO`       | `index.ts:84-88`   | Returns 501 |
-| `SongRequestWorkflow`    | `index.ts:92-100`  | Throws      |
-| `ChatCommandWorkflow`    | `index.ts:102-110` | Throws      |
-| `KeyboardRaffleWorkflow` | `index.ts:112-120` | Throws      |
-| Queue consumer           | `index.ts:127-132` | Just acks   |
-
-### Infrastructure Issues
-
-- **No CI/CD** - No `.github/workflows/`, manual deploy only
-- **No tests** - No test framework configured
-- **Outdated compatibility_date** - `2024-01-01` in wrangler.jsonc (~2 years old)
-- **Redundant types package** - Has `@cloudflare/workers-types` despite using `wrangler types`
 
 ## Commands
 
@@ -195,10 +192,9 @@ pnpm dev              # Start local dev server (api worker)
 pnpm deploy           # Deploy all apps to Cloudflare
 pnpm typecheck        # Type check all apps
 pnpm lint             # Basic linting
-pnpm lint:types       # Type-aware linting
-pnpm lint:all         # Type-aware + type-check (replaces tsc --noEmit)
 pnpm fmt              # Format all files
-pnpm check            # Full CI check (lint:all + fmt:check)
+pnpm check            # CI check (lint + fmt:check)
+pnpm test             # Run vitest tests (api worker)
 pnpm --filter cf-twitch-api run dev   # Dev specific app
 wrangler types        # Regenerate worker-configuration.d.ts
 ```
@@ -207,6 +203,7 @@ wrangler types        # Regenerate worker-configuration.d.ts
 
 - **VCS**: Uses jj (Jujutsu), NOT git - check `.jj/` before VCS commands
 - **Secrets**: Store in `.dev.vars` for local dev (gitignored)
+- **No CI/CD**: Manual deploy only - no `.github/workflows/`
 
 <!-- opensrc:start -->
 

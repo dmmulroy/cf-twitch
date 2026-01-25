@@ -10,6 +10,7 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/stream-lifecycle-do/migrations";
+import { writeStreamSessionMetric, writeViewerCountMetric } from "../lib/analytics";
 import { getStub } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
 import { logger } from "../lib/logger";
@@ -31,6 +32,8 @@ const RecordViewerCountBodySchema = z.object({
 export class StreamLifecycleDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private isLive = false;
+	private sessionId: string | null = null;
+	private sessionStartMs: number | null = null;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -62,6 +65,10 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	async onStreamOnline(): Promise<void> {
 		const now = new Date().toISOString();
 
+		// Generate session ID for analytics correlation
+		this.sessionId = crypto.randomUUID();
+		this.sessionStartMs = Date.now();
+
 		// Update stream state
 		await this.db
 			.update(streamState)
@@ -75,7 +82,7 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 
 		this.isLive = true;
 
-		logger.info("Stream online", { timestamp: now });
+		logger.info("Stream online", { timestamp: now, sessionId: this.sessionId });
 
 		// Notify token DOs of stream online (for proactive token refresh)
 		await this.notifyTokenDOsOnline();
@@ -96,6 +103,10 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	async onStreamOffline(): Promise<void> {
 		const now = new Date().toISOString();
 
+		// Get peak viewer count before updating state
+		const currentState = await this.db.query.streamState.findFirst();
+		const peakViewers = currentState?.peakViewerCount ?? 0;
+
 		// Update stream state
 		await this.db
 			.update(streamState)
@@ -107,7 +118,27 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 
 		this.isLive = false;
 
-		logger.info("Stream offline", { timestamp: now });
+		// Write stream session metric
+		if (this.sessionId && this.sessionStartMs) {
+			const durationMs = Date.now() - this.sessionStartMs;
+			writeStreamSessionMetric(this.env.ANALYTICS, {
+				sessionId: this.sessionId,
+				durationMs,
+				peakViewers,
+			});
+			logger.info("Stream offline", {
+				timestamp: now,
+				sessionId: this.sessionId,
+				durationMs,
+				peakViewers,
+			});
+		} else {
+			logger.info("Stream offline", { timestamp: now });
+		}
+
+		// Clear session state
+		this.sessionId = null;
+		this.sessionStartMs = null;
 
 		// Notify token DOs of stream offline (to cancel proactive refresh alarms)
 		await this.notifyTokenDOsOffline();
@@ -148,6 +179,9 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 				.set({ peakViewerCount: count })
 				.where(eq(streamState.id, 1));
 		}
+
+		// Write Analytics Engine metric
+		writeViewerCountMetric(this.env.ANALYTICS, { count });
 
 		logger.debug("Recorded viewer count", { count, timestamp });
 	}

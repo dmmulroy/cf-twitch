@@ -13,7 +13,11 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/achievements-do/migrations";
-import { AchievementDbError, type AchievementError, type StreamLifecycleHandler } from "../lib/errors";
+import {
+	AchievementDbError,
+	type AchievementError,
+	type StreamLifecycleHandler,
+} from "../lib/errors";
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/achievements-do.schema";
 import {
@@ -214,7 +218,8 @@ export class AchievementsDO
 							.update(userAchievements)
 							.set({
 								progress: newProgress,
-								unlockedAt: shouldUnlock && !userAchievement.unlockedAt ? now : userAchievement.unlockedAt,
+								unlockedAt:
+									shouldUnlock && !userAchievement.unlockedAt ? now : userAchievement.unlockedAt,
 								eventId: definition.threshold === null ? eventId : userAchievement.eventId,
 							})
 							.where(eq(userAchievements.id, userAchievement.id));
@@ -365,12 +370,7 @@ export class AchievementsDO
 						achievementDefinitions,
 						eq(userAchievements.achievementId, achievementDefinitions.id),
 					)
-					.where(
-						and(
-							isNotNull(userAchievements.unlockedAt),
-							eq(userAchievements.announced, false),
-						),
-					)
+					.where(and(isNotNull(userAchievements.unlockedAt), eq(userAchievements.announced, false)))
 					.orderBy(userAchievements.unlockedAt);
 
 				return results.flatMap((r) =>

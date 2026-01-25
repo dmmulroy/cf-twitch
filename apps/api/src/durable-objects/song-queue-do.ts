@@ -26,6 +26,7 @@ import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/song-queue-do/migrations";
+import { writeSpotifySyncMetric } from "../lib/analytics";
 import { SongQueueDbError, SongRequestNotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { SpotifyService, type TrackInfo } from "../services/spotify-service";
@@ -547,6 +548,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	 * 7. Reconcile dropped tracks (previously seen but no longer in queue)
 	 */
 	private async syncFromSpotify(): Promise<Result<void, SongQueueDbError>> {
+		const syncStartMs = Date.now();
 		const spotifyService = new SpotifyService(this.env);
 
 		// 1. Get previous position 0 (with eventId for reconciliation)
@@ -733,9 +735,18 @@ export class SongQueueDO extends DurableObject<Env> {
 				);
 			}
 
+			// Write analytics metric
+			const latencyMs = Date.now() - syncStartMs;
+			writeSpotifySyncMetric(this.env.ANALYTICS, {
+				latencyMs,
+				queueSize: attributedItems.length,
+				matchedCount: matchedEventIds.length,
+			});
+
 			logger.debug("Synced Spotify queue snapshot", {
 				queueSize: attributedItems.length,
 				userRequests: matchedEventIds.length,
+				latencyMs,
 			});
 
 			// 8. Reconcile dropped tracks (previously seen but no longer in queue)
