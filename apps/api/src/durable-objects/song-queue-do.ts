@@ -26,7 +26,6 @@ import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/song-queue-do/migrations";
-import { writeSpotifySyncMetric } from "../lib/analytics";
 import { SongQueueDbError, SongRequestNotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { SpotifyService, type TrackInfo } from "../services/spotify-service";
@@ -136,7 +135,7 @@ export class SongQueueDO extends DurableObject<Env> {
 		// Invalidate cache - next read triggers sync via ensureFresh
 		this.lastSyncAt = null;
 
-		return Result.ok(undefined);
+		return Result.ok();
 	}
 
 	/**
@@ -200,7 +199,7 @@ export class SongQueueDO extends DurableObject<Env> {
 			);
 
 			logger.info("Wrote request to history", { eventId, fulfilledAt });
-			return Result.ok(undefined);
+			return Result.ok();
 		}, this);
 	}
 
@@ -508,13 +507,13 @@ export class SongQueueDO extends DurableObject<Env> {
 
 		// Check if we have recent sync
 		if (this.lastSyncAt && now - this.lastSyncAt < maxStalenessMs) {
-			return Result.ok(undefined);
+			return Result.ok();
 		}
 
 		// Coalesce concurrent sync requests
 		if (this.syncLock) {
 			await this.syncLock;
-			return Result.ok(undefined);
+			return Result.ok();
 		}
 
 		// Start new sync
@@ -530,7 +529,7 @@ export class SongQueueDO extends DurableObject<Env> {
 		}
 
 		// Always return ok - stale fallback
-		return Result.ok(undefined);
+		return Result.ok();
 	}
 
 	/**
@@ -548,7 +547,6 @@ export class SongQueueDO extends DurableObject<Env> {
 	 * 7. Reconcile dropped tracks (previously seen but no longer in queue)
 	 */
 	private async syncFromSpotify(): Promise<Result<void, SongQueueDbError>> {
-		const syncStartMs = Date.now();
 		const spotifyService = new SpotifyService(this.env);
 
 		// 1. Get previous position 0 (with eventId for reconciliation)
@@ -735,18 +733,9 @@ export class SongQueueDO extends DurableObject<Env> {
 				);
 			}
 
-			// Write analytics metric
-			const latencyMs = Date.now() - syncStartMs;
-			writeSpotifySyncMetric(this.env.ANALYTICS, {
-				latencyMs,
-				queueSize: attributedItems.length,
-				matchedCount: matchedEventIds.length,
-			});
-
 			logger.debug("Synced Spotify queue snapshot", {
 				queueSize: attributedItems.length,
 				userRequests: matchedEventIds.length,
-				latencyMs,
 			});
 
 			// 8. Reconcile dropped tracks (previously seen but no longer in queue)
@@ -763,7 +752,7 @@ export class SongQueueDO extends DurableObject<Env> {
 				logger.error("Failed to cleanup stale pending", { error: cleanupResult.error.message });
 			}
 
-			return Result.ok(undefined);
+			return Result.ok();
 		}, this);
 	}
 
@@ -780,17 +769,17 @@ export class SongQueueDO extends DurableObject<Env> {
 	): Promise<Result<void, SongQueueDbError>> {
 		// No previous snapshot = nothing to reconcile
 		if (!previousSnapshot) {
-			return Result.ok(undefined);
+			return Result.ok();
 		}
 
 		// Previous was autoplay = nothing to reconcile
 		if (!previousSnapshot.eventId) {
-			return Result.ok(undefined);
+			return Result.ok();
 		}
 
 		// Same request still playing = nothing to reconcile
 		if (previousSnapshot.eventId === newEventId) {
-			return Result.ok(undefined);
+			return Result.ok();
 		}
 
 		// Previous user request finished playing - move to history
@@ -810,7 +799,7 @@ export class SongQueueDO extends DurableObject<Env> {
 
 			if (!pending) {
 				// Already reconciled or deleted
-				return Result.ok(undefined);
+				return Result.ok();
 			}
 
 			// Move to history
@@ -843,7 +832,7 @@ export class SongQueueDO extends DurableObject<Env> {
 				requester: pending.requesterDisplayName,
 			});
 
-			return Result.ok(undefined);
+			return Result.ok();
 		}, this);
 	}
 
@@ -891,7 +880,7 @@ export class SongQueueDO extends DurableObject<Env> {
 			);
 
 			if (orphaned.length === 0) {
-				return Result.ok(undefined);
+				return Result.ok();
 			}
 
 			// Delete orphaned requests silently (no history - they were skipped/removed)
@@ -911,7 +900,7 @@ export class SongQueueDO extends DurableObject<Env> {
 				trackIds: orphaned.map((o) => o.trackId),
 			});
 
-			return Result.ok(undefined);
+			return Result.ok();
 		}, this);
 	}
 

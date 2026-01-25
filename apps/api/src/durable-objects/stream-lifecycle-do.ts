@@ -10,7 +10,6 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/stream-lifecycle-do/migrations";
-import { writeStreamSessionMetric, writeViewerCountMetric } from "../lib/analytics";
 import { getStub } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
 import { logger } from "../lib/logger";
@@ -32,8 +31,6 @@ const RecordViewerCountBodySchema = z.object({
 export class StreamLifecycleDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private isLive = false;
-	private sessionId: string | null = null;
-	private sessionStartMs: number | null = null;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -65,10 +62,6 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	async onStreamOnline(): Promise<void> {
 		const now = new Date().toISOString();
 
-		// Generate session ID for analytics correlation
-		this.sessionId = crypto.randomUUID();
-		this.sessionStartMs = Date.now();
-
 		// Update stream state
 		await this.db
 			.update(streamState)
@@ -82,7 +75,7 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 
 		this.isLive = true;
 
-		logger.info("Stream online", { timestamp: now, sessionId: this.sessionId });
+		logger.info("Stream online", { timestamp: now });
 
 		// Notify token DOs of stream online (for proactive token refresh)
 		await this.notifyTokenDOsOnline();
@@ -103,10 +96,6 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	async onStreamOffline(): Promise<void> {
 		const now = new Date().toISOString();
 
-		// Get peak viewer count before updating state
-		const currentState = await this.db.query.streamState.findFirst();
-		const peakViewers = currentState?.peakViewerCount ?? 0;
-
 		// Update stream state
 		await this.db
 			.update(streamState)
@@ -118,27 +107,7 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 
 		this.isLive = false;
 
-		// Write stream session metric
-		if (this.sessionId && this.sessionStartMs) {
-			const durationMs = Date.now() - this.sessionStartMs;
-			writeStreamSessionMetric(this.env.ANALYTICS, {
-				sessionId: this.sessionId,
-				durationMs,
-				peakViewers,
-			});
-			logger.info("Stream offline", {
-				timestamp: now,
-				sessionId: this.sessionId,
-				durationMs,
-				peakViewers,
-			});
-		} else {
-			logger.info("Stream offline", { timestamp: now });
-		}
-
-		// Clear session state
-		this.sessionId = null;
-		this.sessionStartMs = null;
+		logger.info("Stream offline", { timestamp: now });
 
 		// Notify token DOs of stream offline (to cancel proactive refresh alarms)
 		await this.notifyTokenDOsOffline();
@@ -179,9 +148,6 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 				.set({ peakViewerCount: count })
 				.where(eq(streamState.id, 1));
 		}
-
-		// Write Analytics Engine metric
-		writeViewerCountMetric(this.env.ANALYTICS, { count });
 
 		logger.debug("Recorded viewer count", { count, timestamp });
 	}
@@ -377,12 +343,10 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	private async notifyTokenDOsOnline(): Promise<void> {
 		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
-		const poolStub = getStub("WORKFLOW_POOL_DO");
 
-		const [spotifyResult, twitchResult, poolResult] = await Promise.all([
+		const [spotifyResult, twitchResult] = await Promise.all([
 			spotifyStub.onStreamOnline(),
 			twitchStub.onStreamOnline(),
-			poolStub.onStreamOnline(),
 		]);
 
 		if (spotifyResult.status === "error") {
@@ -396,12 +360,6 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 				error: twitchResult.error.message,
 			});
 		}
-
-		if (poolResult.status === "error") {
-			logger.error("Failed to notify WorkflowPoolDO of stream online", {
-				error: poolResult.error.message,
-			});
-		}
 	}
 
 	/**
@@ -410,12 +368,10 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	private async notifyTokenDOsOffline(): Promise<void> {
 		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
-		const poolStub = getStub("WORKFLOW_POOL_DO");
 
-		const [spotifyResult, twitchResult, poolResult] = await Promise.all([
+		const [spotifyResult, twitchResult] = await Promise.all([
 			spotifyStub.onStreamOffline(),
 			twitchStub.onStreamOffline(),
-			poolStub.onStreamOffline(),
 		]);
 
 		if (spotifyResult.status === "error") {
@@ -427,12 +383,6 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 		if (twitchResult.status === "error") {
 			logger.error("Failed to notify TwitchTokenDO of stream offline", {
 				error: twitchResult.error.message,
-			});
-		}
-
-		if (poolResult.status === "error") {
-			logger.error("Failed to notify WorkflowPoolDO of stream offline", {
-				error: poolResult.error.message,
 			});
 		}
 	}

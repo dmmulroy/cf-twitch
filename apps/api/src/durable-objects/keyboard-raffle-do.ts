@@ -251,7 +251,7 @@ export class KeyboardRaffleDO
 	async onStreamOnline(): Promise<Result<void, KeyboardRaffleDbError>> {
 		logger.info("KeyboardRaffleDO: Stream online");
 		// No-op for now - raffle runs regardless of stream state
-		return Result.ok(undefined);
+		return Result.ok();
 	}
 
 	/**
@@ -260,6 +260,6 @@ export class KeyboardRaffleDO
 	async onStreamOffline(): Promise<Result<void, KeyboardRaffleDbError>> {
 		logger.info("KeyboardRaffleDO: Stream offline");
 		// No-op for now - raffle runs regardless of stream state
-		return Result.ok(undefined);
+		return Result.ok();
 	}
 }

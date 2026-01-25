@@ -1,31 +1,8 @@
 /**
  * Analytics Engine helpers for metric writing
- *
- * Schema documentation:
- * - song_request: blobs=[requester, trackId, trackName, status], doubles=[latencyMs], index=song_request
- * - raffle_roll: blobs=[user, status], doubles=[roll, winningNumber, distance], index=raffle_roll
- * - viewer_count: blobs=[], doubles=[count], index=viewer_count
- * - stream_session: blobs=[sessionId], doubles=[durationMs, peakViewers], index=stream_session
- * - spotify_sync: blobs=[], doubles=[latencyMs, queueSize, matchedCount], index=spotify_sync
- * - app_error: blobs=[errorTag, endpoint], doubles=[statusCode], index=app_error
- *
- * Query patterns:
- * - Use `WHERE index1 = 'event_name'` (NOT blob1)
- * - Use `SUM(_sample_interval)` for event counts
- * - Use `SUM(_sample_interval * doubleN) / SUM(_sample_interval)` for weighted averages
  */
 
 import { logger } from "./logger";
-
-/** Maximum blob length (Analytics Engine limit) */
-const MAX_BLOB_LENGTH = 255;
-
-/**
- * Truncate string to Analytics Engine blob limit
- */
-function truncate(value: string): string {
-	return value.length > MAX_BLOB_LENGTH ? value.slice(0, MAX_BLOB_LENGTH) : value;
-}
 
 /**
  * Song request metric data
@@ -50,37 +27,122 @@ export interface RaffleRollMetric {
 }
 
 /**
- * Viewer count metric data
+ * Error metric data
  */
-export interface ViewerCountMetric {
-	count: number;
-}
-
-/**
- * Stream session metric data (written on stream offline)
- */
-export interface StreamSessionMetric {
-	sessionId: string;
-	durationMs: number;
-	peakViewers: number;
-}
-
-/**
- * Spotify sync metric data
- */
-export interface SpotifySyncMetric {
-	latencyMs: number;
-	queueSize: number;
-	matchedCount: number;
-}
-
-/**
- * App error metric data (API/DO errors, not worker exceptions)
- */
-export interface AppErrorMetric {
-	errorTag: string;
+export interface ErrorMetric {
+	errorType: string;
+	errorMessage: string;
 	endpoint?: string;
 	statusCode?: number;
+}
+
+// =============================================================================
+// Chat Command Metrics
+// =============================================================================
+
+/**
+ * Chat command types
+ */
+export type ChatCommandType = "song" | "queue";
+
+/**
+ * Chat command status
+ */
+export type ChatCommandStatus = "success" | "error";
+
+/**
+ * Chat command metric data
+ */
+export interface ChatCommandMetric {
+	command: ChatCommandType;
+	userId: string;
+	userName: string;
+	status: ChatCommandStatus;
+	durationMs: number;
+	error?: string;
+}
+
+/**
+ * Write a chat command metric to Analytics Engine
+ *
+ * Index: "chat-command" (category-level queries)
+ * Blobs: command, userId, userName, status, error
+ * Doubles: durationMs
+ */
+export function writeChatCommandMetric(
+	analytics: AnalyticsEngineDataset,
+	metric: ChatCommandMetric,
+): void {
+	safeWriteMetric(analytics, "chat-command", {
+		blobs: [
+			metric.command,
+			metric.userId,
+			metric.userName,
+			metric.status,
+			(metric.error ?? "").slice(0, 900),
+		],
+		doubles: [metric.durationMs],
+	});
+}
+
+// =============================================================================
+// Saga Lifecycle Metrics
+// =============================================================================
+
+/**
+ * Saga types for lifecycle tracking
+ */
+export type SagaType = "song-request-saga" | "keyboard-raffle-saga";
+
+/**
+ * Saga lifecycle events
+ */
+export type SagaEvent =
+	| "started"
+	| "step_started"
+	| "step_completed"
+	| "step_failed"
+	| "step_compensated"
+	| "step_compensation_failed"
+	| "fulfilled" // point of no return
+	| "compensating"
+	| "completed"
+	| "failed";
+
+/**
+ * Saga lifecycle metric data
+ *
+ * sagaId doubles as traceId for cross-service correlation (DO instance ID)
+ */
+export interface SagaLifecycleMetric {
+	sagaType: SagaType;
+	sagaId: string;
+	event: SagaEvent;
+	stepName?: string;
+	error?: string;
+	durationMs?: number;
+}
+
+/**
+ * Write a saga lifecycle metric to Analytics Engine
+ *
+ * Index: sagaType (enables efficient filtering by saga type)
+ * Blobs: sagaId, event, stepName, error (truncated to 900 bytes)
+ * Doubles: durationMs
+ */
+export function writeSagaLifecycleMetric(
+	analytics: AnalyticsEngineDataset,
+	metric: SagaLifecycleMetric,
+): void {
+	safeWriteMetric(analytics, metric.sagaType, {
+		blobs: [
+			metric.sagaId,
+			metric.event,
+			metric.stepName ?? "",
+			(metric.error ?? "").slice(0, 900), // truncate to AE blob limit
+		],
+		doubles: [metric.durationMs ?? 0],
+	});
 }
 
 /**
@@ -91,12 +153,7 @@ export function writeSongRequestMetric(
 	metric: SongRequestMetric,
 ): void {
 	safeWriteMetric(analytics, "song_request", {
-		blobs: [
-			truncate(metric.requester),
-			truncate(metric.trackId),
-			truncate(metric.trackName),
-			metric.status,
-		],
+		blobs: [metric.requester, metric.trackId, metric.trackName, metric.status],
 		doubles: [metric.latencyMs],
 	});
 }
@@ -109,57 +166,17 @@ export function writeRaffleRollMetric(
 	metric: RaffleRollMetric,
 ): void {
 	safeWriteMetric(analytics, "raffle_roll", {
-		blobs: [truncate(metric.user), metric.status],
+		blobs: [metric.user, metric.status],
 		doubles: [metric.roll, metric.winningNumber, metric.distance],
 	});
 }
 
 /**
- * Write a viewer count metric to Analytics Engine
+ * Write an error metric to Analytics Engine
  */
-export function writeViewerCountMetric(
-	analytics: AnalyticsEngineDataset,
-	metric: ViewerCountMetric,
-): void {
-	safeWriteMetric(analytics, "viewer_count", {
-		doubles: [metric.count],
-	});
-}
-
-/**
- * Write a stream session metric to Analytics Engine
- */
-export function writeStreamSessionMetric(
-	analytics: AnalyticsEngineDataset,
-	metric: StreamSessionMetric,
-): void {
-	safeWriteMetric(analytics, "stream_session", {
-		blobs: [metric.sessionId],
-		doubles: [metric.durationMs, metric.peakViewers],
-	});
-}
-
-/**
- * Write a Spotify sync metric to Analytics Engine
- */
-export function writeSpotifySyncMetric(
-	analytics: AnalyticsEngineDataset,
-	metric: SpotifySyncMetric,
-): void {
-	safeWriteMetric(analytics, "spotify_sync", {
-		doubles: [metric.latencyMs, metric.queueSize, metric.matchedCount],
-	});
-}
-
-/**
- * Write an app error metric to Analytics Engine
- */
-export function writeAppErrorMetric(
-	analytics: AnalyticsEngineDataset,
-	metric: AppErrorMetric,
-): void {
-	safeWriteMetric(analytics, "app_error", {
-		blobs: [truncate(metric.errorTag), truncate(metric.endpoint ?? "")],
+export function writeErrorMetric(analytics: AnalyticsEngineDataset, metric: ErrorMetric): void {
+	safeWriteMetric(analytics, "error", {
+		blobs: [metric.errorType, metric.errorMessage, metric.endpoint ?? ""],
 		doubles: [metric.statusCode ?? 0],
 	});
 }

@@ -121,12 +121,10 @@ api.get("/debug/keyboard-raffle/leaderboard", async (c) => {
  */
 api.get("/debug/status", async (c) => {
 	const streamStub = getStub("STREAM_LIFECYCLE_DO");
-	const poolStub = getStub("WORKFLOW_POOL_DO");
 	const songQueueStub = getStub("SONG_QUEUE_DO");
 
-	const [streamResult, poolResult, queueResult] = await Promise.all([
+	const [streamResult, queueResult] = await Promise.all([
 		streamStub.getStreamState(),
-		poolStub.getPoolStatus(),
 		songQueueStub.getQueue(5),
 	]);
 
@@ -138,11 +136,6 @@ api.get("/debug/status", async (c) => {
 			startedAt: streamResult.status === "ok" ? streamResult.value.startedAt : null,
 			peakViewerCount: streamResult.status === "ok" ? streamResult.value.peakViewerCount : null,
 			error: streamResult.status === "error" ? streamResult.error.message : null,
-		},
-		workflowPool: {
-			ok: poolResult.status === "ok",
-			pools: poolResult.status === "ok" ? poolResult.value : null,
-			error: poolResult.status === "error" ? poolResult.error.message : null,
 		},
 		songQueue: {
 			ok: queueResult.status === "ok",

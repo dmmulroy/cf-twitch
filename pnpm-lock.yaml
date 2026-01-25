@@ -24,11 +24,8 @@ importers:
   apps/api:
     dependencies:
       better-result:
-        specifier: ^2.5.0
-        version: 2.5.0
-      cf-workflow-rollback:
-        specifier: ^1.5.0
-        version: 1.5.0(@cloudflare/workers-types@4.20260123.0)
+        specifier: ^2.5.2
+        version: 2.5.2
       drizzle-orm:
         specifier: ^0.45.1
         version: 0.45.1(@cloudflare/workers-types@4.20260123.0)
@@ -1200,8 +1197,8 @@ packages:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
     engines: {node: '>=12'}
 
-  better-result@2.5.0:
-    resolution: {integrity: sha512-wZ0wNGs9JQroKwRGApIIygIny9VVmxD8L0+Sriij+XSmLxjSlHadAkNqva34/tdfr/0QxE8RdM/5irngslHOTg==}
+  better-result@2.5.2:
+    resolution: {integrity: sha512-gHG++1y+GvCrGvSi1WVwyM3slsl1yeE68rNCuTXfwcCx041I3f1z2d99oaC6QSuP+XB70Vda3Dc+EitE5KfGqg==}
     hasBin: true
 
   blake3-wasm@2.1.5:
@@ -1213,11 +1210,6 @@ packages:
   cac@6.7.14:
     resolution: {integrity: sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ==}
     engines: {node: '>=8'}
-
-  cf-workflow-rollback@1.5.0:
-    resolution: {integrity: sha512-Wrx/ibMmUs/pB022XrffpjljRulJJkruOyiT363FaTzXYLe8IWWflb+1RpzQDGJxqSZB3xQ6bsAUHLLJvz2D5w==}
-    peerDependencies:
-      '@cloudflare/workers-types': '>=4.0.0'
 
   chai@5.3.3:
     resolution: {integrity: sha512-4zNhdJD/iOjSH0A05ea+Ke6MU5mmpQcbQsSOkgdaUMJ9zTlDTD/GYlwohmIE2u0gaxHYiVHEn1Fw9mZ/ktJWgw==}
@@ -1746,7 +1738,8 @@ snapshots:
   '@cloudflare/workerd-windows-64@1.20260120.0':
     optional: true
 
-  '@cloudflare/workers-types@4.20260123.0': {}
+  '@cloudflare/workers-types@4.20260123.0':
+    optional: true
 
   '@cspotcode/source-map-support@0.8.1':
     dependencies:
@@ -2396,7 +2389,7 @@ snapshots:
 
   assertion-error@2.0.1: {}
 
-  better-result@2.5.0:
+  better-result@2.5.2:
     dependencies:
       '@clack/prompts': 0.11.0
 
@@ -2405,10 +2398,6 @@ snapshots:
   buffer-from@1.1.2: {}
 
   cac@6.7.14: {}
-
-  cf-workflow-rollback@1.5.0(@cloudflare/workers-types@4.20260123.0):
-    dependencies:
-      '@cloudflare/workers-types': 4.20260123.0
 
   chai@5.3.3:
     dependencies:

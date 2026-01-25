@@ -120,7 +120,7 @@ export class TwitchTokenDO
 		// Schedule proactive refresh alarm
 		await this.scheduleProactiveRefresh();
 
-		return Result.ok(undefined);
+		return Result.ok();
 	}
 
 	/**
@@ -310,7 +310,7 @@ export class TwitchTokenDO
 			await this.scheduleProactiveRefresh();
 		}
 
-		return Result.ok(undefined);
+		return Result.ok();
 	}
 
 	// =========================================================================

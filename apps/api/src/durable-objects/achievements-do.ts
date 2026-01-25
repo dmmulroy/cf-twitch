@@ -501,7 +501,7 @@ export class AchievementsDO
 	async onStreamOffline(): Promise<Result<void, AchievementDbError>> {
 		logger.info("AchievementsDO: Stream offline");
 		// No cleanup needed on stream end
-		return Result.ok(undefined);
+		return Result.ok();
 	}
 
 	// =============================================================================

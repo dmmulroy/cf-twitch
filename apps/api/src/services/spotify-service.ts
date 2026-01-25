@@ -371,7 +371,7 @@ export class SpotifyService {
 
 		// 200 or 204 = success (Spotify docs say 204, but sometimes returns 200)
 		if (response.status === 200 || response.status === 204) {
-			return Result.ok(undefined);
+			return Result.ok();
 		}
 
 		// Handle 404 - no active device
@@ -618,7 +618,7 @@ export class SpotifyService {
 
 		// 204 = success
 		if (response.status === 204) {
-			return Result.ok(undefined);
+			return Result.ok();
 		}
 
 		// 404 = no active device

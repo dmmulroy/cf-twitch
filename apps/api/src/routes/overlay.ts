@@ -41,9 +41,10 @@ overlay.get("/now-playing", (c) => {
 		
 					body {
 						background: transparent;
-						font-family:
-							-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+						font-family: "IBM Plex Mono", ui-monospace, monospace;
 						color: var(--ctp-text);
+						-webkit-font-smoothing: antialiased;
+						-moz-osx-font-smoothing: grayscale;
 					}
 		
 					.container {
@@ -60,13 +61,22 @@ overlay.get("/now-playing", (c) => {
 						align-items: center;
 					}
 		
+					.album-art-container {
+						width: 64px;
+						height: 64px;
+						flex-shrink: 0;
+					}
+		
 					.album-art {
 						width: 64px;
 						height: 64px;
 						border-radius: 50%;
-						flex-shrink: 0;
 						object-fit: cover;
-						animation: spin 3s linear infinite;
+						animation: spin 5s linear infinite;
+					}
+		
+					.album-art.hidden {
+						visibility: hidden;
 					}
 		
 					@keyframes spin {
@@ -80,6 +90,7 @@ overlay.get("/now-playing", (c) => {
 		
 					.track-info {
 						flex-grow: 1;
+						min-width: 0;
 						padding-left: 16px;
 						display: flex;
 						flex-direction: column;
@@ -87,39 +98,65 @@ overlay.get("/now-playing", (c) => {
 					}
 		
 					.track-header {
-						font-size: 14px;
+						font-size: 16px;
 						font-weight: 600;
+						line-height: 1.5rem;
+						min-height: 1.5rem;
 					}
 		
 					.track-name {
-						font-size: 12px;
+						font-size: 14px;
+						line-height: 1.25rem;
+						min-height: 1.25rem;
+						overflow: hidden;
+						text-overflow: ellipsis;
+						white-space: nowrap;
 					}
 		
 					.track-artist {
-						font-size: 12px;
+						font-size: 14px;
+						line-height: 1.25rem;
+						min-height: 1.25rem;
 						color: var(--ctp-subtext);
+						overflow: hidden;
+						text-overflow: ellipsis;
+						white-space: nowrap;
 					}
 		
 					.track-requester {
-						font-size: 12px;
+						font-size: 14px;
+						line-height: 1.25rem;
+						min-height: 1.25rem;
 						color: var(--ctp-subtext);
+						overflow: hidden;
+						text-overflow: ellipsis;
+						white-space: nowrap;
 					}
 		
 					.music-icon {
 						width: 56px;
-						margin-left: auto;
+						height: 56px;
+						flex-shrink: 0;
 						color: var(--ctp-pink);
 					}
 				</style>
+				<link rel="preconnect" href="https://fonts.googleapis.com" />
+				<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+				<link
+					href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+					rel="stylesheet"
+				/>
 			</head>
 			<body>
 				<div class="container">
-					<div id="album-art-container"></div>
+					<div class="album-art-container">
+						<img id="album-art" src="" alt="" class="album-art hidden" />
+					</div>
 					<div class="track-info">
 						<h2 id="header" class="track-header">Loading...</h2>
-						<p id="track-name" class="track-name"></p>
-						<p id="track-artist" class="track-artist"></p>
-						<p id="track-requester" class="track-requester"></p>
+						<p id="track-name" class="track-name">&nbsp;</p>
+						<p id="track-artist" class="track-artist">&nbsp;</p>
+						<p id="track-requester" class="track-requester">&nbsp;</p>
 					</div>
 					<svg
 						xmlns="http://www.w3.org/2000/svg"
@@ -138,7 +175,8 @@ overlay.get("/now-playing", (c) => {
 				</div>
 		
 				<script>
-					const API_URL = "/api/now-playing";
+					const NOW_PLAYING_URL = "/api/now-playing";
+					const QUEUE_URL = "/api/queue?limit=1";
 					const TOGGLE_INTERVAL = 5000;
 		
 					let active = "currentlyPlaying";
@@ -147,13 +185,21 @@ overlay.get("/now-playing", (c) => {
 		
 					async function fetchData() {
 						try {
-							const response = await fetch(API_URL);
-							if (!response.ok) {
-								throw new Error(\`HTTP error! status: \${response.status}\`);
+							const [nowPlayingRes, queueRes] = await Promise.all([
+								fetch(NOW_PLAYING_URL),
+								fetch(QUEUE_URL)
+							]);
+		
+							if (nowPlayingRes.ok) {
+								const data = await nowPlayingRes.json();
+								currentData = data.track ? data : null;
 							}
-							const data = await response.json();
-							currentData = data.currentlyPlaying || null;
-							nextUpData = data.nextUp || null;
+		
+							if (queueRes.ok) {
+								const queue = await queueRes.json();
+								nextUpData = queue.tracks?.[0] ? { track: queue.tracks[0] } : null;
+							}
+		
 							updateDisplay();
 						} catch (error) {
 							console.error("Failed to fetch now playing:", error);
@@ -166,39 +212,41 @@ overlay.get("/now-playing", (c) => {
 						const nameEl = document.getElementById("track-name");
 						const artistEl = document.getElementById("track-artist");
 						const requesterEl = document.getElementById("track-requester");
-						const albumContainer = document.getElementById("album-art-container");
+						const albumArt = document.getElementById("album-art");
 		
-						if (!activeData) {
+						if (!activeData?.track) {
 							headerEl.textContent = "Nothing is currently playing";
-							nameEl.textContent = "";
-							artistEl.textContent = "";
-							requesterEl.textContent = "";
-							albumContainer.innerHTML = "";
+							nameEl.innerHTML = "&nbsp;";
+							artistEl.innerHTML = "&nbsp;";
+							requesterEl.innerHTML = "&nbsp;";
+							albumArt.classList.add("hidden");
 							return;
 						}
 		
+						const track = activeData.track;
 						headerEl.textContent = active === "currentlyPlaying" ? "Now Playing" : "Next Up";
-						nameEl.textContent = activeData.track?.name || "";
-						artistEl.textContent = activeData.track?.artists?.map(a => a.name).join(", ") || "";
+						nameEl.textContent = track.name || "";
+						// Artists are string[] in new API, not {name}[]
+						artistEl.textContent = Array.isArray(track.artists)
+							? track.artists.map(a => typeof a === "string" ? a : a.name).join(", ")
+							: "";
 		
-						if (activeData.requesterDisplayName) {
-							requesterEl.textContent = \`Requested by @\${activeData.requesterDisplayName}\`;
+						const requester = track.requesterDisplayName || activeData.requesterDisplayName;
+						if (requester && requester !== "Unknown") {
+							requesterEl.textContent = \`Requested by @\${requester}\`;
 						} else {
-							requesterEl.textContent = "";
+							requesterEl.innerHTML = "&nbsp;";
 						}
 		
-						const albumUrl = activeData.track?.album?.images?.[0]?.url;
+						// Update album art src instead of replacing innerHTML (prevents CLS)
+						const albumUrl = track.albumCoverUrl;
 						if (albumUrl) {
-							albumContainer.innerHTML = \`<img src="\${escapeAttr(albumUrl)}" alt="Album Art" class="album-art" />\`;
+							albumArt.src = albumUrl;
+							albumArt.alt = \`\${track.album} album art\`;
+							albumArt.classList.remove("hidden");
 						} else {
-							albumContainer.innerHTML = "";
+							albumArt.classList.add("hidden");
 						}
-					}
-		
-					function escapeAttr(text) {
-						const div = document.createElement("div");
-						div.textContent = text;
-						return div.innerHTML;
 					}
 		
 					function toggle() {

@@ -1,78 +1,120 @@
 # Durable Objects
 
-Token management, stream lifecycle, and feature DOs. See root AGENTS.md for conventions.
+Token management and stream lifecycle DOs. See root AGENTS.md for project conventions.
 
 ## Overview
 
-| DO                  | Purpose                           | Schema Location                        |
-| ------------------- | --------------------------------- | -------------------------------------- |
-| `SpotifyTokenDO`    | OAuth token storage + refresh     | `schemas/token-schema.ts`              |
-| `TwitchTokenDO`     | OAuth token storage + refresh     | `schemas/token-schema.ts`              |
-| `StreamLifecycleDO` | Stream state, viewer tracking     | `stream-lifecycle-do.schema.ts`        |
-| `SongQueueDO`       | Song request queue + Spotify sync | `schemas/song-queue-do.schema.ts`      |
-| `AchievementsDO`    | Per-user achievement tracking     | `schemas/achievements-do.schema.ts`    |
-| `KeyboardRaffleDO`  | Raffle rolls + leaderboard        | `schemas/keyboard-raffle-do.schema.ts` |
-| `WorkflowPoolDO`    | Warm workflow instance management | `schemas/workflow-pool-do.schema.ts`   |
+| DO                  | Purpose                               | Lines | Status      |
+| ------------------- | ------------------------------------- | ----- | ----------- |
+| `SpotifyTokenDO`    | OAuth token storage + refresh         | ~200  | Implemented |
+| `TwitchTokenDO`     | OAuth token storage + refresh         | ~200  | Implemented |
+| `StreamLifecycleDO` | Stream state, viewer tracking, alarms | ~370  | Implemented |
+| `SongQueueDO`       | Song request queue                    | -     | Stub (501)  |
+| `AchievementsDO`    | Achievement tracking                  | -     | Stub (501)  |
+| `KeyboardRaffleDO`  | Raffle system                         | -     | Stub (501)  |
 
-## Common Pattern
+## Schemas
 
-All DOs follow:
+- `schemas/token-schema.ts` - Shared token table schema for both token DOs
+- `stream-lifecycle-do.schema.ts` - Stream state + viewer snapshots tables
 
-```typescript
-export class MyDO extends DurableObject<Env> {
-	private db: Drizzle;
+## Token DO Pattern
 
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
-		this.db = drizzle(this.ctx.storage, { schema });
-		void this.ctx.blockConcurrencyWhile(async () => {
-			await migrate(this.db, migrations);
-		});
-	}
-
-	// ALL public methods return Result<T, E>
-	async myMethod(): Promise<Result<T, MyError>> {
-		return Result.ok(value);
-	}
-}
-```
-
-## Token DOs
-
-Shared pattern for `SpotifyTokenDO` and `TwitchTokenDO`:
+Both token DOs follow identical pattern:
 
 - Singleton row (`id = 1`)
-- In-memory cache + SQLite persistence
-- Coalesced refresh via `refreshPromise`
-- 5-minute buffer before expiry triggers refresh
-- Implements `StreamLifecycleHandler` interface
+- In-memory cache + SQLite persistence via Drizzle
+- Coalesced refresh (single inflight promise via `refreshPromise`)
+- Stream lifecycle hooks (`onStreamOnline`/`onStreamOffline`)
+- 5-minute refresh buffer before expiry
+
+```typescript
+// Correct Drizzle init in constructor
+this.db = drizzle(this.ctx.storage, { schema });
+```
+
+### RPC Methods
+
+| Method              | Returns           | Purpose                      |
+| ------------------- | ----------------- | ---------------------------- |
+| `getValidToken()`   | `Promise<string>` | Get token, refresh if needed |
+| `setTokens(tokens)` | `Promise<void>`   | Store new OAuth tokens       |
+| `onStreamOnline()`  | `Promise<void>`   | Stream started callback      |
+| `onStreamOffline()` | `Promise<void>`   | Stream ended callback        |
 
 ## StreamLifecycleDO
 
-- **Alarms**: 60s polling for viewer count when live
-- **WebSockets**: Hibernation API, broadcasts `stream_online`/`stream_offline`
+- **Alarms**: 60s viewer count polling when live
+- **WebSockets**: Broadcasts `stream_online`/`stream_offline` events via hibernation API
+- **Tables**: `stream_state` (singleton), `viewer_snapshots` (timeseries)
 - **DO-to-DO**: Signals token DOs on lifecycle changes via RPC
 
-**Pattern Violation**: Has `fetch()` handler (lines 247-314) with if/else routing. Use RPC methods instead.
+### RPC Methods
 
-## SongQueueDO
+| Method                             | Returns                  | Purpose                                        |
+| ---------------------------------- | ------------------------ | ---------------------------------------------- |
+| `onStreamOnline()`                 | `Promise<void>`          | Initialize stream, notify token DOs, set alarm |
+| `onStreamOffline()`                | `Promise<void>`          | End stream, notify token DOs, cancel alarm     |
+| `getStreamState()`                 | `Promise<StreamState>`   | Return current stream state                    |
+| `getIsLive()`                      | `Promise<boolean>`       | Return boolean live status                     |
+| `getViewerHistory(since?, until?)` | `Promise<{snapshots}>`   | Return viewer count snapshots                  |
+| `recordViewerCount(count)`         | `Promise<void>`          | Record viewer snapshot, update peak            |
+| `ping()`                           | `Promise<{ok: boolean}>` | Health check                                   |
 
-- `ensureFresh()` pattern with backoff + stale fallback
-- Reconciles played/dropped tracks with Spotify
-- Pending → History tracking
+## Pattern Violations (Need Fix)
 
-## WorkflowPoolDO
+### fetch() Handler (line 269-330)
 
-- Manages pre-warmed workflow instances (pool size: 3)
-- Warm instances wait at `step.waitForEvent("activate")`
-- `triggerWarmWorkflow()` activates or falls back to cold start
-
-## Export Pattern
-
-All DOs wrapped in `index.ts`:
+StreamLifecycleDO has `fetch()` handler with switch routing. Should expose RPC methods directly.
 
 ```typescript
-export const MyDO = withResultSerialization(MyDOBase);
+// CURRENT (bad)
+switch (url.pathname) {
+  case "/stream-online": await this.onStreamOnline(); ...
+}
+
+// TARGET (good) - remove fetch handler, callers use RPC:
+stub.onStreamOnline()
 ```
 
-This enables Result serialization across RPC boundary.
+### throw Instead of Result
+
+All DOs throw instead of returning `Result<T, E>`:
+
+```typescript
+// CURRENT (bad)
+throw new TokenRefreshError("No token available");
+
+// TARGET (good)
+return Result.err(new TokenRefreshError("No token available"));
+```
+
+### Type Cast at IO Boundary (line 288)
+
+```typescript
+// CURRENT (bad)
+const { count } = (await request.json()) as { count: number };
+
+// TARGET (good)
+const body = RecordViewerCountBody.parse(await request.json());
+```
+
+### Token DOs Bypass Services
+
+Token DOs call external APIs directly via `fetch()` instead of using service bindings:
+
+```typescript
+// CURRENT (bad) - spotify-token-do.ts:159
+const response = await fetch("https://accounts.spotify.com/api/token", ...);
+
+// TARGET (good) - use service binding
+const result = await this.env.SPOTIFY_SERVICE.refreshToken(refreshToken);
+```
+
+## Anti-Patterns
+
+- **Don't** use `this.sql.exec()` directly - use Drizzle ORM
+- **Don't** call other DOs via `stub.fetch()` - use RPC methods
+- **Don't** store timestamps as INTEGER epoch - use TEXT ISO8601
+- **Don't** fetch external APIs directly - use service bindings
+- **Don't** throw errors in RPC methods - return `Result.err()`

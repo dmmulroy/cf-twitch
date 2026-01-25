@@ -519,7 +519,7 @@ export class TwitchService {
 		}
 
 		logger.info("EventSub subscription deleted", { subscriptionId });
-		return Result.ok(undefined);
+		return Result.ok();
 	}
 
 	/**

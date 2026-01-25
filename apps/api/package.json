@@ -17,8 +17,7 @@
 		"db:generate:keyboard-raffle": "drizzle-kit generate --config=drizzle/keyboard-raffle-do/drizzle.config.ts"
 	},
 	"dependencies": {
-		"better-result": "^2.5.0",
-		"cf-workflow-rollback": "^1.5.0",
+		"better-result": "^2.5.2",
 		"drizzle-orm": "^0.45.1",
 		"hono": "^4.11.4",
 		"zod": "^4.3.5"

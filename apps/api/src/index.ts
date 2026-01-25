@@ -6,11 +6,12 @@ import { Hono } from "hono";
 
 import { AchievementsDO as AchievementsDOBase } from "./durable-objects/achievements-do";
 import { KeyboardRaffleDO as KeyboardRaffleDOBase } from "./durable-objects/keyboard-raffle-do";
+import { KeyboardRaffleSagaDO as KeyboardRaffleSagaDOBase } from "./durable-objects/keyboard-raffle-saga-do";
 import { SongQueueDO as SongQueueDOBase } from "./durable-objects/song-queue-do";
+import { SongRequestSagaDO as SongRequestSagaDOBase } from "./durable-objects/song-request-saga-do";
 import { SpotifyTokenDO as SpotifyTokenDOBase } from "./durable-objects/spotify-token-do";
 import { StreamLifecycleDO as StreamLifecycleDOBase } from "./durable-objects/stream-lifecycle-do";
 import { TwitchTokenDO as TwitchTokenDOBase } from "./durable-objects/twitch-token-do";
-import { WorkflowPoolDO as WorkflowPoolDOBase } from "./durable-objects/workflow-pool-do";
 import { withResultSerialization } from "./lib/durable-objects";
 import api from "./routes/api";
 import eventsub from "./routes/eventsub-setup";
@@ -64,15 +65,12 @@ export const StreamLifecycleDO: typeof StreamLifecycleDOBase =
 export const TwitchTokenDO: typeof TwitchTokenDOBase = withResultSerialization(TwitchTokenDOBase);
 export const KeyboardRaffleDO: typeof KeyboardRaffleDOBase =
 	withResultSerialization(KeyboardRaffleDOBase);
-export const WorkflowPoolDO: typeof WorkflowPoolDOBase =
-	withResultSerialization(WorkflowPoolDOBase);
 export const AchievementsDO: typeof AchievementsDOBase =
 	withResultSerialization(AchievementsDOBase);
-
-// Workflow exports
-export { SongRequestWorkflow } from "./workflows/song-request";
-export { ChatCommandWorkflow } from "./workflows/chat-command";
-export { KeyboardRaffleWorkflow } from "./workflows/keyboard-raffle";
+export const SongRequestSagaDO: typeof SongRequestSagaDOBase =
+	withResultSerialization(SongRequestSagaDOBase);
+export const KeyboardRaffleSagaDO: typeof KeyboardRaffleSagaDOBase =
+	withResultSerialization(KeyboardRaffleSagaDOBase);
 
 // Service exports
 export { SpotifyService } from "./services/spotify-service";

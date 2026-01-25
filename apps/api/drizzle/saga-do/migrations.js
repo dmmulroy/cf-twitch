@@ -1,4 +1,4 @@
-import m0000 from "./0000_initial.sql";
+import m0000 from "./0000_saga_tables.sql";
 import journal from "./meta/_journal.json";
 
 export default {

@@ -99,6 +99,8 @@ const SINGLETON_IDS: Record<string, string> = {
 	ACHIEVEMENTS_DO: "achievements",
 	KEYBOARD_RAFFLE_DO: "keyboard-raffle",
 	WORKFLOW_POOL_DO: "workflow-pool",
+	// Saga DOs are NOT singletons - they are keyed by redemption ID
+	// Do not add SONG_REQUEST_SAGA_DO or KEYBOARD_RAFFLE_SAGA_DO here
 };
 
 /**

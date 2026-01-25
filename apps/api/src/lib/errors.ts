@@ -311,24 +311,6 @@ export class DurableObjectError extends TaggedError("DurableObjectError")<{
 }
 
 // =============================================================================
-// Workflow Pool Errors
-// =============================================================================
-
-export class WorkflowPoolError extends TaggedError("WorkflowPoolError")<{
-	operation: string;
-	workflowType: string;
-	message: string;
-}>() {
-	constructor(args: { operation: string; workflowType: string; message: string }) {
-		super({
-			operation: args.operation,
-			workflowType: args.workflowType,
-			message: args.message,
-		});
-	}
-}
-
-// =============================================================================
 // Validation Errors
 // =============================================================================
 
@@ -413,6 +395,85 @@ export interface StreamLifecycleHandler<E = never> {
 	onStreamOnline(): Promise<Result<void, E>>;
 	onStreamOffline(): Promise<Result<void, E>>;
 }
+
+// =============================================================================
+// Saga Errors
+// =============================================================================
+
+export class SagaStepError extends TaggedError("SagaStepError")<{
+	stepName: string;
+	sagaId: string;
+	error: string;
+	message: string;
+}>() {
+	constructor(args: { stepName: string; sagaId: string; error: string }) {
+		super({
+			...args,
+			message: `Saga step "${args.stepName}" failed: ${args.error}`,
+		});
+	}
+}
+
+export class SagaStepRetrying extends TaggedError("SagaStepRetrying")<{
+	stepName: string;
+	sagaId: string;
+	attempt: number;
+	nextRetryAt: string;
+	message: string;
+}>() {
+	constructor(args: { stepName: string; sagaId: string; attempt: number; nextRetryAt: string }) {
+		super({
+			...args,
+			message: `Saga step "${args.stepName}" scheduled for retry (attempt ${args.attempt}) at ${args.nextRetryAt}`,
+		});
+	}
+}
+
+export class SagaCompensationError extends TaggedError("SagaCompensationError")<{
+	stepName: string;
+	sagaId: string;
+	error: string;
+	message: string;
+}>() {
+	constructor(args: { stepName: string; sagaId: string; error: string }) {
+		super({
+			...args,
+			message: `Saga compensation for step "${args.stepName}" failed: ${args.error}`,
+		});
+	}
+}
+
+export class SagaNotFoundError extends TaggedError("SagaNotFoundError")<{
+	sagaId: string;
+	message: string;
+}>() {
+	constructor(args: { sagaId: string }) {
+		super({
+			...args,
+			message: `Saga not found: ${args.sagaId}`,
+		});
+	}
+}
+
+export class SagaAlreadyExistsError extends TaggedError("SagaAlreadyExistsError")<{
+	sagaId: string;
+	message: string;
+}>() {
+	constructor(args: { sagaId: string }) {
+		super({
+			...args,
+			message: `Saga already exists: ${args.sagaId}`,
+		});
+	}
+}
+
+/** Union of all saga-related errors */
+export type SagaError =
+	| SagaStepError
+	| SagaStepRetrying
+	| SagaCompensationError
+	| SagaNotFoundError
+	| SagaAlreadyExistsError;
 
 // =============================================================================
 // Utility Functions

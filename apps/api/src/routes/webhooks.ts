@@ -9,18 +9,115 @@ import { Result } from "better-result";
 import { Hono } from "hono";
 import { z } from "zod";
 
+import { type ChatCommandStatus, writeChatCommandMetric } from "../lib/analytics";
 import { getStub } from "../lib/durable-objects";
 import { logger } from "../lib/logger";
-import { triggerWarmWorkflow } from "../lib/warm-workflow";
+import { TwitchService } from "../services/twitch-service";
 
+import type { QueuedTrack } from "../durable-objects/song-queue-do";
 import type { Env } from "../index";
 
-/**
- * Sanitize event ID for use as workflow instance ID.
- * Workflow IDs can only contain alphanumeric, hyphens, underscores.
- */
-function sanitizeWorkflowId(eventId: string): string {
-	return eventId.replace(/[^a-zA-Z0-9_-]/g, "_");
+// =============================================================================
+// Chat Command Handlers (migrated from ChatCommandWorkflow)
+// =============================================================================
+
+type ChatCommand = "song" | "queue";
+
+function parseCommand(text: string): ChatCommand | null {
+	const trimmed = text.trim().toLowerCase();
+	if (trimmed === "!song") return "song";
+	if (trimmed === "!queue") return "queue";
+	return null;
+}
+
+async function handleSongCommand(): Promise<string> {
+	const stub = getStub("SONG_QUEUE_DO");
+	const result = await stub.getCurrentlyPlaying();
+
+	if (result.status === "error") {
+		logger.error("Failed to get currently playing", { error: result.error.message });
+		return "Sorry, couldn't get the current song info.";
+	}
+
+	const { track } = result.value;
+	if (!track) {
+		return "No track currently playing.";
+	}
+
+	const artistStr = track.artists.join(", ");
+	const attribution =
+		track.requesterUserId === "unknown" ? "" : ` - requested by @${track.requesterDisplayName}`;
+
+	return `Now playing: "${track.name}" by ${artistStr}${attribution}`;
+}
+
+async function handleQueueCommand(): Promise<string> {
+	const stub = getStub("SONG_QUEUE_DO");
+	const result = await stub.getQueue(4);
+
+	if (result.status === "error") {
+		logger.error("Failed to get queue", { error: result.error.message });
+		return "Sorry, couldn't get the queue info.";
+	}
+
+	const { tracks } = result.value;
+	if (tracks.length === 0) {
+		return "Queue is empty.";
+	}
+
+	const trackLines = tracks.map((track: QueuedTrack, idx: number) => {
+		const requester =
+			track.requesterUserId === "unknown" ? "" : ` (@${track.requesterDisplayName})`;
+		return `${idx + 1}. "${track.name}" by ${track.artists.join(", ")}${requester}`;
+	});
+
+	return `Next up: ${trackLines.join(" | ")}`;
+}
+
+async function handleChatCommand(
+	chatMessage: z.infer<typeof ChatMessageEventSchema>,
+	env: Env,
+): Promise<void> {
+	const command = parseCommand(chatMessage.message.text);
+	if (!command) return;
+
+	const startTime = Date.now();
+	let status: ChatCommandStatus = "success";
+	let error: string | undefined;
+
+	logger.info("Processing chat command", {
+		command,
+		user: chatMessage.chatter_user_name,
+		messageId: chatMessage.message_id,
+	});
+
+	const responseMessage =
+		command === "song" ? await handleSongCommand() : await handleQueueCommand();
+
+	const twitchService = new TwitchService(env);
+	const sendResult = await twitchService.sendChatMessage(responseMessage);
+
+	if (sendResult.status === "error") {
+		status = "error";
+		error = sendResult.error.message;
+		logger.warn("Failed to send chat response", {
+			error: sendResult.error.message,
+			command,
+			messageId: chatMessage.message_id,
+		});
+	} else {
+		logger.info("Chat response sent", { command, messageId: chatMessage.message_id });
+	}
+
+	// Emit chat command metric
+	writeChatCommandMetric(env.ANALYTICS, {
+		command,
+		userId: chatMessage.chatter_user_id,
+		userName: chatMessage.chatter_user_name,
+		status,
+		durationMs: Date.now() - startTime,
+		error,
+	});
 }
 
 const webhooks = new Hono<{ Bindings: Env }>();
@@ -301,28 +398,39 @@ webhooks.post("/twitch", async (c) => {
 						break;
 					}
 					const redemption = redemptionResult.data;
-
-					// Trigger workflow via warm pool (falls back to cold start)
 					const rewardId = redemption.reward.id;
-					const workflowId = sanitizeWorkflowId(messageId);
 
+					// Route to appropriate saga DO based on reward ID
+					// Each saga instance is keyed by redemption ID for isolation
 					if (c.env.SONG_REQUEST_REWARD_ID && rewardId === c.env.SONG_REQUEST_REWARD_ID) {
-						await triggerWarmWorkflow({
-							workflow: c.env.SONG_REQUEST_WF,
-							workflowType: "song-request",
-							instanceId: workflowId,
-							params: redemption,
-						});
+						const sagaId = c.env.SONG_REQUEST_SAGA_DO.idFromName(redemption.id);
+						const stub = c.env.SONG_REQUEST_SAGA_DO.get(sagaId);
+						const result = await stub.start(redemption);
+
+						if (result.status === "error") {
+							logger.error("Song request saga failed to start", {
+								redemptionId: redemption.id,
+								error: result.error.message,
+							});
+						} else {
+							logger.info("Song request saga started", { redemptionId: redemption.id });
+						}
 					} else if (
 						c.env.KEYBOARD_RAFFLE_REWARD_ID &&
 						rewardId === c.env.KEYBOARD_RAFFLE_REWARD_ID
 					) {
-						await triggerWarmWorkflow({
-							workflow: c.env.KEYBOARD_RAFFLE_WF,
-							workflowType: "keyboard-raffle",
-							instanceId: workflowId,
-							params: redemption,
-						});
+						const sagaId = c.env.KEYBOARD_RAFFLE_SAGA_DO.idFromName(redemption.id);
+						const stub = c.env.KEYBOARD_RAFFLE_SAGA_DO.get(sagaId);
+						const result = await stub.start(redemption);
+
+						if (result.status === "error") {
+							logger.error("Keyboard raffle saga failed to start", {
+								redemptionId: redemption.id,
+								error: result.error.message,
+							});
+						} else {
+							logger.info("Keyboard raffle saga started", { redemptionId: redemption.id });
+						}
 					} else {
 						logger.warn("Unknown reward ID, skipping redemption", {
 							rewardId,
@@ -348,13 +456,8 @@ webhooks.post("/twitch", async (c) => {
 					// Only process commands starting with !song or !queue
 					const messageText = chatMessage.message.text.trim().toLowerCase();
 					if (messageText.startsWith("!song") || messageText.startsWith("!queue")) {
-						const workflowId = sanitizeWorkflowId(messageId);
-						await triggerWarmWorkflow({
-							workflow: c.env.CHAT_COMMAND_WF,
-							workflowType: "chat-command",
-							instanceId: workflowId,
-							params: chatMessage,
-						});
+						// Inline handler - no workflow overhead
+						await handleChatCommand(chatMessage, c.env);
 					}
 					// Ignore other chat messages silently
 					break;
