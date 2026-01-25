@@ -1,0 +1,11 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"types": ["vitest/globals", "@cloudflare/vitest-pool-workers"],
+		"paths": {
+			"~/*": ["./src/*"]
+		}
+	},
+	"include": ["src/**/*", "worker-configuration.d.ts"],
+	"exclude": ["node_modules", "dist", "opensrc", "src/__tests__"]
+}

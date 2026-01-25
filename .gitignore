@@ -1,0 +1,25 @@
+# opensrc - source code for packages
+opensrc/
+
+# Ignore .opencode entirely (local agent state)
+.opencode/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+.wrangler/
+
+# Environment
+.env
+.env.local
+.dev.vars
+.envrc
+
+# Logs
+*.log
+
+# OS
+.DS_Store

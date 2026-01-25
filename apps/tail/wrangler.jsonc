@@ -1,0 +1,21 @@
+{
+	"name": "cf-twitch-tail",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-01-13",
+	"observability": {
+		"enabled": true,
+		"logs": {
+			"enabled": true,
+			"invocation_logs": true,
+		},
+		"traces": {
+			"enabled": true,
+		},
+	},
+	"tail_consumers": [],
+	"analytics_engine_datasets": [
+		{
+			"binding": "ANALYTICS",
+		},
+	],
+}

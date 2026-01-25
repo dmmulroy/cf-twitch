@@ -1,0 +1,23 @@
+{
+	"name": "cf-twitch",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "pnpm --filter \"./apps/*\" run build",
+		"dev": "pnpm --filter cf-twitch-api run dev",
+		"deploy": "pnpm --filter \"./apps/*\" run deploy",
+		"typecheck": "pnpm --filter \"./apps/*\" run typecheck",
+		"lint": "oxlint .",
+		"lint:fix": "oxlint --fix .",
+		"fmt": "oxfmt .",
+		"fmt:check": "oxfmt --check .",
+		"check": "pnpm lint && pnpm fmt:check"
+	},
+	"devDependencies": {
+		"oxfmt": "^0.24.0",
+		"oxlint": "^1.39.0",
+		"typescript": "^5.7.2",
+		"wrangler": "^4.60.0"
+	}
+}

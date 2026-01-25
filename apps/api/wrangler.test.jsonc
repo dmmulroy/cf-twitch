@@ -1,0 +1,66 @@
+{
+	// Test-specific wrangler config - DO bindings without script_name for local testing
+	"name": "cf-twitch-api-test",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-01-13",
+	"compatibility_flags": ["nodejs_compat"],
+	"rules": [
+		{
+			"type": "Text",
+			"globs": ["**/*.sql"],
+			"fallthrough": true,
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "SPOTIFY_TOKEN_DO",
+				"class_name": "SpotifyTokenDO",
+			},
+			{
+				"name": "TWITCH_TOKEN_DO",
+				"class_name": "TwitchTokenDO",
+			},
+			{
+				"name": "STREAM_LIFECYCLE_DO",
+				"class_name": "StreamLifecycleDO",
+			},
+			{
+				"name": "SONG_QUEUE_DO",
+				"class_name": "SongQueueDO",
+			},
+			{
+				"name": "ACHIEVEMENTS_DO",
+				"class_name": "AchievementsDO",
+			},
+			{
+				"name": "KEYBOARD_RAFFLE_DO",
+				"class_name": "KeyboardRaffleDO",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"SpotifyTokenDO",
+				"TwitchTokenDO",
+				"StreamLifecycleDO",
+				"SongQueueDO",
+				"AchievementsDO",
+				"KeyboardRaffleDO",
+			],
+		},
+	],
+	"vars": {
+		"SONG_REQUEST_REWARD_ID": "test-song-reward",
+		"KEYBOARD_RAFFLE_REWARD_ID": "test-raffle-reward",
+		"BROADCASTER_USER_ID": "12345",
+		"BROADCASTER_USER_LOGIN": "teststreamer",
+		"SPOTIFY_CLIENT_ID": "test-spotify-client",
+		"SPOTIFY_CLIENT_SECRET": "test-spotify-secret",
+		"TWITCH_CLIENT_ID": "test-twitch-client",
+		"TWITCH_CLIENT_SECRET": "test-twitch-secret",
+		"TWITCH_EVENTSUB_SECRET": "test-eventsub-secret",
+	},
+}

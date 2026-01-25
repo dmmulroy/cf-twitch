@@ -1,0 +1,35 @@
+{
+	"name": "cf-twitch-api",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"typecheck": "tsc --noEmit",
+		"build": "pnpm run typecheck",
+		"db:generate": "pnpm run db:generate:token && pnpm run db:generate:song-queue && pnpm run db:generate:stream-lifecycle && pnpm run db:generate:keyboard-raffle",
+		"db:generate:token": "drizzle-kit generate --config=drizzle/token-do/drizzle.config.ts",
+		"db:generate:song-queue": "drizzle-kit generate --config=drizzle/song-queue-do/drizzle.config.ts",
+		"db:generate:stream-lifecycle": "drizzle-kit generate --config=drizzle/stream-lifecycle-do/drizzle.config.ts",
+		"db:generate:keyboard-raffle": "drizzle-kit generate --config=drizzle/keyboard-raffle-do/drizzle.config.ts"
+	},
+	"dependencies": {
+		"better-result": "^2.5.0",
+		"cf-workflow-rollback": "^1.5.0",
+		"drizzle-orm": "^0.45.1",
+		"hono": "^4.11.4",
+		"zod": "^4.3.5"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.6",
+		"drizzle-kit": "^0.31.8",
+		"ts-morph": "^27.0.2",
+		"tsx": "^4.21.0",
+		"typescript": "^5.7.2",
+		"vitest": "^3.2.4",
+		"wrangler": "^4.60.0"
+	}
+}

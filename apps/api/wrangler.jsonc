@@ -1,0 +1,94 @@
+{
+	"name": "cf-twitch-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-01-13",
+	"compatibility_flags": ["nodejs_compat"],
+	"rules": [
+		{
+			"type": "Text",
+			"globs": ["**/*.sql"],
+			"fallthrough": true,
+		},
+	],
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true,
+			"invocation_logs": true,
+		},
+		"traces": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+		},
+	},
+	"durable_objects": {
+		"bindings": [
+			{ "name": "SPOTIFY_TOKEN_DO", "class_name": "SpotifyTokenDO" },
+			{ "name": "TWITCH_TOKEN_DO", "class_name": "TwitchTokenDO" },
+			{ "name": "STREAM_LIFECYCLE_DO", "class_name": "StreamLifecycleDO" },
+			{ "name": "SONG_QUEUE_DO", "class_name": "SongQueueDO" },
+			{ "name": "ACHIEVEMENTS_DO", "class_name": "AchievementsDO" },
+			{ "name": "KEYBOARD_RAFFLE_DO", "class_name": "KeyboardRaffleDO" },
+			{ "name": "WORKFLOW_POOL_DO", "class_name": "WorkflowPoolDO" },
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"SpotifyTokenDO",
+				"TwitchTokenDO",
+				"StreamLifecycleDO",
+				"SongQueueDO",
+				"AchievementsDO",
+				"KeyboardRaffleDO",
+			],
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["WorkflowPoolDO"],
+		},
+	],
+	"analytics_engine_datasets": [
+		{
+			"binding": "ANALYTICS",
+		},
+	],
+	// Vectorize/AI deferred to post-MVP (not needed for feature parity)
+	// "vectorize": [
+	// 	{
+	// 		"binding": "TRACK_VECTORS",
+	// 		"index_name": "cf-twitch-tracks",
+	// 	},
+	// ],
+	// "ai": {
+	// 	"binding": "AI",
+	// },
+	"workflows": [
+		{
+			"name": "cf-twitch-song-request",
+			"binding": "SONG_REQUEST_WF",
+			"class_name": "SongRequestWorkflow",
+		},
+		{
+			"name": "cf-twitch-chat-command",
+			"binding": "CHAT_COMMAND_WF",
+			"class_name": "ChatCommandWorkflow",
+		},
+		{
+			"name": "cf-twitch-keyboard-raffle",
+			"binding": "KEYBOARD_RAFFLE_WF",
+			"class_name": "KeyboardRaffleWorkflow",
+		},
+	],
+	"vars": {
+		"SONG_REQUEST_REWARD_ID": "c2063c79-a24c-4b17-94f7-c871f2876708",
+		"KEYBOARD_RAFFLE_REWARD_ID": "29afa291-244a-47a8-8be8-ded13995e83d",
+	},
+	"tail_consumers": [
+		{
+			"service": "cf-twitch-tail",
+		},
+	],
+}

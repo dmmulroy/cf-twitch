@@ -1,0 +1,135 @@
+# Codebase Patterns - Work in Progress
+
+Last Updated: 2026-01-13
+
+## Violations Found in Review
+
+### 1. Raw SQL in Durable Objects (CRITICAL)
+
+Files affected:
+- apps/api/src/durable-objects/twitch-token-do.ts
+- apps/api/src/durable-objects/spotify-token-do.ts
+- apps/api/src/durable-objects/stream-lifecycle-do.ts
+
+Current (wrong):
+```typescript
+this.state.blockConcurrencyWhile(async () => {
+  this.sql.exec(`CREATE TABLE IF NOT EXISTS token_set (...)`);
+  const result = this.sql.exec('SELECT * FROM token_set WHERE id = 1').toArray();
+});
+```
+
+Required (correct):
+```typescript
+// schema.ts
+export const tokenSet = sqliteTable('token_set', {
+  id: integer('id').primaryKey(),
+  accessToken: text('access_token').notNull(),
+  // ...
+});
+
+// DO constructor
+this.state.blockConcurrencyWhile(async () => {
+  // Drizzle handles schema via migrations or push
+  const result = await this.db.query.tokenSet.findFirst();
+});
+```
+
+### 2. Service Bindings Using fetch() Instead of RPC (CRITICAL)
+
+Files affected:
+- apps/api/src/routes/oauth.ts
+- apps/api/src/services/twitch-service.ts
+- apps/api/src/services/spotify-service.ts
+
+Current (wrong):
+```typescript
+const spotifyService = c.env.SPOTIFY_SERVICE;
+const tokenResponse = await spotifyService.fetch(
+  new Request('http://internal/exchange-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, redirectUri }),
+  }),
+);
+const tokens = await tokenResponse.json();
+```
+
+Required (correct):
+```typescript
+const spotifyService = c.env.SPOTIFY_SERVICE;
+const tokens = await spotifyService.exchangeToken(code, redirectUri);
+```
+
+### 3. WorkerEntrypoint with fetch() Handler (CRITICAL)
+
+Files affected:
+- apps/api/src/services/twitch-service.ts
+- apps/api/src/services/spotify-service.ts
+
+Current (wrong):
+```typescript
+async fetch(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname === '/exchange-token' && request.method === 'POST') {
+    const { code, redirectUri } = await request.json();
+    const tokens = await this.exchangeToken(code, redirectUri);
+    return Response.json(tokens);
+  }
+  // ...
+}
+```
+
+Required (correct):
+```typescript
+// Just expose RPC methods directly - no fetch() handler needed
+async exchangeToken(code: string, redirectUri: string) {
+  // implementation
+  return tokens;
+}
+
+async getStreamInfo(userLogin: string) {
+  // implementation
+  return streamInfo;
+}
+```
+
+### 4. Missing Zod Validation on External Data (CRITICAL)
+
+Files affected:
+- apps/api/src/routes/oauth.ts
+
+Current (wrong):
+```typescript
+const tokens = (await tokenResponse.json()) as {
+  access_token: string;
+  refresh_token?: string;
+  token_type: string;
+  expires_in: number;
+  scope?: string;
+};
+```
+
+Required (correct):
+```typescript
+const SpotifyTokenResponseSchema = z.object({
+  access_token: z.string(),
+  refresh_token: z.string().optional(),
+  token_type: z.string(),
+  expires_in: z.number(),
+  scope: z.string().optional(),
+});
+
+const tokens = SpotifyTokenResponseSchema.parse(await tokenResponse.json());
+```
+
+## New Tooling Needed
+
+### oxlint + oxfmt Setup
+
+Research and configure:
+- pnpm add -D oxlint oxfmt
+- oxlint.jsonc for linting config
+- oxfmt.jsonc for formatting config  
+- Add npm scripts: lint, lint:fix, fmt, fmt:check
+- Consider type-aware linting for stricter checks
