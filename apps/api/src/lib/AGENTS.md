@@ -1,117 +1,75 @@
 # Lib Utilities
 
-Shared helpers for the cf-twitch-api worker. See root AGENTS.md for project conventions.
+Shared helpers: DO stubs, errors, sagas, logging. See root AGENTS.md for project conventions.
 
 ## Files
 
-| File                                   | Lines | Status           |
-| -------------------------------------- | ----- | ---------------- |
-| `errors.ts`                            | 118   | Active (partial) |
-| `do-ids.ts`                            | 39    | Active           |
-| `analytics.ts`                         | 96    | Unused           |
-| `logger.ts`                            | 67    | Active           |
-| `stub-with-better-result-hydration.ts` | 81    | Unused           |
+| File | Lines | Status |
+|------|-------|--------|
+| `errors.ts` | 504 | Active |
+| `durable-objects.ts` | 266 | Active (47 call sites) |
+| `saga-runner.ts` | 696 | Active |
+| `logger.ts` | 67 | Active (42 call sites) |
+| `exhaustive.ts` | 102 | Active |
+| `cache.ts` | 63 | Active |
+| `analytics.ts` | 231 | Partial - only `writeSagaLifecycleMetric`, `writeChatCommandMetric` used |
 
-## errors.ts
+## Key Patterns
 
-All errors extend `TaggedError` from better-result with `readonly _tag` discriminant.
-
-| Error                | Tag                    | Status                                             |
-| -------------------- | ---------------------- | -------------------------------------------------- |
-| `TokenRefreshError`  | `"TokenRefreshError"`  | **Active** (8 call sites)                          |
-| `DurableObjectError` | `"DurableObjectError"` | Unused (only in stub-with-better-result-hydration) |
-| `SpotifyError`       | `"SpotifyError"`       | **DEAD CODE**                                      |
-| `TwitchError`        | `"TwitchError"`        | **DEAD CODE**                                      |
-| `InvalidSpotifyUrl`  | `"InvalidSpotifyUrl"`  | **DEAD CODE**                                      |
-| `ValidationError`    | `"ValidationError"`    | **DEAD CODE**                                      |
-
-Helper functions:
-
-- `isRetryableError(error)` - Check if error is transient (rate limit, network)
-- `requiresTokenRefresh(error)` - Check if error indicates expired token
-
-### Adding New Errors
+### getStub() - Typed DO Access
 
 ```typescript
-export class MyNewError extends TaggedError {
-	readonly _tag = "MyNewError" as const;
-	constructor(
-		public readonly field: string,
-		message: string,
-		options?: ErrorOptions,
-	) {
-		super(message, options);
-	}
+import { getStub } from "~/lib/durable-objects";
+
+const stub = getStub("SPOTIFY_TOKEN_DO");           // singleton
+const stub = getStub("SONG_REQUEST_SAGA_DO", id);   // keyed by ID
+
+const result = await stub.getAccessToken();  // Result<T, E | DurableObjectError>
+```
+
+Auto-deserializes `Result` values, wraps infra errors in `DurableObjectError`.
+
+### Error Type Guards
+
+```typescript
+import { SpotifyRateLimitError, isRetryableError } from "~/lib/errors";
+
+if (SpotifyRateLimitError.is(error)) {
+  // error narrowed to SpotifyRateLimitError
+}
+if (isRetryableError(error)) { /* rate limit or 5xx */ }
+```
+
+### SagaRunner - Step Execution
+
+```typescript
+class MySagaDO extends DurableObject {
+  private runner: SagaRunner;
+  
+  async runStep() {
+    return this.runner.executeStepWithRollback(
+      "step-name",
+      async () => ({ result: data, undoPayload: rollbackData }),
+      async (payload) => { /* compensation */ }
+    );
+  }
 }
 ```
 
-## do-ids.ts
-
-Singleton DO IDs for all DOs. Use `getDOStub()` helper to get typed stubs.
+### Exhaustive Checks
 
 ```typescript
-import { DO_IDS, getDOStub } from "~/lib/do-ids";
+import { casesHandled } from "~/lib/exhaustive";
 
-const stub = getDOStub(env.SPOTIFY_TOKEN_DO, DO_IDS.SPOTIFY_TOKEN);
+function handle(cmd: "song" | "queue") {
+  if (cmd === "song") return handleSong();
+  if (cmd === "queue") return handleQueue();
+  return casesHandled(cmd);  // TS error if case missing
+}
 ```
 
-**Active** - 8 call sites across oauth.ts, stream-lifecycle-do.ts, twitch-service.ts
+## Dead Code
 
-## analytics.ts
-
-Type-safe metric writers for Analytics Engine.
-
-```typescript
-writeSongRequestMetric(env.ANALYTICS, {
-	requester: "user123",
-	trackId: "spotify:track:xxx",
-	trackName: "Song Name",
-	status: "fulfilled",
-	latencyMs: 150,
-});
-```
-
-Metric types: `SongRequestMetric`, `RaffleRollMetric`, `ErrorMetric`
-
-**Status:** Typed functions are **UNUSED**. Tail worker uses raw `writeDataPoint()` directly.
-
-## logger.ts
-
-Structured JSON logger with levels.
-
-```typescript
-import { logger } from "~/lib/logger";
-
-logger.info("Processing request", { userId: "123" });
-logger.error("Failed to fetch", { error: err.message });
-```
-
-Output: `{"level":"info","message":"...","timestamp":"2026-01-14T...","userId":"123"}`
-
-**Active** - 42 call sites across all modules
-
-## stub-with-better-result-hydration.ts
-
-Wrapper for DO stubs to enable Result pattern.
-
-```typescript
-import { stubWithBetterResultHydration } from "~/lib/stub-with-better-result-hydration";
-
-const stub = env.MY_DO.get(id);
-const wrapped = stubWithBetterResultHydration(stub);
-const result = await wrapped.myMethod(); // Result<T, E | DurableObjectError>
-```
-
-Features:
-
-- Catches DO infrastructure errors -> `DurableObjectError`
-- Calls `Result.hydrate()` on return values
-- Wraps non-Result returns in `Result.ok()`
-
-**Status:** **UNUSED** - Prepared for Result pattern migration. DO methods currently throw instead of returning `Result<T, E>`.
-
-## Anti-Patterns
-
-- **Don't** throw errors from RPC methods - return `Result.err()`
-- **Don't** use raw `writeDataPoint()` in api worker - use typed metric functions
-- **Don't** define error classes without using them - delete or implement
+| File | Items |
+|------|-------|
+| `analytics.ts` | `writeSongRequestMetric`, `writeRaffleRollMetric`, `writeErrorMetric`, `writeAchievementUnlockMetric` |

@@ -115,6 +115,83 @@ api.get("/debug/keyboard-raffle/leaderboard", async (c) => {
 	return c.json(result.value);
 });
 
+// =============================================================================
+// Achievement Routes
+// =============================================================================
+
+/**
+ * GET /api/achievements/definitions
+ * All achievement definitions
+ */
+api.get("/achievements/definitions", async (c) => {
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getDefinitions();
+
+	if (result.status === "error") {
+		logger.error("Failed to get achievement definitions", { error: result.error.message });
+		return c.json({ error: "Failed to fetch achievement definitions" }, 500);
+	}
+
+	return c.json(result.value);
+});
+
+/**
+ * GET /api/achievements/leaderboard?limit=10
+ * Top users by achievement count
+ *
+ * Note: Must be defined before /:user to avoid route conflict
+ */
+api.get("/achievements/leaderboard", async (c) => {
+	const limit = Number(c.req.query("limit") ?? 10);
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getLeaderboard({ limit });
+
+	if (result.status === "error") {
+		logger.error("Failed to get achievement leaderboard", { error: result.error.message });
+		return c.json({ error: "Failed to fetch achievement leaderboard" }, 500);
+	}
+
+	return c.json(result.value);
+});
+
+/**
+ * GET /api/achievements/:user
+ * User's achievement progress
+ */
+api.get("/achievements/:user", async (c) => {
+	const user = c.req.param("user");
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getUserAchievements(user);
+
+	if (result.status === "error") {
+		logger.error("Failed to get user achievements", { error: result.error.message, user });
+		return c.json({ error: "Failed to fetch user achievements" }, 500);
+	}
+
+	return c.json(result.value);
+});
+
+/**
+ * GET /api/achievements/:user/unlocked
+ * User's unlocked achievements only
+ */
+api.get("/achievements/:user/unlocked", async (c) => {
+	const user = c.req.param("user");
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getUnlockedAchievements(user);
+
+	if (result.status === "error") {
+		logger.error("Failed to get unlocked achievements", { error: result.error.message, user });
+		return c.json({ error: "Failed to fetch unlocked achievements" }, 500);
+	}
+
+	return c.json(result.value);
+});
+
+// =============================================================================
+// Debug Routes
+// =============================================================================
+
 /**
  * GET /api/debug/status
  * Aggregates state from all DOs for debugging

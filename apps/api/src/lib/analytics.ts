@@ -36,6 +36,16 @@ export interface ErrorMetric {
 	statusCode?: number;
 }
 
+/**
+ * Achievement unlock metric data
+ */
+export interface AchievementUnlockMetric {
+	user: string;
+	achievementId: string;
+	achievementName: string;
+	category: string;
+}
+
 // =============================================================================
 // Chat Command Metrics
 // =============================================================================
@@ -178,6 +188,22 @@ export function writeErrorMetric(analytics: AnalyticsEngineDataset, metric: Erro
 	safeWriteMetric(analytics, "error", {
 		blobs: [metric.errorType, metric.errorMessage, metric.endpoint ?? ""],
 		doubles: [metric.statusCode ?? 0],
+	});
+}
+
+/**
+ * Write an achievement unlock metric to Analytics Engine
+ *
+ * Index: "achievement_unlock" (enables achievement-specific queries)
+ * Blobs: user, achievementId, achievementName, category
+ */
+export function writeAchievementUnlockMetric(
+	analytics: AnalyticsEngineDataset,
+	metric: AchievementUnlockMetric,
+): void {
+	safeWriteMetric(analytics, "achievement_unlock", {
+		blobs: [metric.user, metric.achievementId, metric.achievementName, metric.category],
+		doubles: [],
 	});
 }
 
