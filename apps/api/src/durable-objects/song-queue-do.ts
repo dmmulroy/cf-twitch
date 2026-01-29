@@ -101,6 +101,8 @@ export class SongQueueDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private lastSyncAt: number | null = null;
 	private syncLock: Promise<Result<void, SongQueueDbError>> | null = null;
+	/** Per-user streak tracking for session achievements - reset on stream online */
+	private sessionStreaks: Map<string, number> = new Map();
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -346,6 +348,25 @@ export class SongQueueDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * Get count of fulfilled requests since a given timestamp
+	 *
+	 * Used to check if this is the first request of a stream session.
+	 */
+	async getSessionRequestCount(since: string): Promise<Result<number, SongQueueDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				const countRows = await this.db
+					.select({ count: count() })
+					.from(requestHistory)
+					.where(gte(requestHistory.fulfilledAt, since));
+
+				return countRows[0]?.count ?? 0;
+			},
+			catch: (cause) => new SongQueueDbError({ operation: "getSessionRequestCount", cause }),
+		});
+	}
+
+	/**
 	 * Get top tracks by request count
 	 */
 	async getTopTracks(limit = 10): Promise<Result<TopTrack[], SongQueueDbError>> {
@@ -478,9 +499,12 @@ export class SongQueueDO extends DurableObject<Env> {
 
 	/**
 	 * Stream lifecycle: called when stream goes online
+	 *
+	 * Resets session-scoped state like streaks.
 	 */
 	async onStreamOnline(): Promise<void> {
-		logger.info("SongQueueDO: Stream online");
+		logger.info("SongQueueDO: Stream online, resetting session streaks");
+		this.sessionStreaks.clear();
 	}
 
 	/**
@@ -488,6 +512,34 @@ export class SongQueueDO extends DurableObject<Env> {
 	 */
 	async onStreamOffline(): Promise<void> {
 		logger.info("SongQueueDO: Stream offline");
+	}
+
+	/**
+	 * Increment a user's successful request streak
+	 *
+	 * Returns the new streak count.
+	 */
+	incrementStreak(userId: string): number {
+		const current = this.sessionStreaks.get(userId) ?? 0;
+		const newStreak = current + 1;
+		this.sessionStreaks.set(userId, newStreak);
+		logger.debug("Incremented user streak", { userId, newStreak });
+		return newStreak;
+	}
+
+	/**
+	 * Reset a user's request streak (on failure)
+	 */
+	resetStreak(userId: string): void {
+		this.sessionStreaks.set(userId, 0);
+		logger.debug("Reset user streak", { userId });
+	}
+
+	/**
+	 * Get a user's current streak
+	 */
+	getStreak(userId: string): number {
+		return this.sessionStreaks.get(userId) ?? 0;
 	}
 
 	/**

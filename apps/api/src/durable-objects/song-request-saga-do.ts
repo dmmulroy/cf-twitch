@@ -10,8 +10,11 @@
  * 3. persist-request → SongQueueDO (rollbackable)
  * 4. add-to-spotify-queue → with rollback (skip if currently playing)
  * 5. write-history → analytics, non-critical
- * 6. fulfill-redemption → POINT OF NO RETURN
- * 7. send-chat-confirmation → best-effort
+ * 6. record-achievement → AchievementsDO (song_request + stream_first_request)
+ * 7. fulfill-redemption → POINT OF NO RETURN
+ * 8. send-chat-confirmation → best-effort
+ * 9. announce-achievements → chat announcements for unlocked achievements
+ * 10. record-streak → increment streak, record request_streak achievement
  */
 
 import { Result } from "better-result";
@@ -384,7 +387,65 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 			{ timeout: 10000, maxRetries: 2 },
 		);
 
-		// Step 6: Fulfill redemption (POINT OF NO RETURN)
+		// Step 6: Record achievement event (non-critical)
+		await runner.executeStep(
+			"record-achievement",
+			async () => {
+				const achievementsStub = getStub("ACHIEVEMENTS_DO");
+				const result = await achievementsStub.recordEvent({
+					userDisplayName: params.user_name,
+					event: "song_request",
+					eventId: sagaId,
+				});
+
+				if (result.status === "ok" && result.value.length > 0) {
+					logger.info("Achievements unlocked", {
+						sagaId,
+						achievements: result.value.map((a: { name: string }) => a.name),
+					});
+				} else if (result.status === "error") {
+					logger.warn("Failed to record achievement event", {
+						sagaId,
+						error: result.error.message,
+					});
+				}
+
+				// Check if this is the first request of the stream session
+				const streamStub = getStub("STREAM_LIFECYCLE_DO");
+				const stateResult = await streamStub.getStreamState();
+
+				if (stateResult.status === "ok" && stateResult.value.startedAt) {
+					const queueStub = getStub("SONG_QUEUE_DO");
+					const countResult = await queueStub.getSessionRequestCount(stateResult.value.startedAt);
+
+					// If count is 0, this is the first request (current one not yet in history)
+					if (countResult.status === "ok" && countResult.value === 0) {
+						const firstResult = await achievementsStub.recordEvent({
+							userDisplayName: params.user_name,
+							event: "stream_first_request",
+							eventId: `${sagaId}-first`,
+						});
+
+						if (firstResult.status === "ok" && firstResult.value.length > 0) {
+							logger.info("Stream opener achievement unlocked", {
+								sagaId,
+								achievements: firstResult.value.map((a: { name: string }) => a.name),
+							});
+						} else if (firstResult.status === "error") {
+							logger.warn("Failed to record stream_first_request achievement", {
+								sagaId,
+								error: firstResult.error.message,
+							});
+						}
+					}
+				}
+
+				return { result: undefined };
+			},
+			{ timeout: 10000, maxRetries: 2 },
+		);
+
+		// Step 7: Fulfill redemption (POINT OF NO RETURN - no compensation after this)
 		const fulfillResult = await runner.executeStep(
 			"fulfill-redemption",
 			async () => {
@@ -417,7 +478,7 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 		// Mark point of no return immediately after fulfill
 		await runner.markPointOfNoReturn();
 
-		// Step 7: Send chat confirmation (best effort)
+		// Step 8: Send chat confirmation (best effort)
 		await runner.executeStep(
 			"send-chat-confirmation",
 			async () => {
@@ -436,6 +497,93 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 				} else {
 					logger.info("Sent chat confirmation", { sagaId, user: params.user_name });
 				}
+
+				return { result: undefined };
+			},
+			{ timeout: 10000, maxRetries: 2 },
+		);
+
+		// Step 9: Announce any unlocked achievements (best effort)
+		await runner.executeStep(
+			"announce-achievements",
+			async () => {
+				const achievementsStub = getStub("ACHIEVEMENTS_DO");
+				const unannouncedResult = await achievementsStub.getUnannounced();
+
+				if (unannouncedResult.status === "error") {
+					logger.warn("Failed to get unannounced achievements", {
+						sagaId,
+						error: unannouncedResult.error.message,
+					});
+					return { result: undefined };
+				}
+
+				// Filter to only this user's achievements
+				const userAchievements = unannouncedResult.value.filter(
+					(a: { userDisplayName: string }) => a.userDisplayName === params.user_name,
+				);
+
+				if (userAchievements.length === 0) {
+					return { result: undefined };
+				}
+
+				const twitchService = new TwitchService(this.env);
+
+				for (const { userDisplayName, achievement } of userAchievements) {
+					const message = `🏆 @${userDisplayName} unlocked "${achievement.name}"! ${achievement.description}`;
+					const sendResult = await twitchService.sendChatMessage(message);
+
+					if (sendResult.status === "ok") {
+						await achievementsStub.markAnnounced(userDisplayName, achievement.id);
+						logger.info("Announced achievement", {
+							sagaId,
+							user: userDisplayName,
+							achievement: achievement.name,
+						});
+					} else {
+						logger.warn("Failed to announce achievement", {
+							sagaId,
+							user: userDisplayName,
+							achievement: achievement.name,
+							error: sendResult.error.message,
+						});
+					}
+				}
+
+				return { result: undefined };
+			},
+			{ timeout: 15000, maxRetries: 2 },
+		);
+
+		// Step 10: Record streak achievement (non-critical)
+		await runner.executeStep(
+			"record-streak",
+			async () => {
+				const queueStub = getStub("SONG_QUEUE_DO");
+				const newStreak = queueStub.incrementStreak(params.user_id);
+
+				// Record streak progress for streak achievements (streak_3, streak_5)
+				const achievementsStub = getStub("ACHIEVEMENTS_DO");
+				const streakResult = await achievementsStub.recordEvent({
+					userDisplayName: params.user_name,
+					event: "request_streak",
+					eventId: `${sagaId}-streak`,
+					metadata: { streakCount: newStreak },
+				});
+
+				if (streakResult.status === "ok" && streakResult.value.length > 0) {
+					logger.info("Streak achievement unlocked", {
+						sagaId,
+						streak: newStreak,
+						achievements: streakResult.value.map((a: { name: string }) => a.name),
+					});
+				}
+
+				logger.debug("Recorded request streak", {
+					sagaId,
+					userId: params.user_id,
+					streak: newStreak,
+				});
 
 				return { result: undefined };
 			},
@@ -488,6 +636,11 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 			await this.refundRedemption(params);
 			await this.sendFailureMessage(params);
 		}
+
+		// Reset user's streak on any failure
+		const queueStub = getStub("SONG_QUEUE_DO");
+		queueStub.resetStreak(params.user_id);
+		logger.debug("Reset user streak due to saga failure", { sagaId, userId: params.user_id });
 
 		await runner.fail(error.message);
 

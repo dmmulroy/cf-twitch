@@ -246,6 +246,39 @@ export class KeyboardRaffleDO
 	}
 
 	/**
+	 * Get the global closest non-winning roll record
+	 *
+	 * Returns the user with the smallest non-zero distance (closest without winning).
+	 * Used to check if a user just set a new record.
+	 */
+	async getClosestRecord(): Promise<
+		Result<{ userId: string; displayName: string; distance: number } | null, KeyboardRaffleDbError>
+	> {
+		return Result.tryPromise({
+			try: async () => {
+				// Get the top entry sorted by closest distance (excluding winners)
+				const [entry] = await this.db
+					.select()
+					.from(raffleLeaderboard)
+					.where(sql`${raffleLeaderboard.closestDistance} > 0`)
+					.orderBy(sql`${raffleLeaderboard.closestDistance} asc`)
+					.limit(1);
+
+				if (!entry || entry.closestDistance === null) {
+					return null;
+				}
+
+				return {
+					userId: entry.userId,
+					displayName: entry.displayName,
+					distance: entry.closestDistance,
+				};
+			},
+			catch: (cause) => new KeyboardRaffleDbError({ operation: "getClosestRecord", cause }),
+		});
+	}
+
+	/**
 	 * Lifecycle: Called when stream goes online
 	 */
 	async onStreamOnline(): Promise<Result<void, KeyboardRaffleDbError>> {
