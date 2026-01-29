@@ -343,10 +343,12 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	private async notifyTokenDOsOnline(): Promise<void> {
 		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
+		const achievementsStub = getStub("ACHIEVEMENTS_DO");
 
-		const [spotifyResult, twitchResult] = await Promise.all([
+		const [spotifyResult, twitchResult, achievementsResult] = await Promise.all([
 			spotifyStub.onStreamOnline(),
 			twitchStub.onStreamOnline(),
+			achievementsStub.onStreamOnline(),
 		]);
 
 		if (spotifyResult.status === "error") {
@@ -360,6 +362,12 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 				error: twitchResult.error.message,
 			});
 		}
+
+		if (achievementsResult.status === "error") {
+			logger.error("Failed to notify AchievementsDO of stream online", {
+				error: achievementsResult.error.message,
+			});
+		}
 	}
 
 	/**
@@ -368,10 +376,12 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	private async notifyTokenDOsOffline(): Promise<void> {
 		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
+		const achievementsStub = getStub("ACHIEVEMENTS_DO");
 
-		const [spotifyResult, twitchResult] = await Promise.all([
+		const [spotifyResult, twitchResult, achievementsResult] = await Promise.all([
 			spotifyStub.onStreamOffline(),
 			twitchStub.onStreamOffline(),
+			achievementsStub.onStreamOffline(),
 		]);
 
 		if (spotifyResult.status === "error") {
@@ -383,6 +393,12 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 		if (twitchResult.status === "error") {
 			logger.error("Failed to notify TwitchTokenDO of stream offline", {
 				error: twitchResult.error.message,
+			});
+		}
+
+		if (achievementsResult.status === "error") {
+			logger.error("Failed to notify AchievementsDO of stream offline", {
+				error: achievementsResult.error.message,
 			});
 		}
 	}
