@@ -13,6 +13,7 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/achievements-do/migrations";
+import { writeAchievementUnlockMetric } from "../lib/analytics";
 import {
 	AchievementDbError,
 	type AchievementError,
@@ -240,6 +241,13 @@ export class AchievementsDO
 							userDisplayName,
 							achievementId: definition.id,
 							achievementName: definition.name,
+						});
+
+						writeAchievementUnlockMetric(this.env.ANALYTICS, {
+							user: userDisplayName,
+							achievementId: definition.id,
+							achievementName: definition.name,
+							category: definition.category,
 						});
 					}
 				}
