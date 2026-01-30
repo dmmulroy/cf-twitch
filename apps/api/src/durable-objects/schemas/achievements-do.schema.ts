@@ -48,3 +48,42 @@ export const userAchievements = sqliteTable(
 
 export type UserAchievement = typeof userAchievements.$inferSelect;
 export type InsertUserAchievement = typeof userAchievements.$inferInsert;
+
+/**
+ * User streaks - tracks song request streaks per user
+ * - session_streak: resets on stream_online event
+ * - longest_streak: high watermark, never resets
+ * - session_started_at: tracks which stream session the current streak belongs to
+ */
+export const userStreaks = sqliteTable("user_streaks", {
+	userId: text("user_id").primaryKey(),
+	userDisplayName: text("user_display_name").notNull(),
+	sessionStreak: integer("session_streak").notNull().default(0),
+	longestStreak: integer("longest_streak").notNull().default(0),
+	lastRequestAt: text("last_request_at"), // ISO8601
+	sessionStartedAt: text("session_started_at"), // ISO8601, set on stream_online
+});
+
+export type UserStreak = typeof userStreaks.$inferSelect;
+export type InsertUserStreak = typeof userStreaks.$inferInsert;
+
+/**
+ * Event history - tracks events for "first request of stream" checks
+ * Used to determine if a user has already triggered a specific event type
+ */
+export const eventHistory = sqliteTable(
+	"event_history",
+	{
+		id: text("id").primaryKey(),
+		eventType: text("event_type").notNull(),
+		userId: text("user_id").notNull(),
+		userDisplayName: text("user_display_name").notNull(),
+		eventId: text("event_id").notNull(), // idempotency key from saga
+		timestamp: text("timestamp").notNull(), // ISO8601
+		metadata: text("metadata"), // JSON for event-specific data
+	},
+	(table) => [index("idx_event_history_type_time").on(table.eventType, table.timestamp)],
+);
+
+export type EventHistory = typeof eventHistory.$inferSelect;
+export type InsertEventHistory = typeof eventHistory.$inferInsert;

@@ -15,25 +15,25 @@ import { eq, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
-import migrations from "../../../drizzle/event-bus-do/migrations";
+import migrations from "../../drizzle/event-bus-do/migrations";
 import {
 	EventBusDbError,
 	EventBusHandlerError,
 	EventBusRoutingError,
 	EventBusValidationError,
 	type EventBusError,
-} from "../../lib/errors";
-import { getStub } from "../../lib/durable-objects";
-import { logger } from "../../lib/logger";
+} from "../lib/errors";
+import { logger } from "../lib/logger";
+import * as schema from "./schemas/event-bus-do.schema";
 import {
 	EventSchema,
 	EventType,
 	pendingEvents,
 	type Event,
 	type PendingEvent,
-} from "./schema";
+} from "./schemas/event-bus-do.schema";
 
-import type { Env } from "../../index";
+import type { Env } from "../index";
 
 // =============================================================================
 // Constants
@@ -81,12 +81,6 @@ const EVENT_ROUTES: Record<EventType, "ACHIEVEMENTS_DO"> = {
 	[EventType.StreamOnline]: "ACHIEVEMENTS_DO",
 	[EventType.StreamOffline]: "ACHIEVEMENTS_DO",
 };
-
-// =============================================================================
-// Schema Import (for Drizzle)
-// =============================================================================
-
-import * as schema from "./schema";
 
 // =============================================================================
 // EventBusDO Implementation
@@ -354,19 +348,42 @@ export class EventBusDO extends DurableObject<Env> {
 
 	/**
 	 * Attempt to deliver event to handler DO.
+	 *
+	 * Uses this.env directly (not getStub) to work properly in test environments
+	 * where the global env from cloudflare:workers may not be initialized.
 	 */
 	private async deliverEvent(
 		event: Event,
 		handlerKey: "ACHIEVEMENTS_DO",
 	): Promise<Result<void, EventBusHandlerError>> {
 		try {
-			const stub = getStub(handlerKey);
+			// Get namespace from this.env (works in tests, unlike global env)
+			const namespace = this.env[handlerKey];
+			const doId = namespace.idFromName("achievements");
+			const stub = namespace.get(doId);
 
-			// TODO: Remove this assertion once AchievementsDO implements EventHandler interface.
-			// Track: type assertion violates conventions but required until handleEvent exists.
-			const handler = stub as unknown as EventHandler;
+			// Call handleEvent via RPC - returns RpcResult which we need to unwrap
+			// The stub has typed RPC methods from DurableObjectNamespace<AchievementsDO>
+			const rpcResult = await stub.handleEvent(event);
 
-			const result = await handler.handleEvent(event);
+			// RpcResult has __unwrap__() method that returns SerializedResult
+			// Use promise pipelining to call it in same round trip
+			// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-member-access, typescript/no-unsafe-call -- RPC pipelining
+			const serialized = await (rpcResult as { __unwrap__(): Promise<unknown> }).__unwrap__();
+
+			// Deserialize back to Result
+			const result = Result.deserialize(serialized);
+
+			if (result === null) {
+				// Deserialization failed - treat as error
+				return Result.err(
+					new EventBusHandlerError({
+						eventType: event.type,
+						handlerName: handlerKey,
+						cause: new Error("Failed to deserialize handler result"),
+					}),
+				);
+			}
 
 			if (result.isErr()) {
 				return Result.err(

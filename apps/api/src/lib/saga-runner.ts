@@ -22,11 +22,7 @@ import {
 	sagaRuns,
 	sagaSteps,
 } from "../durable-objects/schemas/saga.schema";
-import {
-	type SagaEvent,
-	type SagaType,
-	writeSagaLifecycleMetric,
-} from "./analytics";
+import { type SagaEvent, type SagaType, writeSagaLifecycleMetric } from "./analytics";
 import {
 	SagaAlreadyExistsError,
 	SagaCompensationError,

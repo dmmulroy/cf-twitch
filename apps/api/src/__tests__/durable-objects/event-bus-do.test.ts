@@ -5,14 +5,14 @@
  */
 
 import { env, runInDurableObject } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import { EventBusDO } from "../../../durable-objects/event-bus-do";
+import { EventBusDO } from "../../durable-objects/event-bus-do";
 import {
 	EventSource,
 	EventType,
 	createSongRequestSuccessEvent,
-} from "../../../durable-objects/event-bus-do/schema";
+} from "../../durable-objects/schemas/event-bus-do.schema";
 
 /**
  * Create a test SongRequestSuccessEvent with unique ID
@@ -70,29 +70,29 @@ describe("EventBusDO", () => {
 			}
 		});
 
-		it("should accept valid event and queue for retry on handler failure", async () => {
-			// Since AchievementsDO.handleEvent() doesn't exist yet, delivery will fail
-			// and the event should be queued for retry
+		it("should deliver event successfully when handler succeeds", async () => {
+			// AchievementsDO.handleEvent() now exists and returns Ok
+			// so events should be delivered without queueing
 			const event = createTestEvent();
 
 			const result = await runInDurableObject(stub, async (instance: EventBusDO) => {
 				const publishResult = await instance.publish(event);
 
-				// Should return ok (event is queued)
+				// Should return ok (event delivered)
 				expect(publishResult.status).toBe("ok");
 
-				// Check pending count
+				// No events should be pending (delivery succeeded)
 				const countResult = await instance.getPendingCount();
 				return countResult;
 			});
 
 			expect(result.status).toBe("ok");
 			if (result.status === "ok") {
-				expect(result.value).toBe(1);
+				expect(result.value).toBe(0);
 			}
 		});
 
-		it("should handle multiple events", async () => {
+		it("should handle multiple events successfully", async () => {
 			await runInDurableObject(stub, async (instance: EventBusDO) => {
 				const event1 = createTestEvent();
 				const event2 = createTestEvent();
@@ -102,10 +102,11 @@ describe("EventBusDO", () => {
 				await instance.publish(event2);
 				await instance.publish(event3);
 
+				// No events should be pending (all delivered successfully)
 				const countResult = await instance.getPendingCount();
 				expect(countResult.status).toBe("ok");
 				if (countResult.status === "ok") {
-					expect(countResult.value).toBe(3);
+					expect(countResult.value).toBe(0);
 				}
 			});
 		});
@@ -125,29 +126,27 @@ describe("EventBusDO", () => {
 	});
 
 	describe("alarm processing", () => {
-		it("should process pending events on alarm", async () => {
+		it("should have no events to process when handler succeeds", async () => {
 			await runInDurableObject(stub, async (instance: EventBusDO) => {
-				// Queue an event
+				// Publish an event - should be delivered immediately
 				const event = createTestEvent();
 				await instance.publish(event);
 
-				// Verify it's pending
+				// Verify no events are pending (delivery succeeded)
 				let countResult = await instance.getPendingCount();
 				expect(countResult.status).toBe("ok");
 				if (countResult.status === "ok") {
-					expect(countResult.value).toBe(1);
+					expect(countResult.value).toBe(0);
 				}
 
-				// Trigger alarm (this will attempt delivery, fail, and schedule next retry)
+				// Trigger alarm - should find no pending events
 				await instance.alarm();
 
-				// After alarm, event should still be pending (delivery still fails)
-				// but attempts should be incremented
+				// Still no pending events
 				countResult = await instance.getPendingCount();
 				expect(countResult.status).toBe("ok");
-				// Event is still pending after first retry attempt
 				if (countResult.status === "ok") {
-					expect(countResult.value).toBe(1);
+					expect(countResult.value).toBe(0);
 				}
 			});
 		});

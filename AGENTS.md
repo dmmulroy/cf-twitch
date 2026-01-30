@@ -29,29 +29,29 @@ cf-twitch/
 
 ## Where to Look
 
-| Task | Location | Notes |
-|------|----------|-------|
-| Add OAuth provider | `apps/api/src/routes/oauth.ts` | Follow Spotify/Twitch pattern |
-| Create new DO | `apps/api/src/durable-objects/` | Export in index.ts, add to wrangler.jsonc |
-| Add error type | `apps/api/src/lib/errors.ts` | Extend TaggedError |
-| Environment vars | `apps/api/wrangler.jsonc` | Secrets in `.dev.vars` |
-| DO stub utilities | `apps/api/src/lib/durable-objects.ts` | getStub() for typed stubs |
-| Analytics | `apps/api/src/lib/analytics.ts` | writeDataPoint helper |
-| Saga pattern | `apps/api/src/lib/saga-runner.ts` | Step execution + compensation |
+| Task               | Location                              | Notes                                     |
+| ------------------ | ------------------------------------- | ----------------------------------------- |
+| Add OAuth provider | `apps/api/src/routes/oauth.ts`        | Follow Spotify/Twitch pattern             |
+| Create new DO      | `apps/api/src/durable-objects/`       | Export in index.ts, add to wrangler.jsonc |
+| Add error type     | `apps/api/src/lib/errors.ts`          | Extend TaggedError                        |
+| Environment vars   | `apps/api/wrangler.jsonc`             | Secrets in `.dev.vars`                    |
+| DO stub utilities  | `apps/api/src/lib/durable-objects.ts` | getStub() for typed stubs                 |
+| Analytics          | `apps/api/src/lib/analytics.ts`       | writeDataPoint helper                     |
+| Saga pattern       | `apps/api/src/lib/saga-runner.ts`     | Step execution + compensation             |
 
 ## Code Map
 
-| Symbol | Location | Role |
-|--------|----------|------|
-| `Env` | `index.ts:15-53` | Environment interface |
-| `app` | `index.ts:55` | Hono app instance |
-| `SpotifyTokenDO` | `durable-objects/spotify-token-do.ts` | OAuth token management |
-| `TwitchTokenDO` | `durable-objects/twitch-token-do.ts` | OAuth token management |
-| `StreamLifecycleDO` | `durable-objects/stream-lifecycle-do.ts` | Stream state, viewer tracking |
-| `SongQueueDO` | `durable-objects/song-queue-do.ts` | Song request queue + sync |
-| `AchievementsDO` | `durable-objects/achievements-do.ts` | Achievement tracking |
-| `KeyboardRaffleDO` | `durable-objects/keyboard-raffle-do.ts` | Raffle system |
-| `SongRequestSagaDO` | `durable-objects/song-request-saga-do.ts` | 7-step saga orchestration |
+| Symbol              | Location                                  | Role                          |
+| ------------------- | ----------------------------------------- | ----------------------------- |
+| `Env`               | `index.ts:15-53`                          | Environment interface         |
+| `app`               | `index.ts:55`                             | Hono app instance             |
+| `SpotifyTokenDO`    | `durable-objects/spotify-token-do.ts`     | OAuth token management        |
+| `TwitchTokenDO`     | `durable-objects/twitch-token-do.ts`      | OAuth token management        |
+| `StreamLifecycleDO` | `durable-objects/stream-lifecycle-do.ts`  | Stream state, viewer tracking |
+| `SongQueueDO`       | `durable-objects/song-queue-do.ts`        | Song request queue + sync     |
+| `AchievementsDO`    | `durable-objects/achievements-do.ts`      | Achievement tracking          |
+| `KeyboardRaffleDO`  | `durable-objects/keyboard-raffle-do.ts`   | Raffle system                 |
+| `SongRequestSagaDO` | `durable-objects/song-request-saga-do.ts` | 7-step saga orchestration     |
 
 ## Project-Specific Conventions
 
@@ -138,15 +138,15 @@ cf-twitch/
 
 ### Type Casts at IO Boundaries
 
-| File | Line | Cast |
-|------|------|------|
+| File                     | Line     | Cast                              |
+| ------------------------ | -------- | --------------------------------- |
 | `stream-lifecycle-do.ts` | 125, 394 | `as WebSocket[]` (CF types issue) |
 
 ### Dead Code
 
-| Location | Items |
-|----------|-------|
-| `lib/errors.ts` | `SpotifyError`, `TwitchError`, `ValidationError`, `InvalidSpotifyUrl` |
+| Location           | Items                                                                       |
+| ------------------ | --------------------------------------------------------------------------- |
+| `lib/errors.ts`    | `SpotifyError`, `TwitchError`, `ValidationError`, `InvalidSpotifyUrl`       |
 | `lib/analytics.ts` | `writeSongRequestMetric()`, `writeRaffleRollMetric()`, `writeErrorMetric()` |
 
 ## Commands

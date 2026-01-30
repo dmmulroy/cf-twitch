@@ -7,11 +7,13 @@
 ## Problem
 
 Achievement logic is scattered across saga DOs:
+
 - `SongRequestSagaDO`: ~150 lines of achievement code (steps 6, 9, 10)
 - `KeyboardRaffleSagaDO`: ~170 lines of achievement code (steps 4, 7)
 - `StreamLifecycleDO`: ~60 lines for lifecycle notifications
 
 This coupling causes:
+
 - Poor code organization (achievement logic clutters saga flow)
 - Low extensibility (adding achievements requires modifying sagas)
 - Difficult testing (must mock multiple DOs to test achievements)
@@ -68,6 +70,7 @@ Introduce an **EventBusDO** to decouple event producers (sagas) from consumers (
 ### EventBusDO
 
 **Responsibilities:**
+
 - Receive events from publishers
 - Route to hardcoded subscriber handlers
 - Retry failed deliveries with exponential backoff
@@ -75,6 +78,7 @@ Introduce an **EventBusDO** to decouple event producers (sagas) from consumers (
 - Alarm-based DLQ processing
 
 **Not responsible for:**
+
 - Event transformation
 - Subscriber registration (hardcoded)
 - Event ordering guarantees
@@ -88,54 +92,54 @@ Location: `durable-objects/event-bus-do/schema.ts`
 ```typescript
 // Base event structure
 interface BaseEvent {
-  id: string;           // UUID, idempotency key
-  type: string;         // Event discriminant
-  v: number;            // Schema version
-  timestamp: string;    // ISO8601
-  source: string;       // Publisher DO name
+	id: string; // UUID, idempotency key
+	type: string; // Event discriminant
+	v: number; // Schema version
+	timestamp: string; // ISO8601
+	source: string; // Publisher DO name
 }
 
 // Domain events
 interface SongRequestSuccessEvent extends BaseEvent {
-  type: "song_request_success";
-  v: 1;
-  userId: string;
-  userDisplayName: string;
-  sagaId: string;
-  trackId: string;
+	type: "song_request_success";
+	v: 1;
+	userId: string;
+	userDisplayName: string;
+	sagaId: string;
+	trackId: string;
 }
 
 interface RaffleRollEvent extends BaseEvent {
-  type: "raffle_roll";
-  v: 1;
-  userId: string;
-  userDisplayName: string;
-  sagaId: string;
-  roll: number;
-  winningNumber: number;
-  distance: number;
-  isWinner: boolean;
+	type: "raffle_roll";
+	v: 1;
+	userId: string;
+	userDisplayName: string;
+	sagaId: string;
+	roll: number;
+	winningNumber: number;
+	distance: number;
+	isWinner: boolean;
 }
 
 interface StreamOnlineEvent extends BaseEvent {
-  type: "stream_online";
-  v: 1;
-  streamId: string;
-  startedAt: string;
+	type: "stream_online";
+	v: 1;
+	streamId: string;
+	startedAt: string;
 }
 
 interface StreamOfflineEvent extends BaseEvent {
-  type: "stream_offline";
-  v: 1;
-  streamId: string;
-  endedAt: string;
+	type: "stream_offline";
+	v: 1;
+	streamId: string;
+	endedAt: string;
 }
 
-type DomainEvent = 
-  | SongRequestSuccessEvent
-  | RaffleRollEvent
-  | StreamOnlineEvent
-  | StreamOfflineEvent;
+type DomainEvent =
+	| SongRequestSuccessEvent
+	| RaffleRollEvent
+	| StreamOnlineEvent
+	| StreamOfflineEvent;
 ```
 
 ### Streak Tracking
@@ -143,10 +147,12 @@ type DomainEvent =
 **Moved entirely to AchievementsDO** with SQLite persistence.
 
 Two streak types:
+
 - `session_streak`: Current consecutive successes this stream. Resets on `stream_online` event.
 - `longest_streak`: High watermark, never decreases.
 
 **Schema addition:**
+
 ```sql
 CREATE TABLE user_streaks (
   user_id TEXT PRIMARY KEY,
@@ -159,6 +165,7 @@ CREATE TABLE user_streaks (
 ```
 
 **Streak semantics:**
+
 - Only `song_request_success` events increment streak
 - Failed sagas don't publish events, streak unchanged
 - Retried requests that succeed continue from previous state
@@ -167,6 +174,7 @@ CREATE TABLE user_streaks (
 ### DLQ Design
 
 **Schema:**
+
 ```sql
 CREATE TABLE dead_letter_queue (
   id TEXT PRIMARY KEY,
@@ -180,12 +188,14 @@ CREATE TABLE dead_letter_queue (
 ```
 
 **Retry policy:**
+
 - Max 3 delivery attempts with exponential backoff (1s, 4s, 16s)
 - After 3 failures: move to DLQ
 - Alarm checks DLQ every 5 minutes, retries items older than 1 hour
 - Auto-purge after 30 days
 
 **Admin API:**
+
 - `GET /api/admin/dlq` - List failed events
 - `POST /api/admin/dlq/:id/replay` - Manual retry
 - `DELETE /api/admin/dlq/:id` - Discard event
@@ -195,6 +205,7 @@ CREATE TABLE dead_letter_queue (
 **Kept in AchievementsDO** (simpler than separate AnnouncerDO).
 
 After unlocking achievement:
+
 1. Send chat message via TwitchService
 2. Mark as announced
 3. If chat fails: log warning, don't block (best-effort)
@@ -221,23 +232,23 @@ No longer queries SongQueueDO - AchievementsDO maintains its own event history.
 
 ## Deliverables
 
-| # | Deliverable | Effort | Depends |
-|---|-------------|--------|---------|
-| 1 | Define event schema types + Zod validators | S | - |
-| 2 | Implement EventBusDO (routing, retry, DLQ, alarm) | L | 1 |
-| 3 | Add EventBusDO to wrangler.jsonc + migration | S | 2 |
-| 4 | Add user_streaks table to AchievementsDO schema | S | - |
-| 5 | Add event history table to AchievementsDO | S | 1 |
-| 6 | Implement AchievementsDO.handleEvent() dispatcher | M | 1, 4, 5 |
-| 7 | Implement streak tracking in AchievementsDO | M | 4, 6 |
-| 8 | Implement "first request" check in AchievementsDO | S | 5, 6 |
-| 9 | Move announcement logic to AchievementsDO event handler | S | 6 |
-| 10 | Simplify SongRequestSagaDO (publish event only) | M | 2 |
-| 11 | Simplify KeyboardRaffleSagaDO (publish event only) | M | 2 |
-| 12 | Update StreamLifecycleDO to publish events | S | 2 |
-| 13 | Remove streak tracking from SongQueueDO | S | 7 |
-| 14 | Add admin DLQ routes | S | 2 |
-| 15 | Delete old achievement code from sagas | S | 10, 11 |
+| #   | Deliverable                                             | Effort | Depends |
+| --- | ------------------------------------------------------- | ------ | ------- |
+| 1   | Define event schema types + Zod validators              | S      | -       |
+| 2   | Implement EventBusDO (routing, retry, DLQ, alarm)       | L      | 1       |
+| 3   | Add EventBusDO to wrangler.jsonc + migration            | S      | 2       |
+| 4   | Add user_streaks table to AchievementsDO schema         | S      | -       |
+| 5   | Add event history table to AchievementsDO               | S      | 1       |
+| 6   | Implement AchievementsDO.handleEvent() dispatcher       | M      | 1, 4, 5 |
+| 7   | Implement streak tracking in AchievementsDO             | M      | 4, 6    |
+| 8   | Implement "first request" check in AchievementsDO       | S      | 5, 6    |
+| 9   | Move announcement logic to AchievementsDO event handler | S      | 6       |
+| 10  | Simplify SongRequestSagaDO (publish event only)         | M      | 2       |
+| 11  | Simplify KeyboardRaffleSagaDO (publish event only)      | M      | 2       |
+| 12  | Update StreamLifecycleDO to publish events              | S      | 2       |
+| 13  | Remove streak tracking from SongQueueDO                 | S      | 7       |
+| 14  | Add admin DLQ routes                                    | S      | 2       |
+| 15  | Delete old achievement code from sagas                  | S      | 10, 11  |
 
 **Suggested implementation order:** 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14 → 15
 
@@ -251,12 +262,12 @@ No longer queries SongQueueDO - AchievementsDO maintains its own event history.
 
 ## Risks
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|--------|------------|
-| EventBusDO becomes bottleneck | Low | Medium | Monitor latency; partition if needed |
-| DLQ grows unbounded | Low | Low | 30-day auto-purge; alerting on size |
-| Achievement timing feels delayed | Medium | Low | Fire-and-forget is fast; only DLQ adds delay |
-| Migration breaks existing data | Low | Medium | Achievements already isolated; streak data is new |
+| Risk                             | Likelihood | Impact | Mitigation                                        |
+| -------------------------------- | ---------- | ------ | ------------------------------------------------- |
+| EventBusDO becomes bottleneck    | Low        | Medium | Monitor latency; partition if needed              |
+| DLQ grows unbounded              | Low        | Low    | 30-day auto-purge; alerting on size               |
+| Achievement timing feels delayed | Medium     | Low    | Fire-and-forget is fast; only DLQ adds delay      |
+| Migration breaks existing data   | Low        | Medium | Achievements already isolated; streak data is new |
 
 ## Migration
 

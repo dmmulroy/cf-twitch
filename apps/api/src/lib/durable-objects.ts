@@ -2,13 +2,116 @@
  * Durable Objects utilities
  *
  * - getStub: Get typed DO stub with autocomplete and Result deserialization
- * - withResultSerialization: Wrap DO class for auto Result serialization
+ * - withResultSerialization: Wrap DO class for auto Result serialization via RpcResult
+ *
+ * ## Architecture
+ *
+ * The challenge: DO RPC methods need to return Results, but workerd throws
+ * DataCloneError for class instances. We also need internal DO method calls
+ * to work naturally with Results.
+ *
+ * Solution: RpcResult extends RpcTarget (allowed over RPC) and forwards all
+ * Result methods. This enables:
+ * - Internal calls: Get RpcResult instance, use .isErr() directly (forwarded)
+ * - External calls: getStub() detects RpcResult stub, calls __unwrap__() via
+ *   promise pipelining (single round trip), deserializes to real Result
  */
 
 import { Ok, Err, Result } from "better-result";
 import { RpcTarget, env as globalEnv } from "cloudflare:workers";
 
 import { DurableObjectError } from "./errors";
+
+// =============================================================================
+// RpcResult - Result wrapper that can cross RPC boundary
+// =============================================================================
+
+/**
+ * Wraps a Result to cross RPC boundaries. Extends RpcTarget so workerd allows
+ * it over RPC (as a stub). Uses Proxy to auto-forward all Result methods.
+ *
+ * Internal callers receive the actual RpcResult instance and can use methods
+ * like .isErr() directly (auto-forwarded to inner Result).
+ *
+ * External callers (via getStub) receive a stub; getStub() auto-calls
+ * __unwrap__() via promise pipelining and deserializes to a real Result.
+ */
+export class RpcResult<T, E> extends RpcTarget {
+	// Store result for serialization - must be accessible for RPC
+	private readonly _result: Result<T, E>;
+
+	constructor(result: Result<T, E>) {
+		super();
+		this._result = result;
+
+		// Return Proxy that auto-forwards all Result methods/properties
+		// oxlint-disable-next-line typescript/no-unsafe-return -- proxy wrapper
+		return new Proxy(this, {
+			get(target, prop, receiver) {
+				// __unwrap__ must be an actual method for RPC stubs to access
+				// Return the bound method from the target
+				if (prop === "__unwrap__") {
+					return target.__unwrap__.bind(target);
+				}
+
+				// Pass through RpcTarget/Object internals
+				if (
+					prop === Symbol.toStringTag ||
+					prop === "constructor" ||
+					prop === Symbol.for("nodejs.util.inspect.custom") ||
+					prop === "_result"
+				) {
+					return Reflect.get(target, prop, receiver);
+				}
+
+				// Forward everything else to inner Result
+				// oxlint-disable-next-line typescript/no-unsafe-assignment -- dynamic property access
+				const value = Reflect.get(target._result, prop);
+
+				// Non-function properties (status, value, error) - return directly
+				if (typeof value !== "function") {
+					return value;
+				}
+
+				// Function properties - wrap to handle Result returns
+				return (...args: unknown[]) => {
+					// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-call -- dynamic call
+					const result = value.apply(target._result, args);
+
+					// Wrap Result returns in RpcResult for method chaining
+					if (result instanceof Ok || result instanceof Err) {
+						return new RpcResult(result);
+					}
+
+					// Handle async methods that return Promise<Result>
+					if (result instanceof Promise) {
+						return result.then((r: unknown) =>
+							r instanceof Ok || r instanceof Err ? new RpcResult(r) : r,
+						);
+					}
+
+					// Other returns (match results, unwrap values, etc.) - pass through
+					return result;
+				};
+			},
+
+			// Support `prop in rpcResult` checks
+			has(target, prop) {
+				return prop in target || prop in target._result;
+			},
+		});
+	}
+
+	/**
+	 * Serializes the inner Result for RPC transport. Called by getStub() wrapper
+	 * using promise pipelining for single round-trip extraction.
+	 *
+	 * Must be an actual method (not just Proxy-defined) so RPC stubs can access it.
+	 */
+	__unwrap__(): { status: "ok"; value: T } | { status: "error"; error: E } {
+		return Result.serialize(this._result);
+	}
+}
 
 /**
  * Get the typed global env from cloudflare:workers
@@ -139,12 +242,13 @@ export function getStub<K extends DONamespaceKeys>(
 }
 
 /**
- * Wrap a DO stub with Result deserialization and error handling.
- * Cast: CF's Rpc types break on classes with Symbol properties (like Result's [Symbol.iterator]).
- * We use our own DeserializedStub type that works directly with the DO class.
+ * Wrap a DO stub with RpcResult unwrapping and Result deserialization.
  *
- * NOTE: We use .call() at invocation time to preserve `this` binding.
- * Can't use .bind() because it causes DataCloneError when serializing across RPC.
+ * When DO methods return RpcResult (via withResultSerialization), this wrapper:
+ * 1. Uses promise pipelining to call __unwrap__() - single round trip
+ * 2. Deserializes the SerializedResult back to a proper Result instance
+ *
+ * This enables seamless Result DX across RPC boundaries.
  */
 function wrapStub<DO>(stub: DurableObjectStub): DeserializedStub<DO> {
 	// Proxy/reflection code is inherently untyped - disable unsafe rules for this block
@@ -169,14 +273,39 @@ function wrapStub<DO>(stub: DurableObjectStub): DeserializedStub<DO> {
 					if (typeof method !== "function") {
 						throw new Error(`Method ${String(prop)} is not a function`);
 					}
-					// oxlint-disable-next-line typescript/no-unsafe-assignment -- dynamic call
-					const result = await method(...args);
 
+					// Don't await - use promise pipelining for RpcResult
+					// oxlint-disable-next-line typescript/no-unsafe-assignment -- dynamic call
+					const resultPromise = method(...args);
+
+					// Try to unwrap RpcResult via promise pipelining (single round trip)
+					// If the method returns RpcResult, __unwrap__() returns SerializedResult
+					// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-member-access -- RPC pipelining
+					const unwrapMethod = (resultPromise as Record<string, unknown>).__unwrap__;
+					if (typeof unwrapMethod === "function") {
+						// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-call -- RPC pipelining
+						const serialized = await unwrapMethod();
+						const deserialized = Result.deserialize(serialized);
+						if (deserialized !== null && !Result.isError(deserialized)) {
+							return deserialized;
+						}
+						// Deserialization returned an error (bad format) - return it
+						if (deserialized !== null) {
+							return deserialized;
+						}
+					}
+
+					// Fallback: await the result normally (non-RpcResult return)
+					// oxlint-disable-next-line typescript/no-unsafe-assignment -- dynamic call
+					const result = await resultPromise;
+
+					// Try to deserialize if it's a SerializedResult
 					const deserialized = Result.deserialize(result);
-					if (deserialized !== null) {
+					if (deserialized !== null && !Result.isError(deserialized)) {
 						return deserialized;
 					}
 
+					// Not a Result - wrap in Ok
 					return Result.ok(result);
 				} catch (error) {
 					return Result.err(
@@ -217,6 +346,16 @@ function isResult(value: unknown): value is Ok<unknown, unknown> | Err<unknown, 
 // oxlint-disable-next-line typescript/no-explicit-any -- required for generic DO class wrapper
 type AnyDurableObjectClass = new (ctx: DurableObjectState, env: any) => any;
 
+/**
+ * Wraps a DO class to automatically wrap Result returns in RpcResult.
+ *
+ * This enables:
+ * - Internal calls: Get RpcResult instance, use .isErr() directly (methods forwarded)
+ * - External RPC calls: Workerd allows RpcResult (extends RpcTarget), getStub() unwraps it
+ *
+ * The Proxy intercepts all method calls and wraps Result returns in RpcResult.
+ * RpcResult forwards all Result methods, so internal callers can use Results naturally.
+ */
 export function withResultSerialization<DO extends AnyDurableObjectClass>(Base: DO): DO {
 	// Proxy/reflection code is inherently untyped - disable unsafe rules for this block
 	// oxlint-disable-next-line typescript/no-unsafe-return -- class wrapper
@@ -240,12 +379,15 @@ export function withResultSerialization<DO extends AnyDurableObjectClass>(Base: 
 						// oxlint-disable-next-line typescript/no-unsafe-assignment -- dynamic call
 						const result = await (original as (...a: unknown[]) => unknown).apply(target, args);
 
+						// Already an RpcTarget (including RpcResult) - pass through
 						if (result instanceof RpcTarget) {
 							return result;
 						}
 
+						// Wrap Result in RpcResult for RPC transport
+						// RpcResult forwards all Result methods, so internal callers work naturally
 						if (isResult(result)) {
-							return Result.serialize(result);
+							return new RpcResult(result);
 						}
 
 						// oxlint-disable-next-line typescript/no-unsafe-return -- proxy passthrough

@@ -22,7 +22,7 @@ import {
 	isSongRequestSuccessEvent,
 	isStreamOfflineEvent,
 	isStreamOnlineEvent,
-} from "../../../durable-objects/event-bus-do/schema";
+} from "../../durable-objects/schemas/event-bus-do.schema";
 
 describe("Event Schema", () => {
 	describe("SongRequestSuccessEvent", () => {

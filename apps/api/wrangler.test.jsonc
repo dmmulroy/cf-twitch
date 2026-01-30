@@ -33,33 +33,33 @@
 				"name": "ACHIEVEMENTS_DO",
 				"class_name": "AchievementsDO",
 			},
-		{
-			"name": "KEYBOARD_RAFFLE_DO",
-			"class_name": "KeyboardRaffleDO",
-		},
-		{
-			"name": "EVENT_BUS_DO",
-			"class_name": "EventBusDO",
-		},
-	],
-},
-"migrations": [
-	{
-		"tag": "v1",
-		"new_sqlite_classes": [
-			"SpotifyTokenDO",
-			"TwitchTokenDO",
-			"StreamLifecycleDO",
-			"SongQueueDO",
-			"AchievementsDO",
-			"KeyboardRaffleDO",
+			{
+				"name": "KEYBOARD_RAFFLE_DO",
+				"class_name": "KeyboardRaffleDO",
+			},
+			{
+				"name": "EVENT_BUS_DO",
+				"class_name": "EventBusDO",
+			},
 		],
 	},
-	{
-		"tag": "v2",
-		"new_sqlite_classes": ["EventBusDO"],
-	},
-],
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"SpotifyTokenDO",
+				"TwitchTokenDO",
+				"StreamLifecycleDO",
+				"SongQueueDO",
+				"AchievementsDO",
+				"KeyboardRaffleDO",
+			],
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["EventBusDO"],
+		},
+	],
 	"vars": {
 		"SONG_REQUEST_REWARD_ID": "test-song-reward",
 		"KEYBOARD_RAFFLE_REWARD_ID": "test-raffle-reward",

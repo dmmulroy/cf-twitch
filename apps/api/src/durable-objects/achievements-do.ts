@@ -16,6 +16,7 @@ import migrations from "../../drizzle/achievements-do/migrations";
 import { writeAchievementUnlockMetric } from "../lib/analytics";
 import {
 	AchievementDbError,
+	AchievementEventValidationError,
 	type AchievementError,
 	type StreamLifecycleHandler,
 } from "../lib/errors";
@@ -24,8 +25,18 @@ import * as schema from "./schemas/achievements-do.schema";
 import {
 	type AchievementDefinition,
 	achievementDefinitions,
+	eventHistory,
 	userAchievements,
 } from "./schemas/achievements-do.schema";
+import {
+	EventSchema,
+	EventType,
+	type Event,
+	type RaffleRollEvent,
+	type SongRequestSuccessEvent,
+	type StreamOfflineEvent,
+	type StreamOnlineEvent,
+} from "./schemas/event-bus-do.schema";
 
 import type { Env } from "../index";
 
@@ -510,6 +521,206 @@ export class AchievementsDO
 		logger.info("AchievementsDO: Stream offline");
 		// No cleanup needed on stream end
 		return Result.ok();
+	}
+
+	// =============================================================================
+	// Event Bus Handler
+	// =============================================================================
+
+	/**
+	 * Handle events from EventBusDO
+	 *
+	 * Dispatches events to specific handlers, records to event_history for
+	 * "first request of stream" checks and audit trail.
+	 */
+	async handleEvent(event: unknown): Promise<Result<void, AchievementError>> {
+		// Validate event with Zod
+		const parseResult = EventSchema.safeParse(event);
+		if (!parseResult.success) {
+			logger.warn("AchievementsDO: Invalid event format", {
+				error: parseResult.error.message,
+			});
+			return Result.err(
+				new AchievementEventValidationError({
+					parseError: parseResult.error.message,
+				}),
+			);
+		}
+
+		const validEvent = parseResult.data;
+
+		logger.info("AchievementsDO: Handling event", {
+			eventId: validEvent.id,
+			eventType: validEvent.type,
+			source: validEvent.source,
+		});
+
+		// Record to event_history for auditing and "first request" checks
+		const recordResult = await this.recordToEventHistory(validEvent);
+		if (recordResult.isErr()) {
+			return recordResult;
+		}
+
+		// Dispatch to specific handler based on event type
+		switch (validEvent.type) {
+			case EventType.SongRequestSuccess:
+				return this.handleSongRequest(validEvent);
+
+			case EventType.RaffleRoll:
+				return this.handleRaffleRoll(validEvent);
+
+			case EventType.StreamOnline:
+				return this.handleStreamOnline(validEvent);
+
+			case EventType.StreamOffline:
+				return this.handleStreamOffline(validEvent);
+		}
+	}
+
+	/**
+	 * Handle song_request_success event
+	 *
+	 * TODO: Implement achievement logic for song requests:
+	 * - Track request counts for threshold achievements
+	 * - Check for "first request of stream"
+	 * - Update streaks
+	 */
+	private async handleSongRequest(
+		event: SongRequestSuccessEvent,
+	): Promise<Result<void, AchievementError>> {
+		logger.info("AchievementsDO: Handling song request", {
+			eventId: event.id,
+			userId: event.userId,
+			userDisplayName: event.userDisplayName,
+			trackId: event.trackId,
+		});
+
+		// Stub: Will be implemented in subsequent task
+		return Result.ok();
+	}
+
+	/**
+	 * Handle raffle_roll event
+	 *
+	 * TODO: Implement achievement logic for raffle rolls:
+	 * - Track roll counts
+	 * - Check for wins
+	 * - Track closest-to-winning records
+	 */
+	private async handleRaffleRoll(event: RaffleRollEvent): Promise<Result<void, AchievementError>> {
+		logger.info("AchievementsDO: Handling raffle roll", {
+			eventId: event.id,
+			userId: event.userId,
+			userDisplayName: event.userDisplayName,
+			roll: event.roll,
+			isWinner: event.isWinner,
+		});
+
+		// Stub: Will be implemented in subsequent task
+		return Result.ok();
+	}
+
+	/**
+	 * Handle stream_online event
+	 *
+	 * Resets session-scoped achievements and streaks.
+	 */
+	private async handleStreamOnline(
+		event: StreamOnlineEvent,
+	): Promise<Result<void, AchievementError>> {
+		logger.info("AchievementsDO: Handling stream online", {
+			eventId: event.id,
+			streamId: event.streamId,
+			startedAt: event.startedAt,
+		});
+
+		// Delegate to existing lifecycle method
+		return this.onStreamOnline();
+	}
+
+	/**
+	 * Handle stream_offline event
+	 */
+	private async handleStreamOffline(
+		event: StreamOfflineEvent,
+	): Promise<Result<void, AchievementError>> {
+		logger.info("AchievementsDO: Handling stream offline", {
+			eventId: event.id,
+			streamId: event.streamId,
+			endedAt: event.endedAt,
+		});
+
+		// Delegate to existing lifecycle method
+		return this.onStreamOffline();
+	}
+
+	/**
+	 * Record event to event_history table for auditing and "first request" checks
+	 */
+	private async recordToEventHistory(event: Event): Promise<Result<void, AchievementDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				// Extract user info based on event type
+				const userInfo = this.extractUserInfo(event);
+
+				await this.db.insert(eventHistory).values({
+					id: crypto.randomUUID(),
+					eventType: event.type,
+					userId: userInfo.userId,
+					userDisplayName: userInfo.userDisplayName,
+					eventId: event.id,
+					timestamp: event.timestamp,
+					metadata: JSON.stringify(this.extractMetadata(event)),
+				});
+
+				logger.debug("AchievementsDO: Recorded event to history", {
+					eventId: event.id,
+					eventType: event.type,
+				});
+			},
+			catch: (cause) => new AchievementDbError({ operation: "recordToEventHistory", cause }),
+		});
+	}
+
+	/**
+	 * Extract user info from event based on type
+	 */
+	private extractUserInfo(event: Event): { userId: string; userDisplayName: string } {
+		switch (event.type) {
+			case EventType.SongRequestSuccess:
+			case EventType.RaffleRoll:
+				return { userId: event.userId, userDisplayName: event.userDisplayName };
+
+			case EventType.StreamOnline:
+			case EventType.StreamOffline:
+				// Stream events don't have user info, use system placeholder
+				return { userId: "system", userDisplayName: "System" };
+		}
+	}
+
+	/**
+	 * Extract relevant metadata from event for storage
+	 */
+	private extractMetadata(event: Event): Record<string, unknown> {
+		switch (event.type) {
+			case EventType.SongRequestSuccess:
+				return { trackId: event.trackId, sagaId: event.sagaId };
+
+			case EventType.RaffleRoll:
+				return {
+					roll: event.roll,
+					winningNumber: event.winningNumber,
+					distance: event.distance,
+					isWinner: event.isWinner,
+					sagaId: event.sagaId,
+				};
+
+			case EventType.StreamOnline:
+				return { streamId: event.streamId, startedAt: event.startedAt };
+
+			case EventType.StreamOffline:
+				return { streamId: event.streamId, endedAt: event.endedAt };
+		}
 	}
 
 	// =============================================================================

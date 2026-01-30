@@ -377,8 +377,25 @@ export class AchievementNotFoundError extends TaggedError("AchievementNotFoundEr
 	}
 }
 
+export class AchievementEventValidationError extends TaggedError(
+	"AchievementEventValidationError",
+)<{
+	parseError: string;
+	message: string;
+}>() {
+	constructor(args: { parseError: string }) {
+		super({
+			...args,
+			message: `Invalid event format: ${args.parseError}`,
+		});
+	}
+}
+
 /** Union of all achievement-related errors */
-export type AchievementError = AchievementDbError | AchievementNotFoundError;
+export type AchievementError =
+	| AchievementDbError
+	| AchievementNotFoundError
+	| AchievementEventValidationError;
 
 // =============================================================================
 // Event Bus Errors

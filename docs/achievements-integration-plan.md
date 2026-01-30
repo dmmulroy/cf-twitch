@@ -40,29 +40,35 @@ Add step after `write-history` (step 5), before `fulfill-redemption`:
 
 ```typescript
 // Step 5.5: Record achievement event (non-critical)
-await runner.executeStep("record-achievement", async () => {
-  const stub = getStub("ACHIEVEMENTS_DO");
-  const result = await stub.recordEvent({
-    userDisplayName: params.user_name,
-    event: "song_request",
-    eventId: sagaId,
-  });
-  
-  if (result.status === "ok" && result.value.length > 0) {
-    // Optionally announce in chat (or defer to separate announcement system)
-    logger.info("Achievements unlocked", {
-      sagaId,
-      achievements: result.value.map(a => a.name),
-    });
-  }
-  return { result: undefined };
-}, { timeout: 10000, maxRetries: 2 });
+await runner.executeStep(
+	"record-achievement",
+	async () => {
+		const stub = getStub("ACHIEVEMENTS_DO");
+		const result = await stub.recordEvent({
+			userDisplayName: params.user_name,
+			event: "song_request",
+			eventId: sagaId,
+		});
+
+		if (result.status === "ok" && result.value.length > 0) {
+			// Optionally announce in chat (or defer to separate announcement system)
+			logger.info("Achievements unlocked", {
+				sagaId,
+				achievements: result.value.map((a) => a.name),
+			});
+		}
+		return { result: undefined };
+	},
+	{ timeout: 10000, maxRetries: 2 },
+);
 ```
 
 **Events to fire:**
+
 - `song_request` - triggers `first_request`, `request_10`, `request_50`, `request_100`
 
 **Deferred (requires additional state):**
+
 - `stream_first_request` - needs "is first request of stream" tracking
 - `request_streak` - needs consecutive request tracking per user per session
 
@@ -76,36 +82,42 @@ Add step after `record-roll` (step 3), before `fulfill-redemption`:
 
 ```typescript
 // Step 3.5: Record achievement events (non-critical)
-await runner.executeStep("record-achievements", async () => {
-  const stub = getStub("ACHIEVEMENTS_DO");
-  
-  // Always record roll
-  const rollResult = await stub.recordEvent({
-    userDisplayName: params.user_name,
-    event: "raffle_roll",
-    eventId: sagaId,
-  });
-  
-  // Record win if winner
-  if (isWinner) {
-    await stub.recordEvent({
-      userDisplayName: params.user_name,
-      event: "raffle_win",
-      eventId: `${sagaId}-win`,
-    });
-  }
-  
-  // TODO: raffle_close, raffle_closest_record need KeyboardRaffleDO state
-  
-  return { result: undefined };
-}, { timeout: 10000, maxRetries: 2 });
+await runner.executeStep(
+	"record-achievements",
+	async () => {
+		const stub = getStub("ACHIEVEMENTS_DO");
+
+		// Always record roll
+		const rollResult = await stub.recordEvent({
+			userDisplayName: params.user_name,
+			event: "raffle_roll",
+			eventId: sagaId,
+		});
+
+		// Record win if winner
+		if (isWinner) {
+			await stub.recordEvent({
+				userDisplayName: params.user_name,
+				event: "raffle_win",
+				eventId: `${sagaId}-win`,
+			});
+		}
+
+		// TODO: raffle_close, raffle_closest_record need KeyboardRaffleDO state
+
+		return { result: undefined };
+	},
+	{ timeout: 10000, maxRetries: 2 },
+);
 ```
 
 **Events to fire:**
+
 - `raffle_roll` - triggers `first_roll`, `roll_25`, `roll_100`
 - `raffle_win` - triggers `first_win`
 
 **Deferred (requires KeyboardRaffleDO state):**
+
 - `raffle_close` - needs distance comparison with global best
 - `raffle_closest_record` - needs global closest distance tracking
 
@@ -121,12 +133,12 @@ await runner.executeStep("record-achievements", async () => {
  * All achievement definitions
  */
 api.get("/achievements/definitions", async (c) => {
-  const stub = getStub("ACHIEVEMENTS_DO");
-  const result = await stub.getDefinitions();
-  if (result.status === "error") {
-    return c.json({ error: result.error.message }, 500);
-  }
-  return c.json(result.value);
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getDefinitions();
+	if (result.status === "error") {
+		return c.json({ error: result.error.message }, 500);
+	}
+	return c.json(result.value);
 });
 
 /**
@@ -134,13 +146,13 @@ api.get("/achievements/definitions", async (c) => {
  * User's achievement progress
  */
 api.get("/achievements/:user", async (c) => {
-  const user = c.req.param("user");
-  const stub = getStub("ACHIEVEMENTS_DO");
-  const result = await stub.getUserAchievements(user);
-  if (result.status === "error") {
-    return c.json({ error: result.error.message }, 500);
-  }
-  return c.json(result.value);
+	const user = c.req.param("user");
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getUserAchievements(user);
+	if (result.status === "error") {
+		return c.json({ error: result.error.message }, 500);
+	}
+	return c.json(result.value);
 });
 
 /**
@@ -148,13 +160,13 @@ api.get("/achievements/:user", async (c) => {
  * User's unlocked achievements only
  */
 api.get("/achievements/:user/unlocked", async (c) => {
-  const user = c.req.param("user");
-  const stub = getStub("ACHIEVEMENTS_DO");
-  const result = await stub.getUnlockedAchievements(user);
-  if (result.status === "error") {
-    return c.json({ error: result.error.message }, 500);
-  }
-  return c.json(result.value);
+	const user = c.req.param("user");
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getUnlockedAchievements(user);
+	if (result.status === "error") {
+		return c.json({ error: result.error.message }, 500);
+	}
+	return c.json(result.value);
 });
 
 /**
@@ -162,13 +174,13 @@ api.get("/achievements/:user/unlocked", async (c) => {
  * Top users by achievement count
  */
 api.get("/achievements/leaderboard", async (c) => {
-  const limit = Number(c.req.query("limit") ?? 10);
-  const stub = getStub("ACHIEVEMENTS_DO");
-  const result = await stub.getLeaderboard({ limit });
-  if (result.status === "error") {
-    return c.json({ error: result.error.message }, 500);
-  }
-  return c.json(result.value);
+	const limit = Number(c.req.query("limit") ?? 10);
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getLeaderboard({ limit });
+	if (result.status === "error") {
+		return c.json({ error: result.error.message }, 500);
+	}
+	return c.json(result.value);
 });
 ```
 
@@ -180,20 +192,20 @@ api.get("/achievements/leaderboard", async (c) => {
 
 ```typescript
 export interface AchievementUnlockMetric {
-  user: string;
-  achievementId: string;
-  achievementName: string;
-  category: string;
+	user: string;
+	achievementId: string;
+	achievementName: string;
+	category: string;
 }
 
 export function writeAchievementUnlockMetric(
-  analytics: AnalyticsEngineDataset,
-  metric: AchievementUnlockMetric,
+	analytics: AnalyticsEngineDataset,
+	metric: AchievementUnlockMetric,
 ): void {
-  safeWriteMetric(analytics, "achievement_unlock", {
-    blobs: [metric.user, metric.achievementId, metric.achievementName, metric.category],
-    doubles: [],
-  });
+	safeWriteMetric(analytics, "achievement_unlock", {
+		blobs: [metric.user, metric.achievementId, metric.achievementName, metric.category],
+		doubles: [],
+	});
 }
 ```
 
@@ -203,23 +215,23 @@ Call from saga steps when `recordEvent()` returns unlocked achievements.
 
 ## Deferred Work (Not in Scope)
 
-| Feature | Requires | Notes |
-|---------|----------|-------|
-| `stream_first_request` | Session state in SongQueueDO or StreamLifecycleDO | Track "first request made this stream" |
-| `request_streak` | Per-user session state | Track consecutive successful requests |
-| `raffle_close` / `raffle_closest_record` | KeyboardRaffleDO global state | Track/compare best distances |
-| Chat announcements | Polling system or inline in sagas | `getUnannounced()` + `markAnnounced()` exist but no caller |
+| Feature                                  | Requires                                          | Notes                                                      |
+| ---------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
+| `stream_first_request`                   | Session state in SongQueueDO or StreamLifecycleDO | Track "first request made this stream"                     |
+| `request_streak`                         | Per-user session state                            | Track consecutive successful requests                      |
+| `raffle_close` / `raffle_closest_record` | KeyboardRaffleDO global state                     | Track/compare best distances                               |
+| Chat announcements                       | Polling system or inline in sagas                 | `getUnannounced()` + `markAnnounced()` exist but no caller |
 
 ---
 
 ## Task Summary
 
-| Task | Priority | Effort |
-|------|----------|--------|
-| StreamLifecycleDO notify AchievementsDO | High | ~10 lines |
-| SongRequestSagaDO `recordEvent()` | High | ~20 lines |
-| KeyboardRaffleSagaDO `recordEvent()` | High | ~30 lines |
-| API routes | Medium | ~50 lines |
-| Analytics metric | Low | ~15 lines |
+| Task                                    | Priority | Effort    |
+| --------------------------------------- | -------- | --------- |
+| StreamLifecycleDO notify AchievementsDO | High     | ~10 lines |
+| SongRequestSagaDO `recordEvent()`       | High     | ~20 lines |
+| KeyboardRaffleSagaDO `recordEvent()`    | High     | ~30 lines |
+| API routes                              | Medium   | ~50 lines |
+| Analytics metric                        | Low      | ~15 lines |
 
 **Total estimated:** ~125 lines of integration code
