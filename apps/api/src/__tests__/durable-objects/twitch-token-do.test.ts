@@ -187,17 +187,13 @@ describe("TwitchTokenDO", () => {
 					...VALID_TOKEN_RESPONSE,
 					expires_in: -3600, // Expired
 				});
-				await instance.onStreamOnline();
+				// onStreamOnline triggers refresh - check its result directly
+				const result = await instance.onStreamOnline();
+				expect(result.status).toBe("error");
+				if (result.status === "error") {
+					expect(result.error._tag).toBe("TokenRefreshNetworkError");
+				}
 			});
-
-			const result = await runInDurableObject(stub, (instance: TwitchTokenDO) =>
-				instance.getValidToken(),
-			);
-
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error._tag).toBe("TokenRefreshNetworkError");
-			}
 		});
 
 		it("should return TokenRefreshParseError on malformed JSON", async () => {
@@ -211,17 +207,13 @@ describe("TwitchTokenDO", () => {
 					...VALID_TOKEN_RESPONSE,
 					expires_in: -3600, // Expired
 				});
-				await instance.onStreamOnline();
+				// onStreamOnline triggers refresh - check its result directly
+				const result = await instance.onStreamOnline();
+				expect(result.status).toBe("error");
+				if (result.status === "error") {
+					expect(result.error._tag).toBe("TokenRefreshParseError");
+				}
 			});
-
-			const result = await runInDurableObject(stub, (instance: TwitchTokenDO) =>
-				instance.getValidToken(),
-			);
-
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error._tag).toBe("TokenRefreshParseError");
-			}
 		});
 
 		it("should return TokenRefreshParseError on invalid schema", async () => {
@@ -237,31 +229,24 @@ describe("TwitchTokenDO", () => {
 					...VALID_TOKEN_RESPONSE,
 					expires_in: -3600, // Expired
 				});
-				await instance.onStreamOnline();
+				// onStreamOnline triggers refresh - check its result directly
+				const result = await instance.onStreamOnline();
+				expect(result.status).toBe("error");
+				if (result.status === "error") {
+					expect(result.error._tag).toBe("TokenRefreshParseError");
+				}
 			});
-
-			const result = await runInDurableObject(stub, (instance: TwitchTokenDO) =>
-				instance.getValidToken(),
-			);
-
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error._tag).toBe("TokenRefreshParseError");
-			}
 		});
 
-		it("should return NoRefreshTokenError when no token cache exists", async () => {
-			await runInDurableObject(stub, async (instance: TwitchTokenDO) => {
-				await instance.onStreamOnline();
-			});
-
+		it("should return StreamOfflineNoTokenError when no token cache exists", async () => {
+			// No tokens set, stream offline - getValidToken should error
 			const result = await runInDurableObject(stub, (instance: TwitchTokenDO) =>
 				instance.getValidToken(),
 			);
 
 			expect(result.status).toBe("error");
 			if (result.status === "error") {
-				expect(result.error._tag).toBe("NoRefreshTokenError");
+				expect(result.error._tag).toBe("StreamOfflineNoTokenError");
 			}
 		});
 	});

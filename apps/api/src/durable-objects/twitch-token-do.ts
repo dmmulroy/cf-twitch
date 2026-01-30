@@ -253,7 +253,12 @@ export class TwitchTokenDO
 			return Result.err(new StreamOfflineNoTokenError());
 		}
 
-		// Token exists but expired - always try to refresh
+		// Token expired + stream offline → error (conserve resources, don't return stale token)
+		if (!this.tokenCache.isStreamLive) {
+			return Result.err(new StreamOfflineNoTokenError());
+		}
+
+		// Token expired + stream online → refresh
 		// Coalesce concurrent refresh requests
 		if (this.refreshPromise) {
 			return this.refreshPromise;

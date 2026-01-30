@@ -5,6 +5,7 @@
 import { Hono } from "hono";
 
 import { AchievementsDO as AchievementsDOBase } from "./durable-objects/achievements-do";
+import { EventBusDO as EventBusDOBase } from "./durable-objects/event-bus-do";
 import { KeyboardRaffleDO as KeyboardRaffleDOBase } from "./durable-objects/keyboard-raffle-do";
 import { KeyboardRaffleSagaDO as KeyboardRaffleSagaDOBase } from "./durable-objects/keyboard-raffle-saga-do";
 import { SongQueueDO as SongQueueDOBase } from "./durable-objects/song-queue-do";
@@ -71,6 +72,7 @@ export const SongRequestSagaDO: typeof SongRequestSagaDOBase =
 	withResultSerialization(SongRequestSagaDOBase);
 export const KeyboardRaffleSagaDO: typeof KeyboardRaffleSagaDOBase =
 	withResultSerialization(KeyboardRaffleSagaDOBase);
+export const EventBusDO: typeof EventBusDOBase = withResultSerialization(EventBusDOBase);
 
 // Service exports
 export { SpotifyService } from "./services/spotify-service";

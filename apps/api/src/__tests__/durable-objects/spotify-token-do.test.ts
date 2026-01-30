@@ -150,16 +150,19 @@ describe("SpotifyTokenDO", () => {
 				});
 			});
 
-			// When offline, should return cached token without refresh
+			// When offline + expired, should return error (no refresh, no stale token)
 			const offlineResult = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
 				instance.getValidToken(),
 			);
-			expect(offlineResult.status).toBe("ok"); // Returns stale token
+			expect(offlineResult.status).toBe("error");
+			if (offlineResult.status === "error") {
+				expect(offlineResult.error._tag).toBe("StreamOfflineNoTokenError");
+			}
 
-			// Mock refresh endpoint
+			// Mock refresh endpoint BEFORE going online (onStreamOnline triggers refresh)
 			mockSpotifyTokenRefresh(fetchMock);
 
-			// Go online and request token - should trigger refresh
+			// Go online - triggers refresh of expired token
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
 				await instance.onStreamOnline();
 			});
@@ -194,17 +197,13 @@ describe("SpotifyTokenDO", () => {
 					...VALID_TOKEN_RESPONSE,
 					expires_in: -3600, // Expired
 				});
-				await instance.onStreamOnline();
+				// onStreamOnline triggers refresh - check its result directly
+				const result = await instance.onStreamOnline();
+				expect(result.status).toBe("error");
+				if (result.status === "error") {
+					expect(result.error._tag).toBe("TokenRefreshNetworkError");
+				}
 			});
-
-			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
-				instance.getValidToken(),
-			);
-
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error._tag).toBe("TokenRefreshNetworkError");
-			}
 		});
 
 		it("should return TokenRefreshParseError on malformed JSON", async () => {
@@ -218,17 +217,13 @@ describe("SpotifyTokenDO", () => {
 					...VALID_TOKEN_RESPONSE,
 					expires_in: -3600, // Expired
 				});
-				await instance.onStreamOnline();
+				// onStreamOnline triggers refresh - check its result directly
+				const result = await instance.onStreamOnline();
+				expect(result.status).toBe("error");
+				if (result.status === "error") {
+					expect(result.error._tag).toBe("TokenRefreshParseError");
+				}
 			});
-
-			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
-				instance.getValidToken(),
-			);
-
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error._tag).toBe("TokenRefreshParseError");
-			}
 		});
 
 		it("should return TokenRefreshParseError on invalid schema", async () => {
@@ -244,33 +239,24 @@ describe("SpotifyTokenDO", () => {
 					...VALID_TOKEN_RESPONSE,
 					expires_in: -3600, // Expired
 				});
-				await instance.onStreamOnline();
+				// onStreamOnline triggers refresh - check its result directly
+				const result = await instance.onStreamOnline();
+				expect(result.status).toBe("error");
+				if (result.status === "error") {
+					expect(result.error._tag).toBe("TokenRefreshParseError");
+				}
 			});
-
-			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
-				instance.getValidToken(),
-			);
-
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error._tag).toBe("TokenRefreshParseError");
-			}
 		});
 
-		it("should return NoRefreshTokenError when no token cache exists during refresh", async () => {
-			// Stream online but no tokens set
-			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
-				await instance.onStreamOnline();
-			});
-
+		it("should return StreamOfflineNoTokenError when no token cache exists", async () => {
+			// No tokens set, stream offline - getValidToken should error
 			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
 				instance.getValidToken(),
 			);
 
 			expect(result.status).toBe("error");
 			if (result.status === "error") {
-				// Will be NoRefreshTokenError since there's no token to refresh
-				expect(result.error._tag).toBe("NoRefreshTokenError");
+				expect(result.error._tag).toBe("StreamOfflineNoTokenError");
 			}
 		});
 	});

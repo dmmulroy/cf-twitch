@@ -32,6 +32,7 @@
 			{ "name": "KEYBOARD_RAFFLE_DO", "class_name": "KeyboardRaffleDO" },
 			{ "name": "SONG_REQUEST_SAGA_DO", "class_name": "SongRequestSagaDO" },
 			{ "name": "KEYBOARD_RAFFLE_SAGA_DO", "class_name": "KeyboardRaffleSagaDO" },
+			{ "name": "EVENT_BUS_DO", "class_name": "EventBusDO" },
 		],
 	},
 	"migrations": [
@@ -61,6 +62,10 @@
 		{
 			"tag": "v5",
 			"deleted_classes": ["WorkflowPoolDO"],
+		},
+		{
+			"tag": "v6",
+			"new_sqlite_classes": ["EventBusDO"],
 		},
 	],
 	"analytics_engine_datasets": [

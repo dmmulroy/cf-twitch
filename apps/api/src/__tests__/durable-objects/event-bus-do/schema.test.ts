@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-	DomainEventSchema,
+	EventSchema,
 	EventSource,
 	EventType,
 	RaffleRollEventSchema,
@@ -189,7 +189,7 @@ describe("Event Schema", () => {
 		});
 	});
 
-	describe("DomainEventSchema discriminated union", () => {
+	describe("EventSchema discriminated union", () => {
 		it("should parse SongRequestSuccessEvent", () => {
 			const event = {
 				id: "550e8400-e29b-41d4-a716-446655440000",
@@ -202,7 +202,7 @@ describe("Event Schema", () => {
 				sagaId: "saga-456",
 				trackId: "spotify:track:abc123",
 			};
-			const result = DomainEventSchema.safeParse(event);
+			const result = EventSchema.safeParse(event);
 			expect(result.success).toBe(true);
 			if (result.success) {
 				expect(result.data.type).toBe(EventType.SongRequestSuccess);
@@ -224,7 +224,7 @@ describe("Event Schema", () => {
 				distance: 3577,
 				isWinner: false,
 			};
-			const result = DomainEventSchema.safeParse(event);
+			const result = EventSchema.safeParse(event);
 			expect(result.success).toBe(true);
 			if (result.success) {
 				expect(result.data.type).toBe(EventType.RaffleRoll);
@@ -239,7 +239,7 @@ describe("Event Schema", () => {
 				timestamp: "2026-01-30T12:00:00.000Z",
 				source: "UnknownDO",
 			};
-			const result = DomainEventSchema.safeParse(event);
+			const result = EventSchema.safeParse(event);
 			expect(result.success).toBe(false);
 		});
 	});

@@ -381,6 +381,51 @@ export class AchievementNotFoundError extends TaggedError("AchievementNotFoundEr
 export type AchievementError = AchievementDbError | AchievementNotFoundError;
 
 // =============================================================================
+// Event Bus Errors
+// =============================================================================
+
+export class EventBusRoutingError extends TaggedError("EventBusRoutingError")<{
+	eventType: string;
+	message: string;
+}>() {
+	constructor(args: { eventType: string }) {
+		super({
+			...args,
+			message: `No handler registered for event type: ${args.eventType}`,
+		});
+	}
+}
+
+export class EventBusHandlerError extends TaggedError("EventBusHandlerError")<{
+	eventType: string;
+	handlerName: string;
+	cause: unknown;
+	message: string;
+}>() {
+	constructor(args: { eventType: string; handlerName: string; cause: unknown }) {
+		super({
+			...args,
+			message: `Handler ${args.handlerName} failed for event type ${args.eventType}`,
+		});
+	}
+}
+
+export class EventBusValidationError extends TaggedError("EventBusValidationError")<{
+	parseError: string;
+	message: string;
+}>() {
+	constructor(args: { parseError: string }) {
+		super({
+			...args,
+			message: `Invalid event format: ${args.parseError}`,
+		});
+	}
+}
+
+/** Union of all event bus errors */
+export type EventBusError = EventBusRoutingError | EventBusHandlerError | EventBusValidationError;
+
+// =============================================================================
 // Stream Lifecycle Interface
 // =============================================================================
 

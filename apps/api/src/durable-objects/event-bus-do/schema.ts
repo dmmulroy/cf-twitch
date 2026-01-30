@@ -151,38 +151,38 @@ export const StreamOfflineEventSchema = BaseEventSchema.extend({
 export type StreamOfflineEvent = z.infer<typeof StreamOfflineEventSchema>;
 
 // =============================================================================
-// Domain Event Union
+// Event Union
 // =============================================================================
 
 /**
- * Discriminated union of all domain events
+ * Discriminated union of all events
  */
-export const DomainEventSchema = z.discriminatedUnion("type", [
+export const EventSchema = z.discriminatedUnion("type", [
 	SongRequestSuccessEventSchema,
 	RaffleRollEventSchema,
 	StreamOnlineEventSchema,
 	StreamOfflineEventSchema,
 ]);
 
-export type DomainEvent = z.infer<typeof DomainEventSchema>;
+export type Event = z.infer<typeof EventSchema>;
 
 // =============================================================================
 // Type Guards
 // =============================================================================
 
-export function isSongRequestSuccessEvent(event: DomainEvent): event is SongRequestSuccessEvent {
+export function isSongRequestSuccessEvent(event: Event): event is SongRequestSuccessEvent {
 	return event.type === EventType.SongRequestSuccess;
 }
 
-export function isRaffleRollEvent(event: DomainEvent): event is RaffleRollEvent {
+export function isRaffleRollEvent(event: Event): event is RaffleRollEvent {
 	return event.type === EventType.RaffleRoll;
 }
 
-export function isStreamOnlineEvent(event: DomainEvent): event is StreamOnlineEvent {
+export function isStreamOnlineEvent(event: Event): event is StreamOnlineEvent {
 	return event.type === EventType.StreamOnline;
 }
 
-export function isStreamOfflineEvent(event: DomainEvent): event is StreamOfflineEvent {
+export function isStreamOfflineEvent(event: Event): event is StreamOfflineEvent {
 	return event.type === EventType.StreamOffline;
 }
 
