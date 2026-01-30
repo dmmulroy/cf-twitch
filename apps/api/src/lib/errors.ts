@@ -422,8 +422,26 @@ export class EventBusValidationError extends TaggedError("EventBusValidationErro
 	}
 }
 
+export class EventBusDbError extends TaggedError("EventBusDbError")<{
+	operation: string;
+	message: string;
+	cause?: unknown;
+}>() {
+	constructor(args: { operation: string; cause?: unknown }) {
+		super({
+			operation: args.operation,
+			message: `Event bus DB error during ${args.operation}`,
+			cause: args.cause,
+		});
+	}
+}
+
 /** Union of all event bus errors */
-export type EventBusError = EventBusRoutingError | EventBusHandlerError | EventBusValidationError;
+export type EventBusError =
+	| EventBusRoutingError
+	| EventBusHandlerError
+	| EventBusValidationError
+	| EventBusDbError;
 
 // =============================================================================
 // Stream Lifecycle Interface

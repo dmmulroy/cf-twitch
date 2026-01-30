@@ -5,6 +5,7 @@
  * and routed to subscribers (primarily AchievementsDO).
  */
 
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 
 // =============================================================================
@@ -185,6 +186,31 @@ export function isStreamOnlineEvent(event: Event): event is StreamOnlineEvent {
 export function isStreamOfflineEvent(event: Event): event is StreamOfflineEvent {
 	return event.type === EventType.StreamOffline;
 }
+
+// =============================================================================
+// Pending Events Table (Drizzle Schema)
+// =============================================================================
+
+/**
+ * Pending events table - stores events awaiting delivery or retry
+ *
+ * Events are inserted when initial delivery fails. Alarms process
+ * retries with exponential backoff. After max attempts, events move to DLQ.
+ */
+export const pendingEvents = sqliteTable(
+	"pending_events",
+	{
+		id: text("id").primaryKey(), // Event ID (UUID)
+		event: text("event").notNull(), // JSON-serialized Event
+		attempts: integer("attempts").notNull().default(0), // Delivery attempts so far
+		nextRetryAt: text("next_retry_at").notNull(), // ISO8601 timestamp for next retry
+		createdAt: text("created_at").notNull(), // ISO8601 when event was first queued
+	},
+	(table) => [index("idx_pending_next_retry").on(table.nextRetryAt)],
+);
+
+export type PendingEvent = typeof pendingEvents.$inferSelect;
+export type InsertPendingEvent = typeof pendingEvents.$inferInsert;
 
 // =============================================================================
 // Factory Functions
