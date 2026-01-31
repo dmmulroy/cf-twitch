@@ -2,8 +2,8 @@
 
 Instructions for AI coding agents working with this codebase.
 
-**Generated:** 2026-01-29
-**Change:** qourukkm (jj)
+**Generated:** 2026-02-02
+**Change:** rwozskrk (jj)
 
 ## Overview
 
@@ -38,6 +38,8 @@ cf-twitch/
 | DO stub utilities  | `apps/api/src/lib/durable-objects.ts` | getStub() for typed stubs                 |
 | Analytics          | `apps/api/src/lib/analytics.ts`       | writeDataPoint helper                     |
 | Saga pattern       | `apps/api/src/lib/saga-runner.ts`     | Step execution + compensation             |
+| Event bus          | `apps/api/src/durable-objects/event-bus-do.ts` | Event routing + retry + DLQ      |
+| Admin routes       | `apps/api/src/routes/admin.ts`        | DLQ management (requires ADMIN_SECRET)    |
 
 ## Code Map
 
@@ -51,7 +53,9 @@ cf-twitch/
 | `SongQueueDO`       | `durable-objects/song-queue-do.ts`        | Song request queue + sync     |
 | `AchievementsDO`    | `durable-objects/achievements-do.ts`      | Achievement tracking          |
 | `KeyboardRaffleDO`  | `durable-objects/keyboard-raffle-do.ts`   | Raffle system                 |
-| `SongRequestSagaDO` | `durable-objects/song-request-saga-do.ts` | 7-step saga orchestration     |
+| `SongRequestSagaDO` | `durable-objects/song-request-saga-do.ts` | 8-step saga orchestration     |
+| `KeyboardRaffleSagaDO` | `durable-objects/keyboard-raffle-saga-do.ts` | 6-step saga orchestration |
+| `EventBusDO`        | `durable-objects/event-bus-do.ts`         | Event routing + retry + DLQ   |
 
 ## Project-Specific Conventions
 
@@ -81,6 +85,39 @@ cf-twitch/
 - **Use `getStub()`** for typed stubs with Result hydration
 - **`void this.ctx.blockConcurrencyWhile(...)`** - mark fire-and-forget
 - **`DurableObjectNamespace<T>`** in Env - T is DO class for RPC typing
+
+### Result Serialization over RPC
+
+- **Problem**: workerd throws `DataCloneError` for class instances (including Result)
+- **Solution**: Proxy prototype hack in `lib/durable-objects.ts`
+  - `wrapResultForRpc()`: Proxy lies about prototype (`getPrototypeOf() → RpcTarget.prototype`)
+  - `wrapStub()`: Caller-side deserializes via `Symbol.for('rpc.serialize')`
+- **DO-to-DO RPC in tests DOES NOT WORK** - miniflare doesn't support the prototype hack
+  - Skip tests that call `getStub()` from inside `runInDurableObject()`
+- **DO stubs are proxies** - `typeof stub.method === 'function'` is ALWAYS true, even for non-existent methods
+
+### Saga Patterns
+
+- **executeStep() caches results** - handlers never re-execute on replay; UUID generation inside is safe
+- **Fire-and-forget steps**: Document that downstream (e.g., EventBusDO) handles retry
+- **Standard config**: `{ timeout: 10000, maxRetries: 2 }` for publish-event steps
+- **Non-saga DOs** (e.g., StreamLifecycleDO) call `stub.publish()` directly, no executeStep wrapper
+
+### Event-Driven Architecture (EventBusDO)
+
+- **Pattern**: Sagas publish fire-and-forget events → EventBusDO routes → AchievementsDO handles
+- **EventBusDO**: Retry with exponential backoff (1s, 4s, 16s), DLQ after 3 failures
+- **event_history table**: Dual-purpose - audit trail AND state queries (e.g., "first request of stream")
+- **Admin routes**: `/api/admin/dlq` requires `ADMIN_SECRET` env var
+
+### Achievement System (AchievementsDO)
+
+- **Threshold achievements**: Progress accumulates via `currentProgress + increment`
+- **Streak achievements**: Progress is SET to streak count (not accumulated) - prevents early unlock
+- **Event-based achievements**: `threshold: NULL`, unlock immediately on first trigger
+- **Session reset**: `onStreamOnline()` resets BOTH `userAchievements` (session scope) AND `userStreaks`
+- **First-of-stream check**: Query latest `stream_online` from `event_history`, count events after, exclude current `eventId`
+- **Raffle rolls**: Range is 1-10000, not 1-100 (check `keyboard-raffle-do.schema.ts`)
 
 ### Services (Plain Classes)
 
@@ -168,6 +205,17 @@ wrangler types        # Regenerate worker-configuration.d.ts
 - **Secrets**: `.dev.vars` for local dev (gitignored)
 - **Tests**: Vitest with `@cloudflare/vitest-pool-workers`
 - **Test pattern**: `runInDurableObject(stub, callback)`
+
+### Testing Limitations
+
+- **No time mocking**: vitest-pool-workers can't mock `Date.now()` - skip alarm timing tests
+- **No DO-to-DO RPC**: Tests using `getStub()` inside `runInDurableObject()` fail with DataCloneError
+- **fetchMock only**: External HTTP can be mocked, internal DO calls cannot
+
+### Debugging & Logging
+
+- **Log silent fallbacks**: `?? defaultValue` should log warning, not just comment "shouldn't happen"
+- **Memory-only state OK** when: (1) alarm keeps DO warm, (2) downstream doesn't depend on exact value
 
 <!-- opensrc:start -->
 
