@@ -70,7 +70,8 @@ await runner.executeStep(
 **Deferred (requires additional state):**
 
 - `stream_first_request` - needs "is first request of stream" tracking
-- `request_streak` - needs consecutive request tracking per user per session
+
+**Note:** Song request streaks now tracked in `user_song_request_streaks` table with columns `song_request_session_streak` and `song_request_longest_streak`. See specs/achievement-decoupling.md.
 
 ---
 
@@ -218,9 +219,11 @@ Call from saga steps when `recordEvent()` returns unlocked achievements.
 | Feature                                  | Requires                                          | Notes                                                      |
 | ---------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
 | `stream_first_request`                   | Session state in SongQueueDO or StreamLifecycleDO | Track "first request made this stream"                     |
-| `request_streak`                         | Per-user session state                            | Track consecutive successful requests                      |
 | `raffle_close` / `raffle_closest_record` | KeyboardRaffleDO global state                     | Track/compare best distances                               |
 | Chat announcements                       | Polling system or inline in sagas                 | `getUnannounced()` + `markAnnounced()` exist but no caller |
+
+**Removed from scope:**
+- Consecutive raffle wins achievement (odds too rare to be meaningful)
 
 ---
 

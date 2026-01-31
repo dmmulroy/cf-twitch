@@ -27,6 +27,7 @@ import {
 	achievementDefinitions,
 	eventHistory,
 	userAchievements,
+	userStreaks,
 } from "./schemas/achievements-do.schema";
 import {
 	EventSchema,
@@ -205,9 +206,14 @@ export class AchievementsDO
 					}
 
 					// Calculate new progress
+					// For streak achievements, set progress directly to streak count (not accumulate)
+					// For other achievements, accumulate progress normally
 					const effectiveIncrement = this.calculateIncrement(definition, increment, metadata);
+					const isStreakAchievement = definition.triggerEvent === "request_streak";
 					const currentProgress = userAchievement?.progress ?? 0;
-					const newProgress = currentProgress + effectiveIncrement;
+					const newProgress = isStreakAchievement
+						? effectiveIncrement // SET to streak count
+						: currentProgress + effectiveIncrement; // Accumulate for non-streak
 
 					// Determine if this unlocks the achievement
 					const shouldUnlock = this.shouldUnlock(definition, newProgress);
@@ -477,10 +483,13 @@ export class AchievementsDO
 	 * Lifecycle: Called when stream goes online
 	 *
 	 * Resets session-scoped achievements (e.g., "Stream Opener", streaks)
+	 * and resets all user session streaks to 0.
 	 */
 	async onStreamOnline(): Promise<Result<void, AchievementDbError>> {
 		return Result.tryPromise({
 			try: async () => {
+				const now = new Date().toISOString();
+
 				// Get session-scoped achievement IDs
 				const sessionAchievements = await this.db.query.achievementDefinitions.findMany({
 					where: eq(achievementDefinitions.scope, "session"),
@@ -489,26 +498,31 @@ export class AchievementsDO
 
 				const sessionIds = sessionAchievements.map((a) => a.id);
 
-				if (sessionIds.length === 0) {
-					logger.info("AchievementsDO: No session achievements to reset");
-					return;
+				if (sessionIds.length > 0) {
+					// Reset progress and unlock status for session achievements in single query
+					await this.db
+						.update(userAchievements)
+						.set({
+							progress: 0,
+							unlockedAt: null,
+							announced: false,
+							eventId: null,
+						})
+						.where(inArray(userAchievements.achievementId, sessionIds));
+
+					logger.info("AchievementsDO: Reset session achievements", {
+						count: sessionIds.length,
+						achievementIds: sessionIds,
+					});
 				}
 
-				// Reset progress and unlock status for session achievements in single query
-				await this.db
-					.update(userAchievements)
-					.set({
-						progress: 0,
-						unlockedAt: null,
-						announced: false,
-						eventId: null,
-					})
-					.where(inArray(userAchievements.achievementId, sessionIds));
-
-				logger.info("AchievementsDO: Reset session achievements", {
-					count: sessionIds.length,
-					achievementIds: sessionIds,
+				// Reset all user session streaks to 0 and update sessionStartedAt
+				await this.db.update(userStreaks).set({
+					sessionStreak: 0,
+					sessionStartedAt: now,
 				});
+
+				logger.info("AchievementsDO: Reset all user session streaks");
 			},
 			catch: (cause) => new AchievementDbError({ operation: "onStreamOnline", cause }),
 		});
@@ -580,10 +594,8 @@ export class AchievementsDO
 	/**
 	 * Handle song_request_success event
 	 *
-	 * TODO: Implement achievement logic for song requests:
-	 * - Track request counts for threshold achievements
-	 * - Check for "first request of stream"
-	 * - Update streaks
+	 * - Updates user streak (session + longest high watermark)
+	 * - Checks streak achievements (streak_3, streak_5)
 	 */
 	private async handleSongRequest(
 		event: SongRequestSuccessEvent,
@@ -595,8 +607,104 @@ export class AchievementsDO
 			trackId: event.trackId,
 		});
 
-		// Stub: Will be implemented in subsequent task
+		// Update streak and check achievements
+		const streakResult = await this.updateStreak(event.userId, event.userDisplayName);
+		if (streakResult.isErr()) {
+			return streakResult;
+		}
+
+		const newSessionStreak = streakResult.value;
+
+		// Check streak achievements (streak_3, streak_5)
+		// Only check if we've hit a threshold to avoid unnecessary DB queries
+		if (newSessionStreak >= 3) {
+			const achievementResult = await this.recordEvent({
+				userDisplayName: event.userDisplayName,
+				event: "request_streak",
+				eventId: `${event.id}-streak-${newSessionStreak}`,
+				increment: 1,
+				metadata: { streakCount: newSessionStreak },
+			});
+
+			if (achievementResult.isErr()) {
+				logger.warn("AchievementsDO: Failed to record streak achievement", {
+					error: achievementResult.error,
+					userId: event.userId,
+					streak: newSessionStreak,
+				});
+				// Don't fail the whole handler for achievement errors
+			} else if (achievementResult.value.length > 0) {
+				logger.info("AchievementsDO: Streak achievement unlocked", {
+					userId: event.userId,
+					streak: newSessionStreak,
+					achievements: achievementResult.value.map((a) => a.name),
+				});
+			}
+		}
+
 		return Result.ok();
+	}
+
+	/**
+	 * Update user streak on song request success
+	 *
+	 * Returns the new session streak count.
+	 */
+	private async updateStreak(
+		userId: string,
+		userDisplayName: string,
+	): Promise<Result<number, AchievementDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				const now = new Date().toISOString();
+
+				// Get existing streak record
+				const existing = await this.db.query.userStreaks.findFirst({
+					where: eq(userStreaks.userId, userId),
+				});
+
+				if (existing) {
+					// Increment session streak
+					const newSessionStreak = existing.sessionStreak + 1;
+					// Update longest if session exceeds it (high watermark)
+					const newLongestStreak = Math.max(existing.longestStreak, newSessionStreak);
+
+					await this.db
+						.update(userStreaks)
+						.set({
+							sessionStreak: newSessionStreak,
+							longestStreak: newLongestStreak,
+							lastRequestAt: now,
+						})
+						.where(eq(userStreaks.userId, userId));
+
+					logger.debug("AchievementsDO: Updated streak", {
+						userId,
+						sessionStreak: newSessionStreak,
+						longestStreak: newLongestStreak,
+					});
+
+					return newSessionStreak;
+				}
+
+				// Create new streak record (first request ever)
+				await this.db.insert(userStreaks).values({
+					userId,
+					userDisplayName,
+					sessionStreak: 1,
+					longestStreak: 1,
+					lastRequestAt: now,
+				});
+
+				logger.debug("AchievementsDO: Created streak record", {
+					userId,
+					sessionStreak: 1,
+				});
+
+				return 1;
+			},
+			catch: (cause) => new AchievementDbError({ operation: "updateStreak", cause }),
+		});
 	}
 
 	/**

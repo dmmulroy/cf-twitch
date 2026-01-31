@@ -146,23 +146,25 @@ type DomainEvent =
 
 **Moved entirely to AchievementsDO** with SQLite persistence.
 
-Two streak types:
+Two streak types (song requests only):
 
-- `session_streak`: Current consecutive successes this stream. Resets on `stream_online` event.
-- `longest_streak`: High watermark, never decreases.
+- `song_request_session_streak`: Current consecutive successes this stream. Resets on `stream_online` event.
+- `song_request_longest_streak`: High watermark, never decreases.
 
 **Schema addition:**
 
 ```sql
-CREATE TABLE user_streaks (
+CREATE TABLE user_song_request_streaks (
   user_id TEXT PRIMARY KEY,
   user_display_name TEXT NOT NULL,
-  session_streak INTEGER NOT NULL DEFAULT 0,
-  longest_streak INTEGER NOT NULL DEFAULT 0,
+  song_request_session_streak INTEGER NOT NULL DEFAULT 0,
+  song_request_longest_streak INTEGER NOT NULL DEFAULT 0,
   last_request_at TEXT,
   session_started_at TEXT
 );
 ```
+
+> **Note:** Table/columns explicitly named for song requests. Raffle has no streak mechanic (consecutive wins too rare to track meaningfully).
 
 **Streak semantics:**
 
