@@ -303,6 +303,8 @@ export class KeyboardRaffleSagaDO extends DurableObject<Env> {
 		await runner.markPointOfNoReturn();
 
 		// Step 5: Publish raffle_roll event to EventBusDO (fire-and-forget)
+		// Fire-and-forget: EventBusDO has its own retry mechanism with exponential backoff.
+		// Achievement processing may be delayed but will eventually succeed via EventBusDO retries.
 		await runner.executeStep(
 			"publish-event",
 			async () => {
@@ -333,9 +335,10 @@ export class KeyboardRaffleSagaDO extends DurableObject<Env> {
 					});
 				}
 
+				// Step succeeds regardless - EventBusDO handles delivery/retry
 				return { result: undefined };
 			},
-			{ timeout: 5000, maxRetries: 1 },
+			{ timeout: 10000, maxRetries: 2 },
 		);
 
 		// Step 6: Send chat message (best effort)

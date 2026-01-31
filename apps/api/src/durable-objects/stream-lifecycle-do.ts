@@ -14,6 +14,10 @@ import { getStub } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { TwitchService } from "../services/twitch-service";
+import {
+	createStreamOfflineEvent,
+	createStreamOnlineEvent,
+} from "./schemas/event-bus-do.schema";
 import * as schema from "./stream-lifecycle-do.schema";
 import {
 	type StreamState,
@@ -31,6 +35,8 @@ const RecordViewerCountBodySchema = z.object({
 export class StreamLifecycleDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private isLive = false;
+	/** UUID for current stream session - used to correlate online/offline events */
+	private streamSessionId: string | null = null;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -62,6 +68,9 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	async onStreamOnline(): Promise<void> {
 		const now = new Date().toISOString();
 
+		// Generate new stream session ID for correlating online/offline events
+		this.streamSessionId = crypto.randomUUID();
+
 		// Update stream state
 		await this.db
 			.update(streamState)
@@ -75,10 +84,11 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 
 		this.isLive = true;
 
-		logger.info("Stream online", { timestamp: now });
+		logger.info("Stream online", { timestamp: now, streamSessionId: this.streamSessionId });
 
 		// Notify token DOs of stream online (for proactive token refresh)
-		await this.notifyTokenDOsOnline();
+		// and publish stream_online event for achievements
+		await this.notifyTokenDOsOnline(now);
 
 		// Start alarm for viewer count polling (60s interval)
 		await this.ctx.storage.setAlarm(Date.now() + 60_000);
@@ -107,10 +117,14 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 
 		this.isLive = false;
 
-		logger.info("Stream offline", { timestamp: now });
+		logger.info("Stream offline", { timestamp: now, streamSessionId: this.streamSessionId });
 
 		// Notify token DOs of stream offline (to cancel proactive refresh alarms)
-		await this.notifyTokenDOsOffline();
+		// and publish stream_offline event for achievements
+		await this.notifyTokenDOsOffline(now);
+
+		// Clear stream session ID after publishing offline event
+		this.streamSessionId = null;
 
 		// Cancel alarm
 		await this.ctx.storage.deleteAlarm();
@@ -338,17 +352,26 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Notify dependent DOs that stream is online (parallel, errors logged)
+	 * Notify dependent DOs that stream is online and publish stream_online event.
+	 * - Token DOs: Direct RPC for proactive token refresh (not achievement-related)
+	 * - Achievements: Event published via EventBusDO (fire-and-forget, EventBusDO handles retry)
 	 */
-	private async notifyTokenDOsOnline(): Promise<void> {
+	private async notifyTokenDOsOnline(startedAt: string): Promise<void> {
 		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
-		const achievementsStub = getStub("ACHIEVEMENTS_DO");
+		const eventBusStub = getStub("EVENT_BUS_DO");
 
-		const [spotifyResult, twitchResult, achievementsResult] = await Promise.all([
+		// Create stream_online event for achievements
+		const event = createStreamOnlineEvent({
+			id: crypto.randomUUID(),
+			streamId: this.streamSessionId ?? crypto.randomUUID(), // Fallback shouldn't happen
+			startedAt,
+		});
+
+		const [spotifyResult, twitchResult, eventBusResult] = await Promise.all([
 			spotifyStub.onStreamOnline(),
 			twitchStub.onStreamOnline(),
-			achievementsStub.onStreamOnline(),
+			eventBusStub.publish(event),
 		]);
 
 		if (spotifyResult.status === "error") {
@@ -363,25 +386,39 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 			});
 		}
 
-		if (achievementsResult.status === "error") {
-			logger.error("Failed to notify AchievementsDO of stream online", {
-				error: achievementsResult.error.message,
+		// EventBusDO publish is fire-and-forget - it handles its own retry logic
+		// Log for debugging but don't treat as critical failure
+		if (eventBusResult.status === "error") {
+			logger.warn("EventBusDO publish stream_online failed (will retry via alarm)", {
+				error: eventBusResult.error.message,
+				eventId: event.id,
 			});
+		} else {
+			logger.info("Published stream_online event", { eventId: event.id });
 		}
 	}
 
 	/**
-	 * Notify dependent DOs that stream is offline (parallel, errors logged)
+	 * Notify dependent DOs that stream is offline and publish stream_offline event.
+	 * - Token DOs: Direct RPC to cancel proactive refresh alarms (not achievement-related)
+	 * - Achievements: Event published via EventBusDO (fire-and-forget, EventBusDO handles retry)
 	 */
-	private async notifyTokenDOsOffline(): Promise<void> {
+	private async notifyTokenDOsOffline(endedAt: string): Promise<void> {
 		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
-		const achievementsStub = getStub("ACHIEVEMENTS_DO");
+		const eventBusStub = getStub("EVENT_BUS_DO");
 
-		const [spotifyResult, twitchResult, achievementsResult] = await Promise.all([
+		// Create stream_offline event for achievements
+		const event = createStreamOfflineEvent({
+			id: crypto.randomUUID(),
+			streamId: this.streamSessionId ?? crypto.randomUUID(), // Fallback shouldn't happen
+			endedAt,
+		});
+
+		const [spotifyResult, twitchResult, eventBusResult] = await Promise.all([
 			spotifyStub.onStreamOffline(),
 			twitchStub.onStreamOffline(),
-			achievementsStub.onStreamOffline(),
+			eventBusStub.publish(event),
 		]);
 
 		if (spotifyResult.status === "error") {
@@ -396,10 +433,15 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 			});
 		}
 
-		if (achievementsResult.status === "error") {
-			logger.error("Failed to notify AchievementsDO of stream offline", {
-				error: achievementsResult.error.message,
+		// EventBusDO publish is fire-and-forget - it handles its own retry logic
+		// Log for debugging but don't treat as critical failure
+		if (eventBusResult.status === "error") {
+			logger.warn("EventBusDO publish stream_offline failed (will retry via alarm)", {
+				error: eventBusResult.error.message,
+				eventId: event.id,
 			});
+		} else {
+			logger.info("Published stream_offline event", { eventId: event.id });
 		}
 	}
 
