@@ -222,7 +222,9 @@ function wrapStub<DO>(stub: DurableObjectStub): DeserializedStub<DO> {
 						typeof (result as Record<symbol, unknown>)[RPC_SERIALIZE] === "function"
 					) {
 						// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-call -- RPC stub
-						const serialized = await (result as { [RPC_SERIALIZE](): Promise<unknown> })[RPC_SERIALIZE]();
+						const serialized = await (result as { [RPC_SERIALIZE](): Promise<unknown> })[
+							RPC_SERIALIZE
+						]();
 						const deserialized = Result.deserialize(serialized);
 						// Result.deserialize returns Result (never null in practice), but TS thinks it might be null
 						if (deserialized !== null && Result.isOk(deserialized)) {

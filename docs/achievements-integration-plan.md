@@ -223,6 +223,7 @@ Call from saga steps when `recordEvent()` returns unlocked achievements.
 | Chat announcements                       | Polling system or inline in sagas                 | `getUnannounced()` + `markAnnounced()` exist but no caller |
 
 **Removed from scope:**
+
 - Consecutive raffle wins achievement (odds too rare to be meaningful)
 
 ---

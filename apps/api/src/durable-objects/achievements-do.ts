@@ -7,7 +7,7 @@
 
 import { Result } from "better-result";
 import { DurableObject } from "cloudflare:workers";
-import { and, count, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNotNull, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
@@ -21,6 +21,7 @@ import {
 	type StreamLifecycleHandler,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { TwitchService } from "../services/twitch-service";
 import * as schema from "./schemas/achievements-do.schema";
 import {
 	type AchievementDefinition,
@@ -266,6 +267,23 @@ export class AchievementsDO
 							achievementName: definition.name,
 							category: definition.category,
 						});
+
+						// Best-effort chat announcement: fire immediately on unlock
+						const announceResult = await Result.tryPromise({
+							try: () => this.announceAchievement(userDisplayName, definition),
+							catch: (error) => error,
+						});
+
+						if (announceResult.isErr()) {
+							logger.warn("Failed to announce achievement (RPC error)", {
+								userDisplayName,
+								achievementId: definition.id,
+								error:
+									announceResult.error instanceof Error
+										? announceResult.error.message
+										: String(announceResult.error),
+							});
+						}
 					}
 				}
 
@@ -594,6 +612,7 @@ export class AchievementsDO
 	/**
 	 * Handle song_request_success event
 	 *
+	 * - Checks if first request of stream → unlocks stream_opener
 	 * - Updates user streak (session + longest high watermark)
 	 * - Checks streak achievements (streak_3, streak_5)
 	 */
@@ -606,6 +625,36 @@ export class AchievementsDO
 			userDisplayName: event.userDisplayName,
 			trackId: event.trackId,
 		});
+
+		// Check if this is the first request of the current stream
+		const firstRequestResult = await this.isFirstRequestOfStream(event.id);
+		if (firstRequestResult.isErr()) {
+			logger.warn("AchievementsDO: Failed to check first request", {
+				error: firstRequestResult.error,
+				eventId: event.id,
+			});
+			// Continue - don't fail entire handler for first request check
+		} else if (firstRequestResult.value) {
+			// This is the first request of the stream - trigger stream_first_request
+			const firstAchievementResult = await this.recordEvent({
+				userDisplayName: event.userDisplayName,
+				event: "stream_first_request",
+				eventId: `${event.id}-first-request`,
+				increment: 1,
+			});
+
+			if (firstAchievementResult.isErr()) {
+				logger.warn("AchievementsDO: Failed to record first request achievement", {
+					error: firstAchievementResult.error,
+					userId: event.userId,
+				});
+			} else if (firstAchievementResult.value.length > 0) {
+				logger.info("AchievementsDO: First request achievement unlocked", {
+					userId: event.userId,
+					achievements: firstAchievementResult.value.map((a) => a.name),
+				});
+			}
+		}
 
 		// Update streak and check achievements
 		const streakResult = await this.updateStreak(event.userId, event.userDisplayName);
@@ -763,6 +812,61 @@ export class AchievementsDO
 	}
 
 	/**
+	 * Check if this is the first song request of the current stream session
+	 *
+	 * Queries event_history for the most recent stream_online event to get session start,
+	 * then counts song_request_success events after that time (excluding current event).
+	 * Returns true if no prior requests exist in this session.
+	 */
+	private async isFirstRequestOfStream(
+		eventId: string,
+	): Promise<Result<boolean, AchievementDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				// Get most recent stream_online event to determine session start
+				const latestStreamOnline = await this.db.query.eventHistory.findFirst({
+					where: eq(eventHistory.eventType, "stream_online"),
+					orderBy: [desc(eventHistory.timestamp)],
+					columns: { timestamp: true },
+				});
+
+				// If no stream_online recorded, we can't determine "first of stream"
+				// This shouldn't happen in normal flow but handle gracefully
+				if (!latestStreamOnline) {
+					logger.debug("AchievementsDO: No stream_online event found, cannot check first request");
+					return false;
+				}
+
+				const streamStartedAt = latestStreamOnline.timestamp;
+
+				// Count song_request_success events after stream start, excluding current
+				const priorRequests = await this.db
+					.select({ count: count() })
+					.from(eventHistory)
+					.where(
+						and(
+							eq(eventHistory.eventType, "song_request_success"),
+							gt(eventHistory.timestamp, streamStartedAt),
+							ne(eventHistory.eventId, eventId),
+						),
+					);
+
+				const priorCount = priorRequests[0]?.count ?? 0;
+
+				logger.debug("AchievementsDO: First request check", {
+					eventId,
+					streamStartedAt,
+					priorRequestCount: priorCount,
+					isFirst: priorCount === 0,
+				});
+
+				return priorCount === 0;
+			},
+			catch: (cause) => new AchievementDbError({ operation: "isFirstRequestOfStream", cause }),
+		});
+	}
+
+	/**
 	 * Record event to event_history table for auditing and "first request" checks
 	 */
 	private async recordToEventHistory(event: Event): Promise<Result<void, AchievementDbError>> {
@@ -865,5 +969,51 @@ export class AchievementsDO
 
 		// Threshold-based achievements unlock when progress reaches threshold
 		return progress >= definition.threshold;
+	}
+
+	/**
+	 * Announce achievement unlock to chat (best-effort)
+	 *
+	 * Atomically claims announcement rights via markAnnounced() BEFORE sending
+	 * to prevent duplicate chat messages from concurrent requests.
+	 * Failures are logged but do not propagate - announcements are non-critical.
+	 */
+	private async announceAchievement(
+		userDisplayName: string,
+		definition: AchievementDefinition,
+	): Promise<void> {
+		// Atomically claim announcement rights FIRST to prevent duplicate messages
+		const markResult = await this.markAnnounced(userDisplayName, definition.id);
+		if (markResult.status !== "ok" || !markResult.value) {
+			// Already announced by another request, or failed to claim
+			logger.debug("Achievement already announced or claim failed", {
+				userDisplayName,
+				achievementId: definition.id,
+			});
+			return;
+		}
+
+		// Now safe to send - we own this announcement
+		const twitchService = new TwitchService(this.env);
+		const message = `🏆 @${userDisplayName} unlocked "${definition.name}"! ${definition.description}`;
+
+		const sendResult = await twitchService.sendChatMessage(message);
+
+		if (sendResult.status === "ok") {
+			logger.info("Achievement announced", {
+				userDisplayName,
+				achievementId: definition.id,
+				achievementName: definition.name,
+			});
+		} else {
+			logger.warn("Failed to announce achievement to chat (already marked)", {
+				userDisplayName,
+				achievementId: definition.id,
+				achievementName: definition.name,
+				error: sendResult.error.message,
+			});
+			// Note: Achievement is already marked as announced, so no retry.
+			// This is acceptable - chat is ephemeral, achievement is still recorded.
+		}
 	}
 }
