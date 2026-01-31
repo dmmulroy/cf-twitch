@@ -154,6 +154,19 @@ export class SongQueueDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * Delete a history entry (for rollback)
+	 */
+	async deleteHistory(eventId: string): Promise<Result<void, SongQueueDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				await this.db.delete(requestHistory).where(eq(requestHistory.eventId, eventId));
+				logger.info("Deleted history entry", { eventId });
+			},
+			catch: (cause) => new SongQueueDbError({ operation: `deleteHistory(${eventId})`, cause }),
+		});
+	}
+
+	/**
 	 * Write request to history (after fulfilled)
 	 * Note: DO output gates guarantee atomicity for all writes in a single RPC call
 	 */

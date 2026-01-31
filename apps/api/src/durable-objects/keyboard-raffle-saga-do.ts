@@ -8,10 +8,9 @@
  * 1. generate-winning-number → random 1-10000 (cached on replay)
  * 2. generate-user-roll → random 1-10000 (cached on replay)
  * 3. record-roll → KeyboardRaffleDO (rollbackable)
- * 4. record-achievements → AchievementsDO (raffle_roll + raffle_win if winner)
- * 5. fulfill-redemption → POINT OF NO RETURN (both winners and losers)
+ * 4. fulfill-redemption → POINT OF NO RETURN (both winners and losers)
+ * 5. publish-event → EventBusDO (fire-and-forget raffle_roll event)
  * 6. send-chat-message → best-effort notification
- * 7. announce-achievements → chat announcements for unlocked achievements
  */
 
 import { Result } from "better-result";
@@ -33,6 +32,7 @@ import {
 import { logger } from "../lib/logger";
 import { SagaRunner, SagaRunnerDbError } from "../lib/saga-runner";
 import { TwitchService } from "../services/twitch-service";
+import { createRaffleRollEvent } from "./schemas/event-bus-do.schema";
 import * as sagaSchema from "./schemas/saga.schema";
 import { type SagaStatus, sagaRuns } from "./schemas/saga.schema";
 
@@ -268,116 +268,7 @@ export class KeyboardRaffleSagaDO extends DurableObject<Env> {
 			return this.handleStepError(recordRollResult.error, params);
 		}
 
-		// Step 4: Record achievement events (non-critical)
-		await runner.executeStep(
-			"record-achievements",
-			async () => {
-				const stub = getStub("ACHIEVEMENTS_DO");
-
-				// Always record roll event
-				const rollResult = await stub.recordEvent({
-					userDisplayName: params.user_name,
-					event: "raffle_roll",
-					eventId: sagaId,
-				});
-
-				if (rollResult.status === "ok" && rollResult.value.length > 0) {
-					logger.info("Roll achievements unlocked", {
-						sagaId,
-						achievements: rollResult.value.map((a: { name: string }) => a.name),
-					});
-				} else if (rollResult.status === "error") {
-					logger.warn("Failed to record raffle_roll achievement", {
-						sagaId,
-						error: rollResult.error.message,
-					});
-				}
-
-				// Record win event if winner
-				if (isWinner) {
-					const winResult = await stub.recordEvent({
-						userDisplayName: params.user_name,
-						event: "raffle_win",
-						eventId: `${sagaId}-win`,
-					});
-
-					if (winResult.status === "ok" && winResult.value.length > 0) {
-						logger.info("Win achievements unlocked", {
-							sagaId,
-							achievements: winResult.value.map((a: { name: string }) => a.name),
-						});
-					} else if (winResult.status === "error") {
-						logger.warn("Failed to record raffle_win achievement", {
-							sagaId,
-							error: winResult.error.message,
-						});
-					}
-				}
-
-				// Record close call if within 100 of winning number (but not winner)
-				if (!isWinner && distance <= 100) {
-					const closeResult = await stub.recordEvent({
-						userDisplayName: params.user_name,
-						event: "raffle_close",
-						eventId: `${sagaId}-close`,
-					});
-
-					if (closeResult.status === "ok" && closeResult.value.length > 0) {
-						logger.info("Close call achievement unlocked", {
-							sagaId,
-							distance,
-							achievements: closeResult.value.map((a: { name: string }) => a.name),
-						});
-					} else if (closeResult.status === "error") {
-						logger.warn("Failed to record raffle_close achievement", {
-							sagaId,
-							error: closeResult.error.message,
-						});
-					}
-				}
-
-				// Check if user now holds the global closest record (non-winning)
-				if (!isWinner) {
-					const raffleStub = getStub("KEYBOARD_RAFFLE_DO");
-					const recordResult = await raffleStub.getClosestRecord();
-
-					if (recordResult.status === "ok" && recordResult.value) {
-						const record = recordResult.value;
-						// Check if this user now holds the record with this roll's distance
-						if (record.userId === params.user_id && record.distance === distance) {
-							const recordAchievement = await stub.recordEvent({
-								userDisplayName: params.user_name,
-								event: "raffle_closest_record",
-								eventId: `${sagaId}-record`,
-							});
-
-							if (recordAchievement.status === "ok" && recordAchievement.value.length > 0) {
-								logger.info("Closest record achievement unlocked", {
-									sagaId,
-									distance,
-									achievements: recordAchievement.value.map((a: { name: string }) => a.name),
-								});
-							} else if (recordAchievement.status === "error") {
-								logger.warn("Failed to record raffle_closest_record achievement", {
-									sagaId,
-									error: recordAchievement.error.message,
-								});
-							}
-						}
-					} else if (recordResult.status === "error") {
-						logger.warn("Failed to check closest record", {
-							sagaId,
-							error: recordResult.error.message,
-						});
-					}
-				}
-
-				return { result: undefined };
-			},
-			{ timeout: 10000, maxRetries: 2 },
-		);
-
-		// Step 5: Fulfill redemption (POINT OF NO RETURN - always fulfill for both winners and losers)
+		// Step 4: Fulfill redemption (POINT OF NO RETURN - always fulfill for both winners and losers)
 		const fulfillResult = await runner.executeStep(
 			"fulfill-redemption",
 			async () => {
@@ -411,6 +302,42 @@ export class KeyboardRaffleSagaDO extends DurableObject<Env> {
 		// Mark point of no return immediately after fulfill
 		await runner.markPointOfNoReturn();
 
+		// Step 5: Publish raffle_roll event to EventBusDO (fire-and-forget)
+		await runner.executeStep(
+			"publish-event",
+			async () => {
+				const eventBusStub = getStub("EVENT_BUS_DO");
+				const event = createRaffleRollEvent({
+					id: crypto.randomUUID(),
+					userId: params.user_id,
+					userDisplayName: params.user_name,
+					sagaId,
+					roll: userRoll,
+					winningNumber,
+					distance,
+					isWinner,
+				});
+
+				const result = await eventBusStub.publish(event);
+
+				if (result.status === "error") {
+					logger.warn("Failed to publish raffle_roll event", {
+						sagaId,
+						error: result.error.message,
+					});
+				} else {
+					logger.info("Published raffle_roll event", {
+						sagaId,
+						eventId: event.id,
+						userId: params.user_id,
+					});
+				}
+
+				return { result: undefined };
+			},
+			{ timeout: 5000, maxRetries: 1 },
+		);
+
 		// Step 6: Send chat message (best effort)
 		await runner.executeStep(
 			"send-chat-message",
@@ -436,58 +363,6 @@ export class KeyboardRaffleSagaDO extends DurableObject<Env> {
 				return { result: undefined };
 			},
 			{ timeout: 10000, maxRetries: 2 },
-		);
-
-		// Step 7: Announce any unlocked achievements (best effort)
-		await runner.executeStep(
-			"announce-achievements",
-			async () => {
-				const achievementsStub = getStub("ACHIEVEMENTS_DO");
-				const unannouncedResult = await achievementsStub.getUnannounced();
-
-				if (unannouncedResult.status === "error") {
-					logger.warn("Failed to get unannounced achievements", {
-						sagaId,
-						error: unannouncedResult.error.message,
-					});
-					return { result: undefined };
-				}
-
-				// Filter to only this user's achievements
-				const userAchievements = unannouncedResult.value.filter(
-					(a: { userDisplayName: string }) => a.userDisplayName === params.user_name,
-				);
-
-				if (userAchievements.length === 0) {
-					return { result: undefined };
-				}
-
-				const twitchService = new TwitchService(this.env);
-
-				for (const { userDisplayName, achievement } of userAchievements) {
-					const message = `🏆 @${userDisplayName} unlocked "${achievement.name}"! ${achievement.description}`;
-					const sendResult = await twitchService.sendChatMessage(message);
-
-					if (sendResult.status === "ok") {
-						await achievementsStub.markAnnounced(userDisplayName, achievement.id);
-						logger.info("Announced achievement", {
-							sagaId,
-							user: userDisplayName,
-							achievement: achievement.name,
-						});
-					} else {
-						logger.warn("Failed to announce achievement", {
-							sagaId,
-							user: userDisplayName,
-							achievement: achievement.name,
-							error: sendResult.error.message,
-						});
-					}
-				}
-
-				return { result: undefined };
-			},
-			{ timeout: 15000, maxRetries: 2 },
 		);
 
 		// Mark saga as complete
