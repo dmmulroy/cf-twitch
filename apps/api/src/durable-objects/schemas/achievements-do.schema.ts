@@ -2,7 +2,7 @@
  * AchievementsDO schema - tracks user achievements and unlock progress
  */
 
-import { index, integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, unique, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
  * Achievement definitions - static achievement metadata
@@ -82,7 +82,10 @@ export const eventHistory = sqliteTable(
 		timestamp: text("timestamp").notNull(), // ISO8601
 		metadata: text("metadata"), // JSON for event-specific data
 	},
-	(table) => [index("idx_event_history_type_time").on(table.eventType, table.timestamp)],
+	(table) => [
+		index("idx_event_history_type_time").on(table.eventType, table.timestamp),
+		uniqueIndex("idx_event_history_event_id").on(table.eventId),
+	],
 );
 
 export type EventHistory = typeof eventHistory.$inferSelect;

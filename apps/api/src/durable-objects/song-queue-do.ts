@@ -101,8 +101,6 @@ export class SongQueueDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private lastSyncAt: number | null = null;
 	private syncLock: Promise<Result<void, SongQueueDbError>> | null = null;
-	/** Per-user streak tracking for session achievements - reset on stream online */
-	private sessionStreaks: Map<string, number> = new Map();
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -508,51 +506,6 @@ export class SongQueueDO extends DurableObject<Env> {
 
 			return Result.ok(!!historyMatch);
 		}, this);
-	}
-
-	/**
-	 * Stream lifecycle: called when stream goes online
-	 *
-	 * Resets session-scoped state like streaks.
-	 */
-	async onStreamOnline(): Promise<void> {
-		logger.info("SongQueueDO: Stream online, resetting session streaks");
-		this.sessionStreaks.clear();
-	}
-
-	/**
-	 * Stream lifecycle: called when stream goes offline
-	 */
-	async onStreamOffline(): Promise<void> {
-		logger.info("SongQueueDO: Stream offline");
-	}
-
-	/**
-	 * Increment a user's successful request streak
-	 *
-	 * Returns the new streak count.
-	 */
-	incrementStreak(userId: string): number {
-		const current = this.sessionStreaks.get(userId) ?? 0;
-		const newStreak = current + 1;
-		this.sessionStreaks.set(userId, newStreak);
-		logger.debug("Incremented user streak", { userId, newStreak });
-		return newStreak;
-	}
-
-	/**
-	 * Reset a user's request streak (on failure)
-	 */
-	resetStreak(userId: string): void {
-		this.sessionStreaks.set(userId, 0);
-		logger.debug("Reset user streak", { userId });
-	}
-
-	/**
-	 * Get a user's current streak
-	 */
-	getStreak(userId: string): number {
-		return this.sessionStreaks.get(userId) ?? 0;
 	}
 
 	/**

@@ -410,21 +410,6 @@ describe("SongQueueDO", () => {
 		});
 	});
 
-	describe("lifecycle handlers", () => {
-		it("should handle onStreamOnline", async () => {
-			await runInDurableObject(stub, async (instance: SongQueueDO) => {
-				// Should not throw
-				await instance.onStreamOnline();
-			});
-		});
-
-		it("should handle onStreamOffline", async () => {
-			await runInDurableObject(stub, async (instance: SongQueueDO) => {
-				await instance.onStreamOffline();
-			});
-		});
-	});
-
 	describe("ping", () => {
 		it("should return ok: true", async () => {
 			const result = await runInDurableObject(stub, (instance: SongQueueDO) => instance.ping());

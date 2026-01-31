@@ -361,10 +361,18 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
 		const eventBusStub = getStub("EVENT_BUS_DO");
 
+		// Warn if invariant violated - streamSessionId should always be set here
+		// (set at start of onStreamOnline before this method is called)
+		if (this.streamSessionId === null) {
+			logger.warn("StreamLifecycleDO: streamSessionId null in notifyTokenDOsOnline, using fallback UUID", {
+				isLive: this.isLive,
+			});
+		}
+
 		// Create stream_online event for achievements
 		const event = createStreamOnlineEvent({
 			id: crypto.randomUUID(),
-			streamId: this.streamSessionId ?? crypto.randomUUID(), // Fallback shouldn't happen
+			streamId: this.streamSessionId ?? crypto.randomUUID(),
 			startedAt,
 		});
 
@@ -408,10 +416,18 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
 		const eventBusStub = getStub("EVENT_BUS_DO");
 
+		// Warn if invariant violated - streamSessionId should be set from onStreamOnline
+		// Could be null if DO hibernated mid-stream or onStreamOffline called without prior online
+		if (this.streamSessionId === null) {
+			logger.warn("StreamLifecycleDO: streamSessionId null in notifyTokenDOsOffline, using fallback UUID", {
+				isLive: this.isLive,
+			});
+		}
+
 		// Create stream_offline event for achievements
 		const event = createStreamOfflineEvent({
 			id: crypto.randomUUID(),
-			streamId: this.streamSessionId ?? crypto.randomUUID(), // Fallback shouldn't happen
+			streamId: this.streamSessionId ?? crypto.randomUUID(),
 			endedAt,
 		});
 

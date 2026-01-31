@@ -365,41 +365,11 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 			return this.handleStepError(addToQueueResult.error, params);
 		}
 
-		// Step 5: Write to history (rollbackable)
-		const writeHistoryResult = await runner.executeStepWithRollback(
-			"write-history",
-			async () => {
-				const stub = getStub("SONG_QUEUE_DO");
-				const result = await stub.writeHistory(sagaId, new Date().toISOString());
+		// Note: History is written by SongQueueDO.reconcilePlayed() when the song
+		// actually finishes playing, not here. This allows the sync algorithm to
+		// properly attribute pending requests to queue positions.
 
-				if (result.status === "error") {
-					throw result.error;
-				}
-
-				logger.info("Wrote request to history", { sagaId });
-				return { result: undefined, undoPayload: { eventId: sagaId } };
-			},
-			async (undoPayload) => {
-				const payload = undoPayload as { eventId: string };
-				const stub = getStub("SONG_QUEUE_DO");
-				const result = await stub.deleteHistory(payload.eventId);
-				if (result.status === "error") {
-					logger.error("Failed to rollback history entry", {
-						eventId: payload.eventId,
-						error: result.error.message,
-					});
-				} else {
-					logger.info("Rolled back history entry", { eventId: payload.eventId });
-				}
-			},
-			{ timeout: 10000, maxRetries: 2 },
-		);
-
-		if (writeHistoryResult.status === "error") {
-			return this.handleStepError(writeHistoryResult.error, params);
-		}
-
-		// Step 6: Fulfill redemption (POINT OF NO RETURN - no compensation after this)
+		// Step 5: Fulfill redemption (POINT OF NO RETURN - no compensation after this)
 		const fulfillResult = await runner.executeStep(
 			"fulfill-redemption",
 			async () => {
@@ -432,7 +402,7 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 		// Mark point of no return immediately after fulfill
 		await runner.markPointOfNoReturn();
 
-		// Step 7: Send chat confirmation (best effort)
+		// Step 6: Send chat confirmation (best effort)
 		await runner.executeStep(
 			"send-chat-confirmation",
 			async () => {
@@ -457,7 +427,7 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 			{ timeout: 10000, maxRetries: 2 },
 		);
 
-		// Step 8: Publish event to EventBusDO (fire-and-forget)
+		// Step 7: Publish event to EventBusDO (fire-and-forget)
 		await runner.executeStep(
 			"publish-event",
 			async () => {
