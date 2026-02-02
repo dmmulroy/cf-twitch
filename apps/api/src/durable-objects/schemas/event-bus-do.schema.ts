@@ -213,6 +213,33 @@ export type PendingEvent = typeof pendingEvents.$inferSelect;
 export type InsertPendingEvent = typeof pendingEvents.$inferInsert;
 
 // =============================================================================
+// Dead Letter Queue Table (Drizzle Schema)
+// =============================================================================
+
+/**
+ * Dead letter queue table - stores events that exhausted all retry attempts
+ *
+ * Events move here after MAX_ATTEMPTS failures. Can be inspected, replayed,
+ * or deleted via admin API. Auto-purged after 30 days.
+ */
+export const deadLetterQueue = sqliteTable(
+	"dead_letter_queue",
+	{
+		id: text("id").primaryKey(), // Event ID (UUID)
+		event: text("event").notNull(), // JSON-serialized Event
+		error: text("error").notNull(), // Last error message
+		attempts: integer("attempts").notNull(), // Total delivery attempts
+		firstFailedAt: text("first_failed_at").notNull(), // ISO8601 when first queued
+		lastFailedAt: text("last_failed_at").notNull(), // ISO8601 of last attempt
+		expiresAt: text("expires_at").notNull(), // ISO8601 - 30 days from first failure
+	},
+	(table) => [index("idx_dlq_expires_at").on(table.expiresAt)],
+);
+
+export type DeadLetterEvent = typeof deadLetterQueue.$inferSelect;
+export type InsertDeadLetterEvent = typeof deadLetterQueue.$inferInsert;
+
+// =============================================================================
 // Factory Functions
 // =============================================================================
 

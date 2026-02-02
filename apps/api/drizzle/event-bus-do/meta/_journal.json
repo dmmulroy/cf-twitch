@@ -8,6 +8,13 @@
 			"when": 1738262400000,
 			"tag": "0000_pending_events",
 			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "6",
+			"when": 1738512000000,
+			"tag": "0001_dead_letter_queue",
+			"breakpoints": true
 		}
 	]
 }

@@ -11,13 +11,14 @@
 
 import { Result } from "better-result";
 import { DurableObject } from "cloudflare:workers";
-import { eq, lte } from "drizzle-orm";
+import { desc, eq, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/event-bus-do/migrations";
 import { getStub } from "../lib/durable-objects";
 import {
+	DLQItemNotFoundError,
 	EventBusDbError,
 	EventBusHandlerError,
 	EventBusRoutingError,
@@ -27,6 +28,7 @@ import {
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/event-bus-do.schema";
 import {
+	deadLetterQueue,
 	EventSchema,
 	EventType,
 	pendingEvents,
@@ -45,6 +47,12 @@ const MAX_ATTEMPTS = 3;
 
 /** Backoff delays in milliseconds: 1s, 4s, 16s (exponential: 1000 * 4^attempt) */
 const BACKOFF_DELAYS_MS: readonly [number, number, number] = [1000, 4000, 16000];
+
+/** DLQ retention period in days */
+const DLQ_RETENTION_DAYS = 30;
+
+/** DLQ retention in milliseconds */
+const DLQ_RETENTION_MS = DLQ_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 /**
  * Get backoff delay for a given attempt number.
@@ -180,11 +188,15 @@ export class EventBusDO extends DurableObject<Env> {
 
 	/**
 	 * Alarm handler - processes pending events that are due for retry.
+	 * Also purges expired DLQ items.
 	 */
 	override async alarm(): Promise<void> {
 		const now = new Date().toISOString();
 
 		logger.info("EventBusDO: Alarm fired, processing pending events", { now });
+
+		// Purge expired DLQ items
+		await this.purgeExpiredDLQ();
 
 		// Get all events due for retry
 		const dueEvents = await this.db
@@ -252,14 +264,30 @@ export class EventBusDO extends DurableObject<Env> {
 
 		// Delivery failed again
 		if (attemptNumber >= MAX_ATTEMPTS) {
-			// Max attempts reached - give up (DLQ will be added in separate task)
-			logger.error("EventBusDO: Max retry attempts reached, giving up", {
+			// Max attempts reached - move to DLQ
+			logger.error("EventBusDO: Max retry attempts reached, moving to DLQ", {
 				eventId: event.id,
 				eventType: event.type,
 				attempts: attemptNumber,
 				error: deliveryResult.error.message,
 			});
-			await this.db.delete(pendingEvents).where(eq(pendingEvents.id, pending.id));
+
+			const now = new Date().toISOString();
+			const expiresAt = new Date(Date.now() + DLQ_RETENTION_MS).toISOString();
+
+			// Atomic move: insert to DLQ + delete from pending in single transaction
+			await this.db.transaction(async (tx) => {
+				await tx.insert(deadLetterQueue).values({
+					id: event.id,
+					event: pending.event,
+					error: deliveryResult.error.message,
+					attempts: attemptNumber,
+					firstFailedAt: pending.createdAt,
+					lastFailedAt: now,
+					expiresAt,
+				});
+				await tx.delete(pendingEvents).where(eq(pendingEvents.id, pending.id));
+			});
 			return;
 		}
 
@@ -392,4 +420,224 @@ export class EventBusDO extends DurableObject<Env> {
 			catch: (cause) => new EventBusDbError({ operation: "getPendingCount", cause }),
 		});
 	}
+
+	// =============================================================================
+	// Dead Letter Queue RPC Methods
+	// =============================================================================
+
+	/**
+	 * Get DLQ items for admin inspection.
+	 *
+	 * @param options.limit - Max items to return (default 50)
+	 * @param options.offset - Pagination offset (default 0)
+	 * @returns Result<DLQListResponse, EventBusDbError>
+	 */
+	async getDLQ(options?: {
+		limit?: number;
+		offset?: number;
+	}): Promise<Result<DLQListResponse, EventBusDbError>> {
+		const limit = options?.limit ?? 50;
+		const offset = options?.offset ?? 0;
+
+		return Result.tryPromise({
+			try: async () => {
+				// Get items (sorted by last failure, newest first)
+				const items = await this.db
+					.select()
+					.from(deadLetterQueue)
+					.orderBy(desc(deadLetterQueue.lastFailedAt))
+					.limit(limit)
+					.offset(offset);
+
+				// Get total count
+				const allItems = await this.db.select().from(deadLetterQueue);
+				const totalCount = allItems.length;
+
+				// Parse events for response
+				const parsedItems: DLQItem[] = items.map((item) => {
+					let event: Event | null = null;
+					try {
+						const parseResult = EventSchema.safeParse(JSON.parse(item.event));
+						event = parseResult.success ? parseResult.data : null;
+					} catch {
+						// Corrupted JSON - leave event as null
+					}
+					return {
+						id: item.id,
+						event,
+						error: item.error,
+						attempts: item.attempts,
+						firstFailedAt: item.firstFailedAt,
+						lastFailedAt: item.lastFailedAt,
+						expiresAt: item.expiresAt,
+					};
+				});
+
+				return {
+					items: parsedItems,
+					totalCount,
+					limit,
+					offset,
+				};
+			},
+			catch: (cause) => new EventBusDbError({ operation: "getDLQ", cause }),
+		});
+	}
+
+	/**
+	 * Replay a DLQ item - attempt delivery again.
+	 *
+	 * If successful, removes from DLQ. If failed, updates lastFailedAt and resets attempts to 0.
+	 *
+	 * @param id - Event ID to replay
+	 * @returns Result<ReplayResult, EventBusDbError | DLQItemNotFoundError | EventBusValidationError>
+	 */
+	async replayDLQ(
+		id: string,
+	): Promise<Result<ReplayResult, EventBusDbError | DLQItemNotFoundError | EventBusValidationError>> {
+		// Find the DLQ item
+		const [item] = await this.db
+			.select()
+			.from(deadLetterQueue)
+			.where(eq(deadLetterQueue.id, id));
+
+		if (!item) {
+			return Result.err(new DLQItemNotFoundError({ eventId: id }));
+		}
+
+		// Parse the event
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(item.event);
+		} catch {
+			return Result.err(
+				new EventBusValidationError({ parseError: "Malformed JSON in DLQ item" }),
+			);
+		}
+		const parseResult = EventSchema.safeParse(parsed);
+		if (!parseResult.success) {
+			return Result.err(
+				new EventBusValidationError({ parseError: parseResult.error.message }),
+			);
+		}
+
+		const event = parseResult.data;
+		const handlerKey = EVENT_ROUTES[event.type];
+
+		logger.info("EventBusDO: Replaying DLQ item", {
+			eventId: event.id,
+			eventType: event.type,
+			handler: handlerKey,
+		});
+
+		// Attempt delivery
+		const deliveryResult = await this.deliverEvent(event, handlerKey);
+
+		if (deliveryResult.isOk()) {
+			// Success - remove from DLQ
+			await this.db.delete(deadLetterQueue).where(eq(deadLetterQueue.id, id));
+			logger.info("EventBusDO: DLQ replay succeeded", { eventId: event.id });
+			return Result.ok({ success: true, eventId: event.id });
+		}
+
+		// Failed again - update lastFailedAt, reset to retry queue
+		const now = new Date().toISOString();
+		await this.db
+			.update(deadLetterQueue)
+			.set({
+				lastFailedAt: now,
+				error: deliveryResult.error.message,
+			})
+			.where(eq(deadLetterQueue.id, id));
+
+		logger.warn("EventBusDO: DLQ replay failed", {
+			eventId: event.id,
+			error: deliveryResult.error.message,
+		});
+
+		return Result.ok({
+			success: false,
+			eventId: event.id,
+			error: deliveryResult.error.message,
+		});
+	}
+
+	/**
+	 * Delete a DLQ item - discard the failed event.
+	 *
+	 * @param id - Event ID to delete
+	 * @returns Result<void, EventBusDbError | DLQItemNotFoundError>
+	 */
+	async deleteDLQ(
+		id: string,
+	): Promise<Result<void, EventBusDbError | DLQItemNotFoundError>> {
+		// Check if item exists
+		const [item] = await this.db
+			.select()
+			.from(deadLetterQueue)
+			.where(eq(deadLetterQueue.id, id));
+
+		if (!item) {
+			return Result.err(new DLQItemNotFoundError({ eventId: id }));
+		}
+
+		return Result.tryPromise({
+			try: async () => {
+				await this.db.delete(deadLetterQueue).where(eq(deadLetterQueue.id, id));
+				logger.info("EventBusDO: DLQ item deleted", { eventId: id });
+			},
+			catch: (cause) => new EventBusDbError({ operation: "deleteDLQ", cause }),
+		});
+	}
+
+	/**
+	 * Purge expired DLQ items (older than 30 days).
+	 * Called during alarm processing.
+	 */
+	private async purgeExpiredDLQ(): Promise<void> {
+		const now = new Date().toISOString();
+
+		const expired = await this.db
+			.select()
+			.from(deadLetterQueue)
+			.where(lte(deadLetterQueue.expiresAt, now));
+
+		if (expired.length === 0) {
+			return;
+		}
+
+		logger.info("EventBusDO: Purging expired DLQ items", { count: expired.length });
+
+		await this.db.delete(deadLetterQueue).where(lte(deadLetterQueue.expiresAt, now));
+	}
+}
+
+// =============================================================================
+// DLQ Response Types
+// =============================================================================
+
+/** Single DLQ item with parsed event */
+export interface DLQItem {
+	id: string;
+	event: Event | null;
+	error: string;
+	attempts: number;
+	firstFailedAt: string;
+	lastFailedAt: string;
+	expiresAt: string;
+}
+
+/** Response for getDLQ */
+export interface DLQListResponse {
+	items: DLQItem[];
+	totalCount: number;
+	limit: number;
+	offset: number;
+}
+
+/** Response for replayDLQ */
+export interface ReplayResult {
+	success: boolean;
+	eventId: string;
+	error?: string;
 }

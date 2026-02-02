@@ -453,12 +453,22 @@ export class EventBusDbError extends TaggedError("EventBusDbError")<{
 	}
 }
 
+export class DLQItemNotFoundError extends TaggedError("DLQItemNotFoundError")<{
+	eventId: string;
+	message: string;
+}>() {
+	constructor(args: { eventId: string }) {
+		super({ ...args, message: `DLQ item not found: ${args.eventId}` });
+	}
+}
+
 /** Union of all event bus errors */
 export type EventBusError =
 	| EventBusRoutingError
 	| EventBusHandlerError
 	| EventBusValidationError
-	| EventBusDbError;
+	| EventBusDbError
+	| DLQItemNotFoundError;
 
 // =============================================================================
 // Stream Lifecycle Interface
