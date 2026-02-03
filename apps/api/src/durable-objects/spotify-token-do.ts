@@ -17,6 +17,7 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/token-do/migrations";
+import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	NoRefreshTokenError,
 	StreamOfflineNoTokenError,
@@ -45,7 +46,7 @@ export type SpotifyTokenResponse = z.infer<typeof SpotifyTokenResponseSchema>;
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 
-export class SpotifyTokenDO
+class _SpotifyTokenDO
 	extends DurableObject<Env>
 	implements StreamLifecycleHandler<TokenError>
 {
@@ -96,6 +97,7 @@ export class SpotifyTokenDO
 	/**
 	 * Called when stream goes online. Refresh token if needed, schedule proactive refresh.
 	 */
+	@rpc
 	async onStreamOnline(): Promise<Result<void, TokenError>> {
 		logger.info("SpotifyTokenDO: stream online");
 
@@ -126,6 +128,7 @@ export class SpotifyTokenDO
 	/**
 	 * Called when stream goes offline. Cancel proactive refresh alarm.
 	 */
+	@rpc
 	async onStreamOffline(): Promise<Result<void, TokenError>> {
 		logger.info("SpotifyTokenDO: stream offline");
 
@@ -200,17 +203,17 @@ export class SpotifyTokenDO
 				tag: error._tag,
 			});
 			// Schedule fallback alarm to try again later
-			await this.ctx.storage.setAlarm(Date.now() + SpotifyTokenDO.ALARM_FALLBACK_DELAY_MS);
+			await this.ctx.storage.setAlarm(Date.now() + _SpotifyTokenDO.ALARM_FALLBACK_DELAY_MS);
 			return;
 		}
 
 		// Get current retry count from storage (survives hibernation)
 		const retryCount = (await this.ctx.storage.get<number>("alarmRetryCount")) ?? 0;
 
-		if (retryCount < SpotifyTokenDO.MAX_ALARM_RETRIES) {
+		if (retryCount < _SpotifyTokenDO.MAX_ALARM_RETRIES) {
 			// Schedule retry with exponential backoff
 			const nextRetryCount = retryCount + 1;
-			const delayMs = SpotifyTokenDO.ALARM_RETRY_BASE_DELAY_MS * Math.pow(2, retryCount);
+			const delayMs = _SpotifyTokenDO.ALARM_RETRY_BASE_DELAY_MS * Math.pow(2, retryCount);
 
 			await this.ctx.storage.put("alarmRetryCount", nextRetryCount);
 			await this.ctx.storage.setAlarm(Date.now() + delayMs);
@@ -226,11 +229,11 @@ export class SpotifyTokenDO
 		// Exhausted retries - log error and schedule fallback alarm
 		logger.error("Proactive token refresh failed after max retries", {
 			error: error.message,
-			maxRetries: SpotifyTokenDO.MAX_ALARM_RETRIES,
+			maxRetries: _SpotifyTokenDO.MAX_ALARM_RETRIES,
 		});
 
 		await this.ctx.storage.delete("alarmRetryCount");
-		await this.ctx.storage.setAlarm(Date.now() + SpotifyTokenDO.ALARM_FALLBACK_DELAY_MS);
+		await this.ctx.storage.setAlarm(Date.now() + _SpotifyTokenDO.ALARM_FALLBACK_DELAY_MS);
 	}
 
 	// =========================================================================
@@ -242,6 +245,7 @@ export class SpotifyTokenDO
 	 *
 	 * Always validates token expiry and refreshes when needed.
 	 */
+	@rpc
 	async getValidToken(): Promise<Result<string, TokenError>> {
 		// Return cached token if still valid
 		if (this.tokenCache && this.isTokenValid(this.tokenCache)) {
@@ -277,6 +281,7 @@ export class SpotifyTokenDO
 	/**
 	 * Store new tokens (called during OAuth flow or after refresh)
 	 */
+	@rpc
 	async setTokens(tokens: SpotifyTokenResponse): Promise<Result<void, never>> {
 		const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
 
@@ -434,3 +439,5 @@ export class SpotifyTokenDO
 		return Result.ok(parseResult.data.access_token);
 	}
 }
+
+export const SpotifyTokenDO = withRpcSerialization(_SpotifyTokenDO);

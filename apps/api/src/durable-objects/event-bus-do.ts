@@ -16,7 +16,7 @@ import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/event-bus-do/migrations";
-import { getStub } from "../lib/durable-objects";
+import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	DLQItemNotFoundError,
 	EventBusDbError,
@@ -102,7 +102,7 @@ const EVENT_ROUTES: Record<EventType, "ACHIEVEMENTS_DO"> = {
  * the appropriate handler DOs. Failed deliveries are retried with
  * exponential backoff via alarms.
  */
-export class EventBusDO extends DurableObject<Env> {
+class _EventBusDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 
 	constructor(ctx: DurableObjectState, env: Env) {
@@ -122,6 +122,7 @@ export class EventBusDO extends DurableObject<Env> {
 	 * @param event - The domain event to publish
 	 * @returns Result<void, EventBusError> - Success if delivered or queued
 	 */
+	@rpc
 	async publish(event: unknown): Promise<Result<void, EventBusError>> {
 		// Validate event with Zod
 		const parseResult = EventSchema.safeParse(event);
@@ -411,6 +412,7 @@ export class EventBusDO extends DurableObject<Env> {
 	/**
 	 * Get count of pending events (for monitoring/testing).
 	 */
+	@rpc
 	async getPendingCount(): Promise<Result<number, EventBusDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -432,6 +434,7 @@ export class EventBusDO extends DurableObject<Env> {
 	 * @param options.offset - Pagination offset (default 0)
 	 * @returns Result<DLQListResponse, EventBusDbError>
 	 */
+	@rpc
 	async getDLQ(options?: {
 		limit?: number;
 		offset?: number;
@@ -492,14 +495,14 @@ export class EventBusDO extends DurableObject<Env> {
 	 * @param id - Event ID to replay
 	 * @returns Result<ReplayResult, EventBusDbError | DLQItemNotFoundError | EventBusValidationError>
 	 */
+	@rpc
 	async replayDLQ(
 		id: string,
-	): Promise<Result<ReplayResult, EventBusDbError | DLQItemNotFoundError | EventBusValidationError>> {
+	): Promise<
+		Result<ReplayResult, EventBusDbError | DLQItemNotFoundError | EventBusValidationError>
+	> {
 		// Find the DLQ item
-		const [item] = await this.db
-			.select()
-			.from(deadLetterQueue)
-			.where(eq(deadLetterQueue.id, id));
+		const [item] = await this.db.select().from(deadLetterQueue).where(eq(deadLetterQueue.id, id));
 
 		if (!item) {
 			return Result.err(new DLQItemNotFoundError({ eventId: id }));
@@ -510,15 +513,11 @@ export class EventBusDO extends DurableObject<Env> {
 		try {
 			parsed = JSON.parse(item.event);
 		} catch {
-			return Result.err(
-				new EventBusValidationError({ parseError: "Malformed JSON in DLQ item" }),
-			);
+			return Result.err(new EventBusValidationError({ parseError: "Malformed JSON in DLQ item" }));
 		}
 		const parseResult = EventSchema.safeParse(parsed);
 		if (!parseResult.success) {
-			return Result.err(
-				new EventBusValidationError({ parseError: parseResult.error.message }),
-			);
+			return Result.err(new EventBusValidationError({ parseError: parseResult.error.message }));
 		}
 
 		const event = parseResult.data;
@@ -568,14 +567,10 @@ export class EventBusDO extends DurableObject<Env> {
 	 * @param id - Event ID to delete
 	 * @returns Result<void, EventBusDbError | DLQItemNotFoundError>
 	 */
-	async deleteDLQ(
-		id: string,
-	): Promise<Result<void, EventBusDbError | DLQItemNotFoundError>> {
+	@rpc
+	async deleteDLQ(id: string): Promise<Result<void, EventBusDbError | DLQItemNotFoundError>> {
 		// Check if item exists
-		const [item] = await this.db
-			.select()
-			.from(deadLetterQueue)
-			.where(eq(deadLetterQueue.id, id));
+		const [item] = await this.db.select().from(deadLetterQueue).where(eq(deadLetterQueue.id, id));
 
 		if (!item) {
 			return Result.err(new DLQItemNotFoundError({ eventId: id }));
@@ -641,3 +636,5 @@ export interface ReplayResult {
 	eventId: string;
 	error?: string;
 }
+
+export const EventBusDO = withRpcSerialization(_EventBusDO);

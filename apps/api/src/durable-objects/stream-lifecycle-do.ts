@@ -10,14 +10,11 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/stream-lifecycle-do/migrations";
-import { getStub } from "../lib/durable-objects";
+import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { TwitchService } from "../services/twitch-service";
-import {
-	createStreamOfflineEvent,
-	createStreamOnlineEvent,
-} from "./schemas/event-bus-do.schema";
+import { createStreamOfflineEvent, createStreamOnlineEvent } from "./schemas/event-bus-do.schema";
 import * as schema from "./stream-lifecycle-do.schema";
 import {
 	type StreamState,
@@ -32,7 +29,7 @@ const RecordViewerCountBodySchema = z.object({
 	count: z.number(),
 });
 
-export class StreamLifecycleDO extends DurableObject<Env> {
+class _StreamLifecycleDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private isLive = false;
 	/** UUID for current stream session - used to correlate online/offline events */
@@ -169,6 +166,7 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 	/**
 	 * Get current stream state
 	 */
+	@rpc
 	async getStreamState(): Promise<Result<StreamState, DurableObjectError>> {
 		const result = await Result.tryPromise({
 			try: () => this.db.query.streamState.findFirst(),
@@ -364,9 +362,12 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 		// Warn if invariant violated - streamSessionId should always be set here
 		// (set at start of onStreamOnline before this method is called)
 		if (this.streamSessionId === null) {
-			logger.warn("StreamLifecycleDO: streamSessionId null in notifyTokenDOsOnline, using fallback UUID", {
-				isLive: this.isLive,
-			});
+			logger.warn(
+				"StreamLifecycleDO: streamSessionId null in notifyTokenDOsOnline, using fallback UUID",
+				{
+					isLive: this.isLive,
+				},
+			);
 		}
 
 		// Create stream_online event for achievements
@@ -419,9 +420,12 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 		// Warn if invariant violated - streamSessionId should be set from onStreamOnline
 		// Could be null if DO hibernated mid-stream or onStreamOffline called without prior online
 		if (this.streamSessionId === null) {
-			logger.warn("StreamLifecycleDO: streamSessionId null in notifyTokenDOsOffline, using fallback UUID", {
-				isLive: this.isLive,
-			});
+			logger.warn(
+				"StreamLifecycleDO: streamSessionId null in notifyTokenDOsOffline, using fallback UUID",
+				{
+					isLive: this.isLive,
+				},
+			);
 		}
 
 		// Create stream_offline event for achievements
@@ -480,3 +484,5 @@ export class StreamLifecycleDO extends DurableObject<Env> {
 		}
 	}
 }
+
+export const StreamLifecycleDO = withRpcSerialization(_StreamLifecycleDO);

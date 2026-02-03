@@ -23,7 +23,7 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/saga-do/migrations";
-import { getStub } from "../lib/durable-objects";
+import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	InvalidSpotifyUrlError,
 	SagaAlreadyExistsError,
@@ -110,7 +110,7 @@ function parseSpotifyUrl(input: string): string | null {
  * Each instance handles a single song request (keyed by redemption ID).
  * Uses DO alarms for retry scheduling and durable step execution.
  */
-export class SongRequestSagaDO extends DurableObject<Env> {
+class _SongRequestSagaDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof sagaSchema>>;
 	private runner: SagaRunner | null = null;
 
@@ -145,6 +145,7 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 	 * If saga already exists, returns success (idempotent).
 	 * Otherwise, initializes saga and begins execution.
 	 */
+	@rpc
 	async start(
 		params: SongRequestParams,
 	): Promise<
@@ -559,6 +560,7 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 	/**
 	 * Get saga status for debugging/monitoring
 	 */
+	@rpc
 	async getStatus(): Promise<Result<SongRequestSagaStatus | null, SagaRunnerDbError>> {
 		const sagaId = this.ctx.id.toString();
 
@@ -624,3 +626,5 @@ export class SongRequestSagaDO extends DurableObject<Env> {
 		}
 	}
 }
+
+export const SongRequestSagaDO = withRpcSerialization(_SongRequestSagaDO);

@@ -1,59 +1,122 @@
 /**
  * Durable Objects utilities
  *
+ * - @rpc: Method decorator for auto-serializing Result returns
  * - getStub: Get typed DO stub with autocomplete and Result deserialization
- * - withResultSerialization: Wrap DO class for auto Result serialization
  *
  * ## Architecture
  *
  * The challenge: DO RPC methods need to return Results, but workerd throws
  * DataCloneError for class instances.
  *
- * Solution: Proxy prototype hack - wrap Results in a Proxy that lies about
- * its prototype (claims to be RpcTarget). This makes workerd accept it for
- * RPC transport while preserving all Result methods.
+ * Solution: Serialize Results to plain objects on DO side, deserialize on caller side.
  *
- * - Local callers (tests, internal): Use Result methods directly (proxy forwards)
- * - RPC callers (via getStub): wrapStub calls __unwrapResult__(), deserializes
+ * ### DO side - use @rpc decorator
+ * ```typescript
+ * class SongQueueDO extends DurableObject<Env> {
+ *   @rpc
+ *   async getData(): Promise<Result<Data, Error>> {
+ *     return Result.tryPromise({...});
+ *   }
+ * }
+ * ```
  *
- * Reference: workerd/api/tests/js-rpc-test.js:1926-1937
+ * ### Caller side - getStub auto-deserializes
+ * ```typescript
+ * const stub = getStub("SONG_QUEUE_DO");
+ * const result = await stub.getData(); // Result<Data, Error | DurableObjectError>
+ * ```
+ *
+ * ## Important: DO NOT use Reflect.get() on DO stubs
+ *
+ * workerd's DO stubs have special property access behavior where Reflect.get()
+ * returns a different (broken) function than direct property access. Always use
+ * direct property access: `stub[prop]` not `Reflect.get(stub, prop)`.
  */
 
-import { Ok, Err, Result } from "better-result";
-import { RpcTarget, env as globalEnv } from "cloudflare:workers";
+import { Result } from "better-result";
+import { env as globalEnv } from "cloudflare:workers";
 
 import { DurableObjectError } from "./errors";
 
 // =============================================================================
-// Result Proxy - Prototype hack for RPC transport
+// rpcReturn - Result Serialization for RPC
 // =============================================================================
 
-/** Symbol for extracting serialized Result over RPC - zero collision risk */
-const RPC_SERIALIZE = Symbol.for("rpc.serialize");
+/**
+ * DEPRECATED: No-op wrapper, kept for backward compatibility.
+ * workerd bypasses prototype modifications - use rpcReturn() in DO methods instead.
+ */
+// oxlint-disable-next-line typescript/no-explicit-any -- mixin pattern requires any[]
+export function withRpcSerialization<T extends new (...args: any[]) => object>(BaseClass: T): T {
+	return BaseClass;
+}
+
+// =============================================================================
+// @rpc Decorator - TC39 Stage 3 Method Decorator
+// =============================================================================
+
+import { Ok, Err } from "better-result";
 
 /**
- * Wrap a Result in a Proxy that lies about its prototype to bypass workerd's
- * DataCloneError. The proxy claims to be an RpcTarget while forwarding all
- * property access to the underlying Result.
+ * Check if a value is a Result instance
  */
-function wrapResultForRpc<T, E>(result: Result<T, E>): Result<T, E> {
-	return new Proxy(result, {
-		// Lie about prototype - makes workerd think it's an RpcTarget
-		getPrototypeOf() {
-			return RpcTarget.prototype;
-		},
-
-		get(target, prop, receiver) {
-			// Symbol method to extract serialized Result for RPC callers
-			if (prop === RPC_SERIALIZE) {
-				return () => Result.serialize(target);
-			}
-
-			// Forward everything else to the actual Result
-			return Reflect.get(target, prop, receiver);
-		},
-	});
+function isResult(value: unknown): value is Ok<unknown, unknown> | Err<unknown, unknown> {
+	return value instanceof Ok || value instanceof Err;
 }
+
+/**
+ * Method decorator for DO methods that return Results over RPC.
+ * Automatically serializes Result return values for RPC transport.
+ *
+ * Uses TC39 Stage 3 decorators (TypeScript 5.0+ native support).
+ *
+ * @example
+ * ```typescript
+ * class SongQueueDO extends DurableObject<Env> {
+ *   @rpc
+ *   async getCurrentlyPlaying(): Promise<Result<Track, Error>> {
+ *     return Result.tryPromise({...});
+ *   }
+ * }
+ * ```
+ */
+export function rpc<This, Args extends unknown[], Return>(
+	method: (this: This, ...args: Args) => Promise<Return>,
+	_context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Promise<Return>>,
+): (this: This, ...args: Args) => Promise<Return> {
+	return async function (this: This, ...args: Args): Promise<Return> {
+		const result = await method.call(this, ...args);
+
+		if (isResult(result)) {
+			return Result.serialize(result) as Return;
+		}
+
+		return result;
+	};
+}
+
+/**
+ * Serialize a Result for RPC transport.
+ *
+ * Call this at the end of every DO RPC method that returns a Result.
+ * The `wrapStub()` on the caller side will deserialize back to Result.
+ *
+ * @example
+ * ```typescript
+ * async getCurrentlyPlaying(): Promise<SerializedResult<Track, Error>> {
+ *   const result = await this.doWork();
+ *   return rpcReturn(result);
+ * }
+ * ```
+ */
+export function rpcReturn<T, E>(result: Result<T, E>): ReturnType<typeof Result.serialize<T, E>> {
+	return Result.serialize(result);
+}
+
+// =============================================================================
+// Environment Access
+// =============================================================================
 
 /**
  * Get the typed global env from cloudflare:workers
@@ -184,23 +247,24 @@ export function getStub<K extends DONamespaceKeys>(
 }
 
 /**
- * Wrap a DO stub with RpcBox unwrapping and Result deserialization.
+ * Wrap a DO stub with Result deserialization.
  *
- * When DO methods return RpcBox (via withResultSerialization), this wrapper:
- * 1. Detects RpcBox stub (has get() method)
- * 2. Calls get() to retrieve serialized Result
- * 3. Deserializes back to a proper Result instance
+ * When DO methods return serialized Results (via rpcReturn),
+ * this wrapper deserializes them back to proper Result instances.
  *
- * This enables seamless Result DX across RPC boundaries.
+ * IMPORTANT: DO NOT use Reflect.get() on DO stubs - workerd's stubs have
+ * special property access behavior where Reflect.get returns a different
+ * (broken) function than direct property access.
  */
 function wrapStub<DO>(stub: DurableObjectStub): DeserializedStub<DO> {
-	// Proxy/reflection code is inherently untyped - disable unsafe rules for this block
 	// oxlint-disable-next-line typescript/no-unsafe-return -- proxy reflection
 	return new Proxy(stub, {
 		get(target, prop) {
-			// For non-method properties, pass through directly
-			// oxlint-disable-next-line typescript/no-unsafe-assignment -- Reflect.get returns any
-			const original = Reflect.get(target, prop);
+			// CRITICAL: Use direct property access, NOT Reflect.get!
+			// DO stubs have special behavior where Reflect.get returns a different function
+			// that fails with "Could not serialize object of type 'DurableObject'"
+			// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-member-access -- dynamic access
+			const original = (target as Record<string | symbol, unknown>)[prop];
 
 			if (typeof original !== "function") {
 				// oxlint-disable-next-line typescript/no-unsafe-return -- proxy passthrough
@@ -210,35 +274,13 @@ function wrapStub<DO>(stub: DurableObjectStub): DeserializedStub<DO> {
 			// Return a wrapper function that calls the original method
 			return async (...args: unknown[]) => {
 				try {
-					// Call the method with proper receiver binding
-					// oxlint-disable-next-line typescript/no-unsafe-assignment -- dynamic call
-					const result = await (original as (...a: unknown[]) => unknown).apply(target, args);
+					// Call directly - the method is already bound correctly
+					// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-call -- dynamic call
+					const result = await (original as (...a: unknown[]) => unknown)(...args);
 
-					// Check if result is a proxied Result (has RPC_SERIALIZE symbol method)
-					if (
-						result !== null &&
-						typeof result === "object" &&
-						RPC_SERIALIZE in result &&
-						typeof (result as Record<symbol, unknown>)[RPC_SERIALIZE] === "function"
-					) {
-						// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-call -- RPC stub
-						const serialized = await (result as { [RPC_SERIALIZE](): Promise<unknown> })[
-							RPC_SERIALIZE
-						]();
-						const deserialized = Result.deserialize(serialized);
-						// Result.deserialize returns Result (never null in practice), but TS thinks it might be null
-						if (deserialized !== null && Result.isOk(deserialized)) {
-							return deserialized;
-						}
-						// Deserialization error or unexpected null - return the error Result or fall through
-						if (deserialized !== null) {
-							return deserialized;
-						}
-					}
-
-					// Try to deserialize if it's already a SerializedResult
+					// Try to deserialize if it's a SerializedResult
 					const deserialized = Result.deserialize(result);
-					if (deserialized !== null && Result.isOk(deserialized)) {
+					if (deserialized !== null) {
 						return deserialized;
 					}
 
@@ -257,85 +299,3 @@ function wrapStub<DO>(stub: DurableObjectStub): DeserializedStub<DO> {
 		},
 	}) as DeserializedStub<DO>;
 }
-
-// =============================================================================
-// withResultSerialization - DO class wrapper
-// =============================================================================
-
-/** Methods that should not have their return values transformed */
-const LIFECYCLE_METHODS = [
-	"fetch",
-	"alarm",
-	"webSocketMessage",
-	"webSocketClose",
-	"webSocketError",
-];
-
-function isResult(value: unknown): value is Ok<unknown, unknown> | Err<unknown, unknown> {
-	return value instanceof Ok || value instanceof Err;
-}
-
-/**
- * Generic DO class type for withResultSerialization wrapper.
- * Uses `any` for both env and return to avoid type conflicts between
- * our typed Env (with DurableObjectNamespace<T>) and generated Cloudflare.Env.
- */
-// oxlint-disable-next-line typescript/no-explicit-any -- required for generic DO class wrapper
-type AnyDurableObjectClass = new (ctx: DurableObjectState, env: any) => any;
-
-/**
- * Wraps a DO class to automatically box Result returns in RpcBox.
- *
- * RpcBox forwards common Result methods (.isErr(), .map(), etc.) so:
- * - Local callers (tests, internal code): use Result methods directly on RpcBox
- * - RPC callers (via getStub): wrapStub calls .get() and deserializes to real Result
- */
-export function withResultSerialization<DO extends AnyDurableObjectClass>(Base: DO): DO {
-	// Proxy/reflection code is inherently untyped - disable unsafe rules for this block
-	// oxlint-disable-next-line typescript/no-unsafe-return -- class wrapper
-	return class extends (Base as AnyDurableObjectClass) {
-		// oxlint-disable-next-line typescript/no-explicit-any -- generic env type
-		constructor(ctx: DurableObjectState, env: any) {
-			super(ctx, env);
-
-			// oxlint-disable-next-line typescript/no-unsafe-return -- proxy wrapper
-			return new Proxy(this, {
-				get(target, prop, receiver) {
-					// oxlint-disable-next-line typescript/no-unsafe-assignment -- Reflect.get returns any
-					const original = Reflect.get(target, prop, receiver);
-
-					if (typeof original !== "function" || LIFECYCLE_METHODS.includes(String(prop))) {
-						// oxlint-disable-next-line typescript/no-unsafe-return -- proxy passthrough
-						return original;
-					}
-
-					return async (...args: unknown[]) => {
-						// oxlint-disable-next-line typescript/no-unsafe-assignment -- dynamic call
-						const result = await (original as (...a: unknown[]) => unknown).apply(target, args);
-
-						// Already an RpcTarget - pass through
-						if (result instanceof RpcTarget) {
-							return result;
-						}
-
-						// Wrap Result in proxy for RPC transport
-						// Proxy lies about prototype (claims RpcTarget) while forwarding Result methods
-						if (isResult(result)) {
-							return wrapResultForRpc(result);
-						}
-
-						// oxlint-disable-next-line typescript/no-unsafe-return -- proxy passthrough
-						return result;
-					};
-				},
-			});
-		}
-	} as DO;
-}
-
-// =============================================================================
-// Legacy exports for backwards compatibility
-// =============================================================================
-
-export { wrapStub as stubWithResultDeserialization };
-export type { DeserializedStub as HydratedStub, WithDOError as AddDOError };

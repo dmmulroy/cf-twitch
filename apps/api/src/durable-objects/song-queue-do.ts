@@ -26,6 +26,7 @@ import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/song-queue-do/migrations";
+import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import { SongQueueDbError, SongRequestNotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { SpotifyService, type TrackInfo } from "../services/spotify-service";
@@ -97,7 +98,7 @@ export interface TopRequester {
 /**
  * SongQueueDO - Durable Object for song request queue management
  */
-export class SongQueueDO extends DurableObject<Env> {
+class _SongQueueDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private lastSyncAt: number | null = null;
 	private syncLock: Promise<Result<void, SongQueueDbError>> | null = null;
@@ -115,6 +116,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	 * Persist a song request (idempotent via event_id)
 	 * Invalidates cache so next read triggers fresh sync
 	 */
+	@rpc
 	async persistRequest(request: InsertPendingRequest): Promise<Result<void, SongQueueDbError>> {
 		const result = await Result.tryPromise({
 			try: () => this.db.insert(pendingRequests).values(request).onConflictDoNothing(),
@@ -141,6 +143,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	/**
 	 * Delete a request (for rollback)
 	 */
+	@rpc
 	async deleteRequest(eventId: string): Promise<Result<void, SongQueueDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -154,6 +157,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	/**
 	 * Delete a history entry (for rollback)
 	 */
+	@rpc
 	async deleteHistory(eventId: string): Promise<Result<void, SongQueueDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -168,11 +172,12 @@ export class SongQueueDO extends DurableObject<Env> {
 	 * Write request to history (after fulfilled)
 	 * Note: DO output gates guarantee atomicity for all writes in a single RPC call
 	 */
+	@rpc
 	async writeHistory(
 		eventId: string,
 		fulfilledAt: string,
 	): Promise<Result<void, SongQueueDbError | SongRequestNotFoundError>> {
-		return Result.gen(async function* (this: SongQueueDO) {
+		return Result.gen(async function* (this: _SongQueueDO) {
 			const request = yield* Result.await(
 				Result.tryPromise({
 					try: () =>
@@ -220,6 +225,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	 * Get currently playing track (position 0)
 	 * Uses denormalized attribution from snapshot (no join needed)
 	 */
+	@rpc
 	async getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueDbError>> {
 		// Ensure fresh snapshot (always returns ok w/ stale fallback)
 		await this.ensureFresh();
@@ -231,7 +237,7 @@ export class SongQueueDO extends DurableObject<Env> {
 				});
 
 				if (!snapshot) {
-					return { track: null, position: 0 };
+					return { track: null, position: 0 } as CurrentlyPlayingResult;
 				}
 
 				// Use denormalized attribution from snapshot
@@ -246,7 +252,7 @@ export class SongQueueDO extends DurableObject<Env> {
 					requestedAt: snapshot.requestedAt ?? snapshot.syncedAt,
 				};
 
-				return { track, position: 0 };
+				return { track, position: 0 } as CurrentlyPlayingResult;
 			},
 			catch: (cause) =>
 				new SongQueueDbError({ operation: "getCurrentlyPlaying.findSnapshot", cause }),
@@ -262,6 +268,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	 * For user requests: secondary sort by requestedAt ASC (FIFO)
 	 * For autoplay: secondary sort by position ASC (Spotify order)
 	 */
+	@rpc
 	async getQueue(limit = 50): Promise<Result<QueueResult, SongQueueDbError>> {
 		// Ensure fresh snapshot (always returns ok w/ stale fallback)
 		await this.ensureFresh();
@@ -316,6 +323,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	/**
 	 * Get request history with pagination and filters
 	 */
+	@rpc
 	async getRequestHistory(
 		limit = 50,
 		offset = 0,
@@ -331,7 +339,7 @@ export class SongQueueDO extends DurableObject<Env> {
 		}
 		const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-		return Result.gen(async function* (this: SongQueueDO) {
+		return Result.gen(async function* (this: _SongQueueDO) {
 			const requests = yield* Result.await(
 				Result.tryPromise({
 					try: () =>
@@ -363,6 +371,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	 *
 	 * Used to check if this is the first request of a stream session.
 	 */
+	@rpc
 	async getSessionRequestCount(since: string): Promise<Result<number, SongQueueDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -380,6 +389,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	/**
 	 * Get top tracks by request count
 	 */
+	@rpc
 	async getTopTracks(limit = 10): Promise<Result<TopTrack[], SongQueueDbError>> {
 		const result = await Result.tryPromise({
 			try: () =>
@@ -406,6 +416,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	/**
 	 * Get top tracks by specific user
 	 */
+	@rpc
 	async getTopTracksByUser(
 		userId: string,
 		limit = 10,
@@ -436,6 +447,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	/**
 	 * Get top requesters by request count
 	 */
+	@rpc
 	async getTopRequesters(limit = 10): Promise<Result<TopRequester[], SongQueueDbError>> {
 		const result = await Result.tryPromise({
 			try: () =>
@@ -462,6 +474,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	 * Check if user has recent duplicate request (spam prevention)
 	 * Returns true if duplicate found within time window
 	 */
+	@rpc
 	async checkDuplicateRequest(
 		userId: string,
 		trackId: string,
@@ -469,7 +482,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	): Promise<Result<boolean, SongQueueDbError>> {
 		const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
 
-		return Result.gen(async function* (this: SongQueueDO) {
+		return Result.gen(async function* (this: _SongQueueDO) {
 			const pendingMatch = yield* Result.await(
 				Result.tryPromise({
 					try: () =>
@@ -697,7 +710,7 @@ export class SongQueueDO extends DurableObject<Env> {
 			});
 		}
 
-		return Result.gen(async function* (this: SongQueueDO) {
+		return Result.gen(async function* (this: _SongQueueDO) {
 			// 6. Clear old snapshot and insert new
 			yield* Result.await(
 				Result.tryPromise({
@@ -803,7 +816,7 @@ export class SongQueueDO extends DurableObject<Env> {
 		// Previous user request finished playing - move to history
 		const eventId = previousSnapshot.eventId;
 
-		return Result.gen(async function* (this: SongQueueDO) {
+		return Result.gen(async function* (this: _SongQueueDO) {
 			const pending = yield* Result.await(
 				Result.tryPromise({
 					try: () =>
@@ -869,7 +882,7 @@ export class SongQueueDO extends DurableObject<Env> {
 	private async reconcileDropped(
 		matchedEventIds: string[],
 	): Promise<Result<void, SongQueueDbError>> {
-		return Result.gen(async function* (this: SongQueueDO) {
+		return Result.gen(async function* (this: _SongQueueDO) {
 			// Find previously-seen requests that are no longer matched
 			// - Must have been seen (firstSeenInSpotifyAt is not null)
 			// - Must not be in current matched set
@@ -947,3 +960,5 @@ export class SongQueueDO extends DurableObject<Env> {
 		});
 	}
 }
+
+export const SongQueueDO = withRpcSerialization(_SongQueueDO);

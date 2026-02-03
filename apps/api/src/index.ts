@@ -4,16 +4,6 @@
 
 import { Hono } from "hono";
 
-import { AchievementsDO as AchievementsDOBase } from "./durable-objects/achievements-do";
-import { EventBusDO as EventBusDOBase } from "./durable-objects/event-bus-do";
-import { KeyboardRaffleDO as KeyboardRaffleDOBase } from "./durable-objects/keyboard-raffle-do";
-import { KeyboardRaffleSagaDO as KeyboardRaffleSagaDOBase } from "./durable-objects/keyboard-raffle-saga-do";
-import { SongQueueDO as SongQueueDOBase } from "./durable-objects/song-queue-do";
-import { SongRequestSagaDO as SongRequestSagaDOBase } from "./durable-objects/song-request-saga-do";
-import { SpotifyTokenDO as SpotifyTokenDOBase } from "./durable-objects/spotify-token-do";
-import { StreamLifecycleDO as StreamLifecycleDOBase } from "./durable-objects/stream-lifecycle-do";
-import { TwitchTokenDO as TwitchTokenDOBase } from "./durable-objects/twitch-token-do";
-import { withResultSerialization } from "./lib/durable-objects";
 import admin from "./routes/admin";
 import api from "./routes/api";
 import eventsub from "./routes/eventsub-setup";
@@ -64,23 +54,16 @@ export default {
 	fetch: app.fetch,
 } satisfies ExportedHandler<Env>;
 
-// Durable Object exports - wrapped with withResultSerialization for RPC Result serialization
-// Explicit type annotations help TypeScript resolve import() types in generated wrangler types
-export const SongQueueDO: typeof SongQueueDOBase = withResultSerialization(SongQueueDOBase);
-export const SpotifyTokenDO: typeof SpotifyTokenDOBase =
-	withResultSerialization(SpotifyTokenDOBase);
-export const StreamLifecycleDO: typeof StreamLifecycleDOBase =
-	withResultSerialization(StreamLifecycleDOBase);
-export const TwitchTokenDO: typeof TwitchTokenDOBase = withResultSerialization(TwitchTokenDOBase);
-export const KeyboardRaffleDO: typeof KeyboardRaffleDOBase =
-	withResultSerialization(KeyboardRaffleDOBase);
-export const AchievementsDO: typeof AchievementsDOBase =
-	withResultSerialization(AchievementsDOBase);
-export const SongRequestSagaDO: typeof SongRequestSagaDOBase =
-	withResultSerialization(SongRequestSagaDOBase);
-export const KeyboardRaffleSagaDO: typeof KeyboardRaffleSagaDOBase =
-	withResultSerialization(KeyboardRaffleSagaDOBase);
-export const EventBusDO: typeof EventBusDOBase = withResultSerialization(EventBusDOBase);
+// Durable Object exports
+export { SongQueueDO } from "./durable-objects/song-queue-do";
+export { SpotifyTokenDO } from "./durable-objects/spotify-token-do";
+export { StreamLifecycleDO } from "./durable-objects/stream-lifecycle-do";
+export { TwitchTokenDO } from "./durable-objects/twitch-token-do";
+export { KeyboardRaffleDO } from "./durable-objects/keyboard-raffle-do";
+export { AchievementsDO } from "./durable-objects/achievements-do";
+export { SongRequestSagaDO } from "./durable-objects/song-request-saga-do";
+export { KeyboardRaffleSagaDO } from "./durable-objects/keyboard-raffle-saga-do";
+export { EventBusDO } from "./durable-objects/event-bus-do";
 
 // Service exports
 export { SpotifyService } from "./services/spotify-service";

@@ -14,6 +14,7 @@ import { z } from "zod";
 
 import migrations from "../../drizzle/achievements-do/migrations";
 import { writeAchievementUnlockMetric } from "../lib/analytics";
+import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	AchievementDbError,
 	AchievementEventValidationError,
@@ -131,7 +132,7 @@ export interface LeaderboardOptions {
 /**
  * AchievementsDO - Durable Object for tracking user achievements
  */
-export class AchievementsDO
+class _AchievementsDO
 	extends DurableObject<Env>
 	implements StreamLifecycleHandler<AchievementDbError>
 {
@@ -152,6 +153,7 @@ export class AchievementsDO
 	 * Increments progress for all matching achievements and returns any newly unlocked.
 	 * Uses eventId for idempotency on event-based achievements.
 	 */
+	@rpc
 	async recordEvent(
 		input: AchievementEventInput,
 	): Promise<Result<UnlockedAchievement[], AchievementError>> {
@@ -296,6 +298,7 @@ export class AchievementsDO
 	/**
 	 * Get all achievements with user's progress
 	 */
+	@rpc
 	async getUserAchievements(
 		userDisplayName: string,
 	): Promise<Result<UserAchievementProgress[], AchievementDbError>> {
@@ -334,6 +337,7 @@ export class AchievementsDO
 	/**
 	 * Get only unlocked achievements for a user
 	 */
+	@rpc
 	async getUnlockedAchievements(
 		userDisplayName: string,
 	): Promise<Result<UnlockedAchievement[], AchievementDbError>> {
@@ -383,6 +387,7 @@ export class AchievementsDO
 	/**
 	 * Get all achievement definitions
 	 */
+	@rpc
 	async getDefinitions(): Promise<Result<AchievementDefinition[], AchievementDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -395,6 +400,7 @@ export class AchievementsDO
 	/**
 	 * Get unlocked but unannounced achievements (for chat bot)
 	 */
+	@rpc
 	async getUnannounced(): Promise<Result<UnannouncedAchievement[], AchievementDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -444,6 +450,7 @@ export class AchievementsDO
 	 * Returns true if this call did the update, false if already announced.
 	 * Atomic check prevents duplicate announcements.
 	 */
+	@rpc
 	async markAnnounced(
 		userDisplayName: string,
 		achievementId: string,
@@ -473,6 +480,7 @@ export class AchievementsDO
 	/**
 	 * Get leaderboard of users by achievement unlock count
 	 */
+	@rpc
 	async getLeaderboard(
 		options?: LeaderboardOptions,
 	): Promise<Result<LeaderboardEntry[], AchievementDbError>> {
@@ -503,6 +511,7 @@ export class AchievementsDO
 	 * Resets session-scoped achievements (e.g., "Stream Opener", streaks)
 	 * and resets all user session streaks to 0.
 	 */
+	@rpc
 	async onStreamOnline(): Promise<Result<void, AchievementDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -549,6 +558,7 @@ export class AchievementsDO
 	/**
 	 * Lifecycle: Called when stream goes offline
 	 */
+	@rpc
 	async onStreamOffline(): Promise<Result<void, AchievementDbError>> {
 		logger.info("AchievementsDO: Stream offline");
 		// No cleanup needed on stream end
@@ -565,6 +575,7 @@ export class AchievementsDO
 	 * Dispatches events to specific handlers, records to event_history for
 	 * "first request of stream" checks and audit trail.
 	 */
+	@rpc
 	async handleEvent(event: unknown): Promise<Result<void, AchievementError>> {
 		// Validate event with Zod
 		const parseResult = EventSchema.safeParse(event);
@@ -1017,3 +1028,5 @@ export class AchievementsDO
 		}
 	}
 }
+
+export const AchievementsDO = withRpcSerialization(_AchievementsDO);

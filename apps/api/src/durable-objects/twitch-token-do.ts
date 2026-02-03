@@ -17,6 +17,7 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/token-do/migrations";
+import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	NoRefreshTokenError,
 	StreamOfflineNoTokenError,
@@ -45,7 +46,7 @@ export type TwitchTokenResponse = z.infer<typeof TwitchTokenResponseSchema>;
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 
-export class TwitchTokenDO
+class _TwitchTokenDO
 	extends DurableObject<Env>
 	implements StreamLifecycleHandler<TokenError>
 {
@@ -96,6 +97,7 @@ export class TwitchTokenDO
 	/**
 	 * Called when stream goes online. Refresh token if needed, schedule proactive refresh.
 	 */
+	@rpc
 	async onStreamOnline(): Promise<Result<void, TokenError>> {
 		logger.info("TwitchTokenDO: stream online");
 
@@ -126,6 +128,7 @@ export class TwitchTokenDO
 	/**
 	 * Called when stream goes offline. Cancel proactive refresh alarm.
 	 */
+	@rpc
 	async onStreamOffline(): Promise<Result<void, TokenError>> {
 		logger.info("TwitchTokenDO: stream offline");
 
@@ -242,6 +245,7 @@ export class TwitchTokenDO
 	 *
 	 * Always validates token expiry and refreshes when needed.
 	 */
+	@rpc
 	async getValidToken(): Promise<Result<string, TokenError>> {
 		// Return cached token if still valid
 		if (this.tokenCache && this.isTokenValid(this.tokenCache)) {
@@ -277,6 +281,7 @@ export class TwitchTokenDO
 	/**
 	 * Store new tokens (called during OAuth flow or after refresh)
 	 */
+	@rpc
 	async setTokens(tokens: TwitchTokenResponse): Promise<Result<void, never>> {
 		const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
 
@@ -435,3 +440,5 @@ export class TwitchTokenDO
 		return Result.ok(parseResult.data.access_token);
 	}
 }
+
+export const TwitchTokenDO = withRpcSerialization(_TwitchTokenDO);

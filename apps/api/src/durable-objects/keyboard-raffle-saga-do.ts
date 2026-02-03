@@ -22,7 +22,7 @@ import { z } from "zod";
 
 import migrations from "../../drizzle/saga-do/migrations";
 import { writeRaffleRollMetric } from "../lib/analytics";
-import { getStub } from "../lib/durable-objects";
+import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	SagaAlreadyExistsError,
 	SagaNotFoundError,
@@ -88,7 +88,7 @@ function generateRandomInt(min: number, max: number): number {
  * Each instance handles a single raffle roll (keyed by redemption ID).
  * Uses DO alarms for retry scheduling and durable step execution.
  */
-export class KeyboardRaffleSagaDO extends DurableObject<Env> {
+class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 	private db: ReturnType<typeof drizzle<typeof sagaSchema>>;
 	private runner: SagaRunner | null = null;
 
@@ -123,6 +123,7 @@ export class KeyboardRaffleSagaDO extends DurableObject<Env> {
 	 * If saga already exists, returns success (idempotent).
 	 * Otherwise, initializes saga and begins execution.
 	 */
+	@rpc
 	async start(
 		params: KeyboardRaffleParams,
 	): Promise<
@@ -456,6 +457,7 @@ export class KeyboardRaffleSagaDO extends DurableObject<Env> {
 	/**
 	 * Get saga status for debugging/monitoring
 	 */
+	@rpc
 	async getStatus(): Promise<Result<KeyboardRaffleSagaStatus | null, SagaRunnerDbError>> {
 		const sagaId = this.ctx.id.toString();
 
@@ -521,3 +523,5 @@ export class KeyboardRaffleSagaDO extends DurableObject<Env> {
 		}
 	}
 }
+
+export const KeyboardRaffleSagaDO = withRpcSerialization(_KeyboardRaffleSagaDO);

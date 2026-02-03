@@ -12,6 +12,7 @@ import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/keyboard-raffle-do/migrations";
+import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/keyboard-raffle-do.schema";
 import {
@@ -77,7 +78,7 @@ export interface LeaderboardOptions {
 /**
  * KeyboardRaffleDO - Durable Object for keyboard raffle management
  */
-export class KeyboardRaffleDO
+class _KeyboardRaffleDO
 	extends DurableObject<Env>
 	implements StreamLifecycleHandler<KeyboardRaffleDbError>
 {
@@ -97,6 +98,7 @@ export class KeyboardRaffleDO
 	 *
 	 * Leaderboard stats are computed automatically via the view.
 	 */
+	@rpc
 	async recordRoll(rollData: InsertRoll): Promise<Result<Roll, KeyboardRaffleDbError>> {
 		const result = await Result.tryPromise({
 			try: async () => {
@@ -140,6 +142,7 @@ export class KeyboardRaffleDO
 	 *
 	 * Leaderboard stats update automatically via the view.
 	 */
+	@rpc
 	async deleteRollById(
 		rollId: string,
 	): Promise<Result<void, KeyboardRaffleDbError | RollNotFoundError>> {
@@ -174,6 +177,7 @@ export class KeyboardRaffleDO
 	/**
 	 * Get stats for a specific user
 	 */
+	@rpc
 	async getUserStats(
 		userId: string,
 	): Promise<Result<LeaderboardEntry, KeyboardRaffleDbError | UserStatsNotFoundError>> {
@@ -209,6 +213,7 @@ export class KeyboardRaffleDO
 	/**
 	 * Get leaderboard sorted by the specified criteria
 	 */
+	@rpc
 	async getLeaderboard(
 		options: LeaderboardOptions,
 	): Promise<Result<LeaderboardEntry[], KeyboardRaffleDbError>> {
@@ -251,6 +256,7 @@ export class KeyboardRaffleDO
 	 * Returns the user with the smallest non-zero distance (closest without winning).
 	 * Used to check if a user just set a new record.
 	 */
+	@rpc
 	async getClosestRecord(): Promise<
 		Result<{ userId: string; displayName: string; distance: number } | null, KeyboardRaffleDbError>
 	> {
@@ -281,6 +287,7 @@ export class KeyboardRaffleDO
 	/**
 	 * Lifecycle: Called when stream goes online
 	 */
+	@rpc
 	async onStreamOnline(): Promise<Result<void, KeyboardRaffleDbError>> {
 		logger.info("KeyboardRaffleDO: Stream online");
 		// No-op for now - raffle runs regardless of stream state
@@ -290,9 +297,12 @@ export class KeyboardRaffleDO
 	/**
 	 * Lifecycle: Called when stream goes offline
 	 */
+	@rpc
 	async onStreamOffline(): Promise<Result<void, KeyboardRaffleDbError>> {
 		logger.info("KeyboardRaffleDO: Stream offline");
 		// No-op for now - raffle runs regardless of stream state
 		return Result.ok();
 	}
 }
+
+export const KeyboardRaffleDO = withRpcSerialization(_KeyboardRaffleDO);
