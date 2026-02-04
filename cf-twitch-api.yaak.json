@@ -1,0 +1,282 @@
+{
+	"yaakSchema": 5,
+	"resources": {
+		"workspaces": [
+			{
+				"id": "wrk_cf_twitch_api",
+				"model": "workspace",
+				"name": "cf-twitch-api",
+				"description": "Twitch stream integration API on Cloudflare Workers"
+			}
+		],
+		"environments": [
+			{
+				"id": "env_cf_twitch_base",
+				"model": "environment",
+				"workspaceId": "wrk_cf_twitch_api",
+				"parentModel": "workspace",
+				"parentId": null,
+				"name": "Base Environment",
+				"variables": [
+					{
+						"enabled": true,
+						"name": "BASE_URL",
+						"value": "https://cf-twitch-api.dillon-mulroy.workers.dev"
+					},
+					{
+						"enabled": true,
+						"name": "ADMIN_SECRET",
+						"value": ""
+					}
+				]
+			},
+			{
+				"id": "env_cf_twitch_local",
+				"model": "environment",
+				"workspaceId": "wrk_cf_twitch_api",
+				"parentModel": "environment",
+				"parentId": null,
+				"name": "Local",
+				"variables": [
+					{
+						"enabled": true,
+						"name": "BASE_URL",
+						"value": "http://localhost:8787"
+					}
+				]
+			},
+			{
+				"id": "env_cf_twitch_prod",
+				"model": "environment",
+				"workspaceId": "wrk_cf_twitch_api",
+				"parentModel": "environment",
+				"parentId": null,
+				"name": "Production",
+				"variables": [
+					{
+						"enabled": true,
+						"name": "BASE_URL",
+						"value": "https://cf-twitch-api.dillon-mulroy.workers.dev"
+					}
+				]
+			}
+		],
+		"folders": [
+			{
+				"id": "fld_admin",
+				"model": "folder",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": null,
+				"name": "Admin",
+				"description": "Admin endpoints (requires ADMIN_SECRET)"
+			},
+			{
+				"id": "fld_admin_dlq",
+				"model": "folder",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin",
+				"name": "DLQ",
+				"description": "Dead Letter Queue management"
+			},
+			{
+				"id": "fld_admin_achievements",
+				"model": "folder",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin",
+				"name": "Achievements",
+				"description": "Achievement management"
+			},
+			{
+				"id": "fld_api",
+				"model": "folder",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": null,
+				"name": "API",
+				"description": "Public API endpoints"
+			}
+		],
+		"httpRequests": [
+			{
+				"id": "req_dlq_list",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_dlq",
+				"name": "List DLQ",
+				"description": "Get failed events from dead letter queue (paginated)",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/admin/dlq",
+				"urlParameters": [
+					{
+						"enabled": true,
+						"name": "limit",
+						"value": "50"
+					},
+					{
+						"enabled": true,
+						"name": "offset",
+						"value": "0"
+					}
+				],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_dlq_replay",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_dlq",
+				"name": "Replay DLQ Item",
+				"description": "Retry delivery of a specific failed event",
+				"method": "POST",
+				"url": "${[BASE_URL]}/api/admin/dlq/${[EVENT_ID]}/replay",
+				"urlParameters": [],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_dlq_delete",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_dlq",
+				"name": "Delete DLQ Item",
+				"description": "Discard a failed event from the DLQ",
+				"method": "DELETE",
+				"url": "${[BASE_URL]}/api/admin/dlq/${[EVENT_ID]}",
+				"urlParameters": [],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_achievements_reset_onetime",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_achievements",
+				"name": "Reset One-Time Achievements",
+				"description": "Reset one-time cumulative achievements (close_call, closest_ever). Optionally filter by user.",
+				"method": "POST",
+				"url": "${[BASE_URL]}/api/admin/achievements/reset-one-time",
+				"urlParameters": [
+					{
+						"enabled": false,
+						"name": "user",
+						"value": ""
+					}
+				],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_now_playing",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_api",
+				"name": "Now Playing",
+				"description": "Get currently playing track",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/now-playing",
+				"urlParameters": [],
+				"headers": [],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_queue",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_api",
+				"name": "Get Queue",
+				"description": "Get song request queue",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/queue",
+				"urlParameters": [
+					{
+						"enabled": false,
+						"name": "limit",
+						"value": "10"
+					}
+				],
+				"headers": [],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_achievements",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_api",
+				"name": "Get User Achievements",
+				"description": "Get achievements for a user",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/achievements/${[USERNAME]}",
+				"urlParameters": [],
+				"headers": [],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_leaderboard",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_api",
+				"name": "Achievement Leaderboard",
+				"description": "Get achievement leaderboard",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/achievements/leaderboard",
+				"urlParameters": [
+					{
+						"enabled": false,
+						"name": "limit",
+						"value": "10"
+					}
+				],
+				"headers": [],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			}
+		]
+	}
+}

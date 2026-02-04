@@ -46,10 +46,7 @@ export type TwitchTokenResponse = z.infer<typeof TwitchTokenResponseSchema>;
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 
-class _TwitchTokenDO
-	extends DurableObject<Env>
-	implements StreamLifecycleHandler<TokenError>
-{
+class _TwitchTokenDO extends DurableObject<Env> implements StreamLifecycleHandler<TokenError> {
 	private db;
 	private tokenCache: TokenSet | null = null;
 	private refreshPromise: Promise<Result<string, TokenError>> | null = null;

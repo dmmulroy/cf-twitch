@@ -398,6 +398,49 @@ export type AchievementError =
 	| AchievementEventValidationError;
 
 // =============================================================================
+// Commands Errors
+// =============================================================================
+
+export class CommandsDbError extends TaggedError("CommandsDbError")<{
+	operation: string;
+	message: string;
+	cause?: unknown;
+}>() {
+	constructor(args: { operation: string; cause?: unknown }) {
+		super({
+			operation: args.operation,
+			message: `Commands DB error during ${args.operation}`,
+			cause: args.cause,
+		});
+	}
+}
+
+export class CommandNotFoundError extends TaggedError("CommandNotFoundError")<{
+	commandName: string;
+	message: string;
+}>() {
+	constructor(args: { commandName: string }) {
+		super({ ...args, message: `Command not found: ${args.commandName}` });
+	}
+}
+
+export class CommandNotUpdateableError extends TaggedError("CommandNotUpdateableError")<{
+	commandName: string;
+	responseType: string;
+	message: string;
+}>() {
+	constructor(args: { commandName: string; responseType: string }) {
+		super({
+			...args,
+			message: `Command !${args.commandName} is not updateable (type: ${args.responseType})`,
+		});
+	}
+}
+
+/** Union of all commands-related errors */
+export type CommandsError = CommandsDbError | CommandNotFoundError | CommandNotUpdateableError;
+
+// =============================================================================
 // Event Bus Errors
 // =============================================================================
 

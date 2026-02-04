@@ -109,6 +109,8 @@ export const RaffleRollEventSchema = BaseEventSchema.extend({
 	distance: z.number().int().min(0).max(9999),
 	/** Whether this roll was a winner */
 	isWinner: z.boolean(),
+	/** Whether this roll set a new closest non-winning record */
+	isNewRecord: z.boolean(),
 });
 
 export type RaffleRollEvent = z.infer<typeof RaffleRollEventSchema>;
@@ -278,6 +280,7 @@ export function createRaffleRollEvent(params: {
 	winningNumber: number;
 	distance: number;
 	isWinner: boolean;
+	isNewRecord: boolean;
 }): RaffleRollEvent {
 	return {
 		id: params.id,
@@ -292,6 +295,7 @@ export function createRaffleRollEvent(params: {
 		winningNumber: params.winningNumber,
 		distance: params.distance,
 		isWinner: params.isWinner,
+		isNewRecord: params.isNewRecord,
 	};
 }
 

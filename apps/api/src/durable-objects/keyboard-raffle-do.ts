@@ -94,15 +94,30 @@ class _KeyboardRaffleDO
 	}
 
 	/**
-	 * Record a raffle roll
+	 * Record a new raffle roll
 	 *
 	 * Leaderboard stats are computed automatically via the view.
+	 * Returns the roll and whether it set a new closest record (for non-winners only).
 	 */
 	@rpc
-	async recordRoll(rollData: InsertRoll): Promise<Result<Roll, KeyboardRaffleDbError>> {
+	async recordRoll(
+		rollData: InsertRoll,
+	): Promise<Result<{ roll: Roll; isNewRecord: boolean }, KeyboardRaffleDbError>> {
 		const result = await Result.tryPromise({
 			try: async () => {
 				const isWinner = rollData.distance === 0;
+
+				// Get current closest record before inserting (for non-winners)
+				let previousBestDistance: number | null = null;
+				if (!isWinner) {
+					const [currentBest] = await this.db
+						.select({ closestDistance: raffleLeaderboard.closestDistance })
+						.from(raffleLeaderboard)
+						.where(sql`${raffleLeaderboard.closestDistance} > 0`)
+						.orderBy(sql`${raffleLeaderboard.closestDistance} asc`)
+						.limit(1);
+					previousBestDistance = currentBest?.closestDistance ?? null;
+				}
 
 				const [recordedRoll] = await this.db
 					.insert(rolls)
@@ -116,13 +131,24 @@ class _KeyboardRaffleDO
 					throw new Error("Insert did not return a row");
 				}
 
+				// Determine if this is a new closest record (for non-winners)
+				// A roll is a new record if:
+				// - It's not a winner (winners have distance 0, which is a different achievement)
+				// - Either there was no previous record, OR this distance is smaller
+				const isNewRecord =
+					!isWinner &&
+					(previousBestDistance === null || rollData.distance < previousBestDistance);
+
 				logger.info("Recorded raffle roll", {
 					rollId: recordedRoll.id,
 					userId: rollData.userId,
 					isWinner,
+					isNewRecord,
+					previousBestDistance,
+					distance: rollData.distance,
 				});
 
-				return recordedRoll;
+				return { roll: recordedRoll, isNewRecord };
 			},
 			catch: (cause) => new KeyboardRaffleDbError({ operation: "recordRoll", cause }),
 		});
@@ -167,7 +193,7 @@ class _KeyboardRaffleDO
 			},
 		});
 
-		if (result.status === "error") {
+		if (result.status === "error" && !RollNotFoundError.is(result.error)) {
 			logger.error("Failed to delete raffle roll", { rollId, error: result.error.message });
 		}
 
@@ -175,43 +201,7 @@ class _KeyboardRaffleDO
 	}
 
 	/**
-	 * Get stats for a specific user
-	 */
-	@rpc
-	async getUserStats(
-		userId: string,
-	): Promise<Result<LeaderboardEntry, KeyboardRaffleDbError | UserStatsNotFoundError>> {
-		const result = await Result.tryPromise({
-			try: async () => {
-				const [entry] = await this.db
-					.select()
-					.from(raffleLeaderboard)
-					.where(eq(raffleLeaderboard.userId, userId))
-					.limit(1);
-
-				if (!entry) {
-					throw new UserStatsNotFoundError({ userId });
-				}
-
-				return entry;
-			},
-			catch: (cause) => {
-				if (UserStatsNotFoundError.is(cause)) {
-					return cause;
-				}
-				return new KeyboardRaffleDbError({ operation: "getUserStats", cause });
-			},
-		});
-
-		if (result.status === "error" && !UserStatsNotFoundError.is(result.error)) {
-			logger.error("Failed to get user raffle stats", { userId, error: result.error.message });
-		}
-
-		return result;
-	}
-
-	/**
-	 * Get leaderboard sorted by the specified criteria
+	 * Get leaderboard entries sorted by specified criteria
 	 */
 	@rpc
 	async getLeaderboard(
@@ -251,10 +241,88 @@ class _KeyboardRaffleDO
 	}
 
 	/**
+	 * Get stats for a user by their Twitch user ID
+	 *
+	 * Returns aggregated stats from the leaderboard view.
+	 */
+	@rpc
+	async getUserStats(
+		userId: string,
+	): Promise<Result<LeaderboardEntry, KeyboardRaffleDbError | UserStatsNotFoundError>> {
+		const result = await Result.tryPromise({
+			try: async () => {
+				const [entry] = await this.db
+					.select()
+					.from(raffleLeaderboard)
+					.where(eq(raffleLeaderboard.userId, userId))
+					.limit(1);
+
+				if (!entry) {
+					throw new UserStatsNotFoundError({ userId });
+				}
+
+				return entry;
+			},
+			catch: (cause) => {
+				if (UserStatsNotFoundError.is(cause)) {
+					return cause;
+				}
+				return new KeyboardRaffleDbError({ operation: "getUserStats", cause });
+			},
+		});
+
+		if (result.status === "error" && !UserStatsNotFoundError.is(result.error)) {
+			logger.error("Failed to get user raffle stats", { userId, error: result.error.message });
+		}
+
+		return result;
+	}
+
+	/**
+	 * Get stats for a user by display name
+	 *
+	 * Used for !stats <user> command where we only have the display name.
+	 */
+	@rpc
+	async getUserStatsByDisplayName(
+		displayName: string,
+	): Promise<Result<LeaderboardEntry, KeyboardRaffleDbError | UserStatsNotFoundError>> {
+		const result = await Result.tryPromise({
+			try: async () => {
+				const [entry] = await this.db
+					.select()
+					.from(raffleLeaderboard)
+					.where(eq(raffleLeaderboard.displayName, displayName))
+					.limit(1);
+
+				if (!entry) {
+					throw new UserStatsNotFoundError({ userId: displayName });
+				}
+
+				return entry;
+			},
+			catch: (cause) => {
+				if (UserStatsNotFoundError.is(cause)) {
+					return cause;
+				}
+				return new KeyboardRaffleDbError({ operation: "getUserStatsByDisplayName", cause });
+			},
+		});
+
+		if (result.status === "error" && !UserStatsNotFoundError.is(result.error)) {
+			logger.error("Failed to get user raffle stats by display name", {
+				displayName,
+				error: result.error.message,
+			});
+		}
+
+		return result;
+	}
+
+	/**
 	 * Get the global closest non-winning roll record
 	 *
 	 * Returns the user with the smallest non-zero distance (closest without winning).
-	 * Used to check if a user just set a new record.
 	 */
 	@rpc
 	async getClosestRecord(): Promise<

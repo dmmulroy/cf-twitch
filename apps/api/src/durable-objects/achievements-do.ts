@@ -7,7 +7,7 @@
 
 import { Result } from "better-result";
 import { DurableObject } from "cloudflare:workers";
-import { and, count, desc, eq, gt, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
@@ -506,6 +506,60 @@ class _AchievementsDO
 	}
 
 	/**
+	 * Reset one-time cumulative achievements (close_call, closest_ever)
+	 *
+	 * Deletes user_achievements rows for event-based (NULL threshold) cumulative
+	 * achievements, allowing them to be earned again. Session-scoped achievements
+	 * (stream_opener) are excluded as they reset automatically on stream start.
+	 *
+	 * @param userDisplayName - If provided, only reset for this user. Otherwise reset for all users.
+	 * @returns Number of rows deleted
+	 */
+	@rpc
+	async resetOneTimeAchievements(
+		userDisplayName?: string,
+	): Promise<Result<{ deleted: number; achievementIds: string[] }, AchievementDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				// Find event-based (NULL threshold) cumulative achievements
+				const eventBasedCumulative = await this.db.query.achievementDefinitions.findMany({
+					where: and(
+						eq(achievementDefinitions.scope, "cumulative"),
+						isNull(achievementDefinitions.threshold),
+					),
+					columns: { id: true },
+				});
+
+				const achievementIds = eventBasedCumulative.map((a) => a.id);
+
+				if (achievementIds.length === 0) {
+					return { deleted: 0, achievementIds: [] };
+				}
+
+				// Build delete query with optional user filter
+				const conditions = [inArray(userAchievements.achievementId, achievementIds)];
+				if (userDisplayName) {
+					conditions.push(eq(userAchievements.userDisplayName, userDisplayName));
+				}
+
+				const deleted = await this.db
+					.delete(userAchievements)
+					.where(and(...conditions))
+					.returning({ id: userAchievements.id });
+
+				logger.info("AchievementsDO: Reset one-time achievements", {
+					deleted: deleted.length,
+					achievementIds,
+					userDisplayName: userDisplayName ?? "all",
+				});
+
+				return { deleted: deleted.length, achievementIds };
+			},
+			catch: (cause) => new AchievementDbError({ operation: "resetOneTimeAchievements", cause }),
+		});
+	}
+
+	/**
 	 * Lifecycle: Called when stream goes online
 	 *
 	 * Resets session-scoped achievements (e.g., "Stream Opener", streaks)
@@ -623,6 +677,7 @@ class _AchievementsDO
 	/**
 	 * Handle song_request_success event
 	 *
+	 * - Records song_request for cumulative achievements (first_request, request_10, etc.)
 	 * - Checks if first request of stream → unlocks stream_opener
 	 * - Updates user streak (session + longest high watermark)
 	 * - Checks streak achievements (streak_3, streak_5)
@@ -636,6 +691,27 @@ class _AchievementsDO
 			userDisplayName: event.userDisplayName,
 			trackId: event.trackId,
 		});
+
+		// Record song_request for cumulative achievements (first_request, request_10, request_50, request_100)
+		const songRequestResult = await this.recordEvent({
+			userDisplayName: event.userDisplayName,
+			event: "song_request",
+			eventId: event.id,
+			increment: 1,
+		});
+
+		if (songRequestResult.isErr()) {
+			logger.warn("AchievementsDO: Failed to record song request achievement", {
+				error: songRequestResult.error,
+				userId: event.userId,
+			});
+			// Continue - don't fail entire handler for achievement errors
+		} else if (songRequestResult.value.length > 0) {
+			logger.info("AchievementsDO: Song request achievement unlocked", {
+				userId: event.userId,
+				achievements: songRequestResult.value.map((a) => a.name),
+			});
+		}
 
 		// Check if this is the first request of the current stream
 		const firstRequestResult = await this.isFirstRequestOfStream(event.id);
@@ -770,10 +846,11 @@ class _AchievementsDO
 	/**
 	 * Handle raffle_roll event
 	 *
-	 * TODO: Implement achievement logic for raffle rolls:
-	 * - Track roll counts
-	 * - Check for wins
-	 * - Track closest-to-winning records
+	 * Triggers achievements:
+	 * - raffle_roll: cumulative (first_roll, roll_25, roll_100)
+	 * - raffle_win: when isWinner=true (first_win)
+	 * - raffle_close: when distance <= 100 AND !isWinner (close_call)
+	 * - raffle_closest_record: when this sets the global closest record (closest_ever)
 	 */
 	private async handleRaffleRoll(event: RaffleRollEvent): Promise<Result<void, AchievementError>> {
 		logger.info("AchievementsDO: Handling raffle roll", {
@@ -781,10 +858,99 @@ class _AchievementsDO
 			userId: event.userId,
 			userDisplayName: event.userDisplayName,
 			roll: event.roll,
+			distance: event.distance,
 			isWinner: event.isWinner,
 		});
 
-		// Stub: Will be implemented in subsequent task
+		// 1. Record raffle_roll for cumulative roll achievements (first_roll, roll_25, roll_100)
+		const rollResult = await this.recordEvent({
+			userDisplayName: event.userDisplayName,
+			event: "raffle_roll",
+			eventId: event.id,
+			increment: 1,
+		});
+
+		if (rollResult.isErr()) {
+			logger.warn("AchievementsDO: Failed to record raffle roll achievement", {
+				error: rollResult.error,
+				userId: event.userId,
+			});
+		} else if (rollResult.value.length > 0) {
+			logger.info("AchievementsDO: Raffle roll achievement unlocked", {
+				userId: event.userId,
+				achievements: rollResult.value.map((a) => a.name),
+			});
+		}
+
+		// 2. Record raffle_win if winner (first_win)
+		if (event.isWinner) {
+			const winResult = await this.recordEvent({
+				userDisplayName: event.userDisplayName,
+				event: "raffle_win",
+				eventId: `${event.id}-win`,
+				increment: 1,
+			});
+
+			if (winResult.isErr()) {
+				logger.warn("AchievementsDO: Failed to record raffle win achievement", {
+					error: winResult.error,
+					userId: event.userId,
+				});
+			} else if (winResult.value.length > 0) {
+				logger.info("AchievementsDO: Raffle win achievement unlocked", {
+					userId: event.userId,
+					achievements: winResult.value.map((a) => a.name),
+				});
+			}
+		}
+
+		// 3. Record raffle_close if within 100 distance (but not winner) (close_call)
+		// close_call is event-based (NULL threshold) - unlocks once per user
+		if (!event.isWinner && event.distance <= 100) {
+			const closeResult = await this.recordEvent({
+				userDisplayName: event.userDisplayName,
+				event: "raffle_close",
+				eventId: `${event.id}-close`,
+				increment: 1,
+			});
+
+			if (closeResult.isErr()) {
+				logger.warn("AchievementsDO: Failed to record close call achievement", {
+					error: closeResult.error,
+					userId: event.userId,
+				});
+			} else if (closeResult.value.length > 0) {
+				logger.info("AchievementsDO: Close call achievement unlocked", {
+					userId: event.userId,
+					distance: event.distance,
+					achievements: closeResult.value.map((a) => a.name),
+				});
+			}
+		}
+
+		// 4. Record closest_ever if this roll set a new closest record
+		// Only check for non-winners - winners have distance 0 (different achievement)
+		if (!event.isWinner && event.isNewRecord) {
+			const recordAchievementResult = await this.recordEvent({
+				userDisplayName: event.userDisplayName,
+				event: "raffle_closest_record",
+				eventId: `${event.id}-closest-record`,
+				increment: 1,
+			});
+
+			if (recordAchievementResult.isErr()) {
+				logger.warn("AchievementsDO: Failed to record closest record achievement", {
+					error: recordAchievementResult.error,
+					userId: event.userId,
+				});
+			} else if (recordAchievementResult.value.length > 0) {
+				logger.info("AchievementsDO: Closest record achievement unlocked", {
+					userId: event.userId,
+					achievements: recordAchievementResult.value.map((a) => a.name),
+				});
+			}
+		}
+
 		return Result.ok();
 	}
 
@@ -879,6 +1045,9 @@ class _AchievementsDO
 
 	/**
 	 * Record event to event_history table for auditing and "first request" checks
+	 *
+	 * Idempotent: uses ON CONFLICT DO NOTHING for the unique eventId index.
+	 * Retried events (from EventBusDO retry or DLQ replay) are safely ignored.
 	 */
 	private async recordToEventHistory(event: Event): Promise<Result<void, AchievementDbError>> {
 		return Result.tryPromise({
@@ -886,15 +1055,18 @@ class _AchievementsDO
 				// Extract user info based on event type
 				const userInfo = this.extractUserInfo(event);
 
-				await this.db.insert(eventHistory).values({
-					id: crypto.randomUUID(),
-					eventType: event.type,
-					userId: userInfo.userId,
-					userDisplayName: userInfo.userDisplayName,
-					eventId: event.id,
-					timestamp: event.timestamp,
-					metadata: JSON.stringify(this.extractMetadata(event)),
-				});
+				await this.db
+					.insert(eventHistory)
+					.values({
+						id: crypto.randomUUID(),
+						eventType: event.type,
+						userId: userInfo.userId,
+						userDisplayName: userInfo.userDisplayName,
+						eventId: event.id,
+						timestamp: event.timestamp,
+						metadata: JSON.stringify(this.extractMetadata(event)),
+					})
+					.onConflictDoNothing({ target: eventHistory.eventId });
 
 				logger.debug("AchievementsDO: Recorded event to history", {
 					eventId: event.id,

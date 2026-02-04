@@ -152,4 +152,48 @@ admin.delete("/dlq/:id", async (c) => {
 	return c.json({ message: "Event deleted from DLQ", eventId: id });
 });
 
+// =============================================================================
+// Achievement Routes
+// =============================================================================
+
+/**
+ * POST /admin/achievements/reset-one-time
+ * Reset one-time cumulative achievements (close_call, closest_ever)
+ *
+ * Query params:
+ * - user: (optional) Only reset for this user display name
+ */
+admin.post("/achievements/reset-one-time", async (c) => {
+	const userDisplayName = c.req.query("user");
+
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.resetOneTimeAchievements(userDisplayName);
+
+	if (result.status === "error") {
+		logger.error("Admin: Failed to reset one-time achievements", {
+			error: result.error.message,
+			user: userDisplayName,
+		});
+		return c.json({ error: "Failed to reset achievements" }, 500);
+	}
+
+	// If specific user requested but nothing deleted, user doesn't exist or has no achievements
+	if (userDisplayName && result.value.deleted === 0) {
+		return c.json(
+			{
+				error: "User not found or no one-time achievements to reset",
+				user: userDisplayName,
+			},
+			404,
+		);
+	}
+
+	return c.json({
+		message: "One-time achievements reset",
+		deleted: result.value.deleted,
+		achievementIds: result.value.achievementIds,
+		user: userDisplayName ?? "all",
+	});
+});
+
 export default admin;

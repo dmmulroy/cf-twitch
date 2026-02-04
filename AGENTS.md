@@ -29,33 +29,33 @@ cf-twitch/
 
 ## Where to Look
 
-| Task               | Location                              | Notes                                     |
-| ------------------ | ------------------------------------- | ----------------------------------------- |
-| Add OAuth provider | `apps/api/src/routes/oauth.ts`        | Follow Spotify/Twitch pattern             |
-| Create new DO      | `apps/api/src/durable-objects/`       | Export in index.ts, add to wrangler.jsonc |
-| Add error type     | `apps/api/src/lib/errors.ts`          | Extend TaggedError                        |
-| Environment vars   | `apps/api/wrangler.jsonc`             | Secrets in `.dev.vars`                    |
-| DO stub utilities  | `apps/api/src/lib/durable-objects.ts` | getStub() for typed stubs                 |
-| Analytics          | `apps/api/src/lib/analytics.ts`       | writeDataPoint helper                     |
-| Saga pattern       | `apps/api/src/lib/saga-runner.ts`     | Step execution + compensation             |
-| Event bus          | `apps/api/src/durable-objects/event-bus-do.ts` | Event routing + retry + DLQ      |
-| Admin routes       | `apps/api/src/routes/admin.ts`        | DLQ management (requires ADMIN_SECRET)    |
+| Task               | Location                                       | Notes                                     |
+| ------------------ | ---------------------------------------------- | ----------------------------------------- |
+| Add OAuth provider | `apps/api/src/routes/oauth.ts`                 | Follow Spotify/Twitch pattern             |
+| Create new DO      | `apps/api/src/durable-objects/`                | Export in index.ts, add to wrangler.jsonc |
+| Add error type     | `apps/api/src/lib/errors.ts`                   | Extend TaggedError                        |
+| Environment vars   | `apps/api/wrangler.jsonc`                      | Secrets in `.dev.vars`                    |
+| DO stub utilities  | `apps/api/src/lib/durable-objects.ts`          | getStub() for typed stubs                 |
+| Analytics          | `apps/api/src/lib/analytics.ts`                | writeDataPoint helper                     |
+| Saga pattern       | `apps/api/src/lib/saga-runner.ts`              | Step execution + compensation             |
+| Event bus          | `apps/api/src/durable-objects/event-bus-do.ts` | Event routing + retry + DLQ               |
+| Admin routes       | `apps/api/src/routes/admin.ts`                 | DLQ management (requires ADMIN_SECRET)    |
 
 ## Code Map
 
-| Symbol              | Location                                  | Role                          |
-| ------------------- | ----------------------------------------- | ----------------------------- |
-| `Env`               | `index.ts:15-53`                          | Environment interface         |
-| `app`               | `index.ts:55`                             | Hono app instance             |
-| `SpotifyTokenDO`    | `durable-objects/spotify-token-do.ts`     | OAuth token management        |
-| `TwitchTokenDO`     | `durable-objects/twitch-token-do.ts`      | OAuth token management        |
-| `StreamLifecycleDO` | `durable-objects/stream-lifecycle-do.ts`  | Stream state, viewer tracking |
-| `SongQueueDO`       | `durable-objects/song-queue-do.ts`        | Song request queue + sync     |
-| `AchievementsDO`    | `durable-objects/achievements-do.ts`      | Achievement tracking          |
-| `KeyboardRaffleDO`  | `durable-objects/keyboard-raffle-do.ts`   | Raffle system                 |
-| `SongRequestSagaDO` | `durable-objects/song-request-saga-do.ts` | 8-step saga orchestration     |
-| `KeyboardRaffleSagaDO` | `durable-objects/keyboard-raffle-saga-do.ts` | 6-step saga orchestration |
-| `EventBusDO`        | `durable-objects/event-bus-do.ts`         | Event routing + retry + DLQ   |
+| Symbol                 | Location                                     | Role                          |
+| ---------------------- | -------------------------------------------- | ----------------------------- |
+| `Env`                  | `index.ts:15-53`                             | Environment interface         |
+| `app`                  | `index.ts:55`                                | Hono app instance             |
+| `SpotifyTokenDO`       | `durable-objects/spotify-token-do.ts`        | OAuth token management        |
+| `TwitchTokenDO`        | `durable-objects/twitch-token-do.ts`         | OAuth token management        |
+| `StreamLifecycleDO`    | `durable-objects/stream-lifecycle-do.ts`     | Stream state, viewer tracking |
+| `SongQueueDO`          | `durable-objects/song-queue-do.ts`           | Song request queue + sync     |
+| `AchievementsDO`       | `durable-objects/achievements-do.ts`         | Achievement tracking          |
+| `KeyboardRaffleDO`     | `durable-objects/keyboard-raffle-do.ts`      | Raffle system                 |
+| `SongRequestSagaDO`    | `durable-objects/song-request-saga-do.ts`    | 8-step saga orchestration     |
+| `KeyboardRaffleSagaDO` | `durable-objects/keyboard-raffle-saga-do.ts` | 6-step saga orchestration     |
+| `EventBusDO`           | `durable-objects/event-bus-do.ts`            | Event routing + retry + DLQ   |
 
 ## Project-Specific Conventions
 

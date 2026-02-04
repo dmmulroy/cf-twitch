@@ -15,12 +15,8 @@ import webhooks from "./routes/webhooks";
 /**
  * Re-export Env from generated Cloudflare.Env.
  * wrangler types generates typed DO namespaces when script_name is omitted.
- *
- * ADMIN_SECRET is optional - set via `wrangler secret put ADMIN_SECRET`
  */
-export interface Env extends Cloudflare.Env {
-	ADMIN_SECRET?: string;
-}
+export type Env = Cloudflare.Env;
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -64,6 +60,7 @@ export { AchievementsDO } from "./durable-objects/achievements-do";
 export { SongRequestSagaDO } from "./durable-objects/song-request-saga-do";
 export { KeyboardRaffleSagaDO } from "./durable-objects/keyboard-raffle-saga-do";
 export { EventBusDO } from "./durable-objects/event-bus-do";
+export { CommandsDO } from "./durable-objects/commands-do";
 
 // Service exports
 export { SpotifyService } from "./services/spotify-service";

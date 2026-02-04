@@ -46,10 +46,7 @@ export type SpotifyTokenResponse = z.infer<typeof SpotifyTokenResponseSchema>;
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 
-class _SpotifyTokenDO
-	extends DurableObject<Env>
-	implements StreamLifecycleHandler<TokenError>
-{
+class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandler<TokenError> {
 	private db;
 	private tokenCache: TokenSet | null = null;
 	private refreshPromise: Promise<Result<string, TokenError>> | null = null;

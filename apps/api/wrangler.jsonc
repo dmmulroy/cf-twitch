@@ -33,6 +33,7 @@
 			{ "name": "SONG_REQUEST_SAGA_DO", "class_name": "SongRequestSagaDO" },
 			{ "name": "KEYBOARD_RAFFLE_SAGA_DO", "class_name": "KeyboardRaffleSagaDO" },
 			{ "name": "EVENT_BUS_DO", "class_name": "EventBusDO" },
+			{ "name": "COMMANDS_DO", "class_name": "CommandsDO" },
 		],
 	},
 	"migrations": [
@@ -66,6 +67,10 @@
 		{
 			"tag": "v6",
 			"new_sqlite_classes": ["EventBusDO"],
+		},
+		{
+			"tag": "v7",
+			"new_sqlite_classes": ["CommandsDO"],
 		},
 	],
 	"analytics_engine_datasets": [

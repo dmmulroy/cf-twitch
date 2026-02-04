@@ -53,7 +53,19 @@ export interface AchievementUnlockMetric {
 /**
  * Chat command types
  */
-export type ChatCommandType = "song" | "queue";
+export type ChatCommandType =
+	| "song"
+	| "queue"
+	| "keyboard"
+	| "socials"
+	| "dotfiles"
+	| "today"
+	| "project"
+	| "update"
+	| "achievements"
+	| "stats"
+	| "raffle-leaderboard"
+	| "commands";
 
 /**
  * Chat command status

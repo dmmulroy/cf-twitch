@@ -10,10 +10,17 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import { type ChatCommandStatus, writeChatCommandMetric } from "../lib/analytics";
+import { parseCommandWithArg } from "../lib/commands";
 import { getStub } from "../lib/durable-objects";
+import { CommandNotUpdateableError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { type Permission, getUserPermission, hasPermission } from "../lib/permissions";
 import { TwitchService } from "../services/twitch-service";
 
+import type { UnlockedAchievement } from "../durable-objects/achievements-do";
+import type { Command } from "../durable-objects/schemas/commands-do.schema";
+import type { LeaderboardEntry } from "../durable-objects/schemas/keyboard-raffle-do.schema";
+import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import type { QueuedTrack } from "../durable-objects/song-queue-do";
 import type { Env } from "../index";
 
@@ -21,13 +28,48 @@ import type { Env } from "../index";
 // Chat Command Handlers (migrated from ChatCommandWorkflow)
 // =============================================================================
 
-type ChatCommand = "song" | "queue";
+type StaticCommand = "keyboard" | "socials" | "dotfiles";
+type DynamicInfoCommand = "today" | "project";
+type MusicCommand = "song" | "queue";
+type UpdateCommand = "update";
+type ComputedCommand = "achievements" | "stats" | "raffle-leaderboard" | "commands";
+type ChatCommand =
+	| StaticCommand
+	| DynamicInfoCommand
+	| MusicCommand
+	| UpdateCommand
+	| ComputedCommand;
 
-function parseCommand(text: string): ChatCommand | null {
-	const trimmed = text.trim().toLowerCase();
-	if (trimmed === "!song") return "song";
-	if (trimmed === "!queue") return "queue";
-	return null;
+interface ParsedChatCommand {
+	command: ChatCommand;
+	arg: string | null;
+}
+
+function parseCommand(text: string): ParsedChatCommand | null {
+	const parsed = parseCommandWithArg(text);
+	if (!parsed) return null;
+
+	// Validate command is a known ChatCommand
+	const validCommands: ChatCommand[] = [
+		"song",
+		"queue",
+		"keyboard",
+		"socials",
+		"dotfiles",
+		"today",
+		"project",
+		"update",
+		"achievements",
+		"stats",
+		"raffle-leaderboard",
+		"commands",
+	];
+
+	if (!validCommands.includes(parsed.command as ChatCommand)) {
+		return null;
+	}
+
+	return { command: parsed.command as ChatCommand, arg: parsed.arg };
 }
 
 async function handleSongCommand(): Promise<string> {
@@ -74,25 +116,349 @@ async function handleQueueCommand(): Promise<string> {
 	return `Next up: ${trackLines.join(" | ")}`;
 }
 
+async function handleStaticCommand(command: StaticCommand): Promise<string> {
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.getCommandValue(command);
+
+	if (result.status === "error") {
+		logger.error("Failed to get command value", { command, error: result.error.message });
+		return `Sorry, couldn't retrieve ${command} info.`;
+	}
+
+	const value = result.value;
+	if (!value) {
+		return `${command} info is not available.`;
+	}
+
+	return value;
+}
+
+/**
+ * Handle dynamic info commands (!today, !project)
+ *
+ * Both read from "today" key via CommandsDO (project is an alias).
+ */
+async function handleDynamicInfoCommand(command: DynamicInfoCommand): Promise<string> {
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.getCommandValue(command);
+
+	if (result.status === "error") {
+		logger.error("Failed to get command value", { command, error: result.error.message });
+		return "Sorry, couldn't retrieve today's topic.";
+	}
+
+	const value = result.value;
+	if (!value) {
+		return "No topic set for today.";
+	}
+
+	return `Working on: ${value}`;
+}
+
+/**
+ * Handle !update command (mod+ only)
+ *
+ * Syntax: !update <command> <value>
+ * Only dynamic commands (today) are updateable.
+ */
+async function handleUpdateCommand(
+	arg: string | null,
+	userPermission: Permission,
+	userName: string,
+): Promise<string> {
+	// Check permission first
+	if (!hasPermission(userPermission, "moderator")) {
+		return "Only moderators can update commands.";
+	}
+
+	if (!arg) {
+		return "Usage: !update today <value>";
+	}
+
+	// Parse: first word is command name, rest is value
+	const parts = arg.split(/\s+/);
+	const targetCommand = parts[0];
+	const newValue = parts.slice(1).join(" ");
+
+	if (!targetCommand) {
+		return "Usage: !update today <value>";
+	}
+
+	if (!newValue) {
+		return `Usage: !update ${targetCommand} <value>`;
+	}
+
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.setCommandValue(targetCommand, newValue, userName);
+
+	if (result.status === "error") {
+		if (CommandNotUpdateableError.is(result.error)) {
+			return `!${targetCommand} is not updateable.`;
+		}
+		logger.error("Failed to update command", {
+			command: targetCommand,
+			error: result.error.message,
+		});
+		return "Sorry, couldn't update the command.";
+	}
+
+	return `Updated !${targetCommand}`;
+}
+
+/**
+ * Handle !achievements command
+ *
+ * Shows unlocked achievements for caller or specified user.
+ * Format: "@user has unlocked X achievements: A, B, C" or "hasn't unlocked any"
+ */
+async function handleAchievementsCommand(
+	arg: string | null,
+	callerDisplayName: string,
+): Promise<string> {
+	const targetUser = arg ?? callerDisplayName;
+
+	const stub = getStub("ACHIEVEMENTS_DO");
+	const result = await stub.getUnlockedAchievements(targetUser);
+
+	if (result.status === "error") {
+		logger.error("Failed to get achievements", { user: targetUser, error: result.error.message });
+		return `Sorry, couldn't retrieve achievements for @${targetUser}.`;
+	}
+
+	const achievements: UnlockedAchievement[] = result.value;
+
+	if (achievements.length === 0) {
+		return `@${targetUser} hasn't unlocked any achievements yet.`;
+	}
+
+	const names = achievements.map((a) => a.name).join(", ");
+	return `@${targetUser} has unlocked ${achievements.length} achievement${achievements.length === 1 ? "" : "s"}: ${names}`;
+}
+
+/**
+ * Handle !stats command
+ *
+ * Shows aggregated stats: songs requested, achievements unlocked, raffle participation.
+ * For self: uses userId for song/raffle queries
+ * For other user: uses displayName for lookups
+ */
+async function handleStatsCommand(
+	arg: string | null,
+	callerUserId: string,
+	callerDisplayName: string,
+): Promise<string> {
+	const isSelf = arg === null;
+	const targetUser = arg ?? callerDisplayName;
+
+	// Get achievement stats (uses displayName)
+	const achievementsStub = getStub("ACHIEVEMENTS_DO");
+	const [unlockedResult, definitionsResult] = await Promise.all([
+		achievementsStub.getUnlockedAchievements(targetUser),
+		achievementsStub.getDefinitions(),
+	]);
+
+	let achievementStats = "?/?";
+	if (unlockedResult.status === "ok" && definitionsResult.status === "ok") {
+		achievementStats = `${unlockedResult.value.length}/${definitionsResult.value.length}`;
+	} else {
+		logger.warn("Failed to get achievement stats", { user: targetUser });
+	}
+
+	// Get raffle stats and song count in parallel
+	const raffleStub = getStub("KEYBOARD_RAFFLE_DO");
+	const songQueueStub = getStub("SONG_QUEUE_DO");
+
+	const formatRaffleStats = (entry: {
+		totalRolls: number;
+		totalWins: number;
+		closestDistance: number | null;
+	}) => {
+		const base = `${entry.totalRolls} rolls`;
+		const extras: string[] = [];
+		if (entry.closestDistance !== null) {
+			extras.push(`closest: ${entry.closestDistance}`);
+		}
+		if (entry.totalWins > 0) {
+			extras.push(`${entry.totalWins} win${entry.totalWins > 1 ? "s" : ""}!`);
+		}
+		return extras.length > 0 ? `${base} (${extras.join(", ")})` : base;
+	};
+
+	// Parallel fetch of song count and raffle stats
+	const [songResult, raffleResult] = await Promise.all([
+		isSelf
+			? songQueueStub.getUserRequestCount(callerUserId)
+			: songQueueStub.getUserRequestCountByDisplayName(targetUser),
+		isSelf
+			? raffleStub.getUserStats(callerUserId)
+			: raffleStub.getUserStatsByDisplayName(targetUser),
+	]);
+
+	// Process song count result
+	let songCount = 0;
+	if (songResult.status === "ok") {
+		songCount = songResult.value;
+	} else {
+		// Only log actual errors, not "not found" scenarios
+		logger.warn("Failed to get song count", {
+			user: isSelf ? callerUserId : targetUser,
+			error: songResult.error.message,
+		});
+	}
+
+	// Process raffle stats result
+	let raffleStats = "0 rolls";
+	if (raffleResult.status === "ok") {
+		raffleStats = formatRaffleStats(raffleResult.value);
+	} else if (!UserStatsNotFoundError.is(raffleResult.error)) {
+		// Log actual errors (not "user hasn't rolled" which is expected)
+		logger.warn("Failed to get raffle stats", {
+			user: isSelf ? callerUserId : targetUser,
+			error: raffleResult.error.message,
+		});
+	}
+
+	return `@${targetUser} — Songs: ${songCount} | Achievements: ${achievementStats} | Raffles: ${raffleStats}`;
+}
+
+/**
+ * Handle !raffle-leaderboard command
+ *
+ * Shows top winners sorted by total wins.
+ * Format: "Raffle wins: 1. @alice (5) 2. @bob (3) 3. @charlie (2)"
+ */
+async function handleRaffleLeaderboardCommand(): Promise<string> {
+	const stub = getStub("KEYBOARD_RAFFLE_DO");
+	const result = await stub.getLeaderboard({ sortBy: "wins", limit: 5 });
+
+	if (result.status === "error") {
+		logger.error("Failed to get raffle leaderboard", { error: result.error.message });
+		return "Sorry, couldn't retrieve the raffle leaderboard.";
+	}
+
+	const entries: LeaderboardEntry[] = result.value;
+
+	if (entries.length === 0) {
+		return "No raffle rolls recorded yet.";
+	}
+
+	// Filter to only users with at least one win
+	const winners = entries.filter((e) => e.totalWins > 0);
+
+	if (winners.length === 0) {
+		return "No raffle winners yet — be the first!";
+	}
+
+	const leaderboard = winners
+		.map((e, idx) => `${idx + 1}. @${e.displayName} (${e.totalWins})`)
+		.join(" ");
+
+	return `Raffle wins: ${leaderboard}`;
+}
+
+/**
+ * Handle !commands command
+ *
+ * Lists available commands based on user permission level.
+ * Format: "Commands: !keyboard !socials ..." for everyone
+ * Mods see: "Commands: ... | Mod: !update"
+ */
+async function handleCommandsCommand(userPermission: Permission): Promise<string> {
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.getCommandsByPermission(userPermission);
+
+	if (result.status === "error") {
+		logger.error("Failed to get commands", {
+			error: result.error.message,
+			permission: userPermission,
+		});
+		return "Sorry, couldn't retrieve the commands list.";
+	}
+
+	const commands: Command[] = result.value;
+
+	if (commands.length === 0) {
+		return "No commands available.";
+	}
+
+	// Separate commands by permission level
+	const everyoneCommands = commands.filter((c: Command) => c.permission === "everyone");
+	const modCommands = commands.filter((c: Command) => c.permission === "moderator");
+
+	// Format everyone commands
+	const everyoneList = everyoneCommands.map((c) => `!${c.name}`).join(" ");
+
+	// If user has mod+ permission and there are mod commands, append them
+	if (modCommands.length > 0 && hasPermission(userPermission, "moderator")) {
+		const modList = modCommands.map((c) => `!${c.name}`).join(" ");
+		return `Commands: ${everyoneList} | Mod: ${modList}`;
+	}
+
+	return `Commands: ${everyoneList}`;
+}
+
 async function handleChatCommand(
 	chatMessage: z.infer<typeof ChatMessageEventSchema>,
 	env: Env,
 ): Promise<void> {
-	const command = parseCommand(chatMessage.message.text);
-	if (!command) return;
+	const parsed = parseCommand(chatMessage.message.text);
+	if (!parsed) return;
 
+	const { command, arg } = parsed;
 	const startTime = Date.now();
 	let status: ChatCommandStatus = "success";
 	let error: string | undefined;
 
 	logger.info("Processing chat command", {
 		command,
+		arg,
 		user: chatMessage.chatter_user_name,
 		messageId: chatMessage.message_id,
 	});
 
-	const responseMessage =
-		command === "song" ? await handleSongCommand() : await handleQueueCommand();
+	let responseMessage: string;
+	const userPermission = getUserPermission(chatMessage.badges);
+
+	switch (command) {
+		case "song":
+			responseMessage = await handleSongCommand();
+			break;
+		case "queue":
+			responseMessage = await handleQueueCommand();
+			break;
+		case "keyboard":
+		case "socials":
+		case "dotfiles":
+			responseMessage = await handleStaticCommand(command);
+			break;
+		case "today":
+		case "project":
+			responseMessage = await handleDynamicInfoCommand(command);
+			break;
+		case "update":
+			responseMessage = await handleUpdateCommand(
+				arg,
+				userPermission,
+				chatMessage.chatter_user_name,
+			);
+			break;
+		case "achievements":
+			responseMessage = await handleAchievementsCommand(arg, chatMessage.chatter_user_name);
+			break;
+		case "stats":
+			responseMessage = await handleStatsCommand(
+				arg,
+				chatMessage.chatter_user_id,
+				chatMessage.chatter_user_name,
+			);
+			break;
+		case "raffle-leaderboard":
+			responseMessage = await handleRaffleLeaderboardCommand();
+			break;
+		case "commands":
+			responseMessage = await handleCommandsCommand(userPermission);
+			break;
+	}
 
 	const twitchService = new TwitchService(env);
 	const sendResult = await twitchService.sendChatMessage(responseMessage);
@@ -170,6 +536,13 @@ const RedemptionEventSchema = z.object({
 	redeemed_at: z.string(),
 });
 
+// Chat badge schema (Twitch EventSub format)
+const ChatBadgeSchema = z.object({
+	set_id: z.string(),
+	id: z.string(),
+	info: z.string(),
+});
+
 // Chat message event schema
 const ChatMessageEventSchema = z.object({
 	broadcaster_user_id: z.string(),
@@ -183,6 +556,7 @@ const ChatMessageEventSchema = z.object({
 		text: z.string(),
 		fragments: z.array(z.unknown()),
 	}),
+	badges: z.array(ChatBadgeSchema),
 });
 
 const EventSubNotificationSchema = z.object({
@@ -453,11 +827,21 @@ webhooks.post("/twitch", async (c) => {
 					}
 					const chatMessage = chatResult.data;
 
-					// Only process commands starting with !song or !queue
+					// Process chat commands
 					const messageText = chatMessage.message.text.trim().toLowerCase();
-					if (messageText.startsWith("!song") || messageText.startsWith("!queue")) {
-						// Inline handler - no workflow overhead
-						await handleChatCommand(chatMessage, c.env);
+
+					// Parse command and check CommandsDO registry (single source of truth)
+					const parsed = parseCommand(messageText);
+					if (parsed) {
+						const commandsStub = getStub("COMMANDS_DO");
+						const commandResult = await commandsStub.getCommand(parsed.command);
+
+						if (commandResult.status === "ok" && commandResult.value.enabled) {
+							const userPermission = getUserPermission(chatMessage.badges);
+							if (hasPermission(userPermission, commandResult.value.permission)) {
+								await handleChatCommand(chatMessage, c.env);
+							}
+						}
 					}
 					// Ignore other chat messages silently
 					break;

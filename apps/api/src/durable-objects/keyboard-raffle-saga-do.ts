@@ -242,11 +242,15 @@ class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 
 				logger.info("Recorded raffle roll", {
 					sagaId,
-					rollId: result.value.id,
+					rollId: result.value.roll.id,
 					isWinner,
+					isNewRecord: result.value.isNewRecord,
 				});
 
-				return { result: result.value.id, undoPayload: result.value.id };
+				return {
+					result: { rollId: result.value.roll.id, isNewRecord: result.value.isNewRecord },
+					undoPayload: result.value.roll.id,
+				};
 			},
 			async (undoPayload) => {
 				const rollId = undoPayload as string;
@@ -268,6 +272,9 @@ class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 		if (recordRollResult.status === "error") {
 			return this.handleStepError(recordRollResult.error, params);
 		}
+
+		// Extract isNewRecord for the event
+		const { isNewRecord } = recordRollResult.value;
 
 		// Step 4: Fulfill redemption (POINT OF NO RETURN - always fulfill for both winners and losers)
 		const fulfillResult = await runner.executeStep(
@@ -319,6 +326,7 @@ class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 					winningNumber,
 					distance,
 					isWinner,
+					isNewRecord,
 				});
 
 				const result = await eventBusStub.publish(event);

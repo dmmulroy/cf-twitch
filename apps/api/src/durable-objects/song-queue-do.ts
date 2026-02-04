@@ -387,6 +387,53 @@ class _SongQueueDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * Get total count of fulfilled requests by a specific user
+	 *
+	 * Used for !stats command to show user's all-time request count.
+	 */
+	@rpc
+	async getUserRequestCount(userId: string): Promise<Result<number, SongQueueDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				const countRows = await this.db
+					.select({ count: count() })
+					.from(requestHistory)
+					.where(eq(requestHistory.requesterUserId, userId));
+
+				return countRows[0]?.count ?? 0;
+			},
+			catch: (cause) =>
+				new SongQueueDbError({ operation: `getUserRequestCount(${userId})`, cause }),
+		});
+	}
+
+	/**
+	 * Get total count of fulfilled requests by a user's display name
+	 *
+	 * Used for !stats <user> command where we only have the display name.
+	 */
+	@rpc
+	async getUserRequestCountByDisplayName(
+		displayName: string,
+	): Promise<Result<number, SongQueueDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				const countRows = await this.db
+					.select({ count: count() })
+					.from(requestHistory)
+					.where(eq(requestHistory.requesterDisplayName, displayName));
+
+				return countRows[0]?.count ?? 0;
+			},
+			catch: (cause) =>
+				new SongQueueDbError({
+					operation: `getUserRequestCountByDisplayName(${displayName})`,
+					cause,
+				}),
+		});
+	}
+
+	/**
 	 * Get top tracks by request count
 	 */
 	@rpc
