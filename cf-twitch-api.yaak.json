@@ -27,6 +27,21 @@
 						"enabled": true,
 						"name": "ADMIN_SECRET",
 						"value": ""
+					},
+					{
+						"enabled": true,
+						"name": "EVENT_ID",
+						"value": ""
+					},
+					{
+						"enabled": true,
+						"name": "USERNAME",
+						"value": ""
+					},
+					{
+						"enabled": true,
+						"name": "DEBUG_USER",
+						"value": ""
 					}
 				]
 			},
@@ -93,6 +108,14 @@
 				"folderId": null,
 				"name": "API",
 				"description": "Public API endpoints"
+			},
+			{
+				"id": "fld_admin_debug",
+				"model": "folder",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin",
+				"name": "Debug",
+				"description": "Admin debug and diagnostics"
 			}
 		],
 		"httpRequests": [
@@ -160,6 +183,105 @@
 				"description": "Discard a failed event from the DLQ",
 				"method": "DELETE",
 				"url": "${[BASE_URL]}/api/admin/dlq/${[EVENT_ID]}",
+				"urlParameters": [],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_event_bus_pending",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_debug",
+				"name": "List Pending Events",
+				"description": "Get pending retry-queued events from EventBusDO",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/admin/event-bus/pending",
+				"urlParameters": [
+					{
+						"enabled": true,
+						"name": "limit",
+						"value": "50"
+					},
+					{
+						"enabled": true,
+						"name": "offset",
+						"value": "0"
+					}
+				],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_achievements_debug_counts",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_debug",
+				"name": "Achievements Debug Counts",
+				"description": "Get achievements table-level counts",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/admin/achievements/debug/counts",
+				"urlParameters": [],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_achievements_debug_user",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_debug",
+				"name": "Achievements Debug User",
+				"description": "Get per-user achievements debug snapshot",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/admin/achievements/debug/user/${[DEBUG_USER]}",
+				"urlParameters": [],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
+				"id": "req_stats_debug_user",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_debug",
+				"name": "Stats Debug User",
+				"description": "Debug exactly what !stats <user> resolves to",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/admin/debug/stats/${[DEBUG_USER]}",
 				"urlParameters": [],
 				"headers": [
 					{

@@ -125,6 +125,46 @@ export interface LeaderboardOptions {
 	limit?: number;
 }
 
+/** Debug counts for achievements tables */
+export interface AchievementDebugTableCounts {
+	definitions: number;
+	userAchievements: number;
+	unlockedAchievements: number;
+	userStreaks: number;
+	eventHistory: number;
+}
+
+/** Debug snapshot for a specific user */
+export interface AchievementDebugUserSnapshot {
+	requestedUser: string;
+	normalizedUser: string;
+	exactUserAchievementRows: number;
+	caseInsensitiveUserAchievementRows: number;
+	exactUnlockedRows: number;
+	caseInsensitiveUnlockedRows: number;
+	exactStreakRows: number;
+	caseInsensitiveStreakRows: number;
+	exactEventHistoryRows: number;
+	caseInsensitiveEventHistoryRows: number;
+	recentEvents: Array<{
+		eventId: string;
+		eventType: string;
+		userId: string;
+		userDisplayName: string;
+		timestamp: string;
+		metadata: string | null;
+	}>;
+	similarUsers: string[];
+}
+
+function normalizeUserDisplayName(value: string): string {
+	return value.trim().replace(/^@+/, "").toLowerCase();
+}
+
+function normalizeUserDisplayNameLoose(value: string): string {
+	return normalizeUserDisplayName(value).replaceAll("_", "");
+}
+
 // =============================================================================
 // AchievementsDO Implementation
 // =============================================================================
@@ -168,13 +208,32 @@ class _AchievementsDO
 			);
 		}
 
-		const { userDisplayName, event, eventId, increment, metadata } = parseResult.data;
+		return this.recordEventInternal(parseResult.data);
+	}
+
+	private async recordEventInternal(
+		input: AchievementEventInput,
+	): Promise<Result<UnlockedAchievement[], AchievementError>> {
+		const { userDisplayName, event, eventId, increment, metadata } = input;
+
+		logger.info("AchievementsDO: recordEvent started", {
+			userDisplayName,
+			event,
+			eventId,
+			increment,
+		});
 
 		return Result.tryPromise({
 			try: async () => {
 				// Find all achievement definitions that match this event
 				const matchingDefinitions = await this.db.query.achievementDefinitions.findMany({
 					where: eq(achievementDefinitions.triggerEvent, event),
+				});
+
+				logger.debug("AchievementsDO: Found matching definitions", {
+					event,
+					count: matchingDefinitions.length,
+					definitions: matchingDefinitions.map((d) => d.id),
 				});
 
 				if (matchingDefinitions.length === 0) {
@@ -204,7 +263,11 @@ class _AchievementsDO
 					}
 
 					// For threshold-based already unlocked, skip
-					if (userAchievement?.unlockedAt !== null && definition.threshold !== null) {
+					if (
+						userAchievement !== undefined &&
+						userAchievement.unlockedAt !== null &&
+						definition.threshold !== null
+					) {
 						continue;
 					}
 
@@ -289,9 +352,25 @@ class _AchievementsDO
 					}
 				}
 
+				logger.info("AchievementsDO: recordEvent completed", {
+					userDisplayName,
+					event,
+					newlyUnlocked: newlyUnlocked.length,
+					achievementIds: newlyUnlocked.map((a) => a.id),
+				});
+
 				return newlyUnlocked;
 			},
-			catch: (cause) => new AchievementDbError({ operation: "recordEvent", cause }),
+			catch: (cause) => {
+				logger.error("AchievementsDO: recordEvent failed", {
+					userDisplayName,
+					event,
+					eventId,
+					error: cause instanceof Error ? cause.message : String(cause),
+					stack: cause instanceof Error ? cause.stack : undefined,
+				});
+				return new AchievementDbError({ operation: "recordEvent", cause });
+			},
 		});
 	}
 
@@ -394,6 +473,172 @@ class _AchievementsDO
 				return this.db.query.achievementDefinitions.findMany();
 			},
 			catch: (cause) => new AchievementDbError({ operation: "getDefinitions", cause }),
+		});
+	}
+
+	/**
+	 * Debug endpoint: table-level counts for achievements state.
+	 */
+	@rpc
+	async getDebugTableCounts(): Promise<Result<AchievementDebugTableCounts, AchievementDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				const [definitionsRow, userAchievementsRow, unlockedRow, userStreaksRow, eventHistoryRow] =
+					await Promise.all([
+						this.db.select({ count: count() }).from(achievementDefinitions),
+						this.db.select({ count: count() }).from(userAchievements),
+						this.db
+							.select({ count: count() })
+							.from(userAchievements)
+							.where(isNotNull(userAchievements.unlockedAt)),
+						this.db.select({ count: count() }).from(userStreaks),
+						this.db.select({ count: count() }).from(eventHistory),
+					]);
+
+				return {
+					definitions: definitionsRow[0]?.count ?? 0,
+					userAchievements: userAchievementsRow[0]?.count ?? 0,
+					unlockedAchievements: unlockedRow[0]?.count ?? 0,
+					userStreaks: userStreaksRow[0]?.count ?? 0,
+					eventHistory: eventHistoryRow[0]?.count ?? 0,
+				};
+			},
+			catch: (cause) => new AchievementDbError({ operation: "getDebugTableCounts", cause }),
+		});
+	}
+
+	/**
+	 * Debug endpoint: detailed per-user snapshot with normalization diagnostics.
+	 */
+	@rpc
+	async getDebugUserSnapshot(
+		userDisplayName: string,
+	): Promise<Result<AchievementDebugUserSnapshot, AchievementDbError>> {
+		const normalizedUser = normalizeUserDisplayName(userDisplayName);
+		const normalizedLoose = normalizeUserDisplayNameLoose(userDisplayName);
+
+		return Result.tryPromise({
+			try: async () => {
+				const [exactUserAchievementRowsResult, exactUnlockedRowsResult, exactStreakRowsResult] =
+					await Promise.all([
+						this.db
+							.select({ count: count() })
+							.from(userAchievements)
+							.where(eq(userAchievements.userDisplayName, userDisplayName)),
+						this.db
+							.select({ count: count() })
+							.from(userAchievements)
+							.where(
+								and(
+									eq(userAchievements.userDisplayName, userDisplayName),
+									isNotNull(userAchievements.unlockedAt),
+								),
+							),
+						this.db
+							.select({ count: count() })
+							.from(userStreaks)
+							.where(eq(userStreaks.userDisplayName, userDisplayName)),
+					]);
+
+				const [allAchievementRows, allStreakRows, allEventRows, recentEventRows] = await Promise.all([
+					this.db
+						.select({
+							userDisplayName: userAchievements.userDisplayName,
+							unlockedAt: userAchievements.unlockedAt,
+						})
+						.from(userAchievements),
+					this.db.select({ userDisplayName: userStreaks.userDisplayName }).from(userStreaks),
+					this.db
+						.select({
+							userDisplayName: eventHistory.userDisplayName,
+							eventId: eventHistory.eventId,
+							eventType: eventHistory.eventType,
+							userId: eventHistory.userId,
+							timestamp: eventHistory.timestamp,
+							metadata: eventHistory.metadata,
+						})
+						.from(eventHistory),
+					this.db
+						.select({
+							eventId: eventHistory.eventId,
+							eventType: eventHistory.eventType,
+							userId: eventHistory.userId,
+							userDisplayName: eventHistory.userDisplayName,
+							timestamp: eventHistory.timestamp,
+							metadata: eventHistory.metadata,
+						})
+						.from(eventHistory)
+						.orderBy(desc(eventHistory.timestamp))
+						.limit(200),
+				]);
+
+				const caseInsensitiveUserAchievementRows = allAchievementRows.filter(
+					(row) => normalizeUserDisplayName(row.userDisplayName) === normalizedUser,
+				).length;
+
+				const caseInsensitiveUnlockedRows = allAchievementRows.filter(
+					(row) =>
+						normalizeUserDisplayName(row.userDisplayName) === normalizedUser &&
+						row.unlockedAt !== null,
+				).length;
+
+				const caseInsensitiveStreakRows = allStreakRows.filter(
+					(row) => normalizeUserDisplayName(row.userDisplayName) === normalizedUser,
+				).length;
+
+				const caseInsensitiveEventHistoryRows = allEventRows.filter(
+					(row) => normalizeUserDisplayName(row.userDisplayName) === normalizedUser,
+				).length;
+
+				const recentEvents = recentEventRows.filter(
+					(row) => normalizeUserDisplayName(row.userDisplayName) === normalizedUser,
+				);
+
+				const allKnownUsers = new Set<string>();
+				for (const row of allAchievementRows) {
+					allKnownUsers.add(row.userDisplayName);
+				}
+				for (const row of allStreakRows) {
+					allKnownUsers.add(row.userDisplayName);
+				}
+				for (const row of allEventRows) {
+					allKnownUsers.add(row.userDisplayName);
+				}
+
+				const similarUsers = Array.from(allKnownUsers)
+					.filter((name) => {
+						const normalizedName = normalizeUserDisplayName(name);
+						const normalizedNameLoose = normalizeUserDisplayNameLoose(name);
+						return (
+							normalizedName === normalizedUser ||
+							normalizedNameLoose === normalizedLoose ||
+							normalizedName.includes(normalizedUser) ||
+							normalizedUser.includes(normalizedName) ||
+							normalizedNameLoose.includes(normalizedLoose) ||
+							normalizedLoose.includes(normalizedNameLoose)
+						);
+					})
+					.sort((a, b) => a.localeCompare(b))
+					.slice(0, 20);
+
+				return {
+					requestedUser: userDisplayName,
+					normalizedUser,
+					exactUserAchievementRows: exactUserAchievementRowsResult[0]?.count ?? 0,
+					caseInsensitiveUserAchievementRows,
+					exactUnlockedRows: exactUnlockedRowsResult[0]?.count ?? 0,
+					caseInsensitiveUnlockedRows,
+					exactStreakRows: exactStreakRowsResult[0]?.count ?? 0,
+					caseInsensitiveStreakRows,
+					exactEventHistoryRows: allEventRows.filter(
+						(row) => row.userDisplayName === userDisplayName,
+					).length,
+					caseInsensitiveEventHistoryRows,
+					recentEvents,
+					similarUsers,
+				};
+			},
+			catch: (cause) => new AchievementDbError({ operation: "getDebugUserSnapshot", cause }),
 		});
 	}
 
@@ -654,6 +899,7 @@ class _AchievementsDO
 
 		// Record to event_history for auditing and "first request" checks
 		const recordResult = await this.recordToEventHistory(validEvent);
+
 		if (recordResult.isErr()) {
 			return recordResult;
 		}
@@ -693,7 +939,7 @@ class _AchievementsDO
 		});
 
 		// Record song_request for cumulative achievements (first_request, request_10, request_50, request_100)
-		const songRequestResult = await this.recordEvent({
+		const songRequestResult = await this.recordEventInternal({
 			userDisplayName: event.userDisplayName,
 			event: "song_request",
 			eventId: event.id,
@@ -723,7 +969,7 @@ class _AchievementsDO
 			// Continue - don't fail entire handler for first request check
 		} else if (firstRequestResult.value) {
 			// This is the first request of the stream - trigger stream_first_request
-			const firstAchievementResult = await this.recordEvent({
+			const firstAchievementResult = await this.recordEventInternal({
 				userDisplayName: event.userDisplayName,
 				event: "stream_first_request",
 				eventId: `${event.id}-first-request`,
@@ -754,7 +1000,7 @@ class _AchievementsDO
 		// Check streak achievements (streak_3, streak_5)
 		// Only check if we've hit a threshold to avoid unnecessary DB queries
 		if (newSessionStreak >= 3) {
-			const achievementResult = await this.recordEvent({
+			const achievementResult = await this.recordEventInternal({
 				userDisplayName: event.userDisplayName,
 				event: "request_streak",
 				eventId: `${event.id}-streak-${newSessionStreak}`,
@@ -863,7 +1109,7 @@ class _AchievementsDO
 		});
 
 		// 1. Record raffle_roll for cumulative roll achievements (first_roll, roll_25, roll_100)
-		const rollResult = await this.recordEvent({
+		const rollResult = await this.recordEventInternal({
 			userDisplayName: event.userDisplayName,
 			event: "raffle_roll",
 			eventId: event.id,
@@ -884,7 +1130,7 @@ class _AchievementsDO
 
 		// 2. Record raffle_win if winner (first_win)
 		if (event.isWinner) {
-			const winResult = await this.recordEvent({
+			const winResult = await this.recordEventInternal({
 				userDisplayName: event.userDisplayName,
 				event: "raffle_win",
 				eventId: `${event.id}-win`,
@@ -907,7 +1153,7 @@ class _AchievementsDO
 		// 3. Record raffle_close if within 100 distance (but not winner) (close_call)
 		// close_call is event-based (NULL threshold) - unlocks once per user
 		if (!event.isWinner && event.distance <= 100) {
-			const closeResult = await this.recordEvent({
+			const closeResult = await this.recordEventInternal({
 				userDisplayName: event.userDisplayName,
 				event: "raffle_close",
 				eventId: `${event.id}-close`,
@@ -931,7 +1177,7 @@ class _AchievementsDO
 		// 4. Record closest_ever if this roll set a new closest record
 		// Only check for non-winners - winners have distance 0 (different achievement)
 		if (!event.isWinner && event.isNewRecord) {
-			const recordAchievementResult = await this.recordEvent({
+			const recordAchievementResult = await this.recordEventInternal({
 				userDisplayName: event.userDisplayName,
 				event: "raffle_closest_record",
 				eventId: `${event.id}-closest-record`,
@@ -950,6 +1196,11 @@ class _AchievementsDO
 				});
 			}
 		}
+
+		logger.info("AchievementsDO: handleRaffleRoll completed", {
+			eventId: event.id,
+			userId: event.userId,
+		});
 
 		return Result.ok();
 	}

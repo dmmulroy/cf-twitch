@@ -388,6 +388,17 @@ class _EventBusDO extends DurableObject<Env> {
 			const result = await stub.handleEvent(event);
 
 			if (result.isErr()) {
+				// Log detailed error cause for debugging
+				const cause = result.error;
+				logger.error("EventBusDO: Handler returned error", {
+					eventId: event.id,
+					eventType: event.type,
+					handler: handlerKey,
+					errorTag: cause && typeof cause === "object" && "_tag" in cause ? cause._tag : "UnknownError",
+					errorMessage: cause instanceof Error ? cause.message : String(cause),
+					errorStack: cause instanceof Error ? cause.stack : undefined,
+					cause: cause && typeof cause === "object" ? JSON.stringify(cause) : cause,
+				});
 				return Result.err(
 					new EventBusHandlerError({
 						eventType: event.type,
@@ -399,6 +410,15 @@ class _EventBusDO extends DurableObject<Env> {
 
 			return Result.ok();
 		} catch (error) {
+			// Log thrown exceptions with full details
+			logger.error("EventBusDO: Handler threw exception", {
+				eventId: event.id,
+				eventType: event.type,
+				handler: handlerKey,
+				errorMessage: error instanceof Error ? error.message : String(error),
+				errorStack: error instanceof Error ? error.stack : undefined,
+				error: error && typeof error === "object" ? JSON.stringify(error) : error,
+			});
 			return Result.err(
 				new EventBusHandlerError({
 					eventType: event.type,
@@ -420,6 +440,58 @@ class _EventBusDO extends DurableObject<Env> {
 				return result.length;
 			},
 			catch: (cause) => new EventBusDbError({ operation: "getPendingCount", cause }),
+		});
+	}
+
+	/**
+	 * Get pending events with parsed payloads for debugging.
+	 */
+	@rpc
+	async getPending(options?: {
+		limit?: number;
+		offset?: number;
+	}): Promise<Result<PendingListResponse, EventBusDbError>> {
+		const limit = options?.limit ?? 50;
+		const offset = options?.offset ?? 0;
+
+		return Result.tryPromise({
+			try: async () => {
+				const items = await this.db
+					.select()
+					.from(pendingEvents)
+					.orderBy(pendingEvents.nextRetryAt)
+					.limit(limit)
+					.offset(offset);
+
+				const allItems = await this.db.select().from(pendingEvents);
+				const totalCount = allItems.length;
+
+				const parsedItems: PendingItem[] = items.map((item) => {
+					let event: Event | null = null;
+					try {
+						const parseResult = EventSchema.safeParse(JSON.parse(item.event));
+						event = parseResult.success ? parseResult.data : null;
+					} catch {
+						// Corrupted JSON - leave event as null
+					}
+
+					return {
+						id: item.id,
+						event,
+						attempts: item.attempts,
+						nextRetryAt: item.nextRetryAt,
+						createdAt: item.createdAt,
+					};
+				});
+
+				return {
+					items: parsedItems,
+					totalCount,
+					limit,
+					offset,
+				};
+			},
+			catch: (cause) => new EventBusDbError({ operation: "getPending", cause }),
 		});
 	}
 
@@ -625,6 +697,23 @@ export interface DLQItem {
 /** Response for getDLQ */
 export interface DLQListResponse {
 	items: DLQItem[];
+	totalCount: number;
+	limit: number;
+	offset: number;
+}
+
+/** Single pending event with parsed event payload */
+export interface PendingItem {
+	id: string;
+	event: Event | null;
+	attempts: number;
+	nextRetryAt: string;
+	createdAt: string;
+}
+
+/** Response for getPending */
+export interface PendingListResponse {
+	items: PendingItem[];
 	totalCount: number;
 	limit: number;
 	offset: number;

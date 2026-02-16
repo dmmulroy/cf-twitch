@@ -258,8 +258,12 @@ async function handleStatsCommand(
 	]);
 
 	let achievementStats = "?/?";
+	let unlockedCount: number | null = null;
+	let totalAchievementCount: number | null = null;
 	if (unlockedResult.status === "ok" && definitionsResult.status === "ok") {
-		achievementStats = `${unlockedResult.value.length}/${definitionsResult.value.length}`;
+		unlockedCount = unlockedResult.value.length;
+		totalAchievementCount = definitionsResult.value.length;
+		achievementStats = `${unlockedCount}/${totalAchievementCount}`;
 	} else {
 		logger.warn("Failed to get achievement stats", { user: targetUser });
 	}
@@ -316,6 +320,19 @@ async function handleStatsCommand(
 			user: isSelf ? callerUserId : targetUser,
 			error: raffleResult.error.message,
 		});
+	}
+
+	const noStatsForTargetUser =
+		!isSelf &&
+		songResult.status === "ok" &&
+		songResult.value === 0 &&
+		unlockedCount === 0 &&
+		totalAchievementCount !== null &&
+		raffleResult.status === "error" &&
+		UserStatsNotFoundError.is(raffleResult.error);
+
+	if (noStatsForTargetUser) {
+		return `No records found for @${targetUser} yet — no songs, achievements, or raffle stats.`;
 	}
 
 	return `@${targetUser} — Songs: ${songCount} | Achievements: ${achievementStats} | Raffles: ${raffleStats}`;
