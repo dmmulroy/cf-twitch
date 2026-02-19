@@ -193,7 +193,9 @@ export class TwitchService {
 	 * Returns Ok(null) if the stream is offline
 	 */
 	async getStreamInfo(userLogin: string) {
-		const tokenResult = await this.getToken();
+		// Use app access token so stream state reconciliation can work even when
+		// user tokens are expired while stream lifecycle state is stale/offline.
+		const tokenResult = await this.getAppToken();
 		if (tokenResult.status === "error") {
 			return Result.err(tokenResult.error);
 		}

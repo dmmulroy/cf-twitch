@@ -136,8 +136,7 @@ class _KeyboardRaffleDO
 				// - It's not a winner (winners have distance 0, which is a different achievement)
 				// - Either there was no previous record, OR this distance is smaller
 				const isNewRecord =
-					!isWinner &&
-					(previousBestDistance === null || rollData.distance < previousBestDistance);
+					!isWinner && (previousBestDistance === null || rollData.distance < previousBestDistance);
 
 				logger.info("Recorded raffle roll", {
 					rollId: recordedRoll.id,

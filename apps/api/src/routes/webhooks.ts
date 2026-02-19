@@ -9,6 +9,7 @@ import { Result } from "better-result";
 import { Hono } from "hono";
 import { z } from "zod";
 
+import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import { type ChatCommandStatus, writeChatCommandMetric } from "../lib/analytics";
 import { parseCommandWithArg } from "../lib/commands";
 import { getStub } from "../lib/durable-objects";
@@ -20,7 +21,6 @@ import { TwitchService } from "../services/twitch-service";
 import type { UnlockedAchievement } from "../durable-objects/achievements-do";
 import type { Command } from "../durable-objects/schemas/commands-do.schema";
 import type { LeaderboardEntry } from "../durable-objects/schemas/keyboard-raffle-do.schema";
-import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import type { QueuedTrack } from "../durable-objects/song-queue-do";
 import type { Env } from "../index";
 
@@ -28,11 +28,39 @@ import type { Env } from "../index";
 // Chat Command Handlers (migrated from ChatCommandWorkflow)
 // =============================================================================
 
-type StaticCommand = "keyboard" | "socials" | "dotfiles";
+type StaticCommand =
+	| "keyboard"
+	| "socials"
+	| "github"
+	| "twitter"
+	| "schedule"
+	| "font"
+	| "dotfiles"
+	| "functor"
+	| "location"
+	| "ocaml"
+	| "lurk"
+	| "youtube"
+	| "unlurk"
+	| "errors"
+	| "vibes"
+	| "neovim"
+	| "dict"
+	| "beam"
+	| "linux"
+	| "leak"
+	| "truth"
+	| "job";
 type DynamicInfoCommand = "today" | "project";
 type MusicCommand = "song" | "queue";
 type UpdateCommand = "update";
-type ComputedCommand = "achievements" | "stats" | "raffle-leaderboard" | "commands";
+type ComputedCommand =
+	| "achievements"
+	| "stats"
+	| "raffle-leaderboard"
+	| "commands"
+	| "time"
+	| "skillissue";
 type ChatCommand =
 	| StaticCommand
 	| DynamicInfoCommand
@@ -40,36 +68,60 @@ type ChatCommand =
 	| UpdateCommand
 	| ComputedCommand;
 
+const RANDOM_EMOTES = ["PogChamp", "Kappa", "LUL", "SeemsGood", "HeyGuys"];
+
 interface ParsedChatCommand {
 	command: ChatCommand;
 	arg: string | null;
 }
 
+const VALID_CHAT_COMMANDS: ChatCommand[] = [
+	"song",
+	"queue",
+	"keyboard",
+	"socials",
+	"github",
+	"twitter",
+	"schedule",
+	"font",
+	"dotfiles",
+	"functor",
+	"location",
+	"ocaml",
+	"lurk",
+	"youtube",
+	"unlurk",
+	"errors",
+	"vibes",
+	"neovim",
+	"dict",
+	"beam",
+	"linux",
+	"time",
+	"leak",
+	"skillissue",
+	"truth",
+	"job",
+	"today",
+	"project",
+	"update",
+	"achievements",
+	"stats",
+	"raffle-leaderboard",
+	"commands",
+];
+
+function isChatCommand(command: string): command is ChatCommand {
+	return VALID_CHAT_COMMANDS.some((validCommand) => validCommand === command);
+}
+
 function parseCommand(text: string): ParsedChatCommand | null {
 	const parsed = parseCommandWithArg(text);
-	if (!parsed) return null;
-
-	// Validate command is a known ChatCommand
-	const validCommands: ChatCommand[] = [
-		"song",
-		"queue",
-		"keyboard",
-		"socials",
-		"dotfiles",
-		"today",
-		"project",
-		"update",
-		"achievements",
-		"stats",
-		"raffle-leaderboard",
-		"commands",
-	];
-
-	if (!validCommands.includes(parsed.command as ChatCommand)) {
+	if (!parsed || !isChatCommand(parsed.command)) {
 		return null;
 	}
 
-	return { command: parsed.command as ChatCommand, arg: parsed.arg };
+	return { command: parsed.command, arg: parsed.arg };
 }
 
 async function handleSongCommand(): Promise<string> {
@@ -116,7 +168,13 @@ async function handleQueueCommand(): Promise<string> {
 	return `Next up: ${trackLines.join(" | ")}`;
 }
 
-async function handleStaticCommand(command: StaticCommand): Promise<string> {
+function renderStaticTemplate(value: string, userName: string): string {
+	const emote = RANDOM_EMOTES[Math.floor(Math.random() * RANDOM_EMOTES.length)] ?? "PogChamp";
+
+	return value.replaceAll("${user}", userName).replaceAll("${random.emote}", emote);
+}
+
+async function handleStaticCommand(command: StaticCommand, userName: string): Promise<string> {
 	const stub = getStub("COMMANDS_DO");
 	const result = await stub.getCommandValue(command);
 
@@ -130,7 +188,7 @@ async function handleStaticCommand(command: StaticCommand): Promise<string> {
 		return `${command} info is not available.`;
 	}
 
-	return value;
+	return renderStaticTemplate(value, userName);
 }
 
 /**
@@ -155,33 +213,67 @@ async function handleDynamicInfoCommand(command: DynamicInfoCommand): Promise<st
 	return `Working on: ${value}`;
 }
 
+async function handleTimeCommand(): Promise<string> {
+	const formatter = new Intl.DateTimeFormat("en-US", {
+		timeZone: "America/New_York",
+		hour: "numeric",
+		minute: "2-digit",
+		second: "2-digit",
+		hour12: true,
+		timeZoneName: "short",
+	});
+
+	return `Current time is: ${formatter.format(new Date())}`;
+}
+
+async function handleSkillIssueCommand(): Promise<string> {
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.incrementCommandCounter("skillissue");
+
+	if (result.status === "error") {
+		logger.error("Failed to increment skillissue counter", {
+			error: result.error.message,
+		});
+		return "Couldn't count that skill issue right now.";
+	}
+
+	return `@dmmulroy has ${result.value} SkillIssue so far`;
+}
+
 /**
- * Handle !update command (mod+ only)
+ * Handle !update command
  *
  * Syntax: !update <command> <value>
- * Only dynamic commands (today) are updateable.
+ * Update permissions:
+ * - !leak: VIP+
+ * - all other dynamic commands: moderator+
  */
 async function handleUpdateCommand(
 	arg: string | null,
 	userPermission: Permission,
 	userName: string,
 ): Promise<string> {
-	// Check permission first
-	if (!hasPermission(userPermission, "moderator")) {
-		return "Only moderators can update commands.";
-	}
-
 	if (!arg) {
-		return "Usage: !update today <value>";
+		return "Usage: !update <command> <value>";
 	}
 
 	// Parse: first word is command name, rest is value
 	const parts = arg.split(/\s+/);
-	const targetCommand = parts[0];
+	const targetCommandRaw = parts[0];
 	const newValue = parts.slice(1).join(" ");
 
-	if (!targetCommand) {
-		return "Usage: !update today <value>";
+	if (!targetCommandRaw) {
+		return "Usage: !update <command> <value>";
+	}
+
+	const targetCommand = targetCommandRaw.toLowerCase();
+	const requiredPermission: Permission = targetCommand === "leak" ? "vip" : "moderator";
+
+	if (!hasPermission(userPermission, requiredPermission)) {
+		if (requiredPermission === "vip") {
+			return "Only VIPs and moderators can update !leak.";
+		}
+		return `Only moderators can update !${targetCommand}.`;
 	}
 
 	if (!newValue) {
@@ -378,7 +470,7 @@ async function handleRaffleLeaderboardCommand(): Promise<string> {
  *
  * Lists available commands based on user permission level.
  * Format: "Commands: !keyboard !socials ..." for everyone
- * Mods see: "Commands: ... | Mod: !update"
+ * Users with elevated roles see extra sections (VIP, Mod, Broadcaster).
  */
 async function handleCommandsCommand(userPermission: Permission): Promise<string> {
 	const stub = getStub("COMMANDS_DO");
@@ -400,18 +492,30 @@ async function handleCommandsCommand(userPermission: Permission): Promise<string
 
 	// Separate commands by permission level
 	const everyoneCommands = commands.filter((c: Command) => c.permission === "everyone");
+	const vipCommands = commands.filter((c: Command) => c.permission === "vip");
 	const modCommands = commands.filter((c: Command) => c.permission === "moderator");
+	const broadcasterCommands = commands.filter((c: Command) => c.permission === "broadcaster");
 
-	// Format everyone commands
+	const sections: string[] = [];
 	const everyoneList = everyoneCommands.map((c) => `!${c.name}`).join(" ");
+	sections.push(`Commands: ${everyoneList}`);
 
-	// If user has mod+ permission and there are mod commands, append them
-	if (modCommands.length > 0 && hasPermission(userPermission, "moderator")) {
-		const modList = modCommands.map((c) => `!${c.name}`).join(" ");
-		return `Commands: ${everyoneList} | Mod: ${modList}`;
+	if (vipCommands.length > 0 && hasPermission(userPermission, "vip")) {
+		const vipList = vipCommands.map((c) => `!${c.name}`).join(" ");
+		sections.push(`VIP: ${vipList}`);
 	}
 
-	return `Commands: ${everyoneList}`;
+	if (modCommands.length > 0 && hasPermission(userPermission, "moderator")) {
+		const modList = modCommands.map((c) => `!${c.name}`).join(" ");
+		sections.push(`Mod: ${modList}`);
+	}
+
+	if (broadcasterCommands.length > 0 && hasPermission(userPermission, "broadcaster")) {
+		const broadcasterList = broadcasterCommands.map((c) => `!${c.name}`).join(" ");
+		sections.push(`Broadcaster: ${broadcasterList}`);
+	}
+
+	return sections.join(" | ");
 }
 
 async function handleChatCommand(
@@ -445,12 +549,37 @@ async function handleChatCommand(
 			break;
 		case "keyboard":
 		case "socials":
+		case "github":
+		case "twitter":
+		case "schedule":
+		case "font":
 		case "dotfiles":
-			responseMessage = await handleStaticCommand(command);
+		case "functor":
+		case "location":
+		case "ocaml":
+		case "lurk":
+		case "youtube":
+		case "unlurk":
+		case "errors":
+		case "vibes":
+		case "neovim":
+		case "dict":
+		case "beam":
+		case "linux":
+		case "leak":
+		case "truth":
+		case "job":
+			responseMessage = await handleStaticCommand(command, chatMessage.chatter_user_name);
 			break;
 		case "today":
 		case "project":
 			responseMessage = await handleDynamicInfoCommand(command);
+			break;
+		case "time":
+			responseMessage = await handleTimeCommand();
+			break;
+		case "skillissue":
+			responseMessage = await handleSkillIssueCommand();
 			break;
 		case "update":
 			responseMessage = await handleUpdateCommand(
@@ -763,18 +892,20 @@ webhooks.post("/twitch", async (c) => {
 		try {
 			switch (subscription.type) {
 				case "stream.online": {
-					// Signal StreamLifecycleDO via RPC
+					// Signal StreamLifecycleDO via RPC using EventSub message timestamp
+					// to handle out-of-order delivery safely.
 					const stub = getStub("STREAM_LIFECYCLE_DO");
-					await stub.onStreamOnline();
-					logger.info("Stream online event processed");
+					await stub.onStreamOnline(timestamp);
+					logger.info("Stream online event processed", { timestamp });
 					break;
 				}
 
 				case "stream.offline": {
-					// Signal StreamLifecycleDO via RPC
+					// Signal StreamLifecycleDO via RPC using EventSub message timestamp
+					// to handle out-of-order delivery safely.
 					const stub = getStub("STREAM_LIFECYCLE_DO");
-					await stub.onStreamOffline();
-					logger.info("Stream offline event processed");
+					await stub.onStreamOffline(timestamp);
+					logger.info("Stream offline event processed", { timestamp });
 					break;
 				}
 

@@ -7,7 +7,7 @@
 /**
  * Permission levels for chat commands (highest to lowest).
  */
-export type Permission = "broadcaster" | "moderator" | "everyone";
+export type Permission = "broadcaster" | "moderator" | "vip" | "everyone";
 
 /**
  * Twitch EventSub chat badge format.
@@ -23,11 +23,12 @@ export interface Badge {
  * Derives the highest permission level from a user's badges.
  *
  * @param badges - Array of Twitch chat badges
- * @returns The highest permission level: broadcaster > moderator > everyone
+ * @returns The highest permission level: broadcaster > moderator > vip > everyone
  */
 export function getUserPermission(badges: Badge[]): Permission {
 	if (badges.some((b) => b.set_id === "broadcaster")) return "broadcaster";
 	if (badges.some((b) => b.set_id === "moderator")) return "moderator";
+	if (badges.some((b) => b.set_id === "vip")) return "vip";
 	return "everyone";
 }
 
@@ -40,8 +41,9 @@ export function getUserPermission(badges: Badge[]): Permission {
  */
 export function hasPermission(userPermission: Permission, required: Permission): boolean {
 	const levels: Record<Permission, number> = {
-		broadcaster: 2,
-		moderator: 1,
+		broadcaster: 3,
+		moderator: 2,
+		vip: 1,
 		everyone: 0,
 	};
 	return levels[userPermission] >= levels[required];

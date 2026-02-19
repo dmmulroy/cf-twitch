@@ -540,37 +540,38 @@ class _AchievementsDO
 							.where(eq(userStreaks.userDisplayName, userDisplayName)),
 					]);
 
-				const [allAchievementRows, allStreakRows, allEventRows, recentEventRows] = await Promise.all([
-					this.db
-						.select({
-							userDisplayName: userAchievements.userDisplayName,
-							unlockedAt: userAchievements.unlockedAt,
-						})
-						.from(userAchievements),
-					this.db.select({ userDisplayName: userStreaks.userDisplayName }).from(userStreaks),
-					this.db
-						.select({
-							userDisplayName: eventHistory.userDisplayName,
-							eventId: eventHistory.eventId,
-							eventType: eventHistory.eventType,
-							userId: eventHistory.userId,
-							timestamp: eventHistory.timestamp,
-							metadata: eventHistory.metadata,
-						})
-						.from(eventHistory),
-					this.db
-						.select({
-							eventId: eventHistory.eventId,
-							eventType: eventHistory.eventType,
-							userId: eventHistory.userId,
-							userDisplayName: eventHistory.userDisplayName,
-							timestamp: eventHistory.timestamp,
-							metadata: eventHistory.metadata,
-						})
-						.from(eventHistory)
-						.orderBy(desc(eventHistory.timestamp))
-						.limit(200),
-				]);
+				const [allAchievementRows, allStreakRows, allEventRows, recentEventRows] =
+					await Promise.all([
+						this.db
+							.select({
+								userDisplayName: userAchievements.userDisplayName,
+								unlockedAt: userAchievements.unlockedAt,
+							})
+							.from(userAchievements),
+						this.db.select({ userDisplayName: userStreaks.userDisplayName }).from(userStreaks),
+						this.db
+							.select({
+								userDisplayName: eventHistory.userDisplayName,
+								eventId: eventHistory.eventId,
+								eventType: eventHistory.eventType,
+								userId: eventHistory.userId,
+								timestamp: eventHistory.timestamp,
+								metadata: eventHistory.metadata,
+							})
+							.from(eventHistory),
+						this.db
+							.select({
+								eventId: eventHistory.eventId,
+								eventType: eventHistory.eventType,
+								userId: eventHistory.userId,
+								userDisplayName: eventHistory.userDisplayName,
+								timestamp: eventHistory.timestamp,
+								metadata: eventHistory.metadata,
+							})
+							.from(eventHistory)
+							.orderBy(desc(eventHistory.timestamp))
+							.limit(200),
+					]);
 
 				const caseInsensitiveUserAchievementRows = allAchievementRows.filter(
 					(row) => normalizeUserDisplayName(row.userDisplayName) === normalizedUser,

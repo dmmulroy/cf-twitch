@@ -394,7 +394,8 @@ class _EventBusDO extends DurableObject<Env> {
 					eventId: event.id,
 					eventType: event.type,
 					handler: handlerKey,
-					errorTag: cause && typeof cause === "object" && "_tag" in cause ? cause._tag : "UnknownError",
+					errorTag:
+						cause && typeof cause === "object" && "_tag" in cause ? cause._tag : "UnknownError",
 					errorMessage: cause instanceof Error ? cause.message : String(cause),
 					errorStack: cause instanceof Error ? cause.stack : undefined,
 					cause: cause && typeof cause === "object" ? JSON.stringify(cause) : cause,

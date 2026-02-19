@@ -264,6 +264,24 @@ admin.get("/achievements/debug/user/:user", async (c) => {
 });
 
 /**
+ * GET /admin/commands/debug/snapshot
+ * Full command registry snapshot (definitions, values, and counters).
+ */
+admin.get("/commands/debug/snapshot", async (c) => {
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.getDebugSnapshot();
+
+	if (result.status === "error") {
+		logger.error("Admin: Failed to get commands debug snapshot", {
+			error: result.error.message,
+		});
+		return c.json({ error: "Failed to fetch commands debug snapshot" }, 500);
+	}
+
+	return c.json(result.value);
+});
+
+/**
  * GET /admin/debug/stats/:user
  * Debug what !stats <user> would resolve to.
  */
@@ -317,7 +335,8 @@ admin.get("/debug/stats/:user", async (c) => {
 	const raffleNotFound =
 		raffleResult.status === "error" && UserStatsNotFoundError.is(raffleResult.error);
 
-	const raffleStats = raffleResult.status === "ok" ? formatRaffleStats(raffleResult.value) : "0 rolls";
+	const raffleStats =
+		raffleResult.status === "ok" ? formatRaffleStats(raffleResult.value) : "0 rolls";
 
 	const noStatsForTargetUser =
 		songResult.status === "ok" &&

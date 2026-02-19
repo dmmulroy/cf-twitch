@@ -17,7 +17,7 @@ export const commands = sqliteTable("commands", {
 	description: text("description").notNull(),
 	category: text("category").notNull(), // "info" | "stats" | "meta" | "music"
 	responseType: text("response_type").notNull(), // "static" | "dynamic" | "computed"
-	permission: text("permission").notNull(), // "everyone" | "moderator" | "broadcaster"
+	permission: text("permission").notNull(), // "everyone" | "vip" | "moderator" | "broadcaster"
 	enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
 	createdAt: text("created_at").notNull(),
 });
@@ -44,9 +44,24 @@ export type CommandValue = typeof commandValues.$inferSelect;
 export type InsertCommandValue = typeof commandValues.$inferInsert;
 
 /**
+ * Command counters - stores incrementing counters for computed commands
+ * such as !skillissue.
+ */
+export const commandCounters = sqliteTable("command_counters", {
+	commandName: text("command_name")
+		.primaryKey()
+		.references(() => commands.name),
+	count: integer("count").notNull().default(0),
+	updatedAt: text("updated_at").notNull(),
+});
+
+export type CommandCounter = typeof commandCounters.$inferSelect;
+export type InsertCommandCounter = typeof commandCounters.$inferInsert;
+
+/**
  * Permission level enum for type safety
  */
-export type Permission = "everyone" | "moderator" | "broadcaster";
+export type Permission = "everyone" | "vip" | "moderator" | "broadcaster";
 
 /**
  * Response type enum for type safety

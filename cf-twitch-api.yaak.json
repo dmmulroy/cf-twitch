@@ -230,6 +230,28 @@
 				"body": {}
 			},
 			{
+				"id": "req_commands_debug_snapshot",
+				"model": "http_request",
+				"workspaceId": "wrk_cf_twitch_api",
+				"folderId": "fld_admin_debug",
+				"name": "Commands Debug Snapshot",
+				"description": "Get full command registry snapshot (definitions, values, counters)",
+				"method": "GET",
+				"url": "${[BASE_URL]}/api/admin/commands/debug/snapshot",
+				"urlParameters": [],
+				"headers": [
+					{
+						"enabled": true,
+						"name": "Authorization",
+						"value": "Bearer ${[ADMIN_SECRET]}"
+					}
+				],
+				"authenticationType": null,
+				"authentication": {},
+				"bodyType": null,
+				"body": {}
+			},
+			{
 				"id": "req_achievements_debug_counts",
 				"model": "http_request",
 				"workspaceId": "wrk_cf_twitch_api",

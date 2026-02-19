@@ -54,5 +54,6 @@ ENCODED_USER="$(urlencode "$TARGET_USER")"
 
 run_get "EventBus pending" "${BASE_URL}/api/admin/event-bus/pending?limit=${LIMIT}&offset=${OFFSET}"
 run_get "Achievements debug counts" "${BASE_URL}/api/admin/achievements/debug/counts"
+run_get "Commands debug snapshot" "${BASE_URL}/api/admin/commands/debug/snapshot"
 run_get "Achievements debug user" "${BASE_URL}/api/admin/achievements/debug/user/${ENCODED_USER}"
 run_get "Stats debug user" "${BASE_URL}/api/admin/debug/stats/${ENCODED_USER}"

@@ -7,8 +7,10 @@
 import { Hono } from "hono";
 import { z } from "zod";
 
+import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
 import { logger } from "../lib/logger";
+import { TwitchService } from "../services/twitch-service";
 
 import type { Env } from "../index";
 
@@ -19,6 +21,34 @@ const api = new Hono<{ Bindings: Env }>();
  */
 const QueueQuerySchema = z.object({
 	limit: z.coerce.number().int().positive().max(100).default(10),
+});
+
+/**
+ * Protect debug routes with ADMIN_SECRET bearer auth.
+ */
+api.use("/debug/*", async (c, next) => {
+	const adminSecret = c.env.ADMIN_SECRET;
+
+	if (!adminSecret) {
+		logger.error("Debug API: ADMIN_SECRET not configured");
+		return c.json({ error: "Debug API not configured" }, 503);
+	}
+
+	const authHeader = c.req.header("Authorization");
+	if (!authHeader) {
+		return c.json({ error: "Missing Authorization header" }, 401);
+	}
+
+	const [scheme, token] = authHeader.split(" ");
+	if (scheme !== "Bearer" || !token) {
+		return c.json({ error: "Invalid Authorization header format. Expected: Bearer <token>" }, 401);
+	}
+
+	if (!constantTimeEquals(token, adminSecret)) {
+		return c.json({ error: "Invalid token" }, 403);
+	}
+
+	await next();
 });
 
 /**
@@ -193,16 +223,119 @@ api.get("/achievements/:user/unlocked", async (c) => {
 // =============================================================================
 
 /**
+ * POST /api/debug/reconcile-stream-state
+ * Reconciles StreamLifecycleDO state with Twitch's current stream status.
+ * Useful when EventSub delivery is delayed or out-of-order.
+ */
+api.post("/debug/reconcile-stream-state", async (c) => {
+	const streamStub = getStub("STREAM_LIFECYCLE_DO");
+	const songQueueStub = getStub("SONG_QUEUE_DO");
+	const twitchService = new TwitchService(c.env);
+
+	const [streamStateResult, twitchStreamResult] = await Promise.all([
+		streamStub.getStreamState(),
+		twitchService.getStreamInfo(c.env.TWITCH_BROADCASTER_NAME),
+	]);
+
+	if (streamStateResult.status === "error") {
+		logger.error("Failed to reconcile stream state: stream state unavailable", {
+			error: streamStateResult.error.message,
+		});
+		return c.json({ error: "Failed to fetch current stream state" }, 500);
+	}
+
+	if (twitchStreamResult.status === "error") {
+		logger.error("Failed to reconcile stream state: Twitch lookup failed", {
+			error: twitchStreamResult.error.message,
+			code: twitchStreamResult.error._tag,
+		});
+		return c.json({ error: "Failed to fetch Twitch stream status" }, 500);
+	}
+
+	const before = streamStateResult.value;
+	const twitchStream = twitchStreamResult.value;
+	const twitchIsLive = twitchStream !== null;
+
+	let action: "noop" | "set_online" | "set_offline" = "noop";
+
+	if (twitchIsLive && !before.isLive) {
+		// Reconciliation intentionally uses current processing time so a previously
+		// misordered stale offline event cannot block recovery.
+		const onlineResult = await streamStub.onStreamOnline();
+		if (onlineResult.status === "error") {
+			logger.error("Failed to set StreamLifecycleDO online during reconciliation", {
+				error: onlineResult.error.message,
+			});
+			return c.json({ error: "Failed to update stream state to online" }, 500);
+		}
+		action = "set_online";
+	} else if (!twitchIsLive && before.isLive) {
+		const offlineResult = await streamStub.onStreamOffline();
+		if (offlineResult.status === "error") {
+			logger.error("Failed to set StreamLifecycleDO offline during reconciliation", {
+				error: offlineResult.error.message,
+			});
+			return c.json({ error: "Failed to update stream state to offline" }, 500);
+		}
+		action = "set_offline";
+	}
+
+	let queueWarmup: "not_needed" | "ok" | "error" = "not_needed";
+	if (action === "set_online") {
+		const queueWarmResult = await songQueueStub.getCurrentlyPlaying();
+		if (queueWarmResult.status === "error") {
+			queueWarmup = "error";
+			logger.warn("Queue warmup failed after stream reconciliation", {
+				error: queueWarmResult.error.message,
+			});
+		} else {
+			queueWarmup = "ok";
+		}
+	}
+
+	const afterResult = await streamStub.getStreamState();
+	if (afterResult.status === "error") {
+		logger.error("Reconciled stream state but failed to read final state", {
+			error: afterResult.error.message,
+		});
+		return c.json(
+			{
+				error: "Reconciliation completed but failed to read final state",
+				action,
+				before,
+			},
+			500,
+		);
+	}
+
+	return c.json({
+		action,
+		queueWarmup,
+		before,
+		after: afterResult.value,
+		twitch: {
+			isLive: twitchIsLive,
+			startedAt: twitchStream ? twitchStream.startedAt : null,
+			viewerCount: twitchStream ? twitchStream.viewerCount : null,
+			title: twitchStream ? twitchStream.title : null,
+			gameName: twitchStream ? twitchStream.gameName : null,
+		},
+	});
+});
+
+/**
  * GET /api/debug/status
  * Aggregates state from all DOs for debugging
  */
 api.get("/debug/status", async (c) => {
 	const streamStub = getStub("STREAM_LIFECYCLE_DO");
 	const songQueueStub = getStub("SONG_QUEUE_DO");
+	const twitchService = new TwitchService(c.env);
 
-	const [streamResult, queueResult] = await Promise.all([
+	const [streamResult, queueResult, twitchResult] = await Promise.all([
 		streamStub.getStreamState(),
 		songQueueStub.getQueue(5),
+		twitchService.getStreamInfo(c.env.TWITCH_BROADCASTER_NAME),
 	]);
 
 	const status = {
@@ -213,6 +346,23 @@ api.get("/debug/status", async (c) => {
 			startedAt: streamResult.status === "ok" ? streamResult.value.startedAt : null,
 			peakViewerCount: streamResult.status === "ok" ? streamResult.value.peakViewerCount : null,
 			error: streamResult.status === "error" ? streamResult.error.message : null,
+		},
+		twitch: {
+			ok: twitchResult.status === "ok",
+			isLive: twitchResult.status === "ok" ? twitchResult.value !== null : null,
+			startedAt:
+				twitchResult.status === "ok"
+					? twitchResult.value
+						? twitchResult.value.startedAt
+						: null
+					: null,
+			viewerCount:
+				twitchResult.status === "ok"
+					? twitchResult.value
+						? twitchResult.value.viewerCount
+						: null
+					: null,
+			error: twitchResult.status === "error" ? twitchResult.error.message : null,
 		},
 		songQueue: {
 			ok: queueResult.status === "ok",

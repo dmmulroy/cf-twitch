@@ -61,9 +61,35 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 
 	/**
 	 * Lifecycle handler: called when stream goes online
+	 *
+	 * @param eventTimestamp - Optional authoritative timestamp from upstream event source.
+	 * When provided, stale out-of-order events are ignored.
 	 */
-	async onStreamOnline(): Promise<void> {
-		const now = new Date().toISOString();
+	async onStreamOnline(eventTimestamp?: string): Promise<void> {
+		const now = this.resolveTransitionTimestamp(eventTimestamp);
+		const currentState = await this.db.query.streamState.findFirst({
+			where: eq(streamState.id, 1),
+		});
+
+		if (currentState) {
+			const latestTransitionAt = this.getLatestTransitionAt(currentState);
+			if (latestTransitionAt && new Date(now).getTime() < new Date(latestTransitionAt).getTime()) {
+				logger.warn("Ignoring stale stream.online event", {
+					eventTimestamp: now,
+					latestTransitionAt,
+					isLive: currentState.isLive,
+				});
+				return;
+			}
+
+			if (currentState.isLive) {
+				logger.info("Ignoring duplicate stream.online event", {
+					eventTimestamp: now,
+					startedAt: currentState.startedAt,
+				});
+				return;
+			}
+		}
 
 		// Generate new stream session ID for correlating online/offline events
 		this.streamSessionId = crypto.randomUUID();
@@ -99,9 +125,35 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 
 	/**
 	 * Lifecycle handler: called when stream goes offline
+	 *
+	 * @param eventTimestamp - Optional authoritative timestamp from upstream event source.
+	 * When provided, stale out-of-order events are ignored.
 	 */
-	async onStreamOffline(): Promise<void> {
-		const now = new Date().toISOString();
+	async onStreamOffline(eventTimestamp?: string): Promise<void> {
+		const now = this.resolveTransitionTimestamp(eventTimestamp);
+		const currentState = await this.db.query.streamState.findFirst({
+			where: eq(streamState.id, 1),
+		});
+
+		if (currentState) {
+			const latestTransitionAt = this.getLatestTransitionAt(currentState);
+			if (latestTransitionAt && new Date(now).getTime() < new Date(latestTransitionAt).getTime()) {
+				logger.warn("Ignoring stale stream.offline event", {
+					eventTimestamp: now,
+					latestTransitionAt,
+					isLive: currentState.isLive,
+				});
+				return;
+			}
+
+			if (!currentState.isLive) {
+				logger.info("Ignoring duplicate stream.offline event", {
+					eventTimestamp: now,
+					endedAt: currentState.endedAt,
+				});
+				return;
+			}
+		}
 
 		// Update stream state
 		await this.db
@@ -347,6 +399,39 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 		}
 
 		return streamInfo.viewerCount;
+	}
+
+	/**
+	 * Resolve transition timestamp from upstream event metadata.
+	 * Falls back to current server time when absent or invalid.
+	 */
+	private resolveTransitionTimestamp(eventTimestamp?: string): string {
+		if (!eventTimestamp) {
+			return new Date().toISOString();
+		}
+
+		const parsedMs = new Date(eventTimestamp).getTime();
+		if (Number.isNaN(parsedMs)) {
+			logger.warn("Invalid stream lifecycle event timestamp, using server time", {
+				eventTimestamp,
+			});
+			return new Date().toISOString();
+		}
+
+		return new Date(parsedMs).toISOString();
+	}
+
+	/**
+	 * Get the latest state transition timestamp from persisted stream state.
+	 */
+	private getLatestTransitionAt(state: StreamState): string | null {
+		if (state.startedAt && state.endedAt) {
+			return new Date(state.startedAt).getTime() >= new Date(state.endedAt).getTime()
+				? state.startedAt
+				: state.endedAt;
+		}
+
+		return state.startedAt ?? state.endedAt ?? null;
 	}
 
 	/**

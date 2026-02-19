@@ -1,8 +1,8 @@
 /**
  * CommandsDO - Chat command registry and dynamic values
  *
- * Manages command definitions and updateable values. Seeded on first access
- * with default commands. Supports static, dynamic, and computed command types.
+ * Manages command definitions and updateable values. Default commands are
+ * seeded via Drizzle migration. Supports static, dynamic, and computed types.
  */
 
 import { Result } from "better-result";
@@ -14,16 +14,13 @@ import { z } from "zod";
 
 import migrations from "../../drizzle/commands-do/migrations";
 import { rpc, withRpcSerialization } from "../lib/durable-objects";
-import {
-	CommandsDbError,
-	CommandNotFoundError,
-	CommandNotUpdateableError,
-} from "../lib/errors";
+import { CommandsDbError, CommandNotFoundError, CommandNotUpdateableError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/commands-do.schema";
 import {
 	type Command,
 	type Permission,
+	commandCounters,
 	commands,
 	commandValues,
 } from "./schemas/commands-do.schema";
@@ -34,116 +31,14 @@ import type { Env } from "../index";
 // Input Validation Schemas
 // =============================================================================
 
-const CommandNameSchema = z.string().min(1).max(50).regex(/^[a-z0-9-]+$/);
-const PermissionSchema = z.enum(["everyone", "moderator", "broadcaster"]);
+const CommandNameSchema = z
+	.string()
+	.min(1)
+	.max(50)
+	.regex(/^[a-z0-9-]+$/);
+const PermissionSchema = z.enum(["everyone", "vip", "moderator", "broadcaster"]);
 const CommandValueSchema = z.string().min(0).max(2000);
-
-// =============================================================================
-// Seed Data
-// =============================================================================
-
-/**
- * Default commands to seed on first access
- * Uses INSERT OR IGNORE for idempotency
- */
-const SEED_COMMANDS: Array<{
-	name: string;
-	description: string;
-	category: string;
-	responseType: string;
-	permission: Permission;
-	value?: string;
-}> = [
-	{
-		name: "keyboard",
-		description: "Shows keyboard info and build video",
-		category: "info",
-		responseType: "static",
-		permission: "everyone",
-		value: "SA Voyager with Choc White switches: https://youtube.com/watch?v=WfIfxaXC_Q4",
-	},
-	{
-		name: "socials",
-		description: "Shows social media links",
-		category: "info",
-		responseType: "static",
-		permission: "everyone",
-		value: "GitHub: github.com/dmmulroy | X: x.com/dillon_mulroy",
-	},
-	{
-		name: "dotfiles",
-		description: "Shows dotfiles repository link",
-		category: "info",
-		responseType: "static",
-		permission: "everyone",
-		value: "https://github.com/dmmulroy/.dotfiles",
-	},
-	{
-		name: "today",
-		description: "Shows what's being worked on today",
-		category: "info",
-		responseType: "dynamic",
-		permission: "everyone",
-		value: "",
-	},
-	{
-		name: "project",
-		description: "Shows current project (alias for today)",
-		category: "info",
-		responseType: "dynamic",
-		permission: "everyone",
-		// Note: project reads from "today" key - no separate value
-	},
-	{
-		name: "achievements",
-		description: "Shows user's unlocked achievements",
-		category: "stats",
-		responseType: "computed",
-		permission: "everyone",
-	},
-	{
-		name: "stats",
-		description: "Shows user's song/achievement/raffle stats",
-		category: "stats",
-		responseType: "computed",
-		permission: "everyone",
-	},
-	{
-		name: "raffle-leaderboard",
-		description: "Shows top raffle winners",
-		category: "stats",
-		responseType: "computed",
-		permission: "everyone",
-	},
-	{
-		name: "commands",
-		description: "Lists available commands",
-		category: "meta",
-		responseType: "computed",
-		permission: "everyone",
-	},
-	{
-		name: "update",
-		description: "Updates dynamic command values",
-		category: "meta",
-		responseType: "computed",
-		permission: "moderator",
-	},
-	{
-		name: "song",
-		description: "Request a song via Spotify URL",
-		category: "music",
-		responseType: "computed",
-		permission: "everyone",
-	},
-	{
-		name: "queue",
-		description: "Shows current song queue",
-		category: "music",
-		responseType: "computed",
-		permission: "everyone",
-	},
-];
+const CounterIncrementSchema = z.number().int().min(1).max(100);
 
 // =============================================================================
 // CommandsDO Implementation
@@ -161,7 +56,6 @@ class _CommandsDO extends DurableObject<Env> {
 
 		void this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
-			await this.seedCommandsInternal();
 		});
 	}
 
@@ -220,7 +114,8 @@ class _CommandsDO extends DurableObject<Env> {
 	 *
 	 * Returns all commands that the given permission level can access.
 	 * - "everyone" only sees "everyone" commands
-	 * - "moderator" sees "everyone" and "moderator" commands
+	 * - "vip" sees "everyone" and "vip" commands
+	 * - "moderator" sees "everyone", "vip", and "moderator" commands
 	 * - "broadcaster" sees all commands
 	 */
 	@rpc
@@ -242,10 +137,12 @@ class _CommandsDO extends DurableObject<Env> {
 					switch (maxPerm) {
 						case "everyone":
 							return ["everyone"];
+						case "vip":
+							return ["everyone", "vip"];
 						case "moderator":
-							return ["everyone", "moderator"];
+							return ["everyone", "vip", "moderator"];
 						case "broadcaster":
-							return ["everyone", "moderator", "broadcaster"];
+							return ["everyone", "vip", "moderator", "broadcaster"];
 					}
 				})();
 
@@ -381,13 +278,123 @@ class _CommandsDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Seed default commands (public method for testing/admin)
+	 * Get current counter value for a command.
 	 *
-	 * Idempotent via INSERT OR IGNORE.
+	 * Returns 0 if no counter exists yet.
 	 */
 	@rpc
-	async seedCommands(): Promise<Result<void, CommandsDbError>> {
-		return this.seedCommandsInternal();
+	async getCommandCounter(
+		name: string,
+	): Promise<Result<number, CommandsDbError | CommandNotFoundError>> {
+		const parseResult = CommandNameSchema.safeParse(name);
+		if (!parseResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation: "getCommandCounter",
+					cause: new Error(`Invalid command name: ${parseResult.error.message}`),
+				}),
+			);
+		}
+
+		return Result.tryPromise({
+			try: async () => {
+				const command = await this.db.query.commands.findFirst({
+					where: eq(commands.name, name),
+				});
+
+				if (!command) {
+					throw new CommandNotFoundError({ commandName: name });
+				}
+
+				const counter = await this.db.query.commandCounters.findFirst({
+					where: eq(commandCounters.commandName, name),
+				});
+
+				return counter?.count ?? 0;
+			},
+			catch: (cause) => {
+				if (CommandNotFoundError.is(cause)) {
+					return cause;
+				}
+				return new CommandsDbError({ operation: "getCommandCounter", cause });
+			},
+		});
+	}
+
+	/**
+	 * Increment a command counter and return the new value.
+	 */
+	@rpc
+	async incrementCommandCounter(
+		name: string,
+		increment = 1,
+	): Promise<Result<number, CommandsDbError | CommandNotFoundError>> {
+		const nameResult = CommandNameSchema.safeParse(name);
+		if (!nameResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation: "incrementCommandCounter",
+					cause: new Error(`Invalid command name: ${nameResult.error.message}`),
+				}),
+			);
+		}
+
+		const incrementResult = CounterIncrementSchema.safeParse(increment);
+		if (!incrementResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation: "incrementCommandCounter",
+					cause: new Error(`Invalid increment value: ${incrementResult.error.message}`),
+				}),
+			);
+		}
+
+		return Result.tryPromise({
+			try: async () => {
+				const command = await this.db.query.commands.findFirst({
+					where: eq(commands.name, name),
+				});
+
+				if (!command) {
+					throw new CommandNotFoundError({ commandName: name });
+				}
+
+				const currentCounter = await this.db.query.commandCounters.findFirst({
+					where: eq(commandCounters.commandName, name),
+				});
+
+				const nextCount = (currentCounter?.count ?? 0) + increment;
+				const now = new Date().toISOString();
+
+				await this.db
+					.insert(commandCounters)
+					.values({
+						commandName: name,
+						count: nextCount,
+						updatedAt: now,
+					})
+					.onConflictDoUpdate({
+						target: commandCounters.commandName,
+						set: {
+							count: nextCount,
+							updatedAt: now,
+						},
+					});
+
+				logger.info("Incremented command counter", {
+					command: name,
+					count: nextCount,
+				});
+
+				return nextCount;
+			},
+			catch: (cause) => {
+				if (CommandNotFoundError.is(cause)) {
+					return cause;
+				}
+				return new CommandsDbError({ operation: "incrementCommandCounter", cause });
+			},
+		});
 	}
 
 	/**
@@ -434,6 +441,72 @@ class _CommandsDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * Get full commands debug snapshot (definitions + values + counters).
+	 */
+	@rpc
+	async getDebugSnapshot(): Promise<
+		Result<
+			{
+				commands: Array<
+					Command & {
+						value: string | null;
+						counter: number | null;
+					}
+				>;
+				totals: {
+					total: number;
+					enabled: number;
+					static: number;
+					dynamic: number;
+					computed: number;
+				};
+			},
+			CommandsDbError
+		>
+	> {
+		return Result.tryPromise({
+			try: async () => {
+				const allCommands = await this.db.query.commands.findMany();
+				const allValues = await this.db.query.commandValues.findMany();
+				const allCounters = await this.db.query.commandCounters.findMany();
+
+				const valueMap = new Map(
+					allValues.map((valueRow) => [valueRow.commandName, valueRow.value]),
+				);
+				const counterMap = new Map(
+					allCounters.map((counterRow) => [counterRow.commandName, counterRow.count]),
+				);
+
+				const commandsWithState = allCommands.map((command) => {
+					const lookupName = command.name === "project" ? "today" : command.name;
+					const value =
+						command.responseType === "computed" ? null : (valueMap.get(lookupName) ?? null);
+					const counter =
+						command.responseType === "computed" ? (counterMap.get(command.name) ?? null) : null;
+
+					return {
+						...command,
+						value,
+						counter,
+					};
+				});
+
+				return {
+					commands: commandsWithState,
+					totals: {
+						total: allCommands.length,
+						enabled: allCommands.filter((command) => command.enabled).length,
+						static: allCommands.filter((command) => command.responseType === "static").length,
+						dynamic: allCommands.filter((command) => command.responseType === "dynamic").length,
+						computed: allCommands.filter((command) => command.responseType === "computed").length,
+					},
+				};
+			},
+			catch: (cause) => new CommandsDbError({ operation: "getDebugSnapshot", cause }),
+		});
+	}
+
+	/**
 	 * Get all enabled commands with their values
 	 */
 	@rpc
@@ -459,62 +532,6 @@ class _CommandsDO extends DurableObject<Env> {
 				});
 			},
 			catch: (cause) => new CommandsDbError({ operation: "getEnabledCommandsWithValues", cause }),
-		});
-	}
-
-	// =============================================================================
-	// Private Methods
-	// =============================================================================
-
-	/**
-	 * Internal seed method
-	 *
-	 * Idempotent: onConflictDoNothing() handles duplicate seeding across DO evictions.
-	 * Uses batch inserts to minimize DB round-trips.
-	 */
-	private async seedCommandsInternal(): Promise<Result<void, CommandsDbError>> {
-		return Result.tryPromise({
-			try: async () => {
-				const now = new Date().toISOString();
-
-				// Prepare batch inserts
-				const commandInserts = SEED_COMMANDS.map((cmd) => ({
-					name: cmd.name,
-					description: cmd.description,
-					category: cmd.category,
-					responseType: cmd.responseType,
-					permission: cmd.permission,
-					enabled: true,
-					createdAt: now,
-				}));
-
-				const valueInserts = SEED_COMMANDS.filter((cmd) => cmd.value !== undefined).map((cmd) => {
-					if (cmd.value === undefined) {
-						throw new Error("Unexpected undefined value after filter");
-					}
-					return {
-						commandName: cmd.name,
-						value: cmd.value,
-						updatedAt: now,
-						updatedBy: null as string | null,
-					};
-				});
-
-				// Batch insert commands
-				if (commandInserts.length > 0) {
-					await this.db.insert(commands).values(commandInserts).onConflictDoNothing();
-				}
-
-				// Batch insert values
-				if (valueInserts.length > 0) {
-					await this.db.insert(commandValues).values(valueInserts).onConflictDoNothing();
-				}
-
-				logger.info("CommandsDO: Seeded default commands", {
-					count: SEED_COMMANDS.length,
-				});
-			},
-			catch: (cause) => new CommandsDbError({ operation: "seedCommands", cause }),
 		});
 	}
 }
