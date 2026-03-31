@@ -61,10 +61,19 @@ overlay.get("/now-playing", (c) => {
 						align-items: center;
 					}
 		
+					.container.empty-state {
+						gap: 16px;
+						padding: 16px 20px;
+					}
+		
 					.album-art-container {
 						width: 64px;
 						height: 64px;
 						flex-shrink: 0;
+					}
+		
+					.container.empty-state .album-art-container {
+						display: none;
 					}
 		
 					.album-art {
@@ -97,11 +106,33 @@ overlay.get("/now-playing", (c) => {
 						gap: 4px;
 					}
 		
+					.container.empty-state .track-info {
+						padding-left: 0;
+						gap: 0;
+					}
+		
+					.track-details {
+						display: flex;
+						flex-direction: column;
+						gap: 4px;
+					}
+		
+					.track-details.hidden {
+						display: none;
+					}
+		
 					.track-header {
 						font-size: 16px;
 						font-weight: 600;
 						line-height: 1.5rem;
 						min-height: 1.5rem;
+					}
+		
+					.container.empty-state .track-header {
+						min-height: 0;
+						max-width: 18ch;
+						line-height: 1.4;
+						text-wrap: balance;
 					}
 		
 					.track-name {
@@ -139,6 +170,11 @@ overlay.get("/now-playing", (c) => {
 						flex-shrink: 0;
 						color: var(--ctp-pink);
 					}
+		
+					.container.empty-state .music-icon {
+						width: 48px;
+						height: 48px;
+					}
 				</style>
 				<link rel="preconnect" href="https://fonts.googleapis.com" />
 				<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -148,15 +184,17 @@ overlay.get("/now-playing", (c) => {
 				/>
 			</head>
 			<body>
-				<div class="container">
+				<div id="overlay" class="container">
 					<div class="album-art-container">
 						<img id="album-art" src="" alt="" class="album-art hidden" />
 					</div>
 					<div class="track-info">
 						<h2 id="header" class="track-header">Loading...</h2>
-						<p id="track-name" class="track-name">&nbsp;</p>
-						<p id="track-artist" class="track-artist">&nbsp;</p>
-						<p id="track-requester" class="track-requester">&nbsp;</p>
+						<div id="track-details" class="track-details">
+							<p id="track-name" class="track-name">&nbsp;</p>
+							<p id="track-artist" class="track-artist">&nbsp;</p>
+							<p id="track-requester" class="track-requester">&nbsp;</p>
+						</div>
 					</div>
 					<svg
 						xmlns="http://www.w3.org/2000/svg"
@@ -187,7 +225,7 @@ overlay.get("/now-playing", (c) => {
 						try {
 							const [nowPlayingRes, queueRes] = await Promise.all([
 								fetch(NOW_PLAYING_URL),
-								fetch(QUEUE_URL)
+								fetch(QUEUE_URL),
 							]);
 		
 							if (nowPlayingRes.ok) {
@@ -208,13 +246,29 @@ overlay.get("/now-playing", (c) => {
 		
 					function updateDisplay() {
 						const activeData = active === "currentlyPlaying" ? currentData : nextUpData;
+						const overlayEl = document.getElementById("overlay");
 						const headerEl = document.getElementById("header");
+						const detailsEl = document.getElementById("track-details");
 						const nameEl = document.getElementById("track-name");
 						const artistEl = document.getElementById("track-artist");
 						const requesterEl = document.getElementById("track-requester");
 						const albumArt = document.getElementById("album-art");
 		
+						if (
+							!overlayEl ||
+							!headerEl ||
+							!detailsEl ||
+							!nameEl ||
+							!artistEl ||
+							!requesterEl ||
+							!albumArt
+						) {
+							return;
+						}
+		
 						if (!activeData?.track) {
+							overlayEl.classList.add("empty-state");
+							detailsEl.classList.add("hidden");
 							headerEl.textContent = "Nothing is currently playing";
 							nameEl.innerHTML = "&nbsp;";
 							artistEl.innerHTML = "&nbsp;";
@@ -223,26 +277,29 @@ overlay.get("/now-playing", (c) => {
 							return;
 						}
 		
+						overlayEl.classList.remove("empty-state");
+						detailsEl.classList.remove("hidden");
+		
 						const track = activeData.track;
 						headerEl.textContent = active === "currentlyPlaying" ? "Now Playing" : "Next Up";
 						nameEl.textContent = track.name || "";
-						// Artists are string[] in new API, not {name}[]
 						artistEl.textContent = Array.isArray(track.artists)
-							? track.artists.map(a => typeof a === "string" ? a : a.name).join(", ")
+							? track.artists
+									.map((artist) => (typeof artist === "string" ? artist : artist.name))
+									.join(", ")
 							: "";
 		
 						const requester = track.requesterDisplayName || activeData.requesterDisplayName;
 						if (requester && requester !== "Unknown") {
-							requesterEl.textContent = \`Requested by @\${requester}\`;
+							requesterEl.textContent = "Requested by @" + requester;
 						} else {
 							requesterEl.innerHTML = "&nbsp;";
 						}
 		
-						// Update album art src instead of replacing innerHTML (prevents CLS)
 						const albumUrl = track.albumCoverUrl;
 						if (albumUrl) {
 							albumArt.src = albumUrl;
-							albumArt.alt = \`\${track.album} album art\`;
+							albumArt.alt = (track.album || track.name || "Track") + " album art";
 							albumArt.classList.remove("hidden");
 						} else {
 							albumArt.classList.add("hidden");
@@ -250,7 +307,21 @@ overlay.get("/now-playing", (c) => {
 					}
 		
 					function toggle() {
+						const hasCurrentlyPlaying = Boolean(currentData?.track);
+						const hasNextUp = Boolean(nextUpData?.track);
+		
+						if (!hasCurrentlyPlaying) {
+							active = "currentlyPlaying";
+							fetchData();
+							return;
+						}
+		
 						if (active === "currentlyPlaying") {
+							if (!hasNextUp) {
+								fetchData();
+								return;
+							}
+		
 							active = "nextUp";
 							updateDisplay();
 						} else {

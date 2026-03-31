@@ -237,7 +237,7 @@ async function handleSkillIssueCommand(): Promise<string> {
 		return "Couldn't count that skill issue right now.";
 	}
 
-	return `@dmmulroy has ${result.value} SkillIssue so far`;
+	return `@dillon has ${result.value} SkillIssue so far`;
 }
 
 /**
