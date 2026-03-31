@@ -1,100 +1,146 @@
 {
-	"name": "cf-twitch-api",
-	"main": "src/index.ts",
-	"compatibility_date": "2026-01-13",
-	"compatibility_flags": ["nodejs_compat"],
-	"rules": [
-		{
-			"type": "Text",
-			"globs": ["**/*.sql"],
-			"fallthrough": true,
-		},
-	],
-	"observability": {
-		"enabled": true,
-		"head_sampling_rate": 1,
-		"logs": {
-			"enabled": true,
-			"invocation_logs": true,
-		},
-		"traces": {
-			"enabled": true,
-			"head_sampling_rate": 1,
-		},
-	},
-	"durable_objects": {
-		"bindings": [
-			{ "name": "SPOTIFY_TOKEN_DO", "class_name": "SpotifyTokenDO" },
-			{ "name": "TWITCH_TOKEN_DO", "class_name": "TwitchTokenDO" },
-			{ "name": "STREAM_LIFECYCLE_DO", "class_name": "StreamLifecycleDO" },
-			{ "name": "SONG_QUEUE_DO", "class_name": "SongQueueDO" },
-			{ "name": "ACHIEVEMENTS_DO", "class_name": "AchievementsDO" },
-			{ "name": "KEYBOARD_RAFFLE_DO", "class_name": "KeyboardRaffleDO" },
-			{ "name": "SONG_REQUEST_SAGA_DO", "class_name": "SongRequestSagaDO" },
-			{ "name": "KEYBOARD_RAFFLE_SAGA_DO", "class_name": "KeyboardRaffleSagaDO" },
-			{ "name": "EVENT_BUS_DO", "class_name": "EventBusDO" },
-			{ "name": "COMMANDS_DO", "class_name": "CommandsDO" },
-		],
-	},
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": [
-				"SpotifyTokenDO",
-				"TwitchTokenDO",
-				"StreamLifecycleDO",
-				"SongQueueDO",
-				"AchievementsDO",
-				"KeyboardRaffleDO",
-			],
-		},
-		{
-			"tag": "v2",
-			"new_sqlite_classes": ["WorkflowPoolDO"],
-		},
-		{
-			"tag": "v3",
-			"new_sqlite_classes": ["SongRequestSagaDO"],
-		},
-		{
-			"tag": "v4",
-			"new_sqlite_classes": ["KeyboardRaffleSagaDO"],
-		},
-		{
-			"tag": "v5",
-			"deleted_classes": ["WorkflowPoolDO"],
-		},
-		{
-			"tag": "v6",
-			"new_sqlite_classes": ["EventBusDO"],
-		},
-		{
-			"tag": "v7",
-			"new_sqlite_classes": ["CommandsDO"],
-		},
-	],
-	"analytics_engine_datasets": [
-		{
-			"binding": "ANALYTICS",
-		},
-	],
-	// Vectorize/AI deferred to post-MVP (not needed for feature parity)
-	// "vectorize": [
-	// 	{
-	// 		"binding": "TRACK_VECTORS",
-	// 		"index_name": "cf-twitch-tracks",
-	// 	},
-	// ],
-	// "ai": {
-	// 	"binding": "AI",
-	// },
-	"vars": {
-		"SONG_REQUEST_REWARD_ID": "c2063c79-a24c-4b17-94f7-c871f2876708",
-		"KEYBOARD_RAFFLE_REWARD_ID": "29afa291-244a-47a8-8be8-ded13995e83d",
-	},
-	"tail_consumers": [
-		{
-			"service": "cf-twitch-tail",
-		},
-	],
+  "name": "cf-twitch-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-13",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "rules": [
+    {
+      "type": "Text",
+      "globs": [
+        "**/*.sql"
+      ],
+      "fallthrough": true,
+    },
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+    },
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SPOTIFY_TOKEN_DO",
+        "class_name": "SpotifyTokenDO"
+      },
+      {
+        "name": "TWITCH_TOKEN_DO",
+        "class_name": "TwitchTokenDO"
+      },
+      {
+        "name": "STREAM_LIFECYCLE_DO",
+        "class_name": "StreamLifecycleDO"
+      },
+      {
+        "name": "SONG_QUEUE_DO",
+        "class_name": "SongQueueDO"
+      },
+      {
+        "name": "ACHIEVEMENTS_DO",
+        "class_name": "AchievementsDO"
+      },
+      {
+        "name": "KEYBOARD_RAFFLE_DO",
+        "class_name": "KeyboardRaffleDO"
+      },
+      {
+        "name": "SONG_REQUEST_SAGA_DO",
+        "class_name": "SongRequestSagaDO"
+      },
+      {
+        "name": "KEYBOARD_RAFFLE_SAGA_DO",
+        "class_name": "KeyboardRaffleSagaDO"
+      },
+      {
+        "name": "EVENT_BUS_DO",
+        "class_name": "EventBusDO"
+      },
+      {
+        "name": "COMMANDS_DO",
+        "class_name": "CommandsDO"
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "SpotifyTokenDO",
+        "TwitchTokenDO",
+        "StreamLifecycleDO",
+        "SongQueueDO",
+        "AchievementsDO",
+        "KeyboardRaffleDO",
+      ],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "WorkflowPoolDO"
+      ],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "SongRequestSagaDO"
+      ],
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "KeyboardRaffleSagaDO"
+      ],
+    },
+    {
+      "tag": "v5",
+      "deleted_classes": [
+        "WorkflowPoolDO"
+      ],
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": [
+        "EventBusDO"
+      ],
+    },
+    {
+      "tag": "v7",
+      "new_sqlite_classes": [
+        "CommandsDO"
+      ],
+    },
+  ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "ANALYTICS",
+    },
+  ],
+  // Vectorize/AI deferred to post-MVP (not needed for feature parity)
+  // "vectorize": [
+  // 	{
+  // 		"binding": "TRACK_VECTORS",
+  // 		"index_name": "cf-twitch-tracks",
+  // 	},
+  // ],
+  // "ai": {
+  // 	"binding": "AI",
+  // },
+  "vars": {
+    "SONG_REQUEST_REWARD_ID": "c2063c79-a24c-4b17-94f7-c871f2876708",
+    "KEYBOARD_RAFFLE_REWARD_ID": "29afa291-244a-47a8-8be8-ded13995e83d",
+  },
+  "tail_consumers": [
+    {
+      "service": "cf-twitch-tail",
+    },
+  ],
 }
