@@ -6,6 +6,7 @@ It is primarily based on:
 
 - `apps/api/src/durable-objects/stream-lifecycle-do.ts`
 - `apps/api/src/durable-objects/twitch-token-do.ts`
+- `apps/api/src/durable-objects/event-bus-do.ts`
 
 It is intended as a playbook for migrating other Durable Objects in this repo.
 
@@ -16,9 +17,11 @@ I reviewed the migrations in three ways:
 1. the final implementations in:
    - `apps/api/src/durable-objects/stream-lifecycle-do.ts`
    - `apps/api/src/durable-objects/twitch-token-do.ts`
+   - `apps/api/src/durable-objects/event-bus-do.ts`
 2. the rewritten/expanded tests in:
    - `apps/api/src/__tests__/durable-objects/stream-lifecycle-do.test.ts`
    - `apps/api/src/__tests__/durable-objects/twitch-token-do.test.ts`
+   - `apps/api/src/__tests__/durable-objects/event-bus-do.test.ts`
 3. the saved pi sessions for this repo
 
 I also attempted to use the pi CLI directly against the current session file:
@@ -76,6 +79,65 @@ Keep durable history/query data in SQLite:
 
 - `viewer_snapshots`
 - any audit/history/query-oriented records
+
+## What changed in `EventBusDO`
+
+### Before
+
+`EventBusDO` was a regular Durable Object that used:
+
+- `DurableObject<Env>`
+- constructor-time Drizzle migrations
+- `alarm()` for retry sweeps and DLQ purging
+- SQLite for `pending_events` and `dead_letter_queue`
+- inline delivery plus alarm-driven retry orchestration
+
+### After
+
+`EventBusDO` now uses:
+
+- `Agent<Env, EventBusAgentState>`
+- `initialState` only for small schedule-coordination fields
+- `onStart()` for bootstrap, migration work, and legacy alarm cleanup
+- one-shot `schedule()` callbacks instead of `alarm()`
+- explicit scheduled callbacks:
+  - `retryDueEventsTick()`
+  - `purgeExpiredDlqTick()`
+
+### Current state split
+
+The migration worked best once current coordination state was kept tiny.
+
+#### Agent state
+
+Use Agent state only for operational coordination:
+
+- `retrySweepScheduleId`
+- `retrySweepDueAt`
+- `dlqPurgeScheduleId`
+- `dlqPurgeDueAt`
+
+#### SQLite / Drizzle
+
+Keep SQLite as the durable source of truth for bus data:
+
+- `pending_events`
+- `dead_letter_queue`
+- attempts / timestamps / error text
+- admin-queryable retry and DLQ state
+
+### Additional lesson from `EventBusDO`
+
+For due-time-driven systems, Agent state should often coordinate work, not own the work items.
+
+`EventBusDO` did **not** get simpler by moving pending payloads into Agent state or into Agent queues/workflows.
+The clean design was:
+
+- SQLite owns durable/event records
+- Agent state owns only schedule coordination
+- one-shot schedules wake the DO to process the next due database rows
+
+This is a good pattern for other DOs where ordering is driven by timestamps rather than FIFO.
 
 ## Biggest migration struggles
 
@@ -285,6 +347,25 @@ When a plain DO used alarms, map each alarm responsibility explicitly.
 - one-shot delayed work → `schedule()`
 - cleanup/shutdown → `cancelSchedule()`
 
+### Important `schedule()` gotcha
+
+For Agent migrations, be careful with the `when` argument type passed to `schedule()`.
+
+Use:
+
+- `Date` for a specific timestamp
+- `number` for a delayed number of seconds
+- `string` only when you really mean a cron expression
+
+In the `EventBusDO` migration, the safe pattern for stored ISO timestamps was:
+
+```ts
+await this.schedule(new Date(whenIso), "retryDueEventsTick", whenIso);
+```
+
+Do **not** pass an ISO timestamp string directly to `schedule()` and assume it means “run at this time”.
+Treat string schedules as cron-shaped unless the Agent API says otherwise.
+
 For token refresh style work, prefer a **public scheduled callback method** such as `refreshTokenTick()` instead of trying to preserve an `alarm()`-shaped entrypoint.
 
 That keeps the runtime model Agent-native and gives tests a real public method to exercise.
@@ -365,6 +446,7 @@ Prefer:
 - Vitest with worker pools
 - `runInDurableObject(...)`
 - `fetchMock` for Twitch/Spotify/external APIs
+- seeding durable rows directly through `drizzle(instance.ctx.storage, { schema })` when you need to exercise startup/schedule behavior without adding production-only helpers
 
 Avoid:
 
@@ -393,7 +475,19 @@ await stub.setName("twitch-token");
 Treat this as a **test harness requirement**, not a production design pattern.
 Do not add production hooks just to work around it.
 
-#### 2. When manually invoking scheduled callbacks in tests, do not over-assert exact schedule counts
+#### 2. Cross-DO RPC in tests is brittle, but not uniformly broken
+
+The old rule of thumb was too broad.
+
+What the `EventBusDO` migration showed is:
+
+- public stub-to-stub calls can work fine in worker-pool tests
+- the more fragile case is still DO-to-DO RPC initiated from inside `runInDurableObject(...)`
+- so prefer testing through the public stub first, and only drop into `runInDurableObject(...)` when you need direct state/schedule inspection or durable row seeding
+
+In other words: keep the warning, but scope it to the harness pattern that is actually unreliable.
+
+#### 3. When manually invoking scheduled callbacks in tests, do not over-assert exact schedule counts
 
 If you call a scheduled callback directly in a test via `runInDurableObject(...)`, you are bypassing some real scheduler lifecycle behavior.
 That can leave both:
@@ -434,6 +528,7 @@ When migrating more DOs in this repo, follow these rules:
 - preserve public RPC methods where possible
 - use `onRequest()` only for compatibility HTTP endpoints that still matter
 - replace alarms with Agent scheduling APIs intentionally
+- use `new Date(isoString)` for one-shot timestamp schedules; do not pass ISO strings to `schedule()` as if they were scheduled timestamps
 - do not add `getStub(..., envOverride)`-style workarounds
 - do not add test-only dependency injection to production code
 - use Wrangler-generated types instead of migration-specific type hacks
@@ -474,7 +569,7 @@ Use this checklist before opening review:
 - [ ] ran targeted tests
 - [ ] ran typecheck
 
-## Concrete takeaways from `StreamLifecycleDO` and `TwitchTokenDO`
+## Concrete takeaways from `StreamLifecycleDO`, `TwitchTokenDO`, and `EventBusDO`
 
 The most reusable lessons from these migrations are:
 
@@ -486,7 +581,9 @@ The most reusable lessons from these migrations are:
 6. **Testing difficulties are not a good reason to add production seams.**
 7. **One-time migration beats indefinite compatibility logic.**
 8. **Migration is a cleanup chance; delete old code aggressively.**
-9. **Keep using the repo's typed RPC and Wrangler conventions.**
-10. **In tests, handle current Agent harness quirks in setup/assertions, not in production code.**
+9. **For due-time-driven systems, let SQLite own durable work items and let Agent state coordinate schedules.**
+10. **Use `Date` for one-shot timestamp schedules; treat string schedules as cron-oriented unless proven otherwise.**
+11. **Keep using the repo's typed RPC and Wrangler conventions.**
+12. **In tests, handle current Agent harness quirks in setup/assertions, not in production code.**
 
 If we follow those rules, future DO → Agent migrations should be much smaller, cleaner, and easier to review.

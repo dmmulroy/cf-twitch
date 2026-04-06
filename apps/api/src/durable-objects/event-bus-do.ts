@@ -1,16 +1,15 @@
 /**
  * EventBusDO - Singleton event router for domain events
  *
- * Receives events from sagas/DOs, routes to registered handlers.
- * Features:
- * - Immediate delivery attempt on publish
- * - On failure: persist to pending_events with retry schedule
- * - Exponential backoff: 1s, 4s, 16s (max 3 attempts)
- * - Alarm-driven retry processing
+ * Migrated to Agent for Agent-native lifecycle and delayed scheduling.
+ * SQLite remains the source of truth for pending retries and DLQ state.
+ *
+ * Workflows were evaluated and intentionally deferred. EventBus is a small,
+ * due-time-driven router; Agent scheduling plus SQLite is the simplest fit.
  */
 
+import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { DurableObject } from "cloudflare:workers";
 import { desc, eq, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
@@ -21,7 +20,6 @@ import {
 	DLQItemNotFoundError,
 	EventBusDbError,
 	EventBusHandlerError,
-	EventBusRoutingError,
 	EventBusValidationError,
 	type EventBusError,
 } from "../lib/errors";
@@ -38,93 +36,60 @@ import {
 
 import type { Env } from "../index";
 
-// =============================================================================
-// Constants
-// =============================================================================
-
-/** Maximum number of delivery attempts before giving up */
 const MAX_ATTEMPTS = 3;
-
-/** Backoff delays in milliseconds: 1s, 4s, 16s (exponential: 1000 * 4^attempt) */
 const BACKOFF_DELAYS_MS: readonly [number, number, number] = [1000, 4000, 16000];
-
-/** DLQ retention period in days */
 const DLQ_RETENTION_DAYS = 30;
-
-/** DLQ retention in milliseconds */
 const DLQ_RETENTION_MS = DLQ_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
-/**
- * Get backoff delay for a given attempt number.
- * Returns the delay for the attempt, capped at the maximum delay.
- */
 function getBackoffDelayMs(attempt: number): number {
 	const index = Math.min(attempt, BACKOFF_DELAYS_MS.length - 1);
-	// Safe: index is always 0, 1, or 2 due to Math.min
 	return BACKOFF_DELAYS_MS[index] ?? BACKOFF_DELAYS_MS[0];
 }
 
-// =============================================================================
-// Handler Interface
-// =============================================================================
-
-/**
- * Event handler DO interface.
- * DOs that handle events must implement this method.
- */
 export interface EventHandler {
 	handleEvent(event: Event): Promise<Result<void, unknown>>;
 }
 
-// =============================================================================
-// Routing Configuration
-// =============================================================================
-
-/**
- * Hardcoded event type → handler DO mapping.
- * All events currently route to AchievementsDO.
- */
-const EVENT_ROUTES: Record<EventType, "ACHIEVEMENTS_DO"> = {
+const EVENT_ROUTES = {
 	[EventType.SongRequestSuccess]: "ACHIEVEMENTS_DO",
 	[EventType.RaffleRoll]: "ACHIEVEMENTS_DO",
 	[EventType.StreamOnline]: "ACHIEVEMENTS_DO",
 	[EventType.StreamOffline]: "ACHIEVEMENTS_DO",
-};
+} satisfies Record<EventType, "ACHIEVEMENTS_DO">;
 
-// =============================================================================
-// EventBusDO Implementation
-// =============================================================================
+interface EventBusAgentState {
+	retrySweepScheduleId: string | null;
+	retrySweepDueAt: string | null;
+	dlqPurgeScheduleId: string | null;
+	dlqPurgeDueAt: string | null;
+}
 
-/**
- * EventBusDO - Durable Object for event routing with retry support
- *
- * Singleton instance that receives domain events and routes them to
- * the appropriate handler DOs. Failed deliveries are retried with
- * exponential backoff via alarms.
- */
-class _EventBusDO extends DurableObject<Env> {
+class _EventBusDO extends Agent<Env, EventBusAgentState> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 
-	constructor(ctx: DurableObjectState, env: Env) {
+	initialState: EventBusAgentState = {
+		retrySweepScheduleId: null,
+		retrySweepDueAt: null,
+		dlqPurgeScheduleId: null,
+		dlqPurgeDueAt: null,
+	};
+
+	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
+	}
 
-		void this.ctx.blockConcurrencyWhile(async () => {
+	async onStart(): Promise<void> {
+		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
+			await this.ctx.storage.deleteAlarm();
+			await this.ensureRetrySweepSchedule();
+			await this.ensureDlqPurgeSchedule();
 		});
 	}
 
-	/**
-	 * Publish a domain event to be routed to handlers.
-	 *
-	 * Attempts immediate delivery. On failure, queues for retry.
-	 *
-	 * @param event - The domain event to publish
-	 * @returns Result<void, EventBusError> - Success if delivered or queued
-	 */
 	@rpc
 	async publish(event: unknown): Promise<Result<void, EventBusError>> {
-		// Validate event with Zod
 		const parseResult = EventSchema.safeParse(event);
 		if (!parseResult.success) {
 			logger.warn("EventBusDO: Invalid event format", {
@@ -138,6 +103,7 @@ class _EventBusDO extends DurableObject<Env> {
 		}
 
 		const domainEvent = parseResult.data;
+		const handlerKey = EVENT_ROUTES[domainEvent.type];
 
 		logger.info("EventBusDO: Publishing event", {
 			eventId: domainEvent.id,
@@ -145,22 +111,7 @@ class _EventBusDO extends DurableObject<Env> {
 			source: domainEvent.source,
 		});
 
-		// Look up handler
-		const handlerKey = EVENT_ROUTES[domainEvent.type];
-		if (!handlerKey) {
-			logger.warn("EventBusDO: No handler for event type", {
-				eventType: domainEvent.type,
-			});
-			return Result.err(
-				new EventBusRoutingError({
-					eventType: domainEvent.type,
-				}),
-			);
-		}
-
-		// Attempt immediate delivery
 		const deliveryResult = await this.deliverEvent(domainEvent, handlerKey);
-
 		if (deliveryResult.isOk()) {
 			logger.info("EventBusDO: Event delivered", {
 				eventId: domainEvent.id,
@@ -170,7 +121,6 @@ class _EventBusDO extends DurableObject<Env> {
 			return Result.ok();
 		}
 
-		// Delivery failed - queue for retry
 		logger.warn("EventBusDO: Initial delivery failed, queueing for retry", {
 			eventId: domainEvent.id,
 			eventType: domainEvent.type,
@@ -180,56 +130,70 @@ class _EventBusDO extends DurableObject<Env> {
 
 		const queueResult = await this.queueForRetry(domainEvent, 0);
 		if (queueResult.isErr()) {
-			return queueResult;
+			return Result.err(queueResult.error);
 		}
 
-		// Return success - event is queued for retry
 		return Result.ok();
 	}
 
-	/**
-	 * Alarm handler - processes pending events that are due for retry.
-	 * Also purges expired DLQ items.
-	 */
-	override async alarm(): Promise<void> {
+	async retryDueEventsTick(_scheduledFor?: string): Promise<void> {
+		if (this.state.retrySweepScheduleId !== null || this.state.retrySweepDueAt !== null) {
+			this.setState({
+				...this.state,
+				retrySweepScheduleId: null,
+				retrySweepDueAt: null,
+			});
+		}
+
 		const now = new Date().toISOString();
-
-		logger.info("EventBusDO: Alarm fired, processing pending events", { now });
-
-		// Purge expired DLQ items
-		await this.purgeExpiredDLQ();
-
-		// Get all events due for retry
 		const dueEvents = await this.db
 			.select()
 			.from(pendingEvents)
 			.where(lte(pendingEvents.nextRetryAt, now));
 
 		if (dueEvents.length === 0) {
-			logger.info("EventBusDO: No pending events to process");
+			await this.ensureRetrySweepSchedule();
 			return;
 		}
 
-		logger.info("EventBusDO: Processing pending events", {
-			count: dueEvents.length,
-		});
+		logger.info("EventBusDO: Processing pending events", { count: dueEvents.length, now });
 
 		for (const pending of dueEvents) {
 			await this.processPendingEvent(pending);
 		}
 
-		// Schedule next alarm if there are more pending events
-		await this.scheduleNextAlarm();
+		await this.ensureRetrySweepSchedule();
+		await this.ensureDlqPurgeSchedule();
 	}
 
-	/**
-	 * Process a single pending event - attempt delivery or give up.
-	 */
+	async purgeExpiredDlqTick(_scheduledFor?: string): Promise<void> {
+		if (this.state.dlqPurgeScheduleId !== null || this.state.dlqPurgeDueAt !== null) {
+			this.setState({
+				...this.state,
+				dlqPurgeScheduleId: null,
+				dlqPurgeDueAt: null,
+			});
+		}
+
+		await this.purgeExpiredDLQ();
+		await this.ensureDlqPurgeSchedule();
+	}
+
 	private async processPendingEvent(pending: PendingEvent): Promise<void> {
-		// Parse the stored event
-		const parseResult = EventSchema.safeParse(JSON.parse(pending.event));
+		let parsedEvent: unknown;
+		try {
+			parsedEvent = JSON.parse(pending.event);
+		} catch (error) {
+			logger.error("EventBusDO: Corrupted pending event JSON, deleting", {
+				eventId: pending.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			await this.db.delete(pendingEvents).where(eq(pendingEvents.id, pending.id));
+			return;
+		}
+
+		const parseResult = EventSchema.safeParse(parsedEvent);
 		if (!parseResult.success) {
-			// Corrupted event - delete it
 			logger.error("EventBusDO: Corrupted pending event, deleting", {
 				eventId: pending.id,
 				error: parseResult.error.message,
@@ -249,11 +213,8 @@ class _EventBusDO extends DurableObject<Env> {
 			maxAttempts: MAX_ATTEMPTS,
 		});
 
-		// Attempt delivery
 		const deliveryResult = await this.deliverEvent(event, handlerKey);
-
 		if (deliveryResult.isOk()) {
-			// Success - remove from pending
 			logger.info("EventBusDO: Retry succeeded", {
 				eventId: event.id,
 				eventType: event.type,
@@ -263,9 +224,7 @@ class _EventBusDO extends DurableObject<Env> {
 			return;
 		}
 
-		// Delivery failed again
 		if (attemptNumber >= MAX_ATTEMPTS) {
-			// Max attempts reached - move to DLQ
 			logger.error("EventBusDO: Max retry attempts reached, moving to DLQ", {
 				eventId: event.id,
 				eventType: event.type,
@@ -276,7 +235,6 @@ class _EventBusDO extends DurableObject<Env> {
 			const now = new Date().toISOString();
 			const expiresAt = new Date(Date.now() + DLQ_RETENTION_MS).toISOString();
 
-			// Atomic move: insert to DLQ + delete from pending in single transaction
 			await this.db.transaction(async (tx) => {
 				await tx.insert(deadLetterQueue).values({
 					id: event.id,
@@ -292,7 +250,6 @@ class _EventBusDO extends DurableObject<Env> {
 			return;
 		}
 
-		// Schedule next retry
 		const delayMs = getBackoffDelayMs(attemptNumber);
 		const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
 
@@ -313,9 +270,6 @@ class _EventBusDO extends DurableObject<Env> {
 			.where(eq(pendingEvents.id, pending.id));
 	}
 
-	/**
-	 * Queue an event for retry with exponential backoff.
-	 */
 	private async queueForRetry(
 		event: Event,
 		currentAttempts: number,
@@ -326,13 +280,40 @@ class _EventBusDO extends DurableObject<Env> {
 
 		return Result.tryPromise({
 			try: async () => {
-				await this.db.insert(pendingEvents).values({
-					id: event.id,
-					event: JSON.stringify(event),
-					attempts: currentAttempts,
-					nextRetryAt,
-					createdAt: now,
-				});
+				const [existingPending] = await this.db
+					.select({ id: pendingEvents.id })
+					.from(pendingEvents)
+					.where(eq(pendingEvents.id, event.id))
+					.limit(1);
+				if (existingPending) {
+					logger.info("EventBusDO: Event already pending, skipping duplicate retry queue", {
+						eventId: event.id,
+					});
+					return;
+				}
+
+				const [existingDlq] = await this.db
+					.select({ id: deadLetterQueue.id })
+					.from(deadLetterQueue)
+					.where(eq(deadLetterQueue.id, event.id))
+					.limit(1);
+				if (existingDlq) {
+					logger.info("EventBusDO: Event already in DLQ, skipping duplicate retry queue", {
+						eventId: event.id,
+					});
+					return;
+				}
+
+				await this.db
+					.insert(pendingEvents)
+					.values({
+						id: event.id,
+						event: JSON.stringify(event),
+						attempts: currentAttempts,
+						nextRetryAt,
+						createdAt: now,
+					})
+					.onConflictDoNothing();
 
 				logger.info("EventBusDO: Event queued for retry", {
 					eventId: event.id,
@@ -341,18 +322,13 @@ class _EventBusDO extends DurableObject<Env> {
 					delayMs,
 				});
 
-				// Schedule alarm for the retry
-				await this.scheduleNextAlarm();
+				await this.ensureRetrySweepSchedule();
 			},
 			catch: (cause) => new EventBusDbError({ operation: "queueForRetry", cause }),
 		});
 	}
 
-	/**
-	 * Schedule an alarm for the earliest pending event.
-	 */
-	private async scheduleNextAlarm(): Promise<void> {
-		// Find earliest pending event
+	private async ensureRetrySweepSchedule(): Promise<void> {
 		const [earliest] = await this.db
 			.select({ nextRetryAt: pendingEvents.nextRetryAt })
 			.from(pendingEvents)
@@ -360,25 +336,112 @@ class _EventBusDO extends DurableObject<Env> {
 			.limit(1);
 
 		if (!earliest) {
+			await this.clearRetrySweepSchedule();
 			return;
 		}
 
-		const alarmTime = new Date(earliest.nextRetryAt).getTime();
-		const now = Date.now();
+		const earliestDueAt = earliest.nextRetryAt;
+		if (new Date(earliestDueAt).getTime() <= Date.now()) {
+			await this.clearRetrySweepSchedule();
+			await this.retryDueEventsTick(earliestDueAt);
+			return;
+		}
 
-		// Schedule alarm for earliest retry time (at least 1 second in future)
-		const scheduleAt = Math.max(alarmTime, now + 1000);
+		if (
+			this.state.retrySweepScheduleId !== null &&
+			this.state.retrySweepDueAt === earliestDueAt &&
+			this.getSchedule(this.state.retrySweepScheduleId) !== undefined
+		) {
+			return;
+		}
 
-		logger.info("EventBusDO: Scheduling alarm", {
-			scheduleAt: new Date(scheduleAt).toISOString(),
-		});
-
-		await this.ctx.storage.setAlarm(scheduleAt);
+		await this.scheduleRetrySweepAt(earliestDueAt);
 	}
 
-	/**
-	 * Attempt to deliver event to handler DO.
-	 */
+	private async ensureDlqPurgeSchedule(): Promise<void> {
+		const [earliest] = await this.db
+			.select({ expiresAt: deadLetterQueue.expiresAt })
+			.from(deadLetterQueue)
+			.orderBy(deadLetterQueue.expiresAt)
+			.limit(1);
+
+		if (!earliest) {
+			await this.clearDlqPurgeSchedule();
+			return;
+		}
+
+		const earliestExpiryAt = earliest.expiresAt;
+		if (new Date(earliestExpiryAt).getTime() <= Date.now()) {
+			await this.clearDlqPurgeSchedule();
+			await this.purgeExpiredDlqTick(earliestExpiryAt);
+			return;
+		}
+
+		if (
+			this.state.dlqPurgeScheduleId !== null &&
+			this.state.dlqPurgeDueAt === earliestExpiryAt &&
+			this.getSchedule(this.state.dlqPurgeScheduleId) !== undefined
+		) {
+			return;
+		}
+
+		await this.scheduleDlqPurgeAt(earliestExpiryAt);
+	}
+
+	private async scheduleRetrySweepAt(whenIso: string): Promise<void> {
+		await this.clearRetrySweepSchedule();
+		const schedule = await this.schedule(new Date(whenIso), "retryDueEventsTick", whenIso, {
+			idempotent: true,
+			retry: { maxAttempts: 1 },
+		});
+		this.setState({
+			...this.state,
+			retrySweepScheduleId: schedule.id,
+			retrySweepDueAt: whenIso,
+		});
+	}
+
+	private async scheduleDlqPurgeAt(whenIso: string): Promise<void> {
+		await this.clearDlqPurgeSchedule();
+		const schedule = await this.schedule(new Date(whenIso), "purgeExpiredDlqTick", whenIso, {
+			idempotent: true,
+			retry: { maxAttempts: 1 },
+		});
+		this.setState({
+			...this.state,
+			dlqPurgeScheduleId: schedule.id,
+			dlqPurgeDueAt: whenIso,
+		});
+	}
+
+	private async clearRetrySweepSchedule(): Promise<void> {
+		if (this.state.retrySweepScheduleId !== null) {
+			await this.cancelSchedule(this.state.retrySweepScheduleId);
+		}
+
+		if (this.state.retrySweepScheduleId !== null || this.state.retrySweepDueAt !== null) {
+			this.setState({
+				...this.state,
+				retrySweepScheduleId: null,
+				retrySweepDueAt: null,
+			});
+		}
+	}
+
+	private async clearDlqPurgeSchedule(): Promise<void> {
+		if (this.state.dlqPurgeScheduleId !== null) {
+			await this.cancelSchedule(this.state.dlqPurgeScheduleId);
+		}
+
+		if (this.state.dlqPurgeScheduleId !== null || this.state.dlqPurgeDueAt !== null) {
+			this.setState({
+				...this.state,
+				dlqPurgeScheduleId: null,
+				dlqPurgeDueAt: null,
+			});
+		}
+	}
+
 	private async deliverEvent(
 		event: Event,
 		handlerKey: "ACHIEVEMENTS_DO",
@@ -388,7 +451,6 @@ class _EventBusDO extends DurableObject<Env> {
 			const result = await stub.handleEvent(event);
 
 			if (result.isErr()) {
-				// Log detailed error cause for debugging
 				const cause = result.error;
 				logger.error("EventBusDO: Handler returned error", {
 					eventId: event.id,
@@ -411,7 +473,6 @@ class _EventBusDO extends DurableObject<Env> {
 
 			return Result.ok();
 		} catch (error) {
-			// Log thrown exceptions with full details
 			logger.error("EventBusDO: Handler threw exception", {
 				eventId: event.id,
 				eventType: event.type,
@@ -430,9 +491,6 @@ class _EventBusDO extends DurableObject<Env> {
 		}
 	}
 
-	/**
-	 * Get count of pending events (for monitoring/testing).
-	 */
 	@rpc
 	async getPendingCount(): Promise<Result<number, EventBusDbError>> {
 		return Result.tryPromise({
@@ -444,9 +502,6 @@ class _EventBusDO extends DurableObject<Env> {
 		});
 	}
 
-	/**
-	 * Get pending events with parsed payloads for debugging.
-	 */
 	@rpc
 	async getPending(options?: {
 		limit?: number;
@@ -496,17 +551,6 @@ class _EventBusDO extends DurableObject<Env> {
 		});
 	}
 
-	// =============================================================================
-	// Dead Letter Queue RPC Methods
-	// =============================================================================
-
-	/**
-	 * Get DLQ items for admin inspection.
-	 *
-	 * @param options.limit - Max items to return (default 50)
-	 * @param options.offset - Pagination offset (default 0)
-	 * @returns Result<DLQListResponse, EventBusDbError>
-	 */
 	@rpc
 	async getDLQ(options?: {
 		limit?: number;
@@ -517,7 +561,6 @@ class _EventBusDO extends DurableObject<Env> {
 
 		return Result.tryPromise({
 			try: async () => {
-				// Get items (sorted by last failure, newest first)
 				const items = await this.db
 					.select()
 					.from(deadLetterQueue)
@@ -525,11 +568,9 @@ class _EventBusDO extends DurableObject<Env> {
 					.limit(limit)
 					.offset(offset);
 
-				// Get total count
 				const allItems = await this.db.select().from(deadLetterQueue);
 				const totalCount = allItems.length;
 
-				// Parse events for response
 				const parsedItems: DLQItem[] = items.map((item) => {
 					let event: Event | null = null;
 					try {
@@ -560,28 +601,18 @@ class _EventBusDO extends DurableObject<Env> {
 		});
 	}
 
-	/**
-	 * Replay a DLQ item - attempt delivery again.
-	 *
-	 * If successful, removes from DLQ. If failed, updates lastFailedAt and resets attempts to 0.
-	 *
-	 * @param id - Event ID to replay
-	 * @returns Result<ReplayResult, EventBusDbError | DLQItemNotFoundError | EventBusValidationError>
-	 */
 	@rpc
 	async replayDLQ(
 		id: string,
 	): Promise<
 		Result<ReplayResult, EventBusDbError | DLQItemNotFoundError | EventBusValidationError>
 	> {
-		// Find the DLQ item
 		const [item] = await this.db.select().from(deadLetterQueue).where(eq(deadLetterQueue.id, id));
 
 		if (!item) {
 			return Result.err(new DLQItemNotFoundError({ eventId: id }));
 		}
 
-		// Parse the event
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(item.event);
@@ -602,17 +633,14 @@ class _EventBusDO extends DurableObject<Env> {
 			handler: handlerKey,
 		});
 
-		// Attempt delivery
 		const deliveryResult = await this.deliverEvent(event, handlerKey);
-
 		if (deliveryResult.isOk()) {
-			// Success - remove from DLQ
 			await this.db.delete(deadLetterQueue).where(eq(deadLetterQueue.id, id));
+			await this.ensureDlqPurgeSchedule();
 			logger.info("EventBusDO: DLQ replay succeeded", { eventId: event.id });
 			return Result.ok({ success: true, eventId: event.id });
 		}
 
-		// Failed again - update lastFailedAt, reset to retry queue
 		const now = new Date().toISOString();
 		await this.db
 			.update(deadLetterQueue)
@@ -621,6 +649,7 @@ class _EventBusDO extends DurableObject<Env> {
 				error: deliveryResult.error.message,
 			})
 			.where(eq(deadLetterQueue.id, id));
+		await this.ensureDlqPurgeSchedule();
 
 		logger.warn("EventBusDO: DLQ replay failed", {
 			eventId: event.id,
@@ -634,15 +663,8 @@ class _EventBusDO extends DurableObject<Env> {
 		});
 	}
 
-	/**
-	 * Delete a DLQ item - discard the failed event.
-	 *
-	 * @param id - Event ID to delete
-	 * @returns Result<void, EventBusDbError | DLQItemNotFoundError>
-	 */
 	@rpc
 	async deleteDLQ(id: string): Promise<Result<void, EventBusDbError | DLQItemNotFoundError>> {
-		// Check if item exists
 		const [item] = await this.db.select().from(deadLetterQueue).where(eq(deadLetterQueue.id, id));
 
 		if (!item) {
@@ -652,19 +674,15 @@ class _EventBusDO extends DurableObject<Env> {
 		return Result.tryPromise({
 			try: async () => {
 				await this.db.delete(deadLetterQueue).where(eq(deadLetterQueue.id, id));
+				await this.ensureDlqPurgeSchedule();
 				logger.info("EventBusDO: DLQ item deleted", { eventId: id });
 			},
 			catch: (cause) => new EventBusDbError({ operation: "deleteDLQ", cause }),
 		});
 	}
 
-	/**
-	 * Purge expired DLQ items (older than 30 days).
-	 * Called during alarm processing.
-	 */
 	private async purgeExpiredDLQ(): Promise<void> {
 		const now = new Date().toISOString();
-
 		const expired = await this.db
 			.select()
 			.from(deadLetterQueue)
@@ -675,16 +693,10 @@ class _EventBusDO extends DurableObject<Env> {
 		}
 
 		logger.info("EventBusDO: Purging expired DLQ items", { count: expired.length });
-
 		await this.db.delete(deadLetterQueue).where(lte(deadLetterQueue.expiresAt, now));
 	}
 }
 
-// =============================================================================
-// DLQ Response Types
-// =============================================================================
-
-/** Single DLQ item with parsed event */
 export interface DLQItem {
 	id: string;
 	event: Event | null;
@@ -695,7 +707,6 @@ export interface DLQItem {
 	expiresAt: string;
 }
 
-/** Response for getDLQ */
 export interface DLQListResponse {
 	items: DLQItem[];
 	totalCount: number;
@@ -703,7 +714,6 @@ export interface DLQListResponse {
 	offset: number;
 }
 
-/** Single pending event with parsed event payload */
 export interface PendingItem {
 	id: string;
 	event: Event | null;
@@ -712,7 +722,6 @@ export interface PendingItem {
 	createdAt: string;
 }
 
-/** Response for getPending */
 export interface PendingListResponse {
 	items: PendingItem[];
 	totalCount: number;
@@ -720,7 +729,6 @@ export interface PendingListResponse {
 	offset: number;
 }
 
-/** Response for replayDLQ */
 export interface ReplayResult {
 	success: boolean;
 	eventId: string;

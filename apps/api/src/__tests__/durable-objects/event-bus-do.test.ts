@@ -1,27 +1,21 @@
 /**
- * EventBusDO unit tests
+ * EventBusDO integration tests
  *
- * Tests event publishing, retry logic, and alarm-based processing.
- *
- * NOTE: Tests that trigger DO-to-DO RPC (EventBusDO → AchievementsDO) are skipped
- * because vitest-pool-workers/miniflare doesn't support DO-to-DO RPC from within
- * runInDurableObject. The RpcTarget prototype hack works in production workerd
- * but not in the test environment. See lib/durable-objects.ts for details.
+ * Tests public EventBus behavior through the Agent interface.
  */
 
 import { env, runInDurableObject } from "cloudflare:test";
+import { drizzle } from "drizzle-orm/durable-sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { EventBusDO } from "../../durable-objects/event-bus-do";
+import * as eventBusSchema from "../../durable-objects/schemas/event-bus-do.schema";
 import {
-	EventSource,
-	EventType,
 	createSongRequestSuccessEvent,
+	deadLetterQueue,
+	pendingEvents,
 } from "../../durable-objects/schemas/event-bus-do.schema";
 
-/**
- * Create a test SongRequestSuccessEvent with unique ID
- */
 function createTestEvent(overrides: { id?: string } = {}) {
 	return createSongRequestSuccessEvent({
 		id: overrides.id ?? crypto.randomUUID(),
@@ -32,18 +26,52 @@ function createTestEvent(overrides: { id?: string } = {}) {
 	});
 }
 
+async function seedPendingRow(
+	instance: EventBusDO,
+	params: {
+		id: string;
+		event: string;
+		attempts: number;
+		nextRetryAt: string;
+		createdAt: string;
+	},
+): Promise<void> {
+	const db = drizzle(instance.ctx.storage, { schema: eventBusSchema });
+	await db.insert(pendingEvents).values(params);
+}
+
+async function seedDlqRow(
+	instance: EventBusDO,
+	params: {
+		id: string;
+		event: string;
+		error: string;
+		attempts: number;
+		firstFailedAt: string;
+		lastFailedAt: string;
+		expiresAt: string;
+	},
+): Promise<void> {
+	const db = drizzle(instance.ctx.storage, { schema: eventBusSchema });
+	await db.insert(deadLetterQueue).values(params);
+}
+
 describe("EventBusDO", () => {
 	let stub: DurableObjectStub<EventBusDO>;
+	let busName: string;
 
-	beforeEach(() => {
-		const id = env.EVENT_BUS_DO.idFromName("event-bus");
+	beforeEach(async () => {
+		busName = `event-bus-${crypto.randomUUID()}`;
+		const id = env.EVENT_BUS_DO.idFromName(busName);
 		stub = env.EVENT_BUS_DO.get(id);
+		await stub.setName(busName);
+		await stub.getPendingCount();
 	});
 
 	describe("publish", () => {
-		it("should reject invalid event format", async () => {
+		it("rejects an invalid event payload", async () => {
 			const result = await runInDurableObject(stub, (instance: EventBusDO) =>
-				instance.publish({ invalid: "event" }),
+				instance.publish({ invalid: true }),
 			);
 
 			expect(result.status).toBe("error");
@@ -52,208 +80,226 @@ describe("EventBusDO", () => {
 			}
 		});
 
-		it("should reject event with invalid UUID", async () => {
-			const invalidEvent = {
-				id: "not-a-uuid",
-				type: EventType.SongRequestSuccess,
-				v: 1,
-				timestamp: new Date().toISOString(),
-				source: EventSource.SongRequestSaga,
-				userId: "user-123",
-				userDisplayName: "TestUser",
-				sagaId: "saga-456",
-				trackId: "track-789",
-			};
-
-			const result = await runInDurableObject(stub, (instance: EventBusDO) =>
-				instance.publish(invalidEvent),
-			);
-
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error._tag).toBe("EventBusValidationError");
-			}
-		});
-
-		// NOTE: Skipped - triggers DO-to-DO RPC (EventBusDO → AchievementsDO) which doesn't work in miniflare
-		it.skip("should deliver event successfully when handler succeeds", async () => {
-			// AchievementsDO.handleEvent() now exists and returns Ok
-			// so events should be delivered without queueing
+		it("delivers a valid event immediately when the handler succeeds", async () => {
 			const event = createTestEvent();
 
+			const publishResult = await stub.publish(event);
+			const pendingResult = await stub.getPending();
+
+			expect(publishResult.status).toBe("ok");
+			expect(pendingResult.status).toBe("ok");
+			if (pendingResult.status === "ok") {
+				expect(pendingResult.value.totalCount).toBe(0);
+			}
+		});
+	});
+
+	describe("scheduled retry and purge callbacks", () => {
+		it("restores retry and DLQ purge schedules from durable rows during onStart", async () => {
+			const pendingEvent = createTestEvent();
+			const futureRetryAt = new Date(Date.now() + 60_000).toISOString();
+			const futureExpiresAt = new Date(Date.now() + 120_000).toISOString();
+			const createdAt = new Date().toISOString();
+
+			const schedules = await runInDurableObject(stub, async (instance: EventBusDO) => {
+				await seedPendingRow(instance, {
+					id: pendingEvent.id,
+					event: JSON.stringify(pendingEvent),
+					attempts: 0,
+					nextRetryAt: futureRetryAt,
+					createdAt,
+				});
+				await seedDlqRow(instance, {
+					id: `${pendingEvent.id}-dlq`,
+					event: JSON.stringify(createTestEvent({ id: `${pendingEvent.id}-dlq` })),
+					error: "boom",
+					attempts: 3,
+					firstFailedAt: createdAt,
+					lastFailedAt: createdAt,
+					expiresAt: futureExpiresAt,
+				});
+
+				instance.setState({
+					retrySweepScheduleId: "stale-retry-id",
+					retrySweepDueAt: "2099-01-01T00:00:00.000Z",
+					dlqPurgeScheduleId: "stale-dlq-id",
+					dlqPurgeDueAt: "2099-01-01T00:00:00.000Z",
+				});
+
+				await instance.onStart();
+				return instance.getSchedules();
+			});
+
+			expect(schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "scheduled",
+						callback: "retryDueEventsTick",
+					}),
+					expect.objectContaining({
+						type: "scheduled",
+						callback: "purgeExpiredDlqTick",
+					}),
+				]),
+			);
+		});
+
+		it("processes a due pending row and removes it when delivery succeeds", async () => {
+			const event = createTestEvent();
+			const createdAt = new Date(Date.now() - 10_000).toISOString();
+			const dueAt = new Date(Date.now() - 1_000).toISOString();
+
+			const pendingResult = await runInDurableObject(stub, async (instance: EventBusDO) => {
+				await seedPendingRow(instance, {
+					id: event.id,
+					event: JSON.stringify(event),
+					attempts: 0,
+					nextRetryAt: dueAt,
+					createdAt,
+				});
+
+				await instance.retryDueEventsTick();
+				return instance.getPending();
+			});
+
+			expect(pendingResult.status).toBe("ok");
+			if (pendingResult.status === "ok") {
+				expect(pendingResult.value.totalCount).toBe(0);
+			}
+		});
+
+		it("deletes corrupted pending JSON during retry processing", async () => {
+			const eventId = crypto.randomUUID();
+			const createdAt = new Date(Date.now() - 10_000).toISOString();
+			const dueAt = new Date(Date.now() - 1_000).toISOString();
+
+			const pendingResult = await runInDurableObject(stub, async (instance: EventBusDO) => {
+				await seedPendingRow(instance, {
+					id: eventId,
+					event: "{invalid-json",
+					attempts: 0,
+					nextRetryAt: dueAt,
+					createdAt,
+				});
+
+				await instance.retryDueEventsTick();
+				return instance.getPending();
+			});
+
+			expect(pendingResult.status).toBe("ok");
+			if (pendingResult.status === "ok") {
+				expect(pendingResult.value.totalCount).toBe(0);
+			}
+		});
+
+		it("purges expired DLQ rows and keeps unexpired rows", async () => {
+			const expiredEvent = createTestEvent();
+			const futureEvent = createTestEvent();
+			const createdAt = new Date(Date.now() - 10_000).toISOString();
+			const expiredAt = new Date(Date.now() - 1_000).toISOString();
+			const futureExpiresAt = new Date(Date.now() + 60_000).toISOString();
+
+			const dlqResult = await runInDurableObject(stub, async (instance: EventBusDO) => {
+				await seedDlqRow(instance, {
+					id: expiredEvent.id,
+					event: JSON.stringify(expiredEvent),
+					error: "expired",
+					attempts: 3,
+					firstFailedAt: createdAt,
+					lastFailedAt: createdAt,
+					expiresAt: expiredAt,
+				});
+				await seedDlqRow(instance, {
+					id: futureEvent.id,
+					event: JSON.stringify(futureEvent),
+					error: "future",
+					attempts: 3,
+					firstFailedAt: createdAt,
+					lastFailedAt: createdAt,
+					expiresAt: futureExpiresAt,
+				});
+
+				await instance.purgeExpiredDlqTick();
+				return instance.getDLQ();
+			});
+
+			expect(dlqResult.status).toBe("ok");
+			if (dlqResult.status === "ok") {
+				expect(dlqResult.value.totalCount).toBe(1);
+				expect(dlqResult.value.items[0]).toMatchObject({ id: futureEvent.id, error: "future" });
+			}
+		});
+	});
+
+	describe("DLQ admin methods", () => {
+		it("replays a valid DLQ row immediately and removes it when delivery succeeds", async () => {
+			const event = createTestEvent();
+			const createdAt = new Date(Date.now() - 10_000).toISOString();
+			const expiresAt = new Date(Date.now() + 60_000).toISOString();
+
 			const result = await runInDurableObject(stub, async (instance: EventBusDO) => {
-				const publishResult = await instance.publish(event);
+				await seedDlqRow(instance, {
+					id: event.id,
+					event: JSON.stringify(event),
+					error: "boom",
+					attempts: 3,
+					firstFailedAt: createdAt,
+					lastFailedAt: createdAt,
+					expiresAt,
+				});
 
-				// Should return ok (event delivered)
-				expect(publishResult.status).toBe("ok");
-
-				// No events should be pending (delivery succeeded)
-				const countResult = await instance.getPendingCount();
-				return countResult;
+				const replayResult = await instance.replayDLQ(event.id);
+				const remainingDlq = await instance.getDLQ();
+				return { replayResult, remainingDlq };
 			});
 
-			expect(result.status).toBe("ok");
-			if (result.status === "ok") {
-				expect(result.value).toBe(0);
+			expect(result.replayResult.status).toBe("ok");
+			if (result.replayResult.status === "ok") {
+				expect(result.replayResult.value).toEqual({ success: true, eventId: event.id });
+			}
+			expect(result.remainingDlq.status).toBe("ok");
+			if (result.remainingDlq.status === "ok") {
+				expect(result.remainingDlq.value.totalCount).toBe(0);
 			}
 		});
 
-		// NOTE: Skipped - triggers DO-to-DO RPC (EventBusDO → AchievementsDO) which doesn't work in miniflare
-		it.skip("should handle multiple events successfully", async () => {
-			await runInDurableObject(stub, async (instance: EventBusDO) => {
-				const event1 = createTestEvent();
-				const event2 = createTestEvent();
-				const event3 = createTestEvent();
+		it("deletes an existing DLQ row", async () => {
+			const event = createTestEvent();
+			const createdAt = new Date(Date.now() - 10_000).toISOString();
+			const expiresAt = new Date(Date.now() + 60_000).toISOString();
 
-				await instance.publish(event1);
-				await instance.publish(event2);
-				await instance.publish(event3);
+			const result = await runInDurableObject(stub, async (instance: EventBusDO) => {
+				await seedDlqRow(instance, {
+					id: event.id,
+					event: JSON.stringify(event),
+					error: "boom",
+					attempts: 3,
+					firstFailedAt: createdAt,
+					lastFailedAt: createdAt,
+					expiresAt,
+				});
 
-				// No events should be pending (all delivered successfully)
-				const countResult = await instance.getPendingCount();
-				expect(countResult.status).toBe("ok");
-				if (countResult.status === "ok") {
-					expect(countResult.value).toBe(0);
-				}
+				const deleteResult = await instance.deleteDLQ(event.id);
+				const remainingDlq = await instance.getDLQ();
+				return { deleteResult, remainingDlq };
 			});
-		});
-	});
 
-	describe("getPendingCount", () => {
-		it("should return 0 when no pending events", async () => {
-			const result = await runInDurableObject(stub, (instance: EventBusDO) =>
-				instance.getPendingCount(),
-			);
-
-			expect(result.status).toBe("ok");
-			if (result.status === "ok") {
-				expect(result.value).toBe(0);
+			expect(result.deleteResult.status).toBe("ok");
+			expect(result.remainingDlq.status).toBe("ok");
+			if (result.remainingDlq.status === "ok") {
+				expect(result.remainingDlq.value.totalCount).toBe(0);
 			}
 		});
-	});
 
-	describe("alarm processing", () => {
-		// NOTE: Skipped - triggers DO-to-DO RPC (EventBusDO → AchievementsDO) which doesn't work in miniflare
-		it.skip("should have no events to process when handler succeeds", async () => {
-			await runInDurableObject(stub, async (instance: EventBusDO) => {
-				// Publish an event - should be delivered immediately
-				const event = createTestEvent();
-				await instance.publish(event);
-
-				// Verify no events are pending (delivery succeeded)
-				let countResult = await instance.getPendingCount();
-				expect(countResult.status).toBe("ok");
-				if (countResult.status === "ok") {
-					expect(countResult.value).toBe(0);
-				}
-
-				// Trigger alarm - should find no pending events
-				await instance.alarm();
-
-				// Still no pending events
-				countResult = await instance.getPendingCount();
-				expect(countResult.status).toBe("ok");
-				if (countResult.status === "ok") {
-					expect(countResult.value).toBe(0);
-				}
-			});
-		});
-
-		// Note: Testing max attempts exhaustion requires time mocking.
-		// The alarm handler only processes events where nextRetryAt <= now,
-		// so calling alarm() immediately after queueing doesn't process the event.
-		// Integration test would verify: after 3 failed attempts, event is deleted.
-		it.skip("should give up after max attempts (requires time mocking)", async () => {
-			await runInDurableObject(stub, async (instance: EventBusDO) => {
-				const event = createTestEvent();
-				await instance.publish(event);
-
-				// Would need to advance time or mock storage to test this
-				// Trigger alarm 3 times (max attempts)
-				await instance.alarm();
-				await instance.alarm();
-				await instance.alarm();
-
-				// After 3 failed attempts, event should be removed
-				const countResult = await instance.getPendingCount();
-				expect(countResult.status).toBe("ok");
-				if (countResult.status === "ok") {
-					expect(countResult.value).toBe(0);
-				}
-			});
-		});
-	});
-
-	// NOTE: All event validation tests skipped - they trigger DO-to-DO RPC which doesn't work in miniflare
-	describe.skip("event validation", () => {
-		it("should validate SongRequestSuccessEvent", async () => {
-			const validEvent = createTestEvent();
-
+		it("returns DLQItemNotFoundError when deleting a missing row", async () => {
 			const result = await runInDurableObject(stub, (instance: EventBusDO) =>
-				instance.publish(validEvent),
+				instance.deleteDLQ(crypto.randomUUID()),
 			);
 
-			// Event is valid, so it should succeed (even if queued for retry)
-			expect(result.status).toBe("ok");
-		});
-
-		it("should validate RaffleRollEvent", async () => {
-			const raffleEvent = {
-				id: crypto.randomUUID(),
-				type: EventType.RaffleRoll,
-				v: 1,
-				timestamp: new Date().toISOString(),
-				source: EventSource.KeyboardRaffleSaga,
-				userId: "user-123",
-				userDisplayName: "TestUser",
-				sagaId: "saga-789",
-				roll: 4200,
-				winningNumber: 7777,
-				distance: 3577,
-				isWinner: false,
-			};
-
-			const result = await runInDurableObject(stub, (instance: EventBusDO) =>
-				instance.publish(raffleEvent),
-			);
-
-			expect(result.status).toBe("ok");
-		});
-
-		it("should validate StreamOnlineEvent", async () => {
-			const streamEvent = {
-				id: crypto.randomUUID(),
-				type: EventType.StreamOnline,
-				v: 1,
-				timestamp: new Date().toISOString(),
-				source: EventSource.StreamLifecycle,
-				streamId: "stream-123",
-				startedAt: new Date().toISOString(),
-			};
-
-			const result = await runInDurableObject(stub, (instance: EventBusDO) =>
-				instance.publish(streamEvent),
-			);
-
-			expect(result.status).toBe("ok");
-		});
-
-		it("should validate StreamOfflineEvent", async () => {
-			const streamEvent = {
-				id: crypto.randomUUID(),
-				type: EventType.StreamOffline,
-				v: 1,
-				timestamp: new Date().toISOString(),
-				source: EventSource.StreamLifecycle,
-				streamId: "stream-123",
-				endedAt: new Date().toISOString(),
-			};
-
-			const result = await runInDurableObject(stub, (instance: EventBusDO) =>
-				instance.publish(streamEvent),
-			);
-
-			expect(result.status).toBe("ok");
+			expect(result.status).toBe("error");
+			if (result.status === "error") {
+				expect(result.error._tag).toBe("DLQItemNotFoundError");
+			}
 		});
 	});
 });
