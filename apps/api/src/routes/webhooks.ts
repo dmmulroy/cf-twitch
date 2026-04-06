@@ -149,7 +149,7 @@ async function handleSongCommand(): Promise<string> {
 
 async function handleQueueCommand(): Promise<string> {
 	const stub = getStub("SONG_QUEUE_DO");
-	const result = await stub.getQueue(4);
+	const result = await stub.getSongQueue(4);
 
 	if (result.status === "error") {
 		logger.error("Failed to get queue", { error: result.error.message });

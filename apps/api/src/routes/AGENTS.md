@@ -33,7 +33,7 @@ c.redirect(url, 302); // Redirect
 
 // DO calls - always via getStub()
 const stub = getStub("SONG_QUEUE_DO");
-const result = await stub.getQueue(10);
+const result = await stub.getSongQueue(10);
 if (result.status === "error") {
 	return c.json({ error: result.error.message }, 500);
 }

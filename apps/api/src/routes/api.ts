@@ -83,7 +83,7 @@ api.get("/queue", async (c) => {
 	const { limit } = queryResult.data;
 
 	const stub = getStub("SONG_QUEUE_DO");
-	const result = await stub.getQueue(limit);
+	const result = await stub.getSongQueue(limit);
 
 	if (result.status === "error") {
 		logger.error("Failed to get queue", { error: result.error.message });
@@ -334,7 +334,7 @@ api.get("/debug/status", async (c) => {
 
 	const [streamResult, queueResult, twitchResult] = await Promise.all([
 		streamStub.getStreamState(),
-		songQueueStub.getQueue(5),
+		songQueueStub.getSongQueue(5),
 		twitchService.getStreamInfo(c.env.TWITCH_BROADCASTER_NAME),
 	]);
 
