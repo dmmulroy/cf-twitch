@@ -31,6 +31,7 @@ import type { Env } from "../index";
 type StaticCommand =
 	| "keyboard"
 	| "socials"
+	| "browser"
 	| "github"
 	| "twitter"
 	| "schedule"
@@ -80,6 +81,7 @@ const VALID_CHAT_COMMANDS: ChatCommand[] = [
 	"queue",
 	"keyboard",
 	"socials",
+	"browser",
 	"github",
 	"twitter",
 	"schedule",
@@ -549,6 +551,7 @@ async function handleChatCommand(
 			break;
 		case "keyboard":
 		case "socials":
+		case "browser":
 		case "github":
 		case "twitter":
 		case "schedule":

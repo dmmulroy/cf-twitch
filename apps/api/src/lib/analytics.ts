@@ -58,6 +58,7 @@ export type ChatCommandType =
 	| "queue"
 	| "keyboard"
 	| "socials"
+	| "browser"
 	| "github"
 	| "twitter"
 	| "schedule"

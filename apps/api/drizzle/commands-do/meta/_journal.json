@@ -29,6 +29,13 @@
 			"when": 1771512163000,
 			"tag": "0003_vip_can_update_leak",
 			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "6",
+			"when": 1775188800000,
+			"tag": "0004_add_browser_command",
+			"breakpoints": true
 		}
 	]
 }

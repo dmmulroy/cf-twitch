@@ -70,5 +70,6 @@
 		"TWITCH_CLIENT_ID": "test-twitch-client",
 		"TWITCH_CLIENT_SECRET": "test-twitch-secret",
 		"TWITCH_EVENTSUB_SECRET": "test-eventsub-secret",
+		"TWITCH_BROADCASTER_NAME": "dillon",
 	},
 }

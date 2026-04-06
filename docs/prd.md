@@ -811,7 +811,7 @@ const fetchQueue = createServerFn().handler(async () => {
 	"vars": {
 		"TWITCH_CLIENT_ID": "YOUR_TWITCH_CLIENT_ID",
 		"TWITCH_BROADCASTER_ID": "209286766",
-		"TWITCH_BROADCASTER_NAME": "dmmulroy",
+		"TWITCH_BROADCASTER_NAME": "dillon",
 		"SONG_REQUEST_REWARD_ID": "c2063c79-a24c-4b17-94f7-c871f2876708",
 		"KEYBOARD_RAFFLE_REWARD_ID": "29afa291-244a-47a8-8be8-ded13995e83d",
 	},

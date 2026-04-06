@@ -17,9 +17,11 @@ import {
 describe("TwitchTokenDO", () => {
 	let stub: DurableObjectStub<TwitchTokenDO>;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		const id = env.TWITCH_TOKEN_DO.idFromName("twitch-token");
 		stub = env.TWITCH_TOKEN_DO.get(id);
+		await stub.setName("twitch-token");
+		await stub.getValidToken().catch(() => undefined);
 	});
 
 	describe("setTokens", () => {
@@ -140,6 +142,85 @@ describe("TwitchTokenDO", () => {
 		});
 	});
 
+	describe("scheduled refresh", () => {
+		it("refreshes the current token via the scheduled callback", async () => {
+			mockTwitchTokenRefresh(fetchMock, {
+				...VALID_TOKEN_RESPONSE,
+				access_token: "scheduled-refresh-token",
+			});
+
+			await runInDurableObject(stub, async (instance: TwitchTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+			});
+
+			await runInDurableObject(stub, async (instance: TwitchTokenDO) => {
+				await instance.refreshTokenTick();
+			});
+
+			const result = await runInDurableObject(stub, (instance: TwitchTokenDO) =>
+				instance.getValidToken(),
+			);
+			expect(result.status).toBe("ok");
+			if (result.status === "ok") {
+				expect(result.value).toBe("scheduled-refresh-token");
+			}
+		});
+
+		it("schedules a 60 second retry after a retryable refresh failure", async () => {
+			mockTwitchTokenRefreshError(fetchMock, 503, "Service unavailable");
+
+			await runInDurableObject(stub, async (instance: TwitchTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+			});
+
+			const schedules = await runInDurableObject(stub, async (instance: TwitchTokenDO) => {
+				await instance.refreshTokenTick();
+				return instance.getSchedules();
+			});
+
+			expect(schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "delayed",
+						callback: "refreshTokenTick",
+						delayInSeconds: 60,
+					}),
+				]),
+			);
+		});
+
+		it("schedules a 10 minute fallback after a non-retryable refresh failure", async () => {
+			fetchMock
+				.get("https://id.twitch.tv")
+				.intercept({ path: "/oauth2/token", method: "POST" })
+				.reply(200, JSON.stringify({ invalid: true }), {
+					headers: { "content-type": "application/json" },
+				});
+
+			await runInDurableObject(stub, async (instance: TwitchTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+			});
+
+			const schedules = await runInDurableObject(stub, async (instance: TwitchTokenDO) => {
+				await instance.refreshTokenTick();
+				return instance.getSchedules();
+			});
+
+			expect(schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "delayed",
+						callback: "refreshTokenTick",
+						delayInSeconds: 600,
+					}),
+				]),
+			);
+		});
+	});
+
 	describe("onStreamOnline/onStreamOffline", () => {
 		it("should enable token refresh when stream goes online", async () => {
 			// Set up expired token
@@ -175,6 +256,17 @@ describe("TwitchTokenDO", () => {
 				instance.getValidToken(),
 			);
 			expect(result.status).toBe("ok");
+		});
+
+		it("cancels scheduled refresh work when the stream goes offline", async () => {
+			const schedules = await runInDurableObject(stub, async (instance: TwitchTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+				await instance.onStreamOffline();
+				return instance.getSchedules();
+			});
+
+			expect(schedules).toHaveLength(0);
 		});
 	});
 

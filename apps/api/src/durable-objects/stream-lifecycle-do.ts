@@ -2,8 +2,8 @@
  * StreamLifecycleDO - Manages stream lifecycle events and viewer tracking
  */
 
+import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { DurableObject } from "cloudflare:workers";
 import { and, eq, gte, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
@@ -18,43 +18,57 @@ import { createStreamOfflineEvent, createStreamOnlineEvent } from "./schemas/eve
 import * as schema from "./stream-lifecycle-do.schema";
 import {
 	type StreamState,
-	streamState,
 	type ViewerSnapshot,
+	streamState,
 	viewerSnapshots,
 } from "./stream-lifecycle-do.schema";
 
 import type { Env } from "../index";
 
+const STREAM_STATE_ID = 1;
+const VIEWER_POLL_INTERVAL_SECONDS = 60;
+
 const RecordViewerCountBodySchema = z.object({
 	count: z.number(),
 });
 
-class _StreamLifecycleDO extends DurableObject<Env> {
-	private db: ReturnType<typeof drizzle<typeof schema>>;
-	private isLive = false;
-	/** UUID for current stream session - used to correlate online/offline events */
-	private streamSessionId: string | null = null;
+interface StreamLifecycleAgentState {
+	isLive: boolean;
+	startedAt: string | null;
+	endedAt: string | null;
+	peakViewerCount: number;
+	streamSessionId: string | null;
+	viewerPollScheduleId: string | null;
+}
 
-	constructor(ctx: DurableObjectState, env: Env) {
+class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
+	private db: ReturnType<typeof drizzle<typeof schema>>;
+	private nextViewerSnapshotAtMs = 0;
+
+	initialState: StreamLifecycleAgentState = {
+		isLive: false,
+		startedAt: null,
+		endedAt: null,
+		peakViewerCount: 0,
+		streamSessionId: null,
+		viewerPollScheduleId: null,
+	};
+
+	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
+	}
 
-		void this.ctx.blockConcurrencyWhile(async () => {
+	async onStart(): Promise<void> {
+		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
+			await this.migrateLegacyStreamState();
 
-			// Load current stream state into cache
-			const state = await this.db.query.streamState.findFirst();
-			if (state) {
-				this.isLive = state.isLive;
-			} else {
-				// Initialize stream state singleton
-				await this.db.insert(streamState).values({
-					id: 1,
-					isLive: false,
-					startedAt: null,
-					endedAt: null,
-					peakViewerCount: 0,
-				});
+			if (this.state.isLive) {
+				await this.ensureViewerPollingSchedule();
+			} else if (this.state.viewerPollScheduleId !== null) {
+				await this.cancelSchedule(this.state.viewerPollScheduleId);
+				this.setState({ ...this.state, viewerPollScheduleId: null });
 			}
 		});
 	}
@@ -67,60 +81,39 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 	 */
 	async onStreamOnline(eventTimestamp?: string): Promise<void> {
 		const now = this.resolveTransitionTimestamp(eventTimestamp);
-		const currentState = await this.db.query.streamState.findFirst({
-			where: eq(streamState.id, 1),
-		});
+		const latestTransitionAt = this.getLatestTransitionAt(this.state);
 
-		if (currentState) {
-			const latestTransitionAt = this.getLatestTransitionAt(currentState);
-			if (latestTransitionAt && new Date(now).getTime() < new Date(latestTransitionAt).getTime()) {
-				logger.warn("Ignoring stale stream.online event", {
-					eventTimestamp: now,
-					latestTransitionAt,
-					isLive: currentState.isLive,
-				});
-				return;
-			}
-
-			if (currentState.isLive) {
-				logger.info("Ignoring duplicate stream.online event", {
-					eventTimestamp: now,
-					startedAt: currentState.startedAt,
-				});
-				return;
-			}
+		if (latestTransitionAt && new Date(now).getTime() < new Date(latestTransitionAt).getTime()) {
+			logger.warn("Ignoring stale stream.online event", {
+				eventTimestamp: now,
+				latestTransitionAt,
+				isLive: this.state.isLive,
+			});
+			return;
 		}
 
-		// Generate new stream session ID for correlating online/offline events
-		this.streamSessionId = crypto.randomUUID();
+		if (this.state.isLive) {
+			logger.info("Ignoring duplicate stream.online event", {
+				eventTimestamp: now,
+				startedAt: this.state.startedAt,
+			});
+			return;
+		}
 
-		// Update stream state
-		await this.db
-			.update(streamState)
-			.set({
-				isLive: true,
-				startedAt: now,
-				endedAt: null,
-				peakViewerCount: 0,
-			})
-			.where(eq(streamState.id, 1));
-
-		this.isLive = true;
-
-		logger.info("Stream online", { timestamp: now, streamSessionId: this.streamSessionId });
-
-		// Notify token DOs of stream online (for proactive token refresh)
-		// and publish stream_online event for achievements
-		await this.notifyTokenDOsOnline(now);
-
-		// Start alarm for viewer count polling (60s interval)
-		await this.ctx.storage.setAlarm(Date.now() + 60_000);
-
-		// Broadcast to WebSocket clients
-		this.broadcastToWebSockets({
-			type: "stream_online",
-			timestamp: now,
+		const streamSessionId = crypto.randomUUID();
+		this.setState({
+			...this.state,
+			isLive: true,
+			startedAt: now,
+			endedAt: null,
+			peakViewerCount: 0,
+			streamSessionId,
 		});
+
+		logger.info("Stream online", { timestamp: now, streamSessionId });
+
+		await this.notifyTokenDOsOnline(now, streamSessionId);
+		await this.ensureViewerPollingSchedule();
 	}
 
 	/**
@@ -131,85 +124,57 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 	 */
 	async onStreamOffline(eventTimestamp?: string): Promise<void> {
 		const now = this.resolveTransitionTimestamp(eventTimestamp);
-		const currentState = await this.db.query.streamState.findFirst({
-			where: eq(streamState.id, 1),
-		});
+		const latestTransitionAt = this.getLatestTransitionAt(this.state);
 
-		if (currentState) {
-			const latestTransitionAt = this.getLatestTransitionAt(currentState);
-			if (latestTransitionAt && new Date(now).getTime() < new Date(latestTransitionAt).getTime()) {
-				logger.warn("Ignoring stale stream.offline event", {
-					eventTimestamp: now,
-					latestTransitionAt,
-					isLive: currentState.isLive,
-				});
-				return;
-			}
-
-			if (!currentState.isLive) {
-				logger.info("Ignoring duplicate stream.offline event", {
-					eventTimestamp: now,
-					endedAt: currentState.endedAt,
-				});
-				return;
-			}
+		if (latestTransitionAt && new Date(now).getTime() < new Date(latestTransitionAt).getTime()) {
+			logger.warn("Ignoring stale stream.offline event", {
+				eventTimestamp: now,
+				latestTransitionAt,
+				isLive: this.state.isLive,
+			});
+			return;
 		}
 
-		// Update stream state
-		await this.db
-			.update(streamState)
-			.set({
-				isLive: false,
-				endedAt: now,
-			})
-			.where(eq(streamState.id, 1));
+		if (!this.state.isLive) {
+			logger.info("Ignoring duplicate stream.offline event", {
+				eventTimestamp: now,
+				endedAt: this.state.endedAt,
+			});
+			return;
+		}
 
-		this.isLive = false;
-
-		logger.info("Stream offline", { timestamp: now, streamSessionId: this.streamSessionId });
-
-		// Notify token DOs of stream offline (to cancel proactive refresh alarms)
-		// and publish stream_offline event for achievements
-		await this.notifyTokenDOsOffline(now);
-
-		// Clear stream session ID after publishing offline event
-		this.streamSessionId = null;
-
-		// Cancel alarm
-		await this.ctx.storage.deleteAlarm();
-
-		// Broadcast to WebSocket clients
-		this.broadcastToWebSockets({
-			type: "stream_offline",
-			timestamp: now,
+		const streamSessionId = this.state.streamSessionId ?? crypto.randomUUID();
+		this.setState({
+			...this.state,
+			isLive: false,
+			endedAt: now,
+			streamSessionId,
 		});
 
-		// Close all WebSocket connections gracefully
-		const webSockets = this.ctx.getWebSockets() as WebSocket[];
-		for (const ws of webSockets) {
-			ws.close(1000, "Stream offline");
-		}
+		logger.info("Stream offline", { timestamp: now, streamSessionId });
+
+		await this.notifyTokenDOsOffline(now, streamSessionId);
+		await this.cancelViewerPollingSchedule();
+		this.setState({
+			...this.state,
+			streamSessionId: null,
+			viewerPollScheduleId: null,
+		});
 	}
 
 	/**
 	 * Record a viewer count snapshot
 	 */
 	async recordViewerCount(count: number): Promise<void> {
-		const timestamp = new Date().toISOString();
+		const timestamp = this.createViewerSnapshotTimestamp();
 
-		// Insert snapshot
 		await this.db.insert(viewerSnapshots).values({
 			timestamp,
 			viewerCount: count,
 		});
 
-		// Update peak if this is a new peak
-		const currentState = await this.db.query.streamState.findFirst();
-		if (currentState && count > currentState.peakViewerCount) {
-			await this.db
-				.update(streamState)
-				.set({ peakViewerCount: count })
-				.where(eq(streamState.id, 1));
+		if (count > this.state.peakViewerCount) {
+			this.setState({ ...this.state, peakViewerCount: count });
 		}
 
 		logger.debug("Recorded viewer count", { count, timestamp });
@@ -220,26 +185,7 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 	 */
 	@rpc
 	async getStreamState(): Promise<Result<StreamState, DurableObjectError>> {
-		const result = await Result.tryPromise({
-			try: () => this.db.query.streamState.findFirst(),
-			catch: (cause) =>
-				new DurableObjectError({ method: "getStreamState", message: "DB error", cause }),
-		});
-
-		if (result.status === "error") {
-			return Result.err(result.error);
-		}
-
-		if (!result.value) {
-			return Result.err(
-				new DurableObjectError({
-					method: "getStreamState",
-					message: "Stream state not initialized",
-				}),
-			);
-		}
-
-		return Result.ok(result.value);
+		return Result.ok(this.toStreamState());
 	}
 
 	/**
@@ -268,47 +214,41 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 	 * Quick check if stream is live
 	 */
 	async getIsLive(): Promise<boolean> {
-		return this.isLive;
+		return this.state.isLive;
 	}
 
 	/**
-	 * Health check endpoint
+	 * Scheduled callback: polls viewer count when stream is live.
 	 */
-	async ping(): Promise<{ ok: boolean }> {
-		return { ok: true };
-	}
-
-	/**
-	 * Alarm handler: polls viewer count when stream is live
-	 */
-	async alarm(): Promise<void> {
-		if (!this.isLive) {
+	async pollViewerCountTick(): Promise<void> {
+		if (!this.state.isLive) {
 			return;
 		}
 
-		// Poll viewer count using TwitchService (returns null on error)
 		const viewerCount = await this.pollViewerCount();
-		if (viewerCount !== null) {
-			const recordResult = await Result.tryPromise({
-				try: () => this.recordViewerCount(viewerCount),
-				catch: (cause) =>
-					new DurableObjectError({ method: "alarm.recordViewerCount", message: String(cause) }),
-			});
-			if (recordResult.status === "error") {
-				logger.error("Failed to record viewer count", { error: recordResult.error.message });
-			}
+		if (viewerCount === null) {
+			return;
 		}
 
-		// Reschedule alarm if still live
-		if (this.isLive) {
-			await this.ctx.storage.setAlarm(Date.now() + 60_000);
+		const recordResult = await Result.tryPromise({
+			try: () => this.recordViewerCount(viewerCount),
+			catch: (cause) =>
+				new DurableObjectError({
+					method: "pollViewerCountTick.recordViewerCount",
+					message: String(cause),
+					cause,
+				}),
+		});
+
+		if (recordResult.status === "error") {
+			logger.error("Failed to record viewer count", { error: recordResult.error.message });
 		}
 	}
 
 	/**
-	 * Fetch handler for RPC-style method calls
+	 * HTTP routing for compatibility endpoints.
 	 */
-	async fetch(request: Request): Promise<Response> {
+	async onRequest(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 
 		try {
@@ -346,7 +286,6 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 				case "/history": {
 					const since = url.searchParams.get("since") ?? undefined;
 					const until = url.searchParams.get("until") ?? undefined;
-
 					const history = await this.getViewerHistory(since, until);
 					return Response.json(history);
 				}
@@ -354,11 +293,6 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 				case "/is-live": {
 					const isLive = await this.getIsLive();
 					return Response.json({ is_live: isLive });
-				}
-
-				case "/ping": {
-					const result = await this.ping();
-					return Response.json(result);
 				}
 
 				default:
@@ -377,11 +311,79 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 		}
 	}
 
+	private async migrateLegacyStreamState(): Promise<void> {
+		const legacyState = await this.db.query.streamState.findFirst({
+			where: eq(streamState.id, STREAM_STATE_ID),
+		});
+
+		if (!legacyState) {
+			return;
+		}
+
+		const agentStateLooksUninitialized =
+			this.state.startedAt === null &&
+			this.state.endedAt === null &&
+			this.state.peakViewerCount === 0 &&
+			this.state.isLive === false &&
+			this.state.streamSessionId === null;
+		const legacyHasState =
+			legacyState.isLive ||
+			legacyState.startedAt !== null ||
+			legacyState.endedAt !== null ||
+			legacyState.peakViewerCount !== 0;
+
+		if (agentStateLooksUninitialized && legacyHasState) {
+			this.setState({
+				...this.state,
+				isLive: legacyState.isLive,
+				startedAt: legacyState.startedAt,
+				endedAt: legacyState.endedAt,
+				peakViewerCount: legacyState.peakViewerCount,
+			});
+		}
+
+		await this.db.delete(streamState).where(eq(streamState.id, STREAM_STATE_ID));
+	}
+
+	private toStreamState(state: StreamLifecycleAgentState = this.state): StreamState {
+		return {
+			id: STREAM_STATE_ID,
+			isLive: state.isLive,
+			startedAt: state.startedAt,
+			endedAt: state.endedAt,
+			peakViewerCount: state.peakViewerCount,
+		};
+	}
+
+	private createViewerSnapshotTimestamp(): string {
+		const nowMs = Date.now();
+		const nextMs = nowMs > this.nextViewerSnapshotAtMs ? nowMs : this.nextViewerSnapshotAtMs + 1;
+		this.nextViewerSnapshotAtMs = nextMs;
+		return new Date(nextMs).toISOString();
+	}
+
+	private async ensureViewerPollingSchedule(): Promise<void> {
+		const schedule = await this.scheduleEvery(VIEWER_POLL_INTERVAL_SECONDS, "pollViewerCountTick");
+
+		if (this.state.viewerPollScheduleId === schedule.id) {
+			return;
+		}
+
+		this.setState({ ...this.state, viewerPollScheduleId: schedule.id });
+	}
+
+	private async cancelViewerPollingSchedule(): Promise<void> {
+		if (this.state.viewerPollScheduleId === null) {
+			return;
+		}
+
+		await this.cancelSchedule(this.state.viewerPollScheduleId);
+	}
+
 	/**
-	 * Poll viewer count from Twitch using TwitchService
+	 * Poll viewer count from Twitch using TwitchService.
 	 */
 	private async pollViewerCount(): Promise<number | null> {
-		// Create TwitchService instance (not using service binding)
 		const twitchService = new TwitchService(this.env);
 		const result = await twitchService.getStreamInfo(this.env.TWITCH_BROADCASTER_NAME);
 
@@ -424,7 +426,9 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 	/**
 	 * Get the latest state transition timestamp from persisted stream state.
 	 */
-	private getLatestTransitionAt(state: StreamState): string | null {
+	private getLatestTransitionAt(
+		state: Pick<StreamLifecycleAgentState, "startedAt" | "endedAt">,
+	): string | null {
 		if (state.startedAt && state.endedAt) {
 			return new Date(state.startedAt).getTime() >= new Date(state.endedAt).getTime()
 				? state.startedAt
@@ -436,29 +440,15 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 
 	/**
 	 * Notify dependent DOs that stream is online and publish stream_online event.
-	 * - Token DOs: Direct RPC for proactive token refresh (not achievement-related)
-	 * - Achievements: Event published via EventBusDO (fire-and-forget, EventBusDO handles retry)
 	 */
-	private async notifyTokenDOsOnline(startedAt: string): Promise<void> {
+	private async notifyTokenDOsOnline(startedAt: string, streamSessionId: string): Promise<void> {
 		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
 		const eventBusStub = getStub("EVENT_BUS_DO");
 
-		// Warn if invariant violated - streamSessionId should always be set here
-		// (set at start of onStreamOnline before this method is called)
-		if (this.streamSessionId === null) {
-			logger.warn(
-				"StreamLifecycleDO: streamSessionId null in notifyTokenDOsOnline, using fallback UUID",
-				{
-					isLive: this.isLive,
-				},
-			);
-		}
-
-		// Create stream_online event for achievements
 		const event = createStreamOnlineEvent({
 			id: crypto.randomUUID(),
-			streamId: this.streamSessionId ?? crypto.randomUUID(),
+			streamId: streamSessionId,
 			startedAt,
 		});
 
@@ -480,8 +470,6 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 			});
 		}
 
-		// EventBusDO publish is fire-and-forget - it handles its own retry logic
-		// Log for debugging but don't treat as critical failure
 		if (eventBusResult.status === "error") {
 			logger.warn("EventBusDO publish stream_online failed (will retry via alarm)", {
 				error: eventBusResult.error.message,
@@ -494,29 +482,15 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 
 	/**
 	 * Notify dependent DOs that stream is offline and publish stream_offline event.
-	 * - Token DOs: Direct RPC to cancel proactive refresh alarms (not achievement-related)
-	 * - Achievements: Event published via EventBusDO (fire-and-forget, EventBusDO handles retry)
 	 */
-	private async notifyTokenDOsOffline(endedAt: string): Promise<void> {
+	private async notifyTokenDOsOffline(endedAt: string, streamSessionId: string): Promise<void> {
 		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
 		const twitchStub = getStub("TWITCH_TOKEN_DO");
 		const eventBusStub = getStub("EVENT_BUS_DO");
 
-		// Warn if invariant violated - streamSessionId should be set from onStreamOnline
-		// Could be null if DO hibernated mid-stream or onStreamOffline called without prior online
-		if (this.streamSessionId === null) {
-			logger.warn(
-				"StreamLifecycleDO: streamSessionId null in notifyTokenDOsOffline, using fallback UUID",
-				{
-					isLive: this.isLive,
-				},
-			);
-		}
-
-		// Create stream_offline event for achievements
 		const event = createStreamOfflineEvent({
 			id: crypto.randomUUID(),
-			streamId: this.streamSessionId ?? crypto.randomUUID(),
+			streamId: streamSessionId,
 			endedAt,
 		});
 
@@ -538,8 +512,6 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 			});
 		}
 
-		// EventBusDO publish is fire-and-forget - it handles its own retry logic
-		// Log for debugging but don't treat as critical failure
 		if (eventBusResult.status === "error") {
 			logger.warn("EventBusDO publish stream_offline failed (will retry via alarm)", {
 				error: eventBusResult.error.message,
@@ -547,25 +519,6 @@ class _StreamLifecycleDO extends DurableObject<Env> {
 			});
 		} else {
 			logger.info("Published stream_offline event", { eventId: event.id });
-		}
-	}
-
-	/**
-	 * Broadcast message to all connected WebSocket clients
-	 */
-	private broadcastToWebSockets(message: { type: string; timestamp: string }): void {
-		const webSockets = this.ctx.getWebSockets() as WebSocket[];
-		const messageStr = JSON.stringify(message);
-
-		for (const ws of webSockets) {
-			// ws.send can throw if connection is closing - use Result.try for sync operations
-			const sendResult = Result.try({
-				try: () => ws.send(messageStr),
-				catch: (cause) => new Error(`WebSocket send failed: ${String(cause)}`),
-			});
-			if (sendResult.status === "error") {
-				logger.error("Failed to broadcast to WebSocket", { error: sendResult.error.message });
-			}
 		}
 	}
 }

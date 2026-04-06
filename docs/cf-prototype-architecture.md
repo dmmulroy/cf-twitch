@@ -876,7 +876,7 @@ export const QueueMessage = {
 // wrangler.jsonc vars (public)
 TWITCH_CLIENT_ID: "YOUR_TWITCH_CLIENT_ID";
 TWITCH_BROADCASTER_ID: "209286766";
-TWITCH_BROADCASTER_NAME: "dmmulroy";
+TWITCH_BROADCASTER_NAME: "dillon";
 
 // Secrets (via wrangler secret)
 TWITCH_CLIENT_SECRET;
