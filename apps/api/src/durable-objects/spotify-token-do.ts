@@ -1,16 +1,14 @@
 /**
  * SpotifyTokenDO - Manages OAuth tokens for Spotify API with automatic refresh
  *
- * Implements proactive token refresh:
- * - Schedules alarm 5 mins before token expiry when stream is live
- * - Cancels alarm when stream goes offline
- * - Uses alarm-based retry with exponential backoff on failure (non-blocking)
+ * Agent state owns the current token state. Legacy SQLite storage is only used
+ * once during startup to migrate old token_set rows from the DurableObject era.
  *
  * All public RPC methods return Result types for type-safe error handling.
  */
 
+import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { DurableObject } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
@@ -27,9 +25,10 @@ import {
 	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
-import { type TokenSet, tokenSet } from "./schemas/token-schema";
+import * as tokenSchema from "./schemas/token-schema";
 
 import type { Env } from "../index";
+import type { TokenSet } from "./schemas/token-schema";
 
 /**
  * Zod schema for Spotify token API responses
@@ -45,45 +44,50 @@ export const SpotifyTokenResponseSchema = z.object({
 export type SpotifyTokenResponse = z.infer<typeof SpotifyTokenResponseSchema>;
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
+const MAX_REFRESH_RETRIES = 3;
+const REFRESH_RETRY_BASE_DELAY_MS = 60_000; // 60 seconds
+const REFRESH_FALLBACK_DELAY_MS = 10 * 60 * 1000; // 10 minutes
 
-class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandler<TokenError> {
-	private db;
-	private tokenCache: TokenSet | null = null;
+interface SpotifyTokenState {
+	accessToken: string;
+	refreshToken: string;
+	tokenType: string;
+	expiresIn: number;
+	expiresAt: string;
+}
+
+interface SpotifyTokenAgentState {
+	token: SpotifyTokenState | null;
+	isStreamLive: boolean;
+	refreshScheduleId: string | null;
+	refreshRetryCount: number;
+}
+
+class _SpotifyTokenDO
+	extends Agent<Env, SpotifyTokenAgentState>
+	implements StreamLifecycleHandler<TokenError>
+{
+	private legacyDb: ReturnType<typeof drizzle<typeof tokenSchema>>;
 	private refreshPromise: Promise<Result<string, TokenError>> | null = null;
 
-	constructor(ctx: DurableObjectState, env: Env) {
+	initialState: SpotifyTokenAgentState = {
+		token: null,
+		isStreamLive: false,
+		refreshScheduleId: null,
+		refreshRetryCount: 0,
+	};
+
+	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
-		this.db = drizzle(this.ctx.storage, { schema: { tokenSet } });
+		this.legacyDb = drizzle(this.ctx.storage, { schema: tokenSchema });
+	}
 
-		// Initialize schema using blockConcurrencyWhile for safe initialization
-		// Intentionally not awaited - blockConcurrencyWhile handles async in DO constructors
-		void this.ctx.blockConcurrencyWhile(async () => {
-			// Run drizzle migrations (idempotent, tracks via __drizzle_migrations table)
-			await migrate(this.db, migrations);
-
-			// Load token into cache if exists
-			const token = await this.db.query.tokenSet.findFirst({
-				where: eq(tokenSet.id, 1),
-			});
-
-			if (token) {
-				this.tokenCache = token;
-
-				// Proactive refresh on init if stream is live and token expiring
-				if (token.isStreamLive && !this.isTokenValid(token)) {
-					const refreshResult = await this.refreshToken();
-					if (refreshResult.status === "error") {
-						logger.error("Failed proactive token refresh on init", {
-							error: refreshResult.error.message,
-						});
-					}
-				}
-
-				// Reschedule alarm if stream is live
-				if (token.isStreamLive) {
-					await this.scheduleProactiveRefresh();
-				}
-			}
+	async onStart(): Promise<void> {
+		await this.ctx.blockConcurrencyWhile(async () => {
+			await migrate(this.legacyDb, migrations);
+			await this.migrateLegacyStateOnce();
+			await this.clearLegacyAlarmState();
+			await this.restoreOrRecomputeRefreshSchedule();
 		});
 	}
 
@@ -97,33 +101,25 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 	@rpc
 	async onStreamOnline(): Promise<Result<void, TokenError>> {
 		logger.info("SpotifyTokenDO: stream online");
+		this.updateState({ isStreamLive: true });
 
-		// Persist stream live state
-		await this.db.update(tokenSet).set({ isStreamLive: true }).where(eq(tokenSet.id, 1));
-
-		if (this.tokenCache) {
-			this.tokenCache = { ...this.tokenCache, isStreamLive: true };
-		}
-
-		// If token is expired/expiring, refresh immediately
-		if (this.tokenCache && !this.isTokenValid(this.tokenCache)) {
-			const refreshResult = await this.refreshToken();
+		if (this.state.token && !this.isTokenValid(this.state.token)) {
+			const refreshResult = await this.refreshTokenWithCoalescing();
 			if (refreshResult.status === "error") {
 				logger.error("Failed to refresh token on stream online", {
 					error: refreshResult.error.message,
 				});
 				return Result.err(refreshResult.error);
 			}
+		} else {
+			await this.restoreOrRecomputeRefreshSchedule();
 		}
-
-		// Schedule proactive refresh alarm
-		await this.scheduleProactiveRefresh();
 
 		return Result.ok();
 	}
 
 	/**
-	 * Called when stream goes offline. Cancel proactive refresh alarm.
+	 * Called when stream goes offline. Cancel proactive refresh schedule.
 	 */
 	@rpc
 	async onStreamOffline(): Promise<Result<void, TokenError>> {
@@ -131,16 +127,8 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 
 		return Result.tryPromise({
 			try: async () => {
-				// Persist stream live state
-				await this.db.update(tokenSet).set({ isStreamLive: false }).where(eq(tokenSet.id, 1));
-
-				if (this.tokenCache) {
-					this.tokenCache = { ...this.tokenCache, isStreamLive: false };
-				}
-
-				// Cancel proactive refresh alarm and clear retry state
-				await this.ctx.storage.deleteAlarm();
-				await this.ctx.storage.delete("alarmRetryCount");
+				this.updateState({ isStreamLive: false, refreshRetryCount: 0 });
+				await this.cancelRefreshSchedule();
 			},
 			catch: (cause) =>
 				new TokenRefreshNetworkError({
@@ -152,68 +140,49 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 	}
 
 	// =========================================================================
-	// Alarm handler for proactive refresh
+	// Scheduled refresh callback
 	// =========================================================================
 
-	private static readonly MAX_ALARM_RETRIES = 3;
-	private static readonly ALARM_RETRY_BASE_DELAY_MS = 60_000; // 60 seconds
-	private static readonly ALARM_FALLBACK_DELAY_MS = 10 * 60 * 1000; // 10 minutes
-
 	/**
-	 * DO alarm handler - proactively refresh token before expiry.
-	 * Uses alarm-based retry with exponential backoff (non-blocking).
-	 * Retry state persisted in storage to survive hibernation.
+	 * Scheduled callback - proactively refresh token before expiry.
+	 * Uses Agent scheduling with exponential backoff for retryable failures.
 	 */
-	async alarm(): Promise<void> {
-		// Load token from DB (not cache - may have hibernated)
-		const token = await this.db.query.tokenSet.findFirst({
-			where: eq(tokenSet.id, 1),
-		});
+	async refreshTokenTick(): Promise<void> {
+		if (this.state.refreshScheduleId !== null) {
+			this.updateState({ refreshScheduleId: null });
+		}
 
-		if (!token?.isStreamLive) {
-			logger.debug("Alarm fired but stream offline, skipping refresh");
-			await this.ctx.storage.delete("alarmRetryCount");
+		if (!this.state.isStreamLive || this.state.token === null) {
+			this.updateState({ refreshRetryCount: 0 });
 			return;
 		}
 
-		logger.info("Proactive Spotify token refresh triggered by alarm");
+		logger.info("Proactive Spotify token refresh triggered by schedule");
 
-		// Update cache from DB in case we hibernated
-		this.tokenCache = token;
-
-		// Single refresh attempt (non-blocking - no in-handler retry loop)
-		const result = await this.refreshToken();
-
+		const result = await this.refreshTokenWithCoalescing();
 		if (result.status === "ok") {
-			// Success - clear retry count, next alarm scheduled by setTokens()
-			await this.ctx.storage.delete("alarmRetryCount");
+			this.updateState({ refreshRetryCount: 0 });
 			return;
 		}
 
-		// Handle failure with alarm-based retry
 		const error = result.error;
-
-		// Only retry network errors (transient failures)
 		if (!TokenRefreshNetworkError.is(error)) {
 			logger.error("Proactive token refresh failed with non-retryable error", {
 				error: error.message,
 				tag: error._tag,
 			});
-			// Schedule fallback alarm to try again later
-			await this.ctx.storage.setAlarm(Date.now() + _SpotifyTokenDO.ALARM_FALLBACK_DELAY_MS);
+			this.updateState({ refreshRetryCount: 0 });
+			await this.scheduleRefreshIn(REFRESH_FALLBACK_DELAY_MS);
 			return;
 		}
 
-		// Get current retry count from storage (survives hibernation)
-		const retryCount = (await this.ctx.storage.get<number>("alarmRetryCount")) ?? 0;
-
-		if (retryCount < _SpotifyTokenDO.MAX_ALARM_RETRIES) {
-			// Schedule retry with exponential backoff
+		const retryCount = this.state.refreshRetryCount;
+		if (retryCount < MAX_REFRESH_RETRIES) {
 			const nextRetryCount = retryCount + 1;
-			const delayMs = _SpotifyTokenDO.ALARM_RETRY_BASE_DELAY_MS * Math.pow(2, retryCount);
+			const delayMs = REFRESH_RETRY_BASE_DELAY_MS * Math.pow(2, retryCount);
 
-			await this.ctx.storage.put("alarmRetryCount", nextRetryCount);
-			await this.ctx.storage.setAlarm(Date.now() + delayMs);
+			this.updateState({ refreshRetryCount: nextRetryCount });
+			await this.scheduleRefreshIn(delayMs);
 
 			logger.warn("Proactive token refresh failed, scheduling retry", {
 				error: error.message,
@@ -223,14 +192,13 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 			return;
 		}
 
-		// Exhausted retries - log error and schedule fallback alarm
 		logger.error("Proactive token refresh failed after max retries", {
 			error: error.message,
-			maxRetries: _SpotifyTokenDO.MAX_ALARM_RETRIES,
+			maxRetries: MAX_REFRESH_RETRIES,
 		});
 
-		await this.ctx.storage.delete("alarmRetryCount");
-		await this.ctx.storage.setAlarm(Date.now() + _SpotifyTokenDO.ALARM_FALLBACK_DELAY_MS);
+		this.updateState({ refreshRetryCount: 0 });
+		await this.scheduleRefreshIn(REFRESH_FALLBACK_DELAY_MS);
 	}
 
 	// =========================================================================
@@ -238,34 +206,183 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 	// =========================================================================
 
 	/**
-	 * Get a valid access token, refreshing if necessary
-	 *
-	 * Always validates token expiry and refreshes when needed.
+	 * Get a valid access token, refreshing if necessary.
 	 */
 	@rpc
 	async getValidToken(): Promise<Result<string, TokenError>> {
-		// Return cached token if still valid
-		if (this.tokenCache && this.isTokenValid(this.tokenCache)) {
-			return Result.ok(this.tokenCache.accessToken);
+		if (this.state.token && this.isTokenValid(this.state.token)) {
+			return Result.ok(this.state.token.accessToken);
 		}
 
-		// No token at all
-		if (!this.tokenCache) {
+		if (this.state.token === null) {
 			return Result.err(new StreamOfflineNoTokenError());
 		}
 
-		// Token expired + stream offline → error (conserve resources, don't return stale token)
-		if (!this.tokenCache.isStreamLive) {
+		if (!this.state.isStreamLive) {
 			return Result.err(new StreamOfflineNoTokenError());
 		}
 
-		// Token expired + stream online → refresh
-		// Coalesce concurrent refresh requests
+		return this.refreshTokenWithCoalescing();
+	}
+
+	/**
+	 * Store new tokens (called during OAuth flow or after refresh).
+	 */
+	@rpc
+	async setTokens(tokens: SpotifyTokenResponse): Promise<Result<void, never>> {
+		const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+		const nextToken: SpotifyTokenState = {
+			accessToken: tokens.access_token,
+			refreshToken: tokens.refresh_token ?? this.state.token?.refreshToken ?? "",
+			tokenType: tokens.token_type,
+			expiresIn: tokens.expires_in,
+			expiresAt,
+		};
+
+		this.updateState({ token: nextToken, refreshRetryCount: 0 });
+
+		logger.info("Spotify tokens updated", { expiresAt });
+
+		if (this.state.isStreamLive) {
+			await this.scheduleProactiveRefresh(nextToken);
+		} else {
+			await this.cancelRefreshSchedule();
+		}
+
+		return Result.ok();
+	}
+
+	// =========================================================================
+	// Private helpers
+	// =========================================================================
+
+	private updateState(partial: Partial<SpotifyTokenAgentState>): SpotifyTokenAgentState {
+		const nextState = { ...this.state, ...partial };
+		this.setState(nextState);
+		return nextState;
+	}
+
+	private async migrateLegacyStateOnce(): Promise<void> {
+		const legacyToken = await this.legacyDb.query.tokenSet.findFirst({
+			where: eq(tokenSchema.tokenSet.id, 1),
+		});
+
+		if (!legacyToken) {
+			return;
+		}
+
+		if (this.isAgentStateUninitialized()) {
+			this.setState({
+				token: this.toAgentTokenState(legacyToken),
+				isStreamLive: legacyToken.isStreamLive,
+				refreshScheduleId: null,
+				refreshRetryCount: 0,
+			});
+		}
+
+		await this.legacyDb.delete(tokenSchema.tokenSet).where(eq(tokenSchema.tokenSet.id, 1));
+	}
+
+	private isAgentStateUninitialized(): boolean {
+		return (
+			this.state.token === null &&
+			this.state.isStreamLive === false &&
+			this.state.refreshScheduleId === null &&
+			this.state.refreshRetryCount === 0
+		);
+	}
+
+	private toAgentTokenState(token: TokenSet): SpotifyTokenState {
+		return {
+			accessToken: token.accessToken,
+			refreshToken: token.refreshToken,
+			tokenType: token.tokenType,
+			expiresIn: token.expiresIn,
+			expiresAt: token.expiresAt,
+		};
+	}
+
+	private async clearLegacyAlarmState(): Promise<void> {
+		await this.ctx.storage.deleteAlarm();
+		await this.ctx.storage.delete("alarmRetryCount");
+	}
+
+	private async restoreOrRecomputeRefreshSchedule(): Promise<void> {
+		if (!this.state.isStreamLive || this.state.token === null) {
+			await this.cancelRefreshSchedule();
+			if (this.state.refreshRetryCount !== 0) {
+				this.updateState({ refreshRetryCount: 0 });
+			}
+			return;
+		}
+
+		if (
+			this.state.refreshScheduleId !== null &&
+			this.getSchedule(this.state.refreshScheduleId) !== undefined
+		) {
+			return;
+		}
+
+		if (!this.isTokenValid(this.state.token)) {
+			await this.refreshTokenTick();
+			return;
+		}
+
+		await this.scheduleProactiveRefresh(this.state.token);
+	}
+
+	private async scheduleProactiveRefresh(token: SpotifyTokenState): Promise<void> {
+		if (!this.state.isStreamLive) {
+			await this.cancelRefreshSchedule();
+			return;
+		}
+
+		const expiresAtMs = new Date(token.expiresAt).getTime();
+		const refreshAtMs = expiresAtMs - REFRESH_BUFFER_MS;
+
+		if (refreshAtMs <= Date.now()) {
+			await this.scheduleRefreshIn(1000);
+			logger.debug("Token in refresh window, scheduling immediate refresh");
+			return;
+		}
+
+		await this.scheduleRefreshAt(new Date(refreshAtMs));
+		logger.debug("Scheduled proactive refresh", {
+			refreshAt: new Date(refreshAtMs).toISOString(),
+		});
+	}
+
+	private async scheduleRefreshAt(when: Date): Promise<void> {
+		await this.cancelRefreshSchedule();
+		const schedule = await this.schedule(when, "refreshTokenTick");
+		this.updateState({ refreshScheduleId: schedule.id });
+	}
+
+	private async scheduleRefreshIn(delayMs: number): Promise<void> {
+		await this.cancelRefreshSchedule();
+		const delayInSeconds = Math.max(1, Math.ceil(delayMs / 1000));
+		const schedule = await this.schedule(delayInSeconds, "refreshTokenTick");
+		this.updateState({ refreshScheduleId: schedule.id });
+	}
+
+	private async cancelRefreshSchedule(): Promise<void> {
+		if (this.state.refreshScheduleId === null) {
+			return;
+		}
+
+		await this.cancelSchedule(this.state.refreshScheduleId);
+		this.updateState({ refreshScheduleId: null });
+	}
+
+	private isTokenValid(token: SpotifyTokenState): boolean {
+		return Date.now() < new Date(token.expiresAt).getTime() - REFRESH_BUFFER_MS;
+	}
+
+	private async refreshTokenWithCoalescing(): Promise<Result<string, TokenError>> {
 		if (this.refreshPromise) {
 			return this.refreshPromise;
 		}
 
-		// Start token refresh
 		this.refreshPromise = this.refreshToken();
 
 		try {
@@ -276,96 +393,16 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 	}
 
 	/**
-	 * Store new tokens (called during OAuth flow or after refresh)
-	 */
-	@rpc
-	async setTokens(tokens: SpotifyTokenResponse): Promise<Result<void, never>> {
-		const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
-
-		const newTokenSet: TokenSet = {
-			id: 1,
-			accessToken: tokens.access_token,
-			refreshToken: tokens.refresh_token ?? this.tokenCache?.refreshToken ?? "",
-			tokenType: tokens.token_type,
-			expiresIn: tokens.expires_in,
-			expiresAt,
-			isStreamLive: this.tokenCache?.isStreamLive ?? false,
-		};
-
-		// Persist to SQLite using Drizzle
-		await this.db
-			.insert(tokenSet)
-			.values(newTokenSet)
-			.onConflictDoUpdate({
-				target: tokenSet.id,
-				set: {
-					accessToken: newTokenSet.accessToken,
-					refreshToken: newTokenSet.refreshToken,
-					tokenType: newTokenSet.tokenType,
-					expiresIn: newTokenSet.expiresIn,
-					expiresAt: newTokenSet.expiresAt,
-				},
-			});
-
-		// Update cache
-		this.tokenCache = newTokenSet;
-
-		logger.info("Spotify tokens updated", { expiresAt });
-
-		// Schedule proactive refresh if stream is live
-		if (this.tokenCache.isStreamLive) {
-			await this.scheduleProactiveRefresh();
-		}
-
-		return Result.ok();
-	}
-
-	// =========================================================================
-	// Private helpers
-	// =========================================================================
-
-	/**
-	 * Schedule alarm for 5 minutes before token expiry.
-	 * Only schedules if token exists.
-	 */
-	private async scheduleProactiveRefresh(): Promise<void> {
-		if (!this.tokenCache) {
-			return;
-		}
-
-		const expiresAtMs = new Date(this.tokenCache.expiresAt).getTime();
-		const refreshAtMs = expiresAtMs - REFRESH_BUFFER_MS;
-		const now = Date.now();
-
-		if (refreshAtMs <= now) {
-			// Token already in refresh window, schedule immediate refresh (1s delay for safety)
-			await this.ctx.storage.setAlarm(now + 1000);
-			logger.debug("Token in refresh window, scheduling immediate refresh");
-		} else {
-			await this.ctx.storage.setAlarm(refreshAtMs);
-			logger.debug("Scheduled proactive refresh", {
-				refreshAt: new Date(refreshAtMs).toISOString(),
-			});
-		}
-	}
-
-	/**
-	 * Check if token is still valid (not expiring soon)
-	 */
-	private isTokenValid(token: TokenSet): boolean {
-		return Date.now() < new Date(token.expiresAt).getTime() - REFRESH_BUFFER_MS;
-	}
-
-	/**
-	 * Refresh the access token using the refresh token
+	 * Refresh the access token using the refresh token.
 	 */
 	private async refreshToken(): Promise<Result<string, TokenError>> {
-		if (!this.tokenCache) {
+		if (this.state.token === null || this.state.token.refreshToken.length === 0) {
 			return Result.err(new NoRefreshTokenError());
 		}
 
 		logger.info("Refreshing Spotify access token");
 
+		const refreshToken = this.state.token.refreshToken;
 		const fetchResult = await Result.tryPromise({
 			try: () =>
 				fetch("https://accounts.spotify.com/api/token", {
@@ -376,7 +413,7 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 					},
 					body: new URLSearchParams({
 						grant_type: "refresh_token",
-						refresh_token: this.tokenCache?.refreshToken ?? "",
+						refresh_token: refreshToken,
 					}),
 				}),
 			catch: (cause) =>
@@ -393,7 +430,6 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 		}
 
 		const response = fetchResult.value;
-
 		if (!response.ok) {
 			const errorText = await response.text();
 			logger.error("Failed to refresh Spotify token", {
@@ -419,7 +455,6 @@ class _SpotifyTokenDO extends DurableObject<Env> implements StreamLifecycleHandl
 		}
 
 		const parseResult = SpotifyTokenResponseSchema.safeParse(jsonResult.value);
-
 		if (!parseResult.success) {
 			logger.error("Invalid token response from Spotify", {
 				error: parseResult.error.message,

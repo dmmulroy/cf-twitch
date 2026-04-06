@@ -17,9 +17,11 @@ import {
 describe("SpotifyTokenDO", () => {
 	let stub: DurableObjectStub<SpotifyTokenDO>;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		const id = env.SPOTIFY_TOKEN_DO.idFromName("spotify-token");
 		stub = env.SPOTIFY_TOKEN_DO.get(id);
+		await stub.setName("spotify-token");
+		await stub.getValidToken().catch(() => undefined);
 	});
 
 	describe("setTokens", () => {
@@ -140,6 +142,85 @@ describe("SpotifyTokenDO", () => {
 		});
 	});
 
+	describe("scheduled refresh", () => {
+		it("refreshes the current token via the scheduled callback", async () => {
+			mockSpotifyTokenRefresh(fetchMock, {
+				...VALID_TOKEN_RESPONSE,
+				access_token: "scheduled-refresh-token",
+			});
+
+			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+			});
+
+			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.refreshTokenTick();
+			});
+
+			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
+				instance.getValidToken(),
+			);
+			expect(result.status).toBe("ok");
+			if (result.status === "ok") {
+				expect(result.value).toBe("scheduled-refresh-token");
+			}
+		});
+
+		it("schedules a 60 second retry after a retryable refresh failure", async () => {
+			mockSpotifyTokenRefreshError(fetchMock, 503, "Service unavailable");
+
+			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+			});
+
+			const schedules = await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.refreshTokenTick();
+				return instance.getSchedules();
+			});
+
+			expect(schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "delayed",
+						callback: "refreshTokenTick",
+						delayInSeconds: 60,
+					}),
+				]),
+			);
+		});
+
+		it("schedules a 10 minute fallback after a non-retryable refresh failure", async () => {
+			fetchMock
+				.get("https://accounts.spotify.com")
+				.intercept({ path: "/api/token", method: "POST" })
+				.reply(200, JSON.stringify({ invalid: true }), {
+					headers: { "content-type": "application/json" },
+				});
+
+			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+			});
+
+			const schedules = await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.refreshTokenTick();
+				return instance.getSchedules();
+			});
+
+			expect(schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "delayed",
+						callback: "refreshTokenTick",
+						delayInSeconds: 600,
+					}),
+				]),
+			);
+		});
+	});
+
 	describe("onStreamOnline/onStreamOffline", () => {
 		it("should enable token refresh when stream goes online", async () => {
 			// Set up expired token
@@ -185,6 +266,17 @@ describe("SpotifyTokenDO", () => {
 				instance.getValidToken(),
 			);
 			expect(result.status).toBe("ok");
+		});
+
+		it("cancels scheduled refresh work when the stream goes offline", async () => {
+			const schedules = await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+				await instance.onStreamOffline();
+				return instance.getSchedules();
+			});
+
+			expect(schedules).toHaveLength(0);
 		});
 	});
 
