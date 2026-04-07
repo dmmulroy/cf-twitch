@@ -544,7 +544,9 @@ When migrating more DOs in this repo, follow these rules:
 - preserve public RPC methods where possible
 - use `onRequest()` only for compatibility HTTP endpoints that still matter
 - replace alarms with Agent scheduling APIs intentionally
+- if shared helpers still assume alarms, extract a small retry/scheduling interface instead of forking the helper per DO
 - use `new Date(isoString)` for one-shot timestamp schedules; do not pass ISO strings to `schedule()` as if they were scheduled timestamps
+- prefer helper methods that return typed `Result`s; log and recover at lifecycle boundaries like `onStart()`
 - do not add `getStub(..., envOverride)`-style workarounds
 - do not add test-only dependency injection to production code
 - use Wrangler-generated types instead of migration-specific type hacks
@@ -577,6 +579,7 @@ Use this checklist before opening review:
 - [ ] avoided `vi.mock()` and test-only production hooks
 - [ ] validated scheduled behavior through public/scheduled methods
 - [ ] set explicit Agent stub names in tests when the harness requires it
+- [ ] cleaned up or canceled background schedules started during the test when they would otherwise outlive assertions
 - [ ] avoided brittle exact-count assertions for manually invoked scheduled callbacks
 
 ### Cleanup
@@ -605,5 +608,7 @@ The most reusable lessons from these migrations are:
 13. **Keep state-mutation validation explicit and Result-based before `setState(...)` when the project avoids throw-based control flow.**
 14. **Keep using the repo's typed RPC and Wrangler conventions.**
 15. **In tests, handle current Agent harness quirks in setup/assertions, not in production code.**
+16. **When shared orchestration logic survives the migration, inject scheduling behavior instead of hardcoding alarms.**
+17. **Keep migration helpers Result-based and let `onStart()` decide how to log, recover, or clear stale coordination state.**
 
 If we follow those rules, future DO → Agent migrations should be much smaller, cleaner, and easier to review.

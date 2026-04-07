@@ -109,7 +109,11 @@ class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 			this.runner = new SagaRunner(
 				this.ctx.id.toString(),
 				this.db,
-				this.ctx,
+				{
+					scheduleRetry: async (delayMs: number) => {
+						await this.ctx.storage.setAlarm(Date.now() + delayMs);
+					},
+				},
 				this.env.ANALYTICS,
 				"keyboard-raffle-saga",
 			);

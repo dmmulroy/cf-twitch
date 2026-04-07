@@ -4,7 +4,7 @@
  * Provides step execution with:
  * - Idempotent replay via SQLite cached results
  * - Compensation handler registration for rollback
- * - Exponential backoff retry via DO alarms
+ * - Exponential backoff retry via pluggable retry scheduling
  * - Point of no return tracking
  *
  * Usage: Extend this class in your saga DO and call executeStep/executeStepWithRollback
@@ -12,7 +12,7 @@
  */
 
 import { Result, TaggedError } from "better-result";
-import { and, asc, eq, lte } from "drizzle-orm";
+import { and, asc, eq, isNotNull, lte } from "drizzle-orm";
 
 import {
 	type SagaRun,
@@ -88,6 +88,10 @@ interface RegisteredCompensation {
 	undoPayload: unknown;
 }
 
+export interface SagaRetryScheduler {
+	scheduleRetry(delayMs: number): Promise<void>;
+}
+
 /**
  * Default step options
  */
@@ -115,7 +119,7 @@ export class SagaRunner {
 	constructor(
 		private readonly sagaId: string,
 		db: DrizzleSqliteDODatabase<SagaSchema>,
-		private readonly ctx: DurableObjectState,
+		private readonly retryScheduler: SagaRetryScheduler,
 		private readonly analytics?: AnalyticsEngineDataset,
 		private readonly sagaType?: SagaType,
 	) {
@@ -203,7 +207,7 @@ export class SagaRunner {
 	 * Execute a step with idempotent replay
 	 *
 	 * If the step has already succeeded, returns the cached result.
-	 * On failure, schedules retry via DO alarm or marks as failed.
+	 * On failure, schedules retry via the configured scheduler or marks as failed.
 	 */
 	async executeStep<T>(
 		stepName: string,
@@ -252,8 +256,8 @@ export class SagaRunner {
 
 					yield* Result.await(this.updateStepRetry(stepName, attempt, nextRetryAt, String(error)));
 
-					// Schedule alarm for retry
-					await this.ctx.storage.setAlarm(Date.now() + delay);
+					// Schedule retry via the configured scheduler
+					await this.retryScheduler.scheduleRetry(delay);
 
 					// Note: Don't emit step_failed for retries - will emit on eventual success or permanent failure
 					return Result.err(
@@ -561,11 +565,29 @@ export class SagaRunner {
 	}
 
 	/**
-	 * Schedule a retry alarm
+	 * Get the next scheduled retry step, including future retries.
+	 */
+	async getNextRetryStep(): Promise<Result<SagaStep | undefined, SagaRunnerDbError>> {
+		return Result.tryPromise({
+			try: () =>
+				this.db.query.sagaSteps.findFirst({
+					where: and(
+						eq(sagaSteps.sagaId, this.sagaId),
+						eq(sagaSteps.state, "PENDING"),
+						isNotNull(sagaSteps.nextRetryAt),
+					),
+					orderBy: [asc(sagaSteps.nextRetryAt)],
+				}),
+			catch: (cause) => new SagaRunnerDbError({ operation: "getNextRetryStep", cause }),
+		});
+	}
+
+	/**
+	 * Schedule a retry using the configured scheduler
 	 */
 	async scheduleRetry(delayMs: number): Promise<void> {
-		await this.ctx.storage.setAlarm(Date.now() + delayMs);
-		logger.debug("Scheduled retry alarm", { sagaId: this.sagaId, delayMs });
+		await this.retryScheduler.scheduleRetry(delayMs);
+		logger.debug("Scheduled saga retry", { sagaId: this.sagaId, delayMs });
 	}
 
 	// ===========================================================================

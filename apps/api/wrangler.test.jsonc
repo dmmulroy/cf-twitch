@@ -38,8 +38,20 @@
 				"class_name": "KeyboardRaffleDO",
 			},
 			{
+				"name": "SONG_REQUEST_SAGA_DO",
+				"class_name": "SongRequestSagaDO",
+			},
+			{
+				"name": "KEYBOARD_RAFFLE_SAGA_DO",
+				"class_name": "KeyboardRaffleSagaDO",
+			},
+			{
 				"name": "EVENT_BUS_DO",
 				"class_name": "EventBusDO",
+			},
+			{
+				"name": "COMMANDS_DO",
+				"class_name": "CommandsDO",
 			},
 		],
 	},
@@ -57,7 +69,19 @@
 		},
 		{
 			"tag": "v2",
+			"new_sqlite_classes": ["SongRequestSagaDO"],
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": ["KeyboardRaffleSagaDO"],
+		},
+		{
+			"tag": "v4",
 			"new_sqlite_classes": ["EventBusDO"],
+		},
+		{
+			"tag": "v5",
+			"new_sqlite_classes": ["CommandsDO"],
 		},
 	],
 	"vars": {
