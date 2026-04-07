@@ -13,8 +13,8 @@
  * 6. send-chat-message → best-effort notification
  */
 
+import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { DurableObject } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
@@ -75,6 +75,11 @@ export interface KeyboardRaffleSagaStatus {
 	updatedAt: string;
 }
 
+interface KeyboardRaffleSagaAgentState {
+	retryScheduleId: string | null;
+	retryDueAt: string | null;
+}
+
 /**
  * Generate random integer between min and max (inclusive)
  */
@@ -83,21 +88,39 @@ function generateRandomInt(min: number, max: number): number {
 }
 
 /**
- * KeyboardRaffleSagaDO - Durable Object for keyboard raffle saga orchestration
+ * KeyboardRaffleSagaDO - Agent-native keyboard raffle saga orchestration
  *
  * Each instance handles a single raffle roll (keyed by redemption ID).
- * Uses DO alarms for retry scheduling and durable step execution.
+ * SQLite remains the source of truth for saga runs/steps while Agent state
+ * coordinates retry scheduling.
  */
-class _KeyboardRaffleSagaDO extends DurableObject<Env> {
+class _KeyboardRaffleSagaDO extends Agent<Env, KeyboardRaffleSagaAgentState> {
 	private db: ReturnType<typeof drizzle<typeof sagaSchema>>;
 	private runner: SagaRunner | null = null;
 
-	constructor(ctx: DurableObjectState, env: Env) {
+	initialState: KeyboardRaffleSagaAgentState = {
+		retryScheduleId: null,
+		retryDueAt: null,
+	};
+
+	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema: sagaSchema });
+	}
 
-		void this.ctx.blockConcurrencyWhile(async () => {
+	async onStart(): Promise<void> {
+		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
+			await this.ctx.storage.deleteAlarm();
+
+			const restoreResult = await this.restoreOrRecomputeRetrySchedule();
+			if (restoreResult.status === "error") {
+				logger.error("Failed to restore keyboard raffle retry schedule", {
+					sagaId: this.ctx.id.toString(),
+					error: restoreResult.error.message,
+				});
+				await this.clearRetrySchedule();
+			}
 		});
 	}
 
@@ -111,7 +134,7 @@ class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 				this.db,
 				{
 					scheduleRetry: async (delayMs: number) => {
-						await this.ctx.storage.setAlarm(Date.now() + delayMs);
+						await this.scheduleRetryIn(delayMs);
 					},
 				},
 				this.env.ANALYTICS,
@@ -119,6 +142,66 @@ class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 			);
 		}
 		return this.runner;
+	}
+
+	private async restoreOrRecomputeRetrySchedule(): Promise<Result<void, SagaRunnerDbError>> {
+		return Result.gen(async function* (this: _KeyboardRaffleSagaDO) {
+			const runner = this.getRunner();
+			const saga = yield* Result.await(runner.getSaga());
+			if (saga?.status !== "RUNNING") {
+				await this.clearRetrySchedule();
+				return Result.ok();
+			}
+
+			const pendingRetryStep = yield* Result.await(runner.getNextRetryStep());
+			if (!pendingRetryStep?.nextRetryAt) {
+				await this.clearRetrySchedule();
+				return Result.ok();
+			}
+
+			if (
+				this.state.retryScheduleId !== null &&
+				this.state.retryDueAt === pendingRetryStep.nextRetryAt &&
+				this.getSchedule(this.state.retryScheduleId) !== undefined
+			) {
+				return Result.ok();
+			}
+
+			await this.scheduleRetryAt(pendingRetryStep.nextRetryAt);
+			return Result.ok();
+		}, this);
+	}
+
+	private async scheduleRetryIn(delayMs: number): Promise<void> {
+		const dueAt = new Date(Date.now() + delayMs).toISOString();
+		await this.scheduleRetryAt(dueAt);
+	}
+
+	private async scheduleRetryAt(whenIso: string): Promise<void> {
+		await this.clearRetrySchedule();
+		const schedule = await this.schedule(new Date(whenIso), "retrySagaTick", whenIso, {
+			idempotent: true,
+			retry: { maxAttempts: 1 },
+		});
+		this.setState({
+			...this.state,
+			retryScheduleId: schedule.id,
+			retryDueAt: whenIso,
+		});
+	}
+
+	private async clearRetrySchedule(): Promise<void> {
+		if (this.state.retryScheduleId !== null) {
+			await this.cancelSchedule(this.state.retryScheduleId);
+		}
+
+		if (this.state.retryScheduleId !== null || this.state.retryDueAt !== null) {
+			this.setState({
+				...this.state,
+				retryScheduleId: null,
+				retryDueAt: null,
+			});
+		}
 	}
 
 	/**
@@ -497,29 +580,37 @@ class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * DO alarm handler - resumes saga execution on retry
+	 * Scheduled callback - resumes saga execution on retry.
 	 */
-	async alarm(): Promise<void> {
+	async retrySagaTick(_scheduledFor?: string): Promise<void> {
 		const sagaId = this.ctx.id.toString();
-		logger.info("Saga alarm triggered", { sagaId });
+		logger.info("Keyboard raffle retry schedule triggered", { sagaId });
+
+		if (this.state.retryScheduleId !== null || this.state.retryDueAt !== null) {
+			this.setState({
+				...this.state,
+				retryScheduleId: null,
+				retryDueAt: null,
+			});
+		}
 
 		const runner = this.getRunner();
-
 		const sagaResult = await runner.getSaga();
 		if (sagaResult.status === "error" || !sagaResult.value) {
-			logger.error("Saga not found on alarm", { sagaId });
+			logger.error("Saga not found on scheduled retry", { sagaId });
 			return;
 		}
 
 		const saga = sagaResult.value;
-
 		if (saga.status !== "RUNNING") {
-			logger.info("Saga not in RUNNING state, skipping alarm", { sagaId, status: saga.status });
+			logger.info("Saga not in RUNNING state, skipping scheduled retry", {
+				sagaId,
+				status: saga.status,
+			});
 			return;
 		}
 
 		const executeResult = await this.execute();
-
 		if (executeResult.status === "error") {
 			if (SagaStepRetrying.is(executeResult.error)) {
 				logger.info("Saga step scheduled for retry", {
@@ -527,7 +618,7 @@ class _KeyboardRaffleSagaDO extends DurableObject<Env> {
 					stepName: executeResult.error.stepName,
 				});
 			} else {
-				logger.error("Saga execution failed on alarm", {
+				logger.error("Saga execution failed on scheduled retry", {
 					sagaId,
 					error: executeResult.error.message,
 				});
