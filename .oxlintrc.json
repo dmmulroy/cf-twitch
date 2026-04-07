@@ -35,5 +35,13 @@
 			}
 		}
 	],
-	"ignorePatterns": ["node_modules", "dist", "*.d.ts", "opensrc", "**/drizzle/**/migrations.js"]
+	"ignorePatterns": [
+		"node_modules",
+		"dist",
+		"*.d.ts",
+		"opensrc",
+		".pi",
+		".pi/**",
+		"**/drizzle/**/migrations.js"
+	]
 }

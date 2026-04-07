@@ -53,41 +53,7 @@ export interface AchievementUnlockMetric {
 /**
  * Chat command types
  */
-export type ChatCommandType =
-	| "song"
-	| "queue"
-	| "keyboard"
-	| "socials"
-	| "browser"
-	| "github"
-	| "twitter"
-	| "schedule"
-	| "font"
-	| "dotfiles"
-	| "functor"
-	| "location"
-	| "ocaml"
-	| "lurk"
-	| "youtube"
-	| "unlurk"
-	| "errors"
-	| "vibes"
-	| "neovim"
-	| "dict"
-	| "beam"
-	| "linux"
-	| "time"
-	| "leak"
-	| "skillissue"
-	| "truth"
-	| "job"
-	| "today"
-	| "project"
-	| "update"
-	| "achievements"
-	| "stats"
-	| "raffle-leaderboard"
-	| "commands";
+export type ChatCommandType = string;
 
 /**
  * Chat command status

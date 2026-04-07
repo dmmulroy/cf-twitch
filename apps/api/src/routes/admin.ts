@@ -7,10 +7,11 @@
 import { Hono } from "hono";
 import { z } from "zod";
 
+import { CreateCommandInputSchema, UpdateCommandInputSchema } from "../durable-objects/commands-do";
 import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
-import { DLQItemNotFoundError } from "../lib/errors";
+import { CommandNotFoundError, DLQItemNotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
 
 import type { Env } from "../index";
@@ -261,6 +262,117 @@ admin.get("/achievements/debug/user/:user", async (c) => {
 	}
 
 	return c.json(result.value);
+});
+
+/**
+ * GET /admin/commands
+ * List all persisted command definitions.
+ */
+admin.get("/commands", async (c) => {
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.getAllCommands();
+
+	if (result.status === "error") {
+		logger.error("Admin: Failed to list commands", {
+			error: result.error.message,
+		});
+		return c.json({ error: "Failed to list commands" }, 500);
+	}
+
+	return c.json(result.value);
+});
+
+/**
+ * POST /admin/commands
+ * Create a new persisted command definition.
+ */
+admin.post("/commands", async (c) => {
+	let body: unknown;
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json({ error: "Invalid JSON body" }, 400);
+	}
+
+	const parsed = CreateCommandInputSchema.safeParse(body);
+	if (!parsed.success) {
+		return c.json({ error: "Invalid command payload", details: parsed.error.issues }, 400);
+	}
+
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.createCommand(parsed.data);
+
+	if (result.status === "error") {
+		logger.error("Admin: Failed to create command", {
+			command: parsed.data.name,
+			error: result.error.message,
+		});
+		return c.json({ error: "Failed to create command" }, 500);
+	}
+
+	return c.json(result.value, 201);
+});
+
+/**
+ * PATCH /admin/commands/:name
+ * Update a persisted command definition.
+ */
+admin.patch("/commands/:name", async (c) => {
+	const name = c.req.param("name");
+	let body: unknown;
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json({ error: "Invalid JSON body" }, 400);
+	}
+
+	const parsed = UpdateCommandInputSchema.safeParse(body);
+	if (!parsed.success) {
+		return c.json({ error: "Invalid command patch", details: parsed.error.issues }, 400);
+	}
+
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.updateCommand(name, parsed.data);
+
+	if (result.status === "error") {
+		logger.error("Admin: Failed to update command", {
+			command: name,
+			error: result.error.message,
+		});
+
+		if (CommandNotFoundError.is(result.error)) {
+			return c.json({ error: result.error.message }, 404);
+		}
+
+		return c.json({ error: "Failed to update command" }, 500);
+	}
+
+	return c.json(result.value);
+});
+
+/**
+ * DELETE /admin/commands/:name
+ * Delete a persisted command definition.
+ */
+admin.delete("/commands/:name", async (c) => {
+	const name = c.req.param("name");
+	const stub = getStub("COMMANDS_DO");
+	const result = await stub.deleteCommand(name);
+
+	if (result.status === "error") {
+		logger.error("Admin: Failed to delete command", {
+			command: name,
+			error: result.error.message,
+		});
+
+		if (CommandNotFoundError.is(result.error)) {
+			return c.json({ error: result.error.message }, 404);
+		}
+
+		return c.json({ error: "Failed to delete command" }, 500);
+	}
+
+	return c.json({ message: "Command deleted", command: name });
 });
 
 /**

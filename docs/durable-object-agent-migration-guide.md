@@ -7,6 +7,7 @@ It is primarily based on:
 - `apps/api/src/durable-objects/stream-lifecycle-do.ts`
 - `apps/api/src/durable-objects/twitch-token-do.ts`
 - `apps/api/src/durable-objects/event-bus-do.ts`
+- `apps/api/src/durable-objects/commands-do.ts`
 
 It is intended as a playbook for migrating other Durable Objects in this repo.
 
@@ -22,6 +23,7 @@ I reviewed the migrations in three ways:
    - `apps/api/src/__tests__/durable-objects/stream-lifecycle-do.test.ts`
    - `apps/api/src/__tests__/durable-objects/twitch-token-do.test.ts`
    - `apps/api/src/__tests__/durable-objects/event-bus-do.test.ts`
+   - `apps/api/src/__tests__/durable-objects/commands-do.test.ts`
 3. the saved pi sessions for this repo
 
 I also attempted to use the pi CLI directly against the current session file:
@@ -244,6 +246,19 @@ For token-style DOs, this usually means:
 - retry count in Agent state
 - schedule id in Agent state
 - legacy `token_set` row deleted after hydration
+
+### Additional lesson from `CommandsDO`
+
+For registry/config-style DOs, consider making the registry itself serializable Agent state instead of a code-owned catalog plus seed migrations.
+
+That works well when you want future additions, edits, or removals to be normal state changes rather than schema work.
+
+A good pattern is:
+
+- import legacy rows once in `onStart()`
+- normalize imported rows at the boundary with Zod
+- store only serializable command/config metadata in Agent state
+- keep mutations in Result-returning helpers before `setState(...)`
 
 ## 5. Types and runtime conventions still matter
 
@@ -523,6 +538,7 @@ When migrating more DOs in this repo, follow these rules:
 - use a one-time migration in `onStart()`
 - wrap startup migration/bootstrap in `ctx.blockConcurrencyWhile(...)`
 - keep Agent state small and focused on current mutable state
+- for registry/config DOs, prefer serializable metadata in Agent state when runtime CRUD matters
 - keep Drizzle/SQLite for history and query-oriented records when the DO genuinely needs history
 - for current-state-only DOs, prefer Agent state as the only long-term source of truth after one-time migration
 - preserve public RPC methods where possible
@@ -552,6 +568,7 @@ Use this checklist before opening review:
 - [ ] replaced alarms with Agent scheduling APIs
 - [ ] implemented a one-time legacy migration only
 - [ ] removed compatibility sync code
+- [ ] validated legacy import shapes at the boundary before persisting Agent state
 
 ### Testing
 
@@ -569,7 +586,7 @@ Use this checklist before opening review:
 - [ ] ran targeted tests
 - [ ] ran typecheck
 
-## Concrete takeaways from `StreamLifecycleDO`, `TwitchTokenDO`, and `EventBusDO`
+## Concrete takeaways from `StreamLifecycleDO`, `TwitchTokenDO`, `EventBusDO`, and `CommandsDO`
 
 The most reusable lessons from these migrations are:
 
@@ -583,7 +600,10 @@ The most reusable lessons from these migrations are:
 8. **Migration is a cleanup chance; delete old code aggressively.**
 9. **For due-time-driven systems, let SQLite own durable work items and let Agent state coordinate schedules.**
 10. **Use `Date` for one-shot timestamp schedules; treat string schedules as cron-oriented unless proven otherwise.**
-11. **Keep using the repo's typed RPC and Wrangler conventions.**
-12. **In tests, handle current Agent harness quirks in setup/assertions, not in production code.**
+11. **For registry/config DOs, serializable Agent-state metadata can replace code-owned catalogs and seed migrations.**
+12. **Validate legacy-imported shapes at the boundary before writing Agent state.**
+13. **Keep state-mutation validation explicit and Result-based before `setState(...)` when the project avoids throw-based control flow.**
+14. **Keep using the repo's typed RPC and Wrangler conventions.**
+15. **In tests, handle current Agent harness quirks in setup/assertions, not in production code.**
 
 If we follow those rules, future DO → Agent migrations should be much smaller, cleaner, and easier to review.

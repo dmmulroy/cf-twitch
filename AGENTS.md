@@ -73,6 +73,7 @@ cf-twitch/
 - **Type narrowing**: `MyError.is(error)` not `instanceof`
 - **Errors as values**: `Result<T, E>` for ALL fallible ops - no throwing
 - **Not found = error**: Return `UserNotFoundError`, not `null`
+- **Prefer `Result.gen(...)`** when composing multiple Result-returning steps or multiple fallible operations in one function; reserve `Result.try()` / `Result.tryPromise()` for single-boundary operations
 - **RPC methods**: Return `Result<T, E>`, use `Result.tryPromise()` for externals
 - **Caller side**: `getStub("DO_NAME")` auto-hydrates Results
 

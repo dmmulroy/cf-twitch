@@ -1,13 +1,12 @@
 /**
  * CommandsDO - Chat command registry and dynamic values
  *
- * Manages command definitions and updateable values. Default commands are
- * seeded via Drizzle migration. Supports static, dynamic, and computed types.
+ * Agent state owns command definitions, values, and counters. Legacy SQLite
+ * tables are only used once during startup to import existing command data.
  */
 
+import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { DurableObject } from "cloudflare:workers";
-import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
@@ -17,19 +16,9 @@ import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import { CommandsDbError, CommandNotFoundError, CommandNotUpdateableError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/commands-do.schema";
-import {
-	type Command,
-	type Permission,
-	commandCounters,
-	commands,
-	commandValues,
-} from "./schemas/commands-do.schema";
+import { type Permission } from "./schemas/commands-do.schema";
 
 import type { Env } from "../index";
-
-// =============================================================================
-// Input Validation Schemas
-// =============================================================================
 
 const CommandNameSchema = z
 	.string()
@@ -37,90 +26,437 @@ const CommandNameSchema = z
 	.max(50)
 	.regex(/^[a-z0-9-]+$/);
 const PermissionSchema = z.enum(["everyone", "vip", "moderator", "broadcaster"]);
+const ResponseTypeSchema = z.enum(["static", "dynamic", "computed"]);
+const CategorySchema = z.enum(["info", "stats", "meta", "music"]);
 const CommandValueSchema = z.string().min(0).max(2000);
 const CounterIncrementSchema = z.number().int().min(1).max(100);
+const IsoTimestampSchema = z.string().min(1).max(100);
+const HandlerKeySchema = z.string().min(1).max(100);
+const TemplateSchema = z.string().min(1).max(2000);
 
-// =============================================================================
-// CommandsDO Implementation
-// =============================================================================
+const DynamicCommandEmptyResponse = "No topic set for today.";
+const DynamicCommandOutputTemplate = "Working on: {value}";
+const GenericStoredOutputTemplate = "{value}";
 
-/**
- * CommandsDO - Durable Object for command registry management
- */
-class _CommandsDO extends DurableObject<Env> {
-	private db: ReturnType<typeof drizzle<typeof schema>>;
+const PermissionLevels: Record<Permission, number> = {
+	everyone: 0,
+	vip: 1,
+	moderator: 2,
+	broadcaster: 3,
+};
 
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
-		this.db = drizzle(this.ctx.storage, { schema });
+export const CommandDefinitionSchema = z.object({
+	name: CommandNameSchema,
+	description: z.string().min(1).max(200),
+	category: CategorySchema,
+	responseType: ResponseTypeSchema,
+	permission: PermissionSchema,
+	enabled: z.boolean(),
+	createdAt: IsoTimestampSchema,
+	aliases: z.array(CommandNameSchema).max(20),
+	valueSourceName: CommandNameSchema.nullable(),
+	counterSourceName: CommandNameSchema.nullable(),
+	handlerKey: HandlerKeySchema.nullable(),
+	outputTemplate: TemplateSchema.nullable(),
+	emptyResponse: TemplateSchema.nullable(),
+	writePermission: PermissionSchema.nullable(),
+});
 
-		void this.ctx.blockConcurrencyWhile(async () => {
-			await migrate(this.db, migrations);
-		});
-	}
+export type Command = z.infer<typeof CommandDefinitionSchema>;
 
-	/**
-	 * Get a command definition by name
-	 *
-	 * Returns CommandNotFoundError if command doesn't exist.
-	 */
-	@rpc
-	async getCommand(name: string): Promise<Result<Command, CommandsDbError | CommandNotFoundError>> {
-		// Validate input
-		const parseResult = CommandNameSchema.safeParse(name);
-		if (!parseResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "getCommand",
-					cause: new Error(`Invalid command name: ${parseResult.error.message}`),
-				}),
-			);
+const CommandValueStateSchema = z.object({
+	value: CommandValueSchema,
+	updatedAt: IsoTimestampSchema,
+	updatedBy: z.string().min(1).max(100).nullable(),
+});
+
+const CommandCounterStateSchema = z.object({
+	count: z.number().int().min(0),
+	updatedAt: IsoTimestampSchema,
+});
+
+const LegacyCommandImportSchema = z
+	.object({
+		name: CommandNameSchema,
+		description: z.string().min(1).max(200),
+		category: CategorySchema,
+		responseType: ResponseTypeSchema,
+		permission: PermissionSchema,
+		enabled: z.boolean(),
+		createdAt: IsoTimestampSchema,
+	})
+	.transform((command): Command => {
+		const base: Command = {
+			name: command.name,
+			description: command.description,
+			category: command.category,
+			responseType: command.responseType,
+			permission: command.permission,
+			enabled: command.enabled,
+			createdAt: command.createdAt,
+			aliases: [],
+			valueSourceName: command.responseType === "computed" ? null : command.name,
+			counterSourceName: null,
+			handlerKey: command.responseType === "computed" ? command.name : null,
+			outputTemplate: command.responseType === "computed" ? null : GenericStoredOutputTemplate,
+			emptyResponse:
+				command.responseType === "computed" ? null : `${command.name} info is not available.`,
+			writePermission: command.responseType === "dynamic" ? "moderator" : null,
+		};
+
+		if (command.name === "today" || command.name === "project") {
+			return {
+				...base,
+				valueSourceName: "today",
+				outputTemplate: DynamicCommandOutputTemplate,
+				emptyResponse: DynamicCommandEmptyResponse,
+				writePermission: "moderator",
+			};
 		}
 
-		return Result.tryPromise({
-			try: async () => {
-				const command = await this.db.query.commands.findFirst({
-					where: eq(commands.name, name),
+		if (command.name === "leak" && command.responseType === "dynamic") {
+			return {
+				...base,
+				writePermission: "vip",
+			};
+		}
+
+		if (command.name === "skillissue") {
+			return {
+				...base,
+				counterSourceName: "skillissue",
+			};
+		}
+
+		return base;
+	});
+
+const LegacyCommandValueImportSchema = z
+	.object({
+		commandName: CommandNameSchema,
+		value: CommandValueSchema,
+		updatedAt: IsoTimestampSchema,
+		updatedBy: z.string().min(1).max(100).nullable(),
+	})
+	.transform((row) => ({
+		commandName: row.commandName,
+		state: {
+			value: row.value,
+			updatedAt: row.updatedAt,
+			updatedBy: row.updatedBy,
+		},
+	}));
+
+const LegacyCommandCounterImportSchema = z
+	.object({
+		commandName: CommandNameSchema,
+		count: z.number().int().min(0),
+		updatedAt: IsoTimestampSchema,
+	})
+	.transform((row) => ({
+		commandName: row.commandName,
+		state: {
+			count: row.count,
+			updatedAt: row.updatedAt,
+		},
+	}));
+
+export interface CommandsAgentState {
+	revision: number;
+	legacyImportCompleted: boolean;
+	commandsByName: Record<string, Command>;
+	valuesByName: Record<string, z.infer<typeof CommandValueStateSchema>>;
+	countersByName: Record<string, z.infer<typeof CommandCounterStateSchema>>;
+}
+
+export const CreateCommandInputSchema = z.object({
+	name: CommandNameSchema,
+	description: z.string().min(1).max(200),
+	category: CategorySchema,
+	responseType: ResponseTypeSchema,
+	permission: PermissionSchema,
+	enabled: z.boolean().optional(),
+	aliases: z.array(CommandNameSchema).max(20).optional(),
+	valueSourceName: CommandNameSchema.nullable().optional(),
+	counterSourceName: CommandNameSchema.nullable().optional(),
+	handlerKey: HandlerKeySchema.nullable().optional(),
+	outputTemplate: TemplateSchema.nullable().optional(),
+	emptyResponse: TemplateSchema.nullable().optional(),
+	writePermission: PermissionSchema.nullable().optional(),
+	initialValue: CommandValueSchema.nullable().optional(),
+	initialCounter: z.number().int().min(0).nullable().optional(),
+	createdAt: IsoTimestampSchema.optional(),
+});
+
+export type CreateCommandInput = z.infer<typeof CreateCommandInputSchema>;
+
+export const UpdateCommandInputSchema = z.object({
+	description: z.string().min(1).max(200).optional(),
+	category: CategorySchema.optional(),
+	responseType: ResponseTypeSchema.optional(),
+	permission: PermissionSchema.optional(),
+	enabled: z.boolean().optional(),
+	aliases: z.array(CommandNameSchema).max(20).optional(),
+	valueSourceName: CommandNameSchema.nullable().optional(),
+	counterSourceName: CommandNameSchema.nullable().optional(),
+	handlerKey: HandlerKeySchema.nullable().optional(),
+	outputTemplate: TemplateSchema.nullable().optional(),
+	emptyResponse: TemplateSchema.nullable().optional(),
+	writePermission: PermissionSchema.nullable().optional(),
+});
+
+export type UpdateCommandInput = z.infer<typeof UpdateCommandInputSchema>;
+
+type CommandValueState = z.infer<typeof CommandValueStateSchema>;
+type CommandCounterState = z.infer<typeof CommandCounterStateSchema>;
+
+class _CommandsDO extends Agent<Env, CommandsAgentState> {
+	private legacyDb: ReturnType<typeof drizzle<typeof schema>>;
+
+	initialState: CommandsAgentState = {
+		revision: 0,
+		legacyImportCompleted: false,
+		commandsByName: {},
+		valuesByName: {},
+		countersByName: {},
+	};
+
+	constructor(ctx: AgentContext, env: Env) {
+		super(ctx, env);
+		this.legacyDb = drizzle(this.ctx.storage, { schema });
+	}
+
+	async onStart(): Promise<void> {
+		await this.ctx.blockConcurrencyWhile(async () => {
+			await migrate(this.legacyDb, migrations);
+			const importResult = await this.importLegacyStateOnce();
+			if (importResult.status === "error") {
+				logger.error("Failed to import legacy commands state", {
+					error: importResult.error.message,
+					operation: importResult.error.operation,
 				});
-				if (!command) {
-					throw new CommandNotFoundError({ commandName: name });
-				}
-				return command;
-			},
-			catch: (cause) => {
-				if (CommandNotFoundError.is(cause)) {
-					return cause;
-				}
-				return new CommandsDbError({ operation: "getCommand", cause });
-			},
+			}
 		});
 	}
 
-	/**
-	 * Get all command definitions
-	 */
+	onStateChanged(state: CommandsAgentState | undefined): void {
+		if (!state) {
+			return;
+		}
+
+		logger.info("CommandsDO state changed", {
+			revision: state.revision,
+			legacyImportCompleted: state.legacyImportCompleted,
+			commandCount: Object.keys(state.commandsByName).length,
+			valueCount: Object.keys(state.valuesByName).length,
+			counterCount: Object.keys(state.countersByName).length,
+		});
+	}
+
+	private validationError(operation: string, message: string): CommandsDbError {
+		return new CommandsDbError({ operation, cause: new Error(message) });
+	}
+
+	private validateNextState(
+		nextState: CommandsAgentState,
+		operation: string,
+	): Result<void, CommandsDbError> {
+		if (!nextState.legacyImportCompleted) {
+			return Result.ok();
+		}
+
+		if (nextState.revision < 0) {
+			return Result.err(this.validationError(operation, "Commands state revision must be >= 0"));
+		}
+
+		const aliasOwners = new Map<string, string>();
+		for (const [commandName, rawCommand] of Object.entries(nextState.commandsByName)) {
+			const parseResult = CommandDefinitionSchema.safeParse(rawCommand);
+			if (!parseResult.success) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Invalid command definition for ${commandName}: ${parseResult.error.message}`,
+					),
+				);
+			}
+
+			const command = parseResult.data;
+			if (command.name !== commandName) {
+				return Result.err(
+					this.validationError(operation, `Command key mismatch for ${commandName}`),
+				);
+			}
+
+			if (command.responseType === "computed" && command.handlerKey === null) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Computed command ${command.name} must declare a handlerKey`,
+					),
+				);
+			}
+
+			if (command.responseType !== "computed" && command.handlerKey !== null) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Stored command ${command.name} must not declare a handlerKey`,
+					),
+				);
+			}
+
+			if (command.responseType === "computed" && command.valueSourceName !== null) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Computed command ${command.name} must not declare a valueSourceName`,
+					),
+				);
+			}
+
+			if (command.responseType !== "computed" && command.valueSourceName === null) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Stored command ${command.name} must declare a valueSourceName`,
+					),
+				);
+			}
+
+			for (const alias of command.aliases) {
+				if (alias === command.name) {
+					return Result.err(
+						this.validationError(operation, `Command ${command.name} cannot alias itself`),
+					);
+				}
+
+				const existingOwner = aliasOwners.get(alias);
+				if (existingOwner !== undefined) {
+					return Result.err(
+						this.validationError(operation, `Alias ${alias} is already owned by ${existingOwner}`),
+					);
+				}
+
+				if (nextState.commandsByName[alias] !== undefined) {
+					return Result.err(
+						this.validationError(
+							operation,
+							`Alias ${alias} collides with an existing command name`,
+						),
+					);
+				}
+
+				aliasOwners.set(alias, command.name);
+			}
+		}
+
+		for (const command of Object.values(nextState.commandsByName)) {
+			if (
+				command.valueSourceName !== null &&
+				nextState.commandsByName[command.valueSourceName] === undefined
+			) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Command ${command.name} references missing value source ${command.valueSourceName}`,
+					),
+				);
+			}
+
+			if (
+				command.counterSourceName !== null &&
+				nextState.commandsByName[command.counterSourceName] === undefined
+			) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Command ${command.name} references missing counter source ${command.counterSourceName}`,
+					),
+				);
+			}
+		}
+
+		for (const [valueName, valueState] of Object.entries(nextState.valuesByName)) {
+			const parseResult = CommandValueStateSchema.safeParse(valueState);
+			if (!parseResult.success) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Invalid value state for ${valueName}: ${parseResult.error.message}`,
+					),
+				);
+			}
+
+			if (nextState.commandsByName[valueName] === undefined) {
+				return Result.err(
+					this.validationError(operation, `Value state references missing command ${valueName}`),
+				);
+			}
+		}
+
+		for (const [counterName, counterState] of Object.entries(nextState.countersByName)) {
+			const parseResult = CommandCounterStateSchema.safeParse(counterState);
+			if (!parseResult.success) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Invalid counter state for ${counterName}: ${parseResult.error.message}`,
+					),
+				);
+			}
+
+			if (nextState.commandsByName[counterName] === undefined) {
+				return Result.err(
+					this.validationError(
+						operation,
+						`Counter state references missing command ${counterName}`,
+					),
+				);
+			}
+		}
+
+		return Result.ok();
+	}
+
+	private persistState(
+		nextState: CommandsAgentState,
+		operation: string,
+	): Result<void, CommandsDbError> {
+		const validationResult = this.validateNextState(nextState, operation);
+		if (validationResult.status === "error") {
+			return validationResult;
+		}
+
+		this.setState(nextState);
+		return Result.ok();
+	}
+
+	@rpc
+	async getCommand(name: string): Promise<Result<Command, CommandsDbError | CommandNotFoundError>> {
+		const commandNameResult = this.parseCommandName(name, "getCommand");
+		if (commandNameResult.status === "error") {
+			return commandNameResult;
+		}
+
+		const command = this.resolveCommand(commandNameResult.value);
+		if (!command) {
+			return Result.err(new CommandNotFoundError({ commandName: commandNameResult.value }));
+		}
+
+		return Result.ok(command);
+	}
+
 	@rpc
 	async getAllCommands(): Promise<Result<Command[], CommandsDbError>> {
-		return Result.tryPromise({
-			try: async () => {
-				return this.db.query.commands.findMany();
-			},
+		return Result.try({
+			try: () => Object.values(this.state.commandsByName),
 			catch: (cause) => new CommandsDbError({ operation: "getAllCommands", cause }),
 		});
 	}
 
-	/**
-	 * Get commands filtered by maximum permission level
-	 *
-	 * Returns all commands that the given permission level can access.
-	 * - "everyone" only sees "everyone" commands
-	 * - "vip" sees "everyone" and "vip" commands
-	 * - "moderator" sees "everyone", "vip", and "moderator" commands
-	 * - "broadcaster" sees all commands
-	 */
 	@rpc
 	async getCommandsByPermission(maxPerm: Permission): Promise<Result<Command[], CommandsDbError>> {
-		// Validate input
 		const parseResult = PermissionSchema.safeParse(maxPerm);
 		if (!parseResult.success) {
 			return Result.err(
@@ -131,39 +467,19 @@ class _CommandsDO extends DurableObject<Env> {
 			);
 		}
 
-		return Result.tryPromise({
-			try: async () => {
-				const allowedPermissions: Permission[] = (() => {
-					switch (maxPerm) {
-						case "everyone":
-							return ["everyone"];
-						case "vip":
-							return ["everyone", "vip"];
-						case "moderator":
-							return ["everyone", "vip", "moderator"];
-						case "broadcaster":
-							return ["everyone", "vip", "moderator", "broadcaster"];
-					}
-				})();
-
-				return this.db.query.commands.findMany({
-					where: inArray(commands.permission, allowedPermissions),
-				});
+		return Result.try({
+			try: () => {
+				const level = PermissionLevels[parseResult.data];
+				return Object.values(this.state.commandsByName).filter(
+					(command) => PermissionLevels[command.permission] <= level,
+				);
 			},
 			catch: (cause) => new CommandsDbError({ operation: "getCommandsByPermission", cause }),
 		});
 	}
 
-	/**
-	 * Get the value for a command
-	 *
-	 * For static/dynamic commands, returns the stored value.
-	 * For "project", returns the "today" value (aliased).
-	 * Returns null if no value exists or command is computed.
-	 */
 	@rpc
 	async getCommandValue(name: string): Promise<Result<string | null, CommandsDbError>> {
-		// Validate input
 		const parseResult = CommandNameSchema.safeParse(name);
 		if (!parseResult.success) {
 			return Result.err(
@@ -174,275 +490,293 @@ class _CommandsDO extends DurableObject<Env> {
 			);
 		}
 
-		return Result.tryPromise({
-			try: async () => {
-				// Handle project -> today alias
-				const lookupName = name === "project" ? "today" : name;
+		return Result.try({
+			try: () => {
+				const command = this.resolveCommand(parseResult.data);
+				if (!command || command.valueSourceName === null) {
+					return null;
+				}
 
-				const value = await this.db.query.commandValues.findFirst({
-					where: eq(commandValues.commandName, lookupName),
-				});
-
-				return value?.value ?? null;
+				return this.state.valuesByName[command.valueSourceName]?.value ?? null;
 			},
 			catch: (cause) => new CommandsDbError({ operation: "getCommandValue", cause }),
 		});
 	}
 
-	/**
-	 * Set the value for a dynamic command
-	 *
-	 * Fails if the command doesn't exist or is not dynamic.
-	 * For "project", updates the "today" value (aliased).
-	 */
 	@rpc
 	async setCommandValue(
 		name: string,
 		value: string,
 		updatedBy: string,
 	): Promise<Result<void, CommandsDbError | CommandNotFoundError | CommandNotUpdateableError>> {
-		// Validate inputs
-		const nameResult = CommandNameSchema.safeParse(name);
-		if (!nameResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "setCommandValue",
-					cause: new Error(`Invalid command name: ${nameResult.error.message}`),
-				}),
-			);
-		}
+		return Result.gen(function* (this: _CommandsDO) {
+			const commandName = yield* this.parseCommandName(name, "setCommandValue");
+			const valueResult = CommandValueSchema.safeParse(value);
+			if (!valueResult.success) {
+				return Result.err(
+					new CommandsDbError({
+						operation: "setCommandValue",
+						cause: new Error(`Invalid command value: ${valueResult.error.message}`),
+					}),
+				);
+			}
 
-		const valueResult = CommandValueSchema.safeParse(value);
-		if (!valueResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "setCommandValue",
-					cause: new Error(`Invalid command value: ${valueResult.error.message}`),
-				}),
-			);
-		}
+			const command = this.resolveCommand(commandName);
+			if (!command) {
+				return Result.err(new CommandNotFoundError({ commandName }));
+			}
 
-		return Result.tryPromise({
-			try: async () => {
-				// Handle project -> today alias
-				const lookupName = name === "project" ? "today" : name;
-
-				// Verify command exists and is updateable
-				const command = await this.db.query.commands.findFirst({
-					where: eq(commands.name, lookupName),
-				});
-
-				if (!command) {
-					throw new CommandNotFoundError({ commandName: name });
-				}
-
-				if (command.responseType !== "dynamic") {
-					throw new CommandNotUpdateableError({
-						commandName: name,
+			if (command.responseType !== "dynamic" || command.valueSourceName === null) {
+				return Result.err(
+					new CommandNotUpdateableError({
+						commandName,
 						responseType: command.responseType,
-					});
-				}
+					}),
+				);
+			}
 
-				const now = new Date().toISOString();
-
-				// Upsert the value
-				await this.db
-					.insert(commandValues)
-					.values({
-						commandName: lookupName,
-						value,
+			const now = new Date().toISOString();
+			const nextState: CommandsAgentState = {
+				...this.state,
+				revision: this.state.revision + 1,
+				valuesByName: {
+					...this.state.valuesByName,
+					[command.valueSourceName]: {
+						value: valueResult.data,
 						updatedAt: now,
 						updatedBy,
-					})
-					.onConflictDoUpdate({
-						target: commandValues.commandName,
-						set: {
-							value,
-							updatedAt: now,
-							updatedBy,
-						},
-					});
+					},
+				},
+			};
+			yield* this.persistState(nextState, "setCommandValue");
 
-				logger.info("Updated command value", {
-					command: lookupName,
-					updatedBy,
-				});
-			},
-			catch: (cause) => {
-				if (CommandNotFoundError.is(cause) || CommandNotUpdateableError.is(cause)) {
-					return cause;
-				}
-				return new CommandsDbError({ operation: "setCommandValue", cause });
-			},
-		});
+			logger.info("Updated command value", {
+				command: command.name,
+				storedAs: command.valueSourceName,
+				updatedBy,
+			});
+			return Result.ok();
+		}, this);
 	}
 
-	/**
-	 * Get current counter value for a command.
-	 *
-	 * Returns 0 if no counter exists yet.
-	 */
 	@rpc
 	async getCommandCounter(
 		name: string,
 	): Promise<Result<number, CommandsDbError | CommandNotFoundError>> {
-		const parseResult = CommandNameSchema.safeParse(name);
-		if (!parseResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "getCommandCounter",
-					cause: new Error(`Invalid command name: ${parseResult.error.message}`),
-				}),
-			);
+		const commandNameResult = this.parseCommandName(name, "getCommandCounter");
+		if (commandNameResult.status === "error") {
+			return commandNameResult;
 		}
 
-		return Result.tryPromise({
-			try: async () => {
-				const command = await this.db.query.commands.findFirst({
-					where: eq(commands.name, name),
-				});
+		const command = this.resolveCommand(commandNameResult.value);
+		if (!command) {
+			return Result.err(new CommandNotFoundError({ commandName: commandNameResult.value }));
+		}
 
-				if (!command) {
-					throw new CommandNotFoundError({ commandName: name });
-				}
-
-				const counter = await this.db.query.commandCounters.findFirst({
-					where: eq(commandCounters.commandName, name),
-				});
-
-				return counter?.count ?? 0;
-			},
-			catch: (cause) => {
-				if (CommandNotFoundError.is(cause)) {
-					return cause;
-				}
-				return new CommandsDbError({ operation: "getCommandCounter", cause });
-			},
-		});
+		const counterName = this.getCounterStorageName(command);
+		return Result.ok(this.state.countersByName[counterName]?.count ?? 0);
 	}
 
-	/**
-	 * Increment a command counter and return the new value.
-	 */
 	@rpc
 	async incrementCommandCounter(
 		name: string,
 		increment = 1,
 	): Promise<Result<number, CommandsDbError | CommandNotFoundError>> {
-		const nameResult = CommandNameSchema.safeParse(name);
-		if (!nameResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "incrementCommandCounter",
-					cause: new Error(`Invalid command name: ${nameResult.error.message}`),
-				}),
-			);
-		}
+		return Result.gen(function* (this: _CommandsDO) {
+			const commandName = yield* this.parseCommandName(name, "incrementCommandCounter");
+			const incrementResult = CounterIncrementSchema.safeParse(increment);
+			if (!incrementResult.success) {
+				return Result.err(
+					new CommandsDbError({
+						operation: "incrementCommandCounter",
+						cause: new Error(`Invalid increment value: ${incrementResult.error.message}`),
+					}),
+				);
+			}
 
-		const incrementResult = CounterIncrementSchema.safeParse(increment);
-		if (!incrementResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "incrementCommandCounter",
-					cause: new Error(`Invalid increment value: ${incrementResult.error.message}`),
-				}),
-			);
-		}
+			const command = this.resolveCommand(commandName);
+			if (!command) {
+				return Result.err(new CommandNotFoundError({ commandName }));
+			}
 
-		return Result.tryPromise({
-			try: async () => {
-				const command = await this.db.query.commands.findFirst({
-					where: eq(commands.name, name),
-				});
-
-				if (!command) {
-					throw new CommandNotFoundError({ commandName: name });
-				}
-
-				const currentCounter = await this.db.query.commandCounters.findFirst({
-					where: eq(commandCounters.commandName, name),
-				});
-
-				const nextCount = (currentCounter?.count ?? 0) + increment;
-				const now = new Date().toISOString();
-
-				await this.db
-					.insert(commandCounters)
-					.values({
-						commandName: name,
+			const counterName = this.getCounterStorageName(command);
+			const currentCount = this.state.countersByName[counterName]?.count ?? 0;
+			const nextCount = currentCount + incrementResult.data;
+			const now = new Date().toISOString();
+			const nextState: CommandsAgentState = {
+				...this.state,
+				revision: this.state.revision + 1,
+				countersByName: {
+					...this.state.countersByName,
+					[counterName]: {
 						count: nextCount,
 						updatedAt: now,
-					})
-					.onConflictDoUpdate({
-						target: commandCounters.commandName,
-						set: {
-							count: nextCount,
-							updatedAt: now,
-						},
-					});
+					},
+				},
+			};
+			yield* this.persistState(nextState, "incrementCommandCounter");
 
-				logger.info("Incremented command counter", {
-					command: name,
-					count: nextCount,
-				});
+			logger.info("Incremented command counter", {
+				command: command.name,
+				storedAs: counterName,
+				count: nextCount,
+			});
 
-				return nextCount;
-			},
-			catch: (cause) => {
-				if (CommandNotFoundError.is(cause)) {
-					return cause;
-				}
-				return new CommandsDbError({ operation: "incrementCommandCounter", cause });
-			},
-		});
+			return Result.ok(nextCount);
+		}, this);
 	}
 
-	/**
-	 * Get a command with its value (convenience method)
-	 *
-	 * Returns CommandNotFoundError if command doesn't exist.
-	 */
 	@rpc
 	async getCommandWithValue(
 		name: string,
 	): Promise<
 		Result<{ command: Command; value: string | null }, CommandsDbError | CommandNotFoundError>
 	> {
-		return Result.tryPromise({
-			try: async () => {
-				const command = await this.db.query.commands.findFirst({
-					where: eq(commands.name, name),
-				});
+		const commandNameResult = this.parseCommandName(name, "getCommandWithValue");
+		if (commandNameResult.status === "error") {
+			return commandNameResult;
+		}
 
-				if (!command) {
-					throw new CommandNotFoundError({ commandName: name });
-				}
+		const command = this.resolveCommand(commandNameResult.value);
+		if (!command) {
+			return Result.err(new CommandNotFoundError({ commandName: commandNameResult.value }));
+		}
 
-				// Get value if static/dynamic
-				let value: string | null = null;
-				if (command.responseType === "static" || command.responseType === "dynamic") {
-					// Handle project -> today alias
-					const lookupName = name === "project" ? "today" : name;
-					const valueRow = await this.db.query.commandValues.findFirst({
-						where: eq(commandValues.commandName, lookupName),
-					});
-					value = valueRow?.value ?? null;
-				}
-
-				return { command, value };
-			},
-			catch: (cause) => {
-				if (CommandNotFoundError.is(cause)) {
-					return cause;
-				}
-				return new CommandsDbError({ operation: "getCommandWithValue", cause });
-			},
-		});
+		const value =
+			command.valueSourceName === null
+				? null
+				: (this.state.valuesByName[command.valueSourceName]?.value ?? null);
+		return Result.ok({ command, value });
 	}
 
-	/**
-	 * Get full commands debug snapshot (definitions + values + counters).
-	 */
+	@rpc
+	async createCommand(input: unknown): Promise<Result<Command, CommandsDbError>> {
+		return Result.gen(function* (this: _CommandsDO) {
+			const commandInput = yield* this.parseCreateCommandInput(input);
+
+			if (this.resolveCommand(commandInput.name) !== undefined) {
+				return Result.err(
+					new CommandsDbError({
+						operation: "createCommand",
+						cause: new Error(`Command ${commandInput.name} already exists`),
+					}),
+				);
+			}
+
+			const command = this.buildCommandDefinition(commandInput);
+			const nextCommandsByName = {
+				...this.state.commandsByName,
+				[command.name]: command,
+			};
+			const nextValuesByName = this.buildNextValuesForCreate(
+				command,
+				commandInput.initialValue ?? null,
+			);
+			const nextCountersByName = this.buildNextCountersForCreate(
+				command,
+				commandInput.initialCounter ?? null,
+			);
+
+			yield* this.persistState(
+				{
+					...this.state,
+					revision: this.state.revision + 1,
+					legacyImportCompleted: true,
+					commandsByName: nextCommandsByName,
+					valuesByName: this.pruneValues(nextCommandsByName, nextValuesByName),
+					countersByName: this.pruneCounters(nextCommandsByName, nextCountersByName),
+				},
+				"createCommand",
+			);
+
+			logger.info("Created command", {
+				command: command.name,
+				responseType: command.responseType,
+			});
+
+			return Result.ok(command);
+		}, this);
+	}
+
+	@rpc
+	async updateCommand(
+		name: string,
+		patch: unknown,
+	): Promise<Result<Command, CommandsDbError | CommandNotFoundError>> {
+		return Result.gen(function* (this: _CommandsDO) {
+			const commandName = yield* this.parseCommandName(name, "updateCommand");
+			const commandPatch = yield* this.parseUpdateCommandPatch(patch);
+			const existing = this.state.commandsByName[commandName];
+			if (!existing) {
+				return Result.err(new CommandNotFoundError({ commandName }));
+			}
+
+			const updated: Command = {
+				...existing,
+				...commandPatch,
+			};
+			const nextCommandsByName = {
+				...this.state.commandsByName,
+				[existing.name]: updated,
+			};
+
+			yield* this.persistState(
+				{
+					...this.state,
+					revision: this.state.revision + 1,
+					commandsByName: nextCommandsByName,
+					valuesByName: this.pruneValues(nextCommandsByName, this.state.valuesByName),
+					countersByName: this.pruneCounters(nextCommandsByName, this.state.countersByName),
+				},
+				"updateCommand",
+			);
+
+			logger.info("Updated command definition", {
+				command: updated.name,
+				responseType: updated.responseType,
+			});
+
+			return Result.ok(updated);
+		}, this);
+	}
+
+	@rpc
+	async deleteCommand(name: string): Promise<Result<void, CommandsDbError | CommandNotFoundError>> {
+		return Result.gen(function* (this: _CommandsDO) {
+			const commandName = yield* this.parseCommandName(name, "deleteCommand");
+			const existing = this.state.commandsByName[commandName];
+			if (!existing) {
+				return Result.err(new CommandNotFoundError({ commandName }));
+			}
+
+			const namesToDelete = this.collectCommandsToDelete(commandName);
+			const nextCommandsByName: Record<string, Command> = {};
+			for (const [nextCommandName, command] of Object.entries(this.state.commandsByName)) {
+				if (!namesToDelete.has(nextCommandName)) {
+					nextCommandsByName[nextCommandName] = command;
+				}
+			}
+
+			yield* this.persistState(
+				{
+					...this.state,
+					revision: this.state.revision + 1,
+					commandsByName: nextCommandsByName,
+					valuesByName: this.pruneValues(nextCommandsByName, this.state.valuesByName),
+					countersByName: this.pruneCounters(nextCommandsByName, this.state.countersByName),
+				},
+				"deleteCommand",
+			);
+
+			logger.info("Deleted command", {
+				command: commandName,
+				deletedCount: namesToDelete.size,
+			});
+
+			return Result.ok();
+		}, this);
+	}
+
 	@rpc
 	async getDebugSnapshot(): Promise<
 		Result<
@@ -460,29 +794,25 @@ class _CommandsDO extends DurableObject<Env> {
 					dynamic: number;
 					computed: number;
 				};
+				revision: number;
+				legacyImportCompleted: boolean;
 			},
 			CommandsDbError
 		>
 	> {
-		return Result.tryPromise({
-			try: async () => {
-				const allCommands = await this.db.query.commands.findMany();
-				const allValues = await this.db.query.commandValues.findMany();
-				const allCounters = await this.db.query.commandCounters.findMany();
-
-				const valueMap = new Map(
-					allValues.map((valueRow) => [valueRow.commandName, valueRow.value]),
-				);
-				const counterMap = new Map(
-					allCounters.map((counterRow) => [counterRow.commandName, counterRow.count]),
-				);
-
+		return Result.try({
+			try: () => {
+				const allCommands = Object.values(this.state.commandsByName);
 				const commandsWithState = allCommands.map((command) => {
-					const lookupName = command.name === "project" ? "today" : command.name;
 					const value =
-						command.responseType === "computed" ? null : (valueMap.get(lookupName) ?? null);
+						command.valueSourceName === null
+							? null
+							: (this.state.valuesByName[command.valueSourceName]?.value ?? null);
+					const counterName = this.getCounterStorageName(command);
 					const counter =
-						command.responseType === "computed" ? (counterMap.get(command.name) ?? null) : null;
+						command.responseType === "computed"
+							? (this.state.countersByName[counterName]?.count ?? null)
+							: null;
 
 					return {
 						...command,
@@ -500,39 +830,398 @@ class _CommandsDO extends DurableObject<Env> {
 						dynamic: allCommands.filter((command) => command.responseType === "dynamic").length,
 						computed: allCommands.filter((command) => command.responseType === "computed").length,
 					},
+					revision: this.state.revision,
+					legacyImportCompleted: this.state.legacyImportCompleted,
 				};
 			},
 			catch: (cause) => new CommandsDbError({ operation: "getDebugSnapshot", cause }),
 		});
 	}
 
-	/**
-	 * Get all enabled commands with their values
-	 */
 	@rpc
 	async getEnabledCommandsWithValues(): Promise<
 		Result<Array<{ command: Command; value: string | null }>, CommandsDbError>
 	> {
-		return Result.tryPromise({
-			try: async () => {
-				const enabledCommands = await this.db.query.commands.findMany({
-					where: eq(commands.enabled, true),
-				});
+		return Result.try({
+			try: () => {
+				const enabledCommandsWithValues: Array<{ command: Command; value: string | null }> = [];
+				for (const command of Object.values(this.state.commandsByName)) {
+					if (!command.enabled) {
+						continue;
+					}
 
-				const allValues = await this.db.query.commandValues.findMany();
-				const valueMap = new Map(allValues.map((v) => [v.commandName, v.value]));
+					enabledCommandsWithValues.push({
+						command,
+						value:
+							command.valueSourceName === null
+								? null
+								: (this.state.valuesByName[command.valueSourceName]?.value ?? null),
+					});
+				}
 
-				return enabledCommands.map((command) => {
-					// Handle project -> today alias
-					const lookupName = command.name === "project" ? "today" : command.name;
-					const value =
-						command.responseType === "computed" ? null : (valueMap.get(lookupName) ?? null);
-
-					return { command, value };
-				});
+				return enabledCommandsWithValues;
 			},
 			catch: (cause) => new CommandsDbError({ operation: "getEnabledCommandsWithValues", cause }),
 		});
+	}
+
+	private async importLegacyStateOnce(): Promise<Result<void, CommandsDbError>> {
+		if (this.state.legacyImportCompleted) {
+			return Result.ok();
+		}
+
+		return Result.gen(async function* (this: _CommandsDO) {
+			// Use Promise.all intentionally: legacy import should fail atomically if any
+			// table read fails. allSettled() would allow partial startup hydration.
+			const legacyRowsResult = yield* Result.await(
+				Result.tryPromise({
+					try: () =>
+						Promise.all([
+							this.legacyDb.query.commands.findMany(),
+							this.legacyDb.query.commandValues.findMany(),
+							this.legacyDb.query.commandCounters.findMany(),
+						]),
+					catch: (cause) =>
+						new CommandsDbError({ operation: "importLegacyStateOnce.readLegacyRows", cause }),
+				}),
+			);
+			const [legacyCommands, legacyValues, legacyCounters] = legacyRowsResult;
+
+			const commandsByName: Record<string, Command> = {};
+			for (const legacyCommand of legacyCommands) {
+				const importedCommand = yield* this.parseLegacyCommandForImport(legacyCommand);
+				commandsByName[importedCommand.name] = importedCommand;
+			}
+
+			const importedValues: Record<string, CommandValueState> = {};
+			for (const legacyValue of legacyValues) {
+				const importedValue = yield* this.parseLegacyValueForImport(legacyValue);
+				importedValues[importedValue.commandName] = importedValue.state;
+			}
+
+			const importedCounters: Record<string, CommandCounterState> = {};
+			for (const legacyCounter of legacyCounters) {
+				const importedCounter = yield* this.parseLegacyCounterForImport(legacyCounter);
+				importedCounters[importedCounter.commandName] = importedCounter.state;
+			}
+
+			yield* this.persistState(
+				{
+					revision: 1,
+					legacyImportCompleted: true,
+					commandsByName,
+					valuesByName: this.pruneValues(
+						commandsByName,
+						this.normalizeImportedValues(commandsByName, importedValues),
+					),
+					countersByName: this.pruneCounters(
+						commandsByName,
+						this.normalizeImportedCounters(commandsByName, importedCounters),
+					),
+				},
+				"importLegacyStateOnce",
+			);
+
+			logger.info("Imported legacy commands into Agent state", {
+				commandCount: legacyCommands.length,
+				valueCount: legacyValues.length,
+				counterCount: legacyCounters.length,
+			});
+			return Result.ok();
+		}, this);
+	}
+
+	private parseCommandName(name: string, operation: string): Result<string, CommandsDbError> {
+		const parseResult = CommandNameSchema.safeParse(name);
+		if (!parseResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation,
+					cause: new Error(`Invalid command name: ${parseResult.error.message}`),
+				}),
+			);
+		}
+
+		return Result.ok(parseResult.data);
+	}
+
+	private parseCreateCommandInput(input: unknown): Result<CreateCommandInput, CommandsDbError> {
+		const parseResult = CreateCommandInputSchema.safeParse(input);
+		if (!parseResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation: "createCommand",
+					cause: new Error(`Invalid command input: ${parseResult.error.message}`),
+				}),
+			);
+		}
+
+		return Result.ok(parseResult.data);
+	}
+
+	private parseUpdateCommandPatch(patch: unknown): Result<UpdateCommandInput, CommandsDbError> {
+		const parseResult = UpdateCommandInputSchema.safeParse(patch);
+		if (!parseResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation: "updateCommand",
+					cause: new Error(`Invalid command patch: ${parseResult.error.message}`),
+				}),
+			);
+		}
+
+		return Result.ok(parseResult.data);
+	}
+
+	private parseLegacyCommandForImport(command: unknown): Result<Command, CommandsDbError> {
+		const parseResult = LegacyCommandImportSchema.safeParse(command);
+		if (!parseResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation: "importLegacyStateOnce.parseCommand",
+					cause: new Error(parseResult.error.message),
+				}),
+			);
+		}
+
+		return Result.ok(parseResult.data);
+	}
+
+	private parseLegacyValueForImport(commandValue: unknown): Result<
+		{
+			commandName: string;
+			state: CommandValueState;
+		},
+		CommandsDbError
+	> {
+		const parseResult = LegacyCommandValueImportSchema.safeParse(commandValue);
+		if (!parseResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation: "importLegacyStateOnce.parseValue",
+					cause: new Error(parseResult.error.message),
+				}),
+			);
+		}
+
+		return Result.ok(parseResult.data);
+	}
+
+	private parseLegacyCounterForImport(commandCounter: unknown): Result<
+		{
+			commandName: string;
+			state: CommandCounterState;
+		},
+		CommandsDbError
+	> {
+		const parseResult = LegacyCommandCounterImportSchema.safeParse(commandCounter);
+		if (!parseResult.success) {
+			return Result.err(
+				new CommandsDbError({
+					operation: "importLegacyStateOnce.parseCounter",
+					cause: new Error(parseResult.error.message),
+				}),
+			);
+		}
+
+		return Result.ok(parseResult.data);
+	}
+
+	private normalizeImportedValues(
+		commandsByName: Record<string, Command>,
+		importedValues: Record<string, CommandValueState>,
+	): Record<string, CommandValueState> {
+		const nextValues = { ...importedValues };
+
+		for (const command of Object.values(commandsByName)) {
+			if (command.valueSourceName === null || command.valueSourceName === command.name) {
+				continue;
+			}
+
+			const aliasValue = importedValues[command.name];
+			if (aliasValue && nextValues[command.valueSourceName] === undefined) {
+				nextValues[command.valueSourceName] = aliasValue;
+			}
+			delete nextValues[command.name];
+		}
+
+		return nextValues;
+	}
+
+	private normalizeImportedCounters(
+		commandsByName: Record<string, Command>,
+		importedCounters: Record<string, CommandCounterState>,
+	): Record<string, CommandCounterState> {
+		const nextCounters = { ...importedCounters };
+
+		for (const command of Object.values(commandsByName)) {
+			const counterName = this.getCounterStorageName(command);
+			if (counterName === command.name) {
+				continue;
+			}
+
+			const aliasCounter = importedCounters[command.name];
+			if (aliasCounter && nextCounters[counterName] === undefined) {
+				nextCounters[counterName] = aliasCounter;
+			}
+			delete nextCounters[command.name];
+		}
+
+		return nextCounters;
+	}
+
+	private resolveCommand(name: string): Command | undefined {
+		const direct = this.state.commandsByName[name];
+		if (direct !== undefined) {
+			return direct;
+		}
+
+		for (const command of Object.values(this.state.commandsByName)) {
+			if (command.aliases.includes(name)) {
+				return command;
+			}
+		}
+
+		return undefined;
+	}
+
+	private getCounterStorageName(command: Command): string {
+		return command.counterSourceName ?? command.name;
+	}
+
+	private buildCommandDefinition(input: CreateCommandInput): Command {
+		const createdAt = input.createdAt ?? new Date().toISOString();
+		const isComputed = input.responseType === "computed";
+		const valueSourceName = isComputed ? null : (input.valueSourceName ?? input.name);
+		const handlerKey = isComputed ? (input.handlerKey ?? input.name) : null;
+		const outputTemplate = isComputed
+			? null
+			: (input.outputTemplate ?? GenericStoredOutputTemplate);
+		const emptyResponse = isComputed
+			? null
+			: (input.emptyResponse ?? `${input.name} info is not available.`);
+		const writePermission = isComputed
+			? null
+			: input.responseType === "dynamic"
+				? (input.writePermission ?? "moderator")
+				: null;
+
+		return {
+			name: input.name,
+			description: input.description,
+			category: input.category,
+			responseType: input.responseType,
+			permission: input.permission,
+			enabled: input.enabled ?? true,
+			createdAt,
+			aliases: input.aliases ?? [],
+			valueSourceName,
+			counterSourceName: input.counterSourceName ?? null,
+			handlerKey,
+			outputTemplate,
+			emptyResponse,
+			writePermission,
+		};
+	}
+
+	private buildNextValuesForCreate(
+		command: Command,
+		initialValue: string | null,
+	): Record<string, CommandValueState> {
+		if (command.valueSourceName === null || initialValue === null) {
+			return { ...this.state.valuesByName };
+		}
+
+		return {
+			...this.state.valuesByName,
+			[command.valueSourceName]: {
+				value: initialValue,
+				updatedAt: new Date().toISOString(),
+				updatedBy: null,
+			},
+		};
+	}
+
+	private buildNextCountersForCreate(
+		command: Command,
+		initialCounter: number | null,
+	): Record<string, CommandCounterState> {
+		const counterSourceName = command.counterSourceName;
+		if (counterSourceName === null || initialCounter === null) {
+			return { ...this.state.countersByName };
+		}
+
+		return {
+			...this.state.countersByName,
+			[counterSourceName]: {
+				count: initialCounter,
+				updatedAt: new Date().toISOString(),
+			},
+		};
+	}
+
+	private pruneValues(
+		commandsByName: Record<string, Command>,
+		valuesByName: Record<string, CommandValueState>,
+	): Record<string, CommandValueState> {
+		const referencedNames = new Set<string>();
+		for (const command of Object.values(commandsByName)) {
+			if (command.valueSourceName !== null) {
+				referencedNames.add(command.valueSourceName);
+			}
+		}
+
+		const nextValues: Record<string, CommandValueState> = {};
+		for (const [valueName, valueState] of Object.entries(valuesByName)) {
+			if (referencedNames.has(valueName)) {
+				nextValues[valueName] = valueState;
+			}
+		}
+
+		return nextValues;
+	}
+
+	private pruneCounters(
+		commandsByName: Record<string, Command>,
+		countersByName: Record<string, CommandCounterState>,
+	): Record<string, CommandCounterState> {
+		const referencedNames = new Set<string>();
+		for (const command of Object.values(commandsByName)) {
+			referencedNames.add(this.getCounterStorageName(command));
+		}
+
+		const nextCounters: Record<string, CommandCounterState> = {};
+		for (const [counterName, counterState] of Object.entries(countersByName)) {
+			if (referencedNames.has(counterName)) {
+				nextCounters[counterName] = counterState;
+			}
+		}
+
+		return nextCounters;
+	}
+
+	private collectCommandsToDelete(rootName: string): Set<string> {
+		const namesToDelete = new Set<string>([rootName]);
+		let added = true;
+
+		while (added) {
+			added = false;
+			for (const command of Object.values(this.state.commandsByName)) {
+				if (namesToDelete.has(command.name)) {
+					continue;
+				}
+
+				if (
+					(command.valueSourceName !== null && namesToDelete.has(command.valueSourceName)) ||
+					(command.counterSourceName !== null && namesToDelete.has(command.counterSourceName))
+				) {
+					namesToDelete.add(command.name);
+					added = true;
+				}
+			}
+		}
+
+		return namesToDelete;
 	}
 }
 

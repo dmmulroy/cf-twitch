@@ -16,5 +16,5 @@
 		"groups": [["builtin", "external"], ["internal"], ["parent", "sibling", "index"], ["type"]],
 		"internalPattern": ["~/**", "@/**"]
 	},
-	"ignorePatterns": ["node_modules", "dist", "*.d.ts", "opensrc", "pnpm-lock.yaml"]
+	"ignorePatterns": ["node_modules", "dist", "*.d.ts", "opensrc", ".pi", ".pi/**", "pnpm-lock.yaml"]
 }
