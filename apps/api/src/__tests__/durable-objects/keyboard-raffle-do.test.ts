@@ -7,7 +7,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { KeyboardRaffleDO } from "../../durable-objects/keyboard-raffle-do";
 import { getStub } from "../../lib/durable-objects";
 
 import type { InsertRoll } from "../../durable-objects/schemas/keyboard-raffle-do.schema";

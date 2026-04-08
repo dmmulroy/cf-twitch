@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 
 import { AchievementsDO } from "../../durable-objects/achievements-do";
+import { SpotifyTokenDO } from "../../durable-objects/spotify-token-do";
 import { TwitchTokenDO } from "../../durable-objects/twitch-token-do";
 
 export async function createAchievementsStub(
@@ -13,8 +14,18 @@ export async function createAchievementsStub(
 	return stub;
 }
 
-export async function ensureAchievementsSingletonStub(): Promise<DurableObjectStub<AchievementsDO>> {
+export async function ensureAchievementsSingletonStub(): Promise<
+	DurableObjectStub<AchievementsDO>
+> {
 	return createAchievementsStub("achievements");
+}
+
+export async function ensureNamedSpotifyTokenStub(): Promise<DurableObjectStub<SpotifyTokenDO>> {
+	const id = env.SPOTIFY_TOKEN_DO.idFromName("spotify-token");
+	const stub = env.SPOTIFY_TOKEN_DO.get(id);
+	await stub.setName("spotify-token");
+	await stub.getValidToken().catch(() => undefined);
+	return stub;
 }
 
 export async function ensureNamedTwitchTokenStub(): Promise<DurableObjectStub<TwitchTokenDO>> {
@@ -31,8 +42,9 @@ export async function waitForAchievementQueuesToDrain(
 	maxPolls = 50,
 ): Promise<void> {
 	for (let poll = 0; poll < maxPolls; poll += 1) {
-		const queuedCount = await runInDurableObject(stub, (instance: AchievementsDO) =>
-			instance.getQueues("userDisplayName", userDisplayName).length,
+		const queuedCount = await runInDurableObject(
+			stub,
+			(instance: AchievementsDO) => instance.getQueues("userDisplayName", userDisplayName).length,
 		);
 
 		if (queuedCount === 0) {

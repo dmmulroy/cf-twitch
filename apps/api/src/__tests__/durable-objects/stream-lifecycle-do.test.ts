@@ -10,6 +10,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { StreamLifecycleDO } from "../../durable-objects/stream-lifecycle-do";
 import { mockTwitchGetStreams, mockTwitchTokenRefresh } from "../fixtures/twitch";
+import {
+	ensureAchievementsSingletonStub,
+	ensureNamedSpotifyTokenStub,
+	ensureNamedTwitchTokenStub,
+} from "../helpers/durable-objects";
 
 const ONLINE_AT = "2026-01-22T12:00:00.000Z";
 const OFFLINE_AT = "2026-01-22T13:00:00.000Z";
@@ -25,6 +30,9 @@ describe("StreamLifecycleDO", () => {
 
 		await stub.setName(streamName);
 		await stub.getIsLive();
+		await ensureNamedSpotifyTokenStub();
+		await ensureNamedTwitchTokenStub();
+		await ensureAchievementsSingletonStub();
 	});
 
 	afterEach(async () => {

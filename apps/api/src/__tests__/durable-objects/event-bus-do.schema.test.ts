@@ -96,6 +96,7 @@ describe("Event Schema", () => {
 			winningNumber: 7777,
 			distance: 3577,
 			isWinner: false,
+			isNewRecord: false,
 		};
 
 		it("should validate valid event", () => {
@@ -110,6 +111,7 @@ describe("Event Schema", () => {
 				winningNumber: 7777,
 				distance: 0,
 				isWinner: true,
+				isNewRecord: false,
 			});
 			expect(result.success).toBe(true);
 		});
@@ -223,6 +225,7 @@ describe("Event Schema", () => {
 				winningNumber: 7777,
 				distance: 3577,
 				isWinner: false,
+				isNewRecord: false,
 			};
 			const result = EventSchema.safeParse(event);
 			expect(result.success).toBe(true);
@@ -270,6 +273,7 @@ describe("Event Schema", () => {
 			winningNumber: 7777,
 			distance: 3577,
 			isWinner: false,
+			isNewRecord: false,
 		} as const;
 
 		const streamOnlineEvent = {
@@ -352,6 +356,7 @@ describe("Event Schema", () => {
 				winningNumber: 77,
 				distance: 35,
 				isWinner: false,
+				isNewRecord: false,
 			});
 
 			expect(event.type).toBe(EventType.RaffleRoll);

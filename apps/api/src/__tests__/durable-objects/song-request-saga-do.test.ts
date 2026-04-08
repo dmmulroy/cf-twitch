@@ -26,6 +26,10 @@ import {
 	mockTwitchChatMessage,
 	mockTwitchRedemptionUpdate,
 } from "../fixtures/twitch";
+import {
+	ensureAchievementsSingletonStub,
+	waitForAchievementQueuesToDrain,
+} from "../helpers/durable-objects";
 
 async function createSongRequestSagaStub(
 	name: string,
@@ -136,6 +140,7 @@ describe("SongRequestSagaDO", () => {
 		);
 
 		const songQueueStub = await ensureSongQueueStub();
+		const achievementsStub = await ensureAchievementsSingletonStub();
 		await ensureEventBusStub();
 		mockSpotifyGetTrack(fetchMock, trackId);
 		mockSpotifyQueue(fetchMock);
@@ -144,6 +149,7 @@ describe("SongRequestSagaDO", () => {
 		mockTwitchChatMessage(fetchMock);
 
 		await stub.retrySagaTick();
+		await waitForAchievementQueuesToDrain(achievementsStub, params.user_name);
 		await cancelSongRequestSagaSchedules(stub);
 		await cancelSongQueueSchedules(songQueueStub);
 
