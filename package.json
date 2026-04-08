@@ -12,7 +12,14 @@
 		"lint:fix": "oxlint --fix .",
 		"fmt": "oxfmt .",
 		"fmt:check": "oxfmt --check .",
-		"check": "pnpm lint && pnpm fmt:check"
+		"check": "pnpm lint && pnpm fmt:check",
+		"share:init": "node ./scripts/share-hf-init.mjs",
+		"share:secrets": "node ./scripts/share-hf-secrets.mjs",
+		"share:collect": "pnpm share:secrets && pi-share-hf collect --workspace .pi/hf-sessions --env-file .envrc --secret .pi/hf-private/secrets.txt --deny .pi/hf-private/deny.txt AGENTS.md docs/prd.md docs/cf-prototype-architecture.md docs/effect-twitch-architecture.md",
+		"share:review": "pnpm share:secrets && pi-share-hf review --workspace .pi/hf-sessions --deny .pi/hf-private/deny.txt AGENTS.md docs/prd.md docs/cf-prototype-architecture.md docs/effect-twitch-architecture.md",
+		"share:list": "pi-share-hf list --workspace .pi/hf-sessions --uploadable",
+		"share:upload:dry": "pi-share-hf upload --workspace .pi/hf-sessions --dry-run",
+		"share:upload": "pi-share-hf upload --workspace .pi/hf-sessions"
 	},
 	"devDependencies": {
 		"oxfmt": "^0.24.0",

@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Integration Walkthrough — pi-share-hf in cf-twitch</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #1c2129;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+      --orange: #d29922;
+      --purple: #bc8cff;
+      --pink: #f778ba;
+      --cyan: #39d353;
+      --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    .topbar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(13, 17, 23, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 32px; height: 56px;
+    }
+    .topbar-left { display: flex; align-items: center; gap: 16px; }
+    .topbar-left .mr-badge {
+      background: var(--accent); color: var(--bg);
+      font-weight: 700; font-size: 13px; padding: 3px 10px; border-radius: 12px;
+    }
+    .topbar-left h1 { font-size: 15px; font-weight: 600; }
+    .topbar-right { display: flex; gap: 8px; align-items: center; }
+    .nav-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+      transition: all 0.15s;
+    }
+    .nav-btn:hover { background: var(--surface2); border-color: var(--accent); }
+    .nav-counter {
+      color: var(--text-muted); font-size: 13px; font-family: var(--font-mono);
+      min-width: 60px; text-align: center;
+    }
+
+    .progress-track {
+      position: fixed; top: 56px; left: 0; right: 0; height: 3px;
+      background: var(--surface); z-index: 99;
+    }
+    .progress-fill {
+      height: 100%; background: linear-gradient(90deg, var(--accent), var(--purple));
+      transition: width 0.4s ease;
+    }
+
+    main { padding-top: 80px; }
+    .slide {
+      display: none; min-height: calc(100vh - 80px);
+      padding: 48px 32px 64px;
+      max-width: 1100px; margin: 0 auto;
+      animation: fadeIn 0.3s ease;
+    }
+    .slide.active { display: block; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    h2 { font-size: 32px; font-weight: 700; margin-bottom: 8px; }
+    h3 { font-size: 20px; font-weight: 600; margin-bottom: 12px; color: var(--accent); }
+    h4 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+    p { color: var(--text-muted); font-size: 15px; margin-bottom: 16px; line-height: 1.7; }
+    p strong { color: var(--text); }
+    .subtitle { font-size: 18px; color: var(--text-muted); margin-bottom: 32px; }
+    .label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1.2px; margin-bottom: 6px;
+    }
+
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 24px; margin-bottom: 20px;
+    }
+    .card-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+    .card-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 28px; }
+    .stat {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px; text-align: center;
+    }
+    .stat-value { font-size: 36px; font-weight: 800; font-family: var(--font-mono); }
+    .stat-label {
+      font-size: 12px; color: var(--text-muted); margin-top: 4px;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .stat-green .stat-value { color: var(--green); }
+    .stat-accent .stat-value { color: var(--accent); }
+    .stat-purple .stat-value { color: var(--purple); }
+    .stat-orange .stat-value { color: var(--orange); }
+
+    pre {
+      background: #0d1117; border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px 20px; overflow-x: auto;
+      font-family: var(--font-mono); font-size: 13px; line-height: 1.7;
+      margin-bottom: 16px;
+    }
+    code { font-family: var(--font-mono); font-size: 13px; }
+    .kw { color: #ff7b72; }
+    .fn { color: #d2a8ff; }
+    .str { color: #a5d6ff; }
+    .cm { color: #8b949e; font-style: italic; }
+    .ty { color: #79c0ff; }
+    .num { color: #79c0ff; }
+    .add { color: var(--green); }
+    .del { color: var(--red); }
+    .inline-code {
+      background: var(--surface2); padding: 2px 7px; border-radius: 4px;
+      font-family: var(--font-mono); font-size: 13px; color: var(--accent);
+    }
+
+    .diagram {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 32px; margin: 24px 0;
+      overflow-x: auto;
+    }
+    .diagram svg { display: block; margin: 0 auto; }
+    .diagram-label {
+      text-align: center; color: var(--text-muted); font-size: 12px; margin-top: 12px;
+    }
+
+    .file-list { list-style: none; }
+    .file-list li {
+      padding: 10px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; font-size: 14px; flex-wrap: wrap;
+    }
+    .file-list li:last-child { border-bottom: none; }
+    .file-badge {
+      font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .badge-ts { background: #3178c622; color: #3178c6; }
+    .badge-json { background: #29283622; color: #e6edf3; }
+    .badge-md { background: #58a6ff22; color: #58a6ff; }
+    .badge-sh { background: #89e05122; color: #89e051; }
+    .badge-ignore { background: #d2992222; color: #d29922; }
+    .file-desc { color: var(--text-muted); }
+
+    .flow-container { position: relative; margin: 32px 0; }
+    .flow-step {
+      display: flex; align-items: flex-start; gap: 20px;
+      margin-bottom: 4px; position: relative;
+    }
+    .flow-num {
+      width: 36px; height: 36px; border-radius: 50%;
+      background: var(--accent); color: var(--bg);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 14px; flex-shrink: 0;
+      position: relative; z-index: 2;
+    }
+    .flow-line {
+      position: absolute; left: 17px; top: 36px; bottom: -4px;
+      width: 2px; background: var(--border);
+    }
+    .flow-content { flex: 1; padding-bottom: 24px; }
+    .flow-content h4 { margin: 4px 0 6px; font-size: 15px; color: var(--text); }
+    .flow-content p { font-size: 14px; margin-bottom: 0; }
+
+    .compare-table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+    .compare-table th {
+      text-align: left; padding: 10px 16px; font-size: 12px;
+      text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted);
+      border-bottom: 2px solid var(--border);
+    }
+    .compare-table td {
+      padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 14px;
+    }
+    .compare-table .before { color: var(--red); }
+    .compare-table .after { color: var(--green); font-weight: 600; }
+    .compare-table .change { color: var(--accent); font-family: var(--font-mono); font-size: 13px; }
+
+    .callout {
+      border-radius: 8px; padding: 16px 20px; margin: 16px 0;
+      display: flex; gap: 12px; align-items: flex-start;
+    }
+    .callout-icon { font-size: 18px; flex-shrink: 0; margin-top: 2px; }
+    .callout-body { font-size: 14px; color: var(--text); }
+    .callout-body strong { color: var(--text); }
+    .callout-info { background: #58a6ff15; border-left: 3px solid var(--accent); }
+    .callout-warn { background: #d2992215; border-left: 3px solid var(--orange); }
+    .callout-success { background: #3fb95015; border-left: 3px solid var(--green); }
+
+    .layer-stack { display: flex; flex-direction: column; gap: 2px; margin: 20px 0; }
+    .layer {
+      display: flex; align-items: center; padding: 14px 20px;
+      border-radius: 8px; font-size: 14px; font-weight: 600;
+    }
+    .layer-label { flex: 1; }
+    .layer-tech { font-size: 12px; color: rgba(255,255,255,0.6); font-weight: 400; }
+    .layer-arrow { text-align: center; color: var(--text-muted); font-size: 18px; padding: 2px 0; }
+    .layer-git { background: linear-gradient(135deg, #1a3a5c, #1a2840); border: 1px solid #264d73; }
+    .layer-zig { background: linear-gradient(135deg, #3d2e0a, #2a1f08); border: 1px solid #6b4f1a; }
+    .layer-wasm { background: linear-gradient(135deg, #2d1f4e, #1f1535); border: 1px solid #4a3578; }
+    .layer-ts { background: linear-gradient(135deg, #0d2948, #0a1e36); border: 1px solid #1a4a7a; }
+    .layer-kv { background: linear-gradient(135deg, #1a3320, #0f2215); border: 1px solid #2a5435; }
+
+    .review-item {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px 20px; margin-bottom: 12px;
+    }
+    .review-item .severity {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      padding: 2px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px;
+    }
+    .severity-warn { background: #d2992230; color: var(--orange); }
+    .severity-nit { background: #58a6ff20; color: var(--accent); }
+    .severity-good { background: #3fb95020; color: var(--green); }
+    .review-item p { margin-bottom: 0; font-size: 14px; }
+
+    .keyboard-hint {
+      position: fixed; bottom: 24px; right: 32px;
+      color: var(--text-muted); font-size: 12px;
+      display: flex; gap: 16px; align-items: center;
+    }
+    .keyboard-hint kbd {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 2px 8px; border-radius: 4px; font-family: var(--font-mono); font-size: 11px;
+    }
+
+    ul.bullets { padding-left: 18px; color: var(--text-muted); margin-bottom: 8px; }
+    ul.bullets li { margin-bottom: 8px; }
+    .split-list { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .small { font-size: 13px; color: var(--text-muted); }
+
+    @media (max-width: 768px) {
+      .card-row, .card-row-3, .split-list { grid-template-columns: 1fr; }
+      .stat-grid { grid-template-columns: 1fr 1fr; }
+      .slide { padding: 32px 16px 48px; }
+      h2 { font-size: 24px; }
+      .topbar { padding: 12px 16px; }
+      .topbar-left h1 { display: none; }
+      .keyboard-hint { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="mr-badge">Integration</span>
+      <h1>pi-share-hf in cf-twitch — Visual Walkthrough</h1>
+    </div>
+    <div class="topbar-right">
+      <button class="nav-btn" onclick="prev()">← Prev</button>
+      <span class="nav-counter" id="counter">1 / 9</span>
+      <button class="nav-btn" onclick="next()">Next →</button>
+    </div>
+  </div>
+  <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
+
+  <main>
+    <section class="slide active" id="slide-1">
+      <p class="label" style="color: var(--accent);">Title + impact</p>
+      <h2>What pi-share-hf is, and what we added to make it safe for this repo</h2>
+      <p class="subtitle">A walkthrough of the publishing pipeline itself and the repo-side integration that makes it usable from <span class="inline-code">cf-twitch</span>.</p>
+
+      <div class="stat-grid">
+        <div class="stat stat-accent">
+          <div class="stat-value">7</div>
+          <div class="stat-label">npm share scripts</div>
+        </div>
+        <div class="stat stat-green">
+          <div class="stat-value">4</div>
+          <div class="stat-label">review context files</div>
+        </div>
+        <div class="stat stat-purple">
+          <div class="stat-value">2</div>
+          <div class="stat-label">local dirs standardized</div>
+        </div>
+        <div class="stat stat-orange">
+          <div class="stat-value">5</div>
+          <div class="stat-label">tracked integration files</div>
+        </div>
+      </div>
+
+      <div class="card-row">
+        <div class="card">
+          <h3>The one-line summary</h3>
+          <p><strong>pi-share-hf</strong> turns local pi coding-agent sessions into a publishable Hugging Face dataset, but only after layered safety checks: exact secret redaction, deny-pattern filtering, TruffleHog scanning, LLM review, and manual rejection support.</p>
+        </div>
+        <div class="card">
+          <h3>What we optimized for in cf-twitch</h3>
+          <p>This repo has real OAuth credentials and operational context for Twitch and Spotify, so the integration is deliberately <strong>safe by default</strong>: local workspace, local helper files, <span class="inline-code">--no-images</span>, explicit project context, and generated secret lists.</p>
+        </div>
+      </div>
+
+      <div class="callout callout-success">
+        <span class="callout-icon">✅</span>
+        <div class="callout-body"><strong>The outcome:</strong> using the feature is now a small set of repeatable commands instead of a long, easy-to-get-wrong CLI incantation.</div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-2">
+      <p class="label" style="color: var(--accent);">Background</p>
+      <h2>How pi-share-hf works as a pipeline</h2>
+      <p class="subtitle">Think of it as a staged filter from raw session traces to an uploadable public dataset.</p>
+
+      <div class="diagram">
+        <svg width="940" height="330" viewBox="0 0 940 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="pi-share-hf pipeline overview">
+          <defs>
+            <marker id="arrow1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0,0 L8,4 L0,8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            </marker>
+          </defs>
+          <rect x="30" y="115" width="140" height="84" rx="10" fill="#1a3a5c" stroke="#264d73"/>
+          <text x="100" y="145" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">pi sessions</text>
+          <text x="100" y="168" fill="#8b949e" font-size="12" text-anchor="middle">raw jsonl traces</text>
+
+          <rect x="210" y="45" width="140" height="66" rx="10" fill="#1a3320" stroke="#2a5435"/>
+          <text x="280" y="73" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">exact-secret</text>
+          <text x="280" y="93" fill="#8b949e" font-size="12" text-anchor="middle">redaction</text>
+
+          <rect x="210" y="135" width="140" height="66" rx="10" fill="#3d2e0a" stroke="#6b4f1a"/>
+          <text x="280" y="163" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">deny filters</text>
+          <text x="280" y="183" fill="#8b949e" font-size="12" text-anchor="middle">never-publish patterns</text>
+
+          <rect x="210" y="225" width="140" height="66" rx="10" fill="#3d2e0a" stroke="#6b4f1a"/>
+          <text x="280" y="253" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">TruffleHog</text>
+          <text x="280" y="273" fill="#8b949e" font-size="12" text-anchor="middle">secret backstop</text>
+
+          <rect x="405" y="115" width="160" height="84" rx="10" fill="#2d1f4e" stroke="#4a3578"/>
+          <text x="485" y="145" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">LLM review</text>
+          <text x="485" y="168" fill="#8b949e" font-size="12" text-anchor="middle">about project?</text>
+          <text x="485" y="184" fill="#8b949e" font-size="12" text-anchor="middle">shareable?</text>
+
+          <rect x="620" y="115" width="140" height="84" rx="10" fill="#1a3320" stroke="#2a5435"/>
+          <text x="690" y="145" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">uploadable</text>
+          <text x="690" y="168" fill="#8b949e" font-size="12" text-anchor="middle">passed every gate</text>
+
+          <rect x="800" y="115" width="110" height="84" rx="10" fill="#1a3a5c" stroke="#264d73"/>
+          <text x="855" y="145" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">HF repo</text>
+          <text x="855" y="168" fill="#8b949e" font-size="12" text-anchor="middle">dataset</text>
+
+          <line x1="170" y1="157" x2="210" y2="78" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow1)"/>
+          <line x1="170" y1="157" x2="210" y2="168" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow1)"/>
+          <line x1="170" y1="157" x2="210" y2="258" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow1)"/>
+          <line x1="350" y1="168" x2="405" y2="157" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow1)"/>
+          <line x1="565" y1="157" x2="620" y2="157" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow1)"/>
+          <line x1="760" y1="157" x2="800" y2="157" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow1)"/>
+
+          <rect x="622" y="220" width="138" height="54" rx="10" fill="#f8514920" stroke="#f85149" stroke-dasharray="4"/>
+          <text x="691" y="243" fill="#f85149" font-size="14" font-weight="700" text-anchor="middle">blocked</text>
+          <text x="691" y="262" fill="#8b949e" font-size="11" text-anchor="middle">any failed stage stops upload</text>
+        </svg>
+        <div class="diagram-label">Raw sessions do not go straight to Hugging Face; every stage narrows the candidate set.</div>
+      </div>
+
+      <div class="card-row">
+        <div class="card">
+          <h3>High-precision redaction first</h3>
+          <p>The first layer only knows <strong>exact values</strong>. That is why we generate a secret list from local env files instead of guessing with broad regexes.</p>
+        </div>
+        <div class="card">
+          <h3>Semantic review later</h3>
+          <p>The LLM review is there to catch things that are not token-shaped secrets: mixed-project sessions, private topics, or sensitive operational context that survives literal redaction.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-3">
+      <p class="label" style="color: var(--red);">The problem</p>
+      <h2>Why this repo needed a cautious integration</h2>
+      <p class="subtitle">The default pi-share-hf workflow is good, but <span class="inline-code">cf-twitch</span> has specific risk factors that justified wrapper scripts and stricter defaults.</p>
+
+      <table class="compare-table">
+        <tr>
+          <th>Concern</th><th>Generic repo</th><th>cf-twitch reality</th><th>Design response</th>
+        </tr>
+        <tr>
+          <td>Secrets location</td>
+          <td class="before">maybe in shell rc or provider settings</td>
+          <td class="after">real Twitch / Spotify secrets in <span class="inline-code">.envrc</span></td>
+          <td class="change">force <span class="inline-code">--env-file .envrc</span> + generated secrets</td>
+        </tr>
+        <tr>
+          <td>Project context</td>
+          <td class="before">README may be enough</td>
+          <td class="after">no root README; architecture context lives in docs</td>
+          <td class="change">pass 4 explicit context files to review</td>
+        </tr>
+        <tr>
+          <td>Images</td>
+          <td class="before">sometimes useful to preserve</td>
+          <td class="after">screenshots may include dashboards / callbacks</td>
+          <td class="change">default to <span class="inline-code">--no-images</span></td>
+        </tr>
+        <tr>
+          <td>Human ergonomics</td>
+          <td class="before">long CLI commands</td>
+          <td class="after">easy to omit flags or use wrong defaults</td>
+          <td class="change">npm scripts encode the repo-safe path</td>
+        </tr>
+      </table>
+
+      <div class="callout callout-warn">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body"><strong>The key risk:</strong> this repo touches OAuth, webhooks, broadcaster identity, admin/setup secrets, and local operational details. A “just publish my sessions” workflow would be too fragile.</div>
+      </div>
+
+      <div class="diagram">
+        <svg width="920" height="250" viewBox="0 0 920 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Repo risk profile diagram">
+          <defs>
+            <marker id="arrow2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0,0 L8,4 L0,8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            </marker>
+          </defs>
+          <rect x="32" y="90" width="170" height="70" rx="8" fill="#1a3a5c" stroke="#264d73"/>
+          <text x="117" y="119" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">developer session</text>
+          <text x="117" y="140" fill="#8b949e" font-size="12" text-anchor="middle">pi prompt / tools / outputs</text>
+
+          <rect x="258" y="25" width="160" height="58" rx="8" fill="#f8514920" stroke="#f85149" stroke-dasharray="4"/>
+          <text x="338" y="50" fill="#f85149" font-size="13" font-weight="700" text-anchor="middle">OAuth tokens</text>
+          <text x="338" y="68" fill="#8b949e" font-size="11" text-anchor="middle">Twitch, Spotify</text>
+
+          <rect x="258" y="97" width="160" height="58" rx="8" fill="#f8514920" stroke="#f85149" stroke-dasharray="4"/>
+          <text x="338" y="122" fill="#f85149" font-size="13" font-weight="700" text-anchor="middle">callback / tunnel URLs</text>
+          <text x="338" y="140" fill="#8b949e" font-size="11" text-anchor="middle">trycloudflare, ngrok</text>
+
+          <rect x="258" y="169" width="160" height="58" rx="8" fill="#f8514920" stroke="#f85149" stroke-dasharray="4"/>
+          <text x="338" y="194" fill="#f85149" font-size="13" font-weight="700" text-anchor="middle">local identifiers</text>
+          <text x="338" y="212" fill="#8b949e" font-size="11" text-anchor="middle">home path, names, admin secrets</text>
+
+          <rect x="505" y="90" width="182" height="70" rx="8" fill="#3d2e0a" stroke="#6b4f1a"/>
+          <text x="596" y="117" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">repo-specific wrappers</text>
+          <text x="596" y="138" fill="#8b949e" font-size="12" text-anchor="middle">scripts + ignored helper dirs</text>
+
+          <rect x="745" y="90" width="142" height="70" rx="8" fill="#1a3320" stroke="#2a5435"/>
+          <text x="816" y="117" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">safer default</text>
+          <text x="816" y="138" fill="#8b949e" font-size="12" text-anchor="middle">collect, review, upload</text>
+
+          <line x1="202" y1="125" x2="258" y2="54" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow2)"/>
+          <line x1="202" y1="125" x2="258" y2="126" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow2)"/>
+          <line x1="202" y1="125" x2="258" y2="198" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow2)"/>
+          <line x1="418" y1="126" x2="505" y2="126" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow2)"/>
+          <line x1="687" y1="126" x2="745" y2="126" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow2)"/>
+        </svg>
+        <div class="diagram-label">The integration is mostly about closing repo-specific safety gaps and turning them into defaults.</div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-4">
+      <p class="label" style="color: var(--purple);">Architecture</p>
+      <h2>What we added to the repo</h2>
+      <p class="subtitle">The integration is small, but each file has a precise job in the workflow.</p>
+
+      <div class="layer-stack">
+        <div class="layer layer-git"><span class="layer-label">🧭 Commands developers run <span class="layer-tech">— pnpm share:init / collect / review / upload</span></span><span style="font-size:12px; color: var(--accent);">ergonomic entry points</span></div>
+        <div class="layer-arrow">↕</div>
+        <div class="layer layer-ts"><span class="layer-label">📦 package.json scripts <span class="layer-tech">— encoded repo-safe CLI flags</span></span><span style="font-size:12px; color: var(--accent);">no memorizing long commands</span></div>
+        <div class="layer-arrow">↕</div>
+        <div class="layer layer-wasm"><span class="layer-label">🛠 wrapper scripts <span class="layer-tech">— share-hf-init.mjs, share-hf-secrets.mjs</span></span><span style="font-size:12px; color: var(--purple);">repo-specific setup logic</span></div>
+        <div class="layer-arrow">↕</div>
+        <div class="layer layer-kv"><span class="layer-label">🔒 local helper dirs <span class="layer-tech">— .pi/hf-sessions, .pi/hf-private</span></span><span style="font-size:12px; color: var(--green);">ignored workspace + local policy files</span></div>
+      </div>
+
+      <div class="card-row">
+        <div class="card">
+          <h3>Tracked files</h3>
+          <ul class="file-list">
+            <li><span class="file-badge badge-ignore">ignore</span><code>.gitignore</code><span class="file-desc">keeps workspace + helper files local</span></li>
+            <li><span class="file-badge badge-json">json</span><code>package.json</code><span class="file-desc">share:* commands</span></li>
+            <li><span class="file-badge badge-ts">mjs</span><code>scripts/share-hf-init.mjs</code><span class="file-desc">starter deny list + init wrapper</span></li>
+            <li><span class="file-badge badge-ts">mjs</span><code>scripts/share-hf-secrets.mjs</code><span class="file-desc">builds exact-secret list</span></li>
+            <li><span class="file-badge badge-md">md</span><code>docs/pi-share-hf.md</code><span class="file-desc">repo-specific usage guide</span></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Ignored local files</h3>
+          <ul class="file-list">
+            <li><span class="file-badge badge-sh">txt</span><code>.pi/hf-private/deny.txt</code><span class="file-desc">never-publish patterns</span></li>
+            <li><span class="file-badge badge-sh">txt</span><code>.pi/hf-private/secrets.txt</code><span class="file-desc">generated exact secret values</span></li>
+            <li><span class="file-badge badge-sh">dir</span><code>.pi/hf-sessions/</code><span class="file-desc">workspace, reports, review sidecars, upload state</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body"><strong>Important distinction:</strong> source-controlled files define the workflow; ignored files hold the repo-local safety inputs and incremental state.</div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-5">
+      <p class="label" style="color: var(--accent);">Init path</p>
+      <h2>How <span class="inline-code">pnpm share:init</span> bootstraps the workspace</h2>
+      <p class="subtitle">The init wrapper exists so the first-time setup produces the right local shape for this repo every time.</p>
+
+      <div class="flow-container">
+        <div class="flow-step">
+          <div class="flow-num">1</div>
+          <div class="flow-line"></div>
+          <div class="flow-content">
+            <h4>Create <span class="inline-code">.pi/hf-private/</span> if needed</h4>
+            <p>We make sure the local helper directory exists before anything else. This is where local-only inputs such as <span class="inline-code">deny.txt</span> live.</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">2</div>
+          <div class="flow-line"></div>
+          <div class="flow-content">
+            <h4>Seed a starter deny list</h4>
+            <p>If <span class="inline-code">.pi/hf-private/deny.txt</span> does not exist, the script writes defaults for your home path and common tunnel hosts.</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">3</div>
+          <div class="flow-line"></div>
+          <div class="flow-content">
+            <h4>Resolve the dataset repo target</h4>
+            <p>Default repo is <span class="inline-code">dmmulroy/cf-twitch-pi-sessions</span>, but you can override it with <span class="inline-code">PI_SHARE_HF_REPO</span> and optionally <span class="inline-code">PI_SHARE_HF_ORGANIZATION</span>.</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">4</div>
+          <div class="flow-content">
+            <h4>Invoke pi-share-hf with repo-safe defaults</h4>
+            <p>The wrapper calls <span class="inline-code">pi-share-hf init --workspace .pi/hf-sessions --repo ... --no-images</span>, encoding the “no images” decision into the normal path.</p>
+          </div>
+        </div>
+      </div>
+
+      <pre><code><span class="cm">// scripts/share-hf-init.mjs</span>
+<span class="kw">const</span> repo = process.env.PI_SHARE_HF_REPO ?? <span class="str">"dmmulroy/cf-twitch-pi-sessions"</span>;
+<span class="kw">const</span> args = [
+  <span class="str">"init"</span>,
+  <span class="str">"--workspace"</span>, workspaceDir,
+  <span class="str">"--repo"</span>, repo,
+<span class="add">  "--no-images",   // disable screenshot/image publishing by default</span>
+];
+
+<span class="kw">if</span> (organization) {
+<span class="add">  args.push("--organization", organization);</span>
+}
+
+<span class="kw">const</span> result = <span class="fn">spawnSync</span>(<span class="str">"pi-share-hf"</span>, args, { stdio: <span class="str">"inherit"</span> });</code></pre>
+
+      <div class="callout callout-success">
+        <span class="callout-icon">✅</span>
+        <div class="callout-body"><strong>Design win:</strong> after this script exists, “how do I initialize it safely?” becomes a one-command answer.</div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-6">
+      <p class="label" style="color: var(--green);">Secrets path</p>
+      <h2>How we generate the exact-secret redaction input</h2>
+      <p class="subtitle">This is the most repo-specific part of the integration because the project keeps real credentials in local env files.</p>
+
+      <div class="diagram">
+        <svg width="920" height="300" viewBox="0 0 920 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Secret generation flow">
+          <defs>
+            <marker id="arrow3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0,0 L8,4 L0,8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            </marker>
+          </defs>
+          <rect x="28" y="60" width="150" height="66" rx="8" fill="#1a3a5c" stroke="#264d73"/>
+          <text x="103" y="88" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">.envrc</text>
+          <text x="103" y="108" fill="#8b949e" font-size="12" text-anchor="middle">repo-local credentials</text>
+
+          <rect x="28" y="174" width="150" height="66" rx="8" fill="#1a3a5c" stroke="#264d73"/>
+          <text x="103" y="202" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">.dev.vars</text>
+          <text x="103" y="222" fill="#8b949e" font-size="12" text-anchor="middle">optional local vars</text>
+
+          <rect x="238" y="116" width="200" height="70" rx="8" fill="#0d2948" stroke="#1a4a7a"/>
+          <text x="338" y="143" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">share-hf-secrets.mjs</text>
+          <text x="338" y="164" fill="#8b949e" font-size="12" text-anchor="middle">parse, unquote, dedupe, sort</text>
+
+          <rect x="500" y="35" width="170" height="56" rx="8" fill="#3d2e0a" stroke="#6b4f1a"/>
+          <text x="585" y="59" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">provider env vars</text>
+          <text x="585" y="77" fill="#8b949e" font-size="11" text-anchor="middle">OPENAI_API_KEY, HF_TOKEN...</text>
+
+          <rect x="500" y="122" width="170" height="56" rx="8" fill="#1a3320" stroke="#2a5435"/>
+          <text x="585" y="146" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">Set&lt;string&gt;</text>
+          <text x="585" y="164" fill="#8b949e" font-size="11" text-anchor="middle">deduplicated values</text>
+
+          <rect x="500" y="209" width="170" height="56" rx="8" fill="#1a3320" stroke="#2a5435"/>
+          <text x="585" y="233" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">secrets.txt</text>
+          <text x="585" y="251" fill="#8b949e" font-size="11" text-anchor="middle">one exact value per line</text>
+
+          <rect x="748" y="122" width="144" height="56" rx="8" fill="#2d1f4e" stroke="#4a3578"/>
+          <text x="820" y="146" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">pi-share-hf</text>
+          <text x="820" y="164" fill="#8b949e" font-size="11" text-anchor="middle">deterministic redaction</text>
+
+          <line x1="178" y1="93" x2="238" y2="136" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow3)"/>
+          <line x1="178" y1="207" x2="238" y2="166" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow3)"/>
+          <line x1="438" y1="122" x2="500" y2="63" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow3)"/>
+          <line x1="438" y1="151" x2="500" y2="151" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow3)"/>
+          <line x1="438" y1="180" x2="500" y2="237" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow3)"/>
+          <line x1="670" y1="151" x2="748" y2="151" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow3)"/>
+        </svg>
+        <div class="diagram-label">We are not asking pi-share-hf to guess our secrets; we are feeding it an exact, current list of real values to redact.</div>
+      </div>
+
+      <div class="card-row">
+        <div class="card">
+          <h3>Why exact values matter</h3>
+          <p>Exact-value redaction is high precision. If the real Twitch client secret appears in a session and that exact value is in <span class="inline-code">secrets.txt</span>, it will be redacted with very low false-positive risk.</p>
+        </div>
+        <div class="card">
+          <h3>Why the script strips quotes and dedupes</h3>
+          <p>Local env files can contain quoted values or duplicates. The script normalizes those cases so the resulting file is a clean list of exact secret strings.</p>
+        </div>
+      </div>
+
+      <pre><code><span class="cm">// scripts/share-hf-secrets.mjs</span>
+<span class="kw">const</span> envFiles = [resolve(rootDir, <span class="str">".envrc"</span>), resolve(rootDir, <span class="str">".dev.vars"</span>)];
+<span class="kw">const</span> envVarNames = [
+  <span class="str">"OPENAI_API_KEY"</span>,
+  <span class="str">"ANTHROPIC_API_KEY"</span>,
+  <span class="str">"HF_TOKEN"</span>,
+  <span class="str">"GOOGLE_API_KEY"</span>,
+  <span class="str">"OPENROUTER_API_KEY"</span>,
+];
+
+<span class="kw">const</span> values = <span class="kw">new</span> Set();
+<span class="kw">for</span> (<span class="kw">const</span> filePath <span class="kw">of</span> envFiles) {
+<span class="add">  collectFromEnvFile(filePath, values);   // parse local repo env files</span>
+}
+<span class="kw">for</span> (<span class="kw">const</span> name <span class="kw">of</span> envVarNames) {
+<span class="add">  if (process.env[name]) values.add(process.env[name]);</span>
+}
+<span class="add">writeFileSync(outputFile, sortedValues.join("\n") + "\n", "utf8");</span></code></pre>
+    </section>
+
+    <section class="slide" id="slide-7">
+      <p class="label" style="color: var(--accent);">Usage path</p>
+      <h2>How the everyday commands map to the underlying pipeline</h2>
+      <p class="subtitle">The npm scripts are the human-facing API of the integration.</p>
+
+      <div class="card-row-3">
+        <div class="card">
+          <h3>collect</h3>
+          <p>Regenerates <span class="inline-code">secrets.txt</span>, then runs <span class="inline-code">pi-share-hf collect</span> with repo-specific flags: workspace, env file, deny list, and context files.</p>
+        </div>
+        <div class="card">
+          <h3>review</h3>
+          <p>Reruns the semantic review stage against already-redacted sessions. Good for updated deny rules or changed project context.</p>
+        </div>
+        <div class="card">
+          <h3>upload</h3>
+          <p>Pushes only the sessions currently marked uploadable. The dry-run variant lets you inspect counts before sending anything to HF.</p>
+        </div>
+      </div>
+
+      <pre><code><span class="cm">// package.json</span>
+<span class="str">"share:collect"</span>: <span class="str">"pnpm share:secrets &amp;&amp; pi-share-hf collect --workspace .pi/hf-sessions --env-file .envrc --secret .pi/hf-private/secrets.txt --deny .pi/hf-private/deny.txt AGENTS.md docs/prd.md docs/cf-prototype-architecture.md docs/effect-twitch-architecture.md"</span>,
+<span class="str">"share:review"</span>: <span class="str">"pnpm share:secrets &amp;&amp; pi-share-hf review --workspace .pi/hf-sessions --deny .pi/hf-private/deny.txt AGENTS.md docs/prd.md docs/cf-prototype-architecture.md docs/effect-twitch-architecture.md"</span>,
+<span class="str">"share:list"</span>: <span class="str">"pi-share-hf list --workspace .pi/hf-sessions --uploadable"</span>,
+<span class="str">"share:upload:dry"</span>: <span class="str">"pi-share-hf upload --workspace .pi/hf-sessions --dry-run"</span>,
+<span class="str">"share:upload"</span>: <span class="str">"pi-share-hf upload --workspace .pi/hf-sessions"</span></code></pre>
+
+      <div class="flow-container">
+        <div class="flow-step">
+          <div class="flow-num">1</div>
+          <div class="flow-line"></div>
+          <div class="flow-content">
+            <h4><span class="inline-code">pnpm share:collect</span></h4>
+            <p>Update exact secrets, collect changed sessions, redact, filter, scan, and review.</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">2</div>
+          <div class="flow-line"></div>
+          <div class="flow-content">
+            <h4><span class="inline-code">pnpm share:list</span></h4>
+            <p>Inspect the current uploadable set. This is the “what would go public right now?” question.</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">3</div>
+          <div class="flow-line"></div>
+          <div class="flow-content">
+            <h4>Optional grep / manual reject</h4>
+            <p>Search for risky terms or reject anything that still feels wrong, even if it technically passed automated checks.</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">4</div>
+          <div class="flow-content">
+            <h4><span class="inline-code">pnpm share:upload:dry</span> → <span class="inline-code">pnpm share:upload</span></h4>
+            <p>Dry-run first, then do the real upload only when satisfied with the candidate set.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-8">
+      <p class="label" style="color: var(--purple);">Files + policy</p>
+      <h2>The repo conventions we established</h2>
+      <p class="subtitle">These choices are the real integration: they turn a standalone tool into a team-usable project workflow.</p>
+
+      <div class="card-row">
+        <div class="card">
+          <h3>Gitignore policy</h3>
+          <pre><code><span class="cm"># .gitignore</span>
+<span class="add">.pi/hf-sessions/</span>
+<span class="add">.pi/hf-private/</span></code></pre>
+          <p>This ensures the share workspace and helper files remain local. The repo gets the workflow, not the generated private state.</p>
+        </div>
+        <div class="card">
+          <h3>Context policy</h3>
+          <ul class="bullets">
+            <li><span class="inline-code">AGENTS.md</span></li>
+            <li><span class="inline-code">docs/prd.md</span></li>
+            <li><span class="inline-code">docs/cf-prototype-architecture.md</span></li>
+            <li><span class="inline-code">docs/effect-twitch-architecture.md</span></li>
+          </ul>
+          <p>Because there is no root README, the review model gets an explicit bundle of architectural context instead of relying on implicit defaults.</p>
+        </div>
+      </div>
+
+      <div class="review-item">
+        <span class="severity severity-good">✅ Strong default</span>
+        <p><strong>Images are off by default.</strong> This is exactly the right bias for a repo that may contain screenshots of OAuth flows, callback hosts, or dashboards.</p>
+      </div>
+      <div class="review-item">
+        <span class="severity severity-warn">⚠️ Still needs human review</span>
+        <p><strong>Deny lists evolve.</strong> The starter <span class="inline-code">deny.txt</span> is just a beginning; you should add private names, domains, and project references over time.</p>
+      </div>
+      <div class="review-item">
+        <span class="severity severity-nit">💬 Nice ergonomics</span>
+        <p><strong>Scripts encode intent.</strong> Team members do not have to remember the exact workspace path or context-file bundle; the repo already knows.</p>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-9">
+      <p class="label" style="color: var(--green);">Takeaways</p>
+      <h2>How to think about this integration going forward</h2>
+      <p class="subtitle">The most useful mental model is “repo policy + safety inputs + publish commands.”</p>
+
+      <div class="card-row">
+        <div class="card">
+          <h3>What pi-share-hf owns</h3>
+          <ul class="bullets">
+            <li>session collection and incremental state</li>
+            <li>exact-value redaction</li>
+            <li>TruffleHog scanning</li>
+            <li>LLM review and upload gating</li>
+            <li>uploading the final dataset</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>What this repo now owns</h3>
+          <ul class="bullets">
+            <li>where workspace state lives</li>
+            <li>which env file is authoritative</li>
+            <li>which context files define the project</li>
+            <li>what safety defaults are enforced</li>
+            <li>how humans invoke the workflow</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body"><strong>Best mental model:</strong> <span class="inline-code">pi-share-hf</span> is the generic engine; the scripts and policy files we added are the <em>cf-twitch adapter</em>.</div>
+      </div>
+
+      <div class="card">
+        <h3>Recommended day-to-day sequence</h3>
+        <pre><code>pnpm share:init        <span class="cm"># once per local workspace</span>
+pnpm share:collect     <span class="cm"># regenerate secrets + process changed sessions</span>
+pnpm share:list        <span class="cm"># inspect uploadable sessions</span>
+pnpm share:upload:dry  <span class="cm"># check what would be pushed</span>
+pnpm share:upload      <span class="cm"># publish when satisfied</span></code></pre>
+      </div>
+
+      <div class="callout callout-success">
+        <span class="callout-icon">✅</span>
+        <div class="callout-body"><strong>Bottom line:</strong> the integration is complete enough that you can learn the workflow from the repo itself, not from tribal memory or ad hoc shell history.</div>
+      </div>
+    </section>
+  </main>
+
+  <div class="keyboard-hint">
+    <span><kbd>←</kbd> <kbd>→</kbd> navigate</span>
+    <span><kbd>Home</kbd> first slide</span>
+    <span><kbd>End</kbd> last slide</span>
+  </div>
+
+  <script>
+    const slides = document.querySelectorAll('.slide');
+    let current = 0;
+
+    function show(n) {
+      slides[current].classList.remove('active');
+      current = Math.max(0, Math.min(n, slides.length - 1));
+      slides[current].classList.add('active');
+      document.getElementById('counter').textContent = `${current + 1} / ${slides.length}`;
+      document.getElementById('progress').style.width = `${((current + 1) / slides.length) * 100}%`;
+      window.scrollTo(0, 0);
+    }
+
+    function next() { show(current + 1); }
+    function prev() { show(current - 1); }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); next(); }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); prev(); }
+      if (e.key === 'Home') { e.preventDefault(); show(0); }
+      if (e.key === 'End') { e.preventDefault(); show(slides.length - 1); }
+    });
+
+    let touchStartX = 0;
+    document.addEventListener('touchstart', e => { touchStartX = e.changedTouches[0].screenX; });
+    document.addEventListener('touchend', e => {
+      const dx = e.changedTouches[0].screenX - touchStartX;
+      if (Math.abs(dx) > 50) { dx < 0 ? next() : prev(); }
+    });
+
+    show(0);
+  </script>
+</body>
+</html>

@@ -5,8 +5,8 @@
  * Progress is tracked and unlocks are recorded with timestamps for chat announcements.
  */
 
+import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { DurableObject } from "cloudflare:workers";
 import { and, count, desc, eq, gt, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
@@ -14,10 +14,15 @@ import { z } from "zod";
 
 import migrations from "../../drizzle/achievements-do/migrations";
 import { writeAchievementUnlockMetric } from "../lib/analytics";
-import { rpc, withRpcSerialization } from "../lib/durable-objects";
+import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	AchievementDbError,
 	AchievementEventValidationError,
+	DurableObjectError,
+	StreamOfflineNoTokenError,
+	TokenRefreshNetworkError,
+	TwitchNetworkError,
+	TwitchRateLimitError,
 	type AchievementError,
 	type StreamLifecycleHandler,
 } from "../lib/errors";
@@ -84,6 +89,19 @@ export const AchievementEventInputSchema = z.object({
 });
 
 export type AchievementEventInput = z.infer<typeof AchievementEventInputSchema>;
+
+const ANNOUNCEMENT_RETRY_DELAYS_SECONDS = [3, 5, 10] as const;
+
+const AchievementUnlockEffectPayloadSchema = z.object({
+	userDisplayName: z.string().min(1),
+	achievementId: z.string().min(1),
+	achievementName: z.string().min(1),
+	achievementDescription: z.string().min(1),
+	category: AchievementCategorySchema,
+	announcementAttempt: z.number().int().min(0),
+});
+
+type AchievementUnlockEffectPayload = z.infer<typeof AchievementUnlockEffectPayloadSchema>;
 
 /** Unlocked achievement returned from recordEvent */
 export interface UnlockedAchievement {
@@ -169,20 +187,32 @@ function normalizeUserDisplayNameLoose(value: string): string {
 // AchievementsDO Implementation
 // =============================================================================
 
+export interface AchievementsAgentState {
+	isStreamLive: boolean;
+	currentStreamStartedAt: string | null;
+}
+
 /**
- * AchievementsDO - Durable Object for tracking user achievements
+ * AchievementsDO - Agent for tracking user achievements
  */
 class _AchievementsDO
-	extends DurableObject<Env>
+	extends Agent<Env, AchievementsAgentState>
 	implements StreamLifecycleHandler<AchievementDbError>
 {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 
-	constructor(ctx: DurableObjectState, env: Env) {
+	initialState: AchievementsAgentState = {
+		isStreamLive: false,
+		currentStreamStartedAt: null,
+	};
+
+	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
+	}
 
-		void this.ctx.blockConcurrencyWhile(async () => {
+	async onStart(): Promise<void> {
+		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
 		});
 	}
@@ -311,12 +341,13 @@ class _AchievementsDO
 
 					// Track newly unlocked
 					if (shouldUnlock && (!userAchievement || !userAchievement.unlockedAt)) {
+						const category = AchievementCategorySchema.parse(definition.category);
 						newlyUnlocked.push({
 							id: definition.id,
 							name: definition.name,
 							description: definition.description,
 							icon: definition.icon,
-							category: AchievementCategorySchema.parse(definition.category),
+							category,
 							unlockedAt: now,
 						});
 
@@ -326,27 +357,25 @@ class _AchievementsDO
 							achievementName: definition.name,
 						});
 
-						writeAchievementUnlockMetric(this.env.ANALYTICS, {
-							user: userDisplayName,
-							achievementId: definition.id,
-							achievementName: definition.name,
-							category: definition.category,
-						});
+						const queueResult = await Result.tryPromise(() =>
+							this.queue("processAchievementUnlockEffects", {
+								userDisplayName,
+								achievementId: definition.id,
+								achievementName: definition.name,
+								achievementDescription: definition.description,
+								category,
+								announcementAttempt: 0,
+							}),
+						);
 
-						// Best-effort chat announcement: fire immediately on unlock
-						const announceResult = await Result.tryPromise({
-							try: () => this.announceAchievement(userDisplayName, definition),
-							catch: (error) => error,
-						});
-
-						if (announceResult.isErr()) {
-							logger.warn("Failed to announce achievement (RPC error)", {
+						if (queueResult.isErr()) {
+							logger.warn("Failed to queue achievement unlock side effects", {
 								userDisplayName,
 								achievementId: definition.id,
 								error:
-									announceResult.error instanceof Error
-										? announceResult.error.message
-										: String(announceResult.error),
+									queueResult.error instanceof Error
+										? queueResult.error.message
+										: String(queueResult.error),
 							});
 						}
 					}
@@ -816,6 +845,10 @@ class _AchievementsDO
 		return Result.tryPromise({
 			try: async () => {
 				const now = new Date().toISOString();
+				this.setState({
+					isStreamLive: true,
+					currentStreamStartedAt: now,
+				});
 
 				// Get session-scoped achievement IDs
 				const sessionAchievements = await this.db.query.achievementDefinitions.findMany({
@@ -861,8 +894,41 @@ class _AchievementsDO
 	@rpc
 	async onStreamOffline(): Promise<Result<void, AchievementDbError>> {
 		logger.info("AchievementsDO: Stream offline");
+		this.setState({
+			isStreamLive: false,
+			currentStreamStartedAt: null,
+		});
 		// No cleanup needed on stream end
 		return Result.ok();
+	}
+
+	/**
+	 * Background/scheduled callback for unlock side effects.
+	 *
+	 * Durable achievement state is written synchronously in recordEventInternal().
+	 * Analytics and chat announcement happen out-of-band via Agent queue/schedule APIs.
+	 */
+	async processAchievementUnlockEffects(payload: unknown): Promise<void> {
+		const parseResult = AchievementUnlockEffectPayloadSchema.safeParse(payload);
+		if (!parseResult.success) {
+			logger.warn("AchievementsDO: Invalid unlock effect payload", {
+				error: parseResult.error.message,
+			});
+			return;
+		}
+
+		const effect = parseResult.data;
+
+		if (effect.announcementAttempt === 0) {
+			writeAchievementUnlockMetric(this.env.ANALYTICS, {
+				user: effect.userDisplayName,
+				achievementId: effect.achievementId,
+				achievementName: effect.achievementName,
+				category: effect.category,
+			});
+		}
+
+		await this.announceAchievementWithRetry(effect);
 	}
 
 	// =============================================================================
@@ -1406,6 +1472,55 @@ class _AchievementsDO
 		return progress >= definition.threshold;
 	}
 
+	private async announceAchievementWithRetry(
+		effect: AchievementUnlockEffectPayload,
+	): Promise<void> {
+		const tokenResult = await getStub("TWITCH_TOKEN_DO").getValidToken();
+		if (tokenResult.status === "error") {
+			if (this.isRetryableAnnouncementPreflightError(tokenResult.error)) {
+				const delayInSeconds =
+					ANNOUNCEMENT_RETRY_DELAYS_SECONDS[effect.announcementAttempt] ?? null;
+				if (delayInSeconds !== null) {
+					await this.schedule(delayInSeconds, "processAchievementUnlockEffects", {
+						...effect,
+						announcementAttempt: effect.announcementAttempt + 1,
+					});
+					logger.warn("AchievementsDO: Scheduled short announcement retry", {
+						userDisplayName: effect.userDisplayName,
+						achievementId: effect.achievementId,
+						delayInSeconds,
+						attempt: effect.announcementAttempt + 1,
+						error: tokenResult.error.message,
+					});
+					return;
+				}
+			}
+
+			logger.warn("AchievementsDO: Skipping achievement announcement", {
+				userDisplayName: effect.userDisplayName,
+				achievementId: effect.achievementId,
+				error: tokenResult.error.message,
+			});
+			return;
+		}
+
+		await this.announceAchievement(effect.userDisplayName, {
+			id: effect.achievementId,
+			name: effect.achievementName,
+			description: effect.achievementDescription,
+		});
+	}
+
+	private isRetryableAnnouncementPreflightError(error: unknown): boolean {
+		return (
+			StreamOfflineNoTokenError.is(error) ||
+			TokenRefreshNetworkError.is(error) ||
+			TwitchNetworkError.is(error) ||
+			TwitchRateLimitError.is(error) ||
+			DurableObjectError.is(error)
+		);
+	}
+
 	/**
 	 * Announce achievement unlock to chat (best-effort)
 	 *
@@ -1415,7 +1530,7 @@ class _AchievementsDO
 	 */
 	private async announceAchievement(
 		userDisplayName: string,
-		definition: AchievementDefinition,
+		definition: Pick<AchievementDefinition, "id" | "name" | "description">,
 	): Promise<void> {
 		// Atomically claim announcement rights FIRST to prevent duplicate messages
 		const markResult = await this.markAnnounced(userDisplayName, definition.id);

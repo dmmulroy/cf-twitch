@@ -18,6 +18,10 @@ import {
 	mockTwitchChatMessage,
 	mockTwitchRedemptionUpdate,
 } from "../fixtures/twitch";
+import {
+	ensureAchievementsSingletonStub,
+	waitForAchievementQueuesToDrain,
+} from "../helpers/durable-objects";
 
 import type { KeyboardRaffleParams } from "../../durable-objects/keyboard-raffle-saga-do";
 
@@ -101,6 +105,7 @@ describe("KeyboardRaffleSagaDO", () => {
 	it("resumes a pending retry via the scheduled callback and completes the saga", async () => {
 		await ensureTwitchTokenStub();
 		await ensureEventBusStub();
+		const achievementsStub = await ensureAchievementsSingletonStub();
 
 		const stub = await createKeyboardRaffleSagaStub(`keyboard-raffle-saga-${crypto.randomUUID()}`);
 		const now = new Date().toISOString();
@@ -161,6 +166,7 @@ describe("KeyboardRaffleSagaDO", () => {
 		mockTwitchChatMessage(fetchMock);
 
 		await stub.retrySagaTick();
+		await waitForAchievementQueuesToDrain(achievementsStub, "TestUser");
 		await cancelKeyboardRaffleSagaSchedules(stub);
 
 		const statusResult = await stub.getStatus();

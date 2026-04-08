@@ -3,7 +3,7 @@
 Instructions for AI coding agents working with this codebase.
 
 **Generated:** 2026-02-02
-**Change:** rwozskrk (jj)
+**Change:** rwozskrk (git)
 
 ## Overview
 
@@ -202,7 +202,7 @@ wrangler types        # Regenerate worker-configuration.d.ts
 
 ## Notes
 
-- **VCS**: Uses jj (Jujutsu), NOT git
+- **VCS**: Uses git
 - **Secrets**: `.dev.vars` for local dev (gitignored)
 - **Tests**: Vitest with `@cloudflare/vitest-pool-workers`
 - **Test pattern**: `runInDurableObject(stub, callback)`

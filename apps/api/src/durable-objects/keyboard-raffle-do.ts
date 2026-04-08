@@ -5,8 +5,8 @@
  * are computed via a SQLite view over the rolls table.
  */
 
+import { Agent, type AgentContext } from "agents";
 import { Result, TaggedError } from "better-result";
-import { DurableObject } from "cloudflare:workers";
 import { desc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
@@ -24,7 +24,6 @@ import {
 } from "./schemas/keyboard-raffle-do.schema";
 
 import type { Env } from "../index";
-import type { StreamLifecycleHandler } from "../lib/errors";
 
 /**
  * Database error for keyboard raffle operations
@@ -76,19 +75,21 @@ export interface LeaderboardOptions {
 }
 
 /**
- * KeyboardRaffleDO - Durable Object for keyboard raffle management
+ * KeyboardRaffleDO - Agent-based durable object for keyboard raffle management.
+ *
+ * SQLite remains the source of truth because this DO is query/history oriented.
+ * Agent lifecycle is used for startup/bootstrap only.
  */
-class _KeyboardRaffleDO
-	extends DurableObject<Env>
-	implements StreamLifecycleHandler<KeyboardRaffleDbError>
-{
+class _KeyboardRaffleDO extends Agent<Env> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 
-	constructor(ctx: DurableObjectState, env: Env) {
+	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
+	}
 
-		void this.ctx.blockConcurrencyWhile(async () => {
+	async onStart(): Promise<void> {
+		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
 		});
 	}
@@ -107,7 +108,6 @@ class _KeyboardRaffleDO
 			try: async () => {
 				const isWinner = rollData.distance === 0;
 
-				// Get current closest record before inserting (for non-winners)
 				let previousBestDistance: number | null = null;
 				if (!isWinner) {
 					const [currentBest] = await this.db
@@ -131,10 +131,6 @@ class _KeyboardRaffleDO
 					throw new Error("Insert did not return a row");
 				}
 
-				// Determine if this is a new closest record (for non-winners)
-				// A roll is a new record if:
-				// - It's not a winner (winners have distance 0, which is a different achievement)
-				// - Either there was no previous record, OR this distance is smaller
 				const isNewRecord =
 					!isWinner && (previousBestDistance === null || rollData.distance < previousBestDistance);
 
@@ -215,7 +211,6 @@ class _KeyboardRaffleDO
 						case "wins":
 							return desc(raffleLeaderboard.totalWins);
 						case "closest":
-							// Sort by closest distance (nulls last for winners)
 							return sql`${raffleLeaderboard.closestDistance} asc nulls last`;
 					}
 				})();
@@ -329,7 +324,6 @@ class _KeyboardRaffleDO
 	> {
 		return Result.tryPromise({
 			try: async () => {
-				// Get the top entry sorted by closest distance (excluding winners)
 				const [entry] = await this.db
 					.select()
 					.from(raffleLeaderboard)
@@ -349,26 +343,6 @@ class _KeyboardRaffleDO
 			},
 			catch: (cause) => new KeyboardRaffleDbError({ operation: "getClosestRecord", cause }),
 		});
-	}
-
-	/**
-	 * Lifecycle: Called when stream goes online
-	 */
-	@rpc
-	async onStreamOnline(): Promise<Result<void, KeyboardRaffleDbError>> {
-		logger.info("KeyboardRaffleDO: Stream online");
-		// No-op for now - raffle runs regardless of stream state
-		return Result.ok();
-	}
-
-	/**
-	 * Lifecycle: Called when stream goes offline
-	 */
-	@rpc
-	async onStreamOffline(): Promise<Result<void, KeyboardRaffleDbError>> {
-		logger.info("KeyboardRaffleDO: Stream offline");
-		// No-op for now - raffle runs regardless of stream state
-		return Result.ok();
 	}
 }
 

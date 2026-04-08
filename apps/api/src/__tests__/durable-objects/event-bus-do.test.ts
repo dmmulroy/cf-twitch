@@ -15,6 +15,10 @@ import {
 	deadLetterQueue,
 	pendingEvents,
 } from "../../durable-objects/schemas/event-bus-do.schema";
+import {
+	ensureAchievementsSingletonStub,
+	ensureNamedTwitchTokenStub,
+} from "../helpers/durable-objects";
 
 function createTestEvent(overrides: { id?: string } = {}) {
 	return createSongRequestSuccessEvent({
@@ -66,6 +70,8 @@ describe("EventBusDO", () => {
 		stub = env.EVENT_BUS_DO.get(id);
 		await stub.setName(busName);
 		await stub.getPendingCount();
+		await ensureNamedTwitchTokenStub();
+		await ensureAchievementsSingletonStub();
 	});
 
 	describe("publish", () => {

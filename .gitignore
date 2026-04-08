@@ -4,6 +4,10 @@ opensrc/
 # Ignore .opencode entirely (local agent state)
 .opencode/
 
+# pi-share-hf local workspace and helper files
+.pi/hf-sessions/
+.pi/hf-private/
+
 # Dependencies
 node_modules/
 .pnpm-store/
