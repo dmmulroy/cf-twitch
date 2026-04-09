@@ -30,6 +30,22 @@
       "settingsChanges": [],
       "installedAt": "2026-04-08T13:02:18.635Z",
       "catalogFingerprint": "f4dd771d58e0c5f895035317e4de7c54c225f9a683ed577de5109d4103c63419"
+    },
+    "mcp:cloudflare-api": {
+      "key": "mcp:cloudflare-api",
+      "type": "mcp",
+      "category": "mcp",
+      "id": "cloudflare-api",
+      "label": "cloudflare-api",
+      "installMode": "merge",
+      "sourcePath": "/Users/dmmulroy/.pi/ephemeral/mcp/mcp.json#mcpServers.cloudflare-api",
+      "targetPaths": [
+        "/Users/dmmulroy/Code/personal/cf-twitch/.pi/mcp.json"
+      ],
+      "settingsChanges": [],
+      "installedAt": "2026-04-09T12:50:25.015Z",
+      "catalogFingerprint": "3903f7caf039d506c4ba6b368f0563eea4b25a7be17fbb6da926612de39a5996",
+      "serverName": "cloudflare-api"
     }
   }
 }
