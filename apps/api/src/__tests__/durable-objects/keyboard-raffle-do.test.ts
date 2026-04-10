@@ -4,7 +4,6 @@
  * Tests public raffle behavior through the Agent interface.
  */
 
-import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { getStub } from "../../lib/durable-objects";
@@ -33,9 +32,6 @@ describe("KeyboardRaffleDO", () => {
 
 	beforeEach(async () => {
 		raffleName = `keyboard-raffle-${crypto.randomUUID()}`;
-		const id = env.KEYBOARD_RAFFLE_DO.idFromName(raffleName);
-		const rawStub = env.KEYBOARD_RAFFLE_DO.get(id);
-		await rawStub.setName(raffleName);
 		stub = getStub("KEYBOARD_RAFFLE_DO", raffleName);
 		await stub.getClosestRecord();
 	});

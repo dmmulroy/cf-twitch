@@ -13,10 +13,11 @@ import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
 import { CommandNotFoundError, DLQItemNotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { type AppRouteEnv } from "../lib/request-context";
 
 import type { Env } from "../index";
 
-const admin = new Hono<{ Bindings: Env }>();
+const admin = new Hono<AppRouteEnv<Env>>();
 
 // =============================================================================
 // Auth Middleware

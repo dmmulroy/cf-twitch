@@ -38,6 +38,7 @@ import { Result } from "better-result";
 import { env as globalEnv } from "cloudflare:workers";
 
 import { DurableObjectError } from "./errors";
+import { logger, normalizeError, startTimer } from "./logger";
 
 // =============================================================================
 // rpcReturn - Result Serialization for RPC
@@ -244,7 +245,7 @@ export function getStub<K extends DONamespaceKeys>(
 	const doId = idFromName(resolvedId);
 	const stub = get(doId);
 
-	return wrapStub<ExtractDO<K>>(stub);
+	return wrapStub<ExtractDO<K>>(stub, resolvedId);
 }
 
 /**
@@ -257,7 +258,84 @@ export function getStub<K extends DONamespaceKeys>(
  * special property access behavior where Reflect.get returns a different
  * (broken) function than direct property access.
  */
-function wrapStub<DO>(stub: DurableObjectStub): DeserializedStub<DO> {
+function wrapStub<DO>(stub: DurableObjectStub, stubName?: string): DeserializedStub<DO> {
+	const stubLogger = logger.child({
+		component: "durable_object",
+		do_name: stubName,
+		do_id: stub.id.toString(),
+		code_path: "lib/durable-objects.wrapStub",
+	});
+	let hasInitializedName = false;
+	let initializeNamePromise: Promise<void> | null = null;
+
+	const ensureAgentName = async (): Promise<void> => {
+		if (!stubName || hasInitializedName) {
+			return;
+		}
+
+		if (initializeNamePromise) {
+			await initializeNamePromise;
+			return;
+		}
+
+		initializeNamePromise = (async () => {
+			stubLogger.info("Initializing durable object agent name", {
+				event: "do.stub.set_name.started",
+			});
+			// Agent-based Durable Object stubs expose setName(). Production traffic can hit
+			// RPC methods before the agent runtime has persisted a name, which surfaces as:
+			// "Attempting to read .name on <Agent> before it was set".
+			//
+			// Calling the native PartyServer set-name fetch route is a more reliable bootstrap
+			// path than RPC setName() for cold-start entrypoints like alarm(), because it uses
+			// the same initialization flow PartyServer expects for request-based startup.
+			// Fall back to RPC setName() in case fetch-based initialization is unavailable.
+			// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-member-access -- dynamic access
+			const setName = (stub as Record<string | symbol, unknown>).setName;
+			if (typeof setName !== "function") {
+				hasInitializedName = true;
+				return;
+			}
+
+			try {
+				const request = new Request(
+					"http://dummy-example.cloudflare.com/cdn-cgi/partyserver/set-name/",
+				);
+				request.headers.set("x-partykit-room", stubName);
+				const response = await stub.fetch(request);
+				await response.text();
+				stubLogger.info("Initialized durable object agent name", {
+					event: "do.stub.set_name.succeeded",
+				});
+			} catch (error) {
+				try {
+					// oxlint-disable-next-line typescript/no-unsafe-call -- dynamic call on RPC stub
+					await setName(stubName);
+					stubLogger.info("Initialized durable object agent name", {
+						event: "do.stub.set_name.succeeded",
+						outcome: "rpc_fallback",
+					});
+				} catch (fallbackError) {
+					stubLogger.error("Failed to initialize durable object agent name", {
+						event: "do.stub.set_name.failed",
+						...normalizeError(error),
+						fallback_error_message:
+							fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+					});
+					throw fallbackError;
+				}
+			}
+
+			hasInitializedName = true;
+		})();
+
+		try {
+			await initializeNamePromise;
+		} finally {
+			initializeNamePromise = null;
+		}
+	};
+
 	// oxlint-disable-next-line typescript/no-unsafe-return -- proxy reflection
 	return new Proxy(stub, {
 		get(target, prop) {
@@ -274,23 +352,58 @@ function wrapStub<DO>(stub: DurableObjectStub): DeserializedStub<DO> {
 
 			// Return a wrapper function that calls the original method
 			return async (...args: unknown[]) => {
+				const rpcMethod = String(prop);
+				const timer = startTimer();
+				stubLogger.info("Durable Object RPC started", {
+					event: "do.rpc.started",
+					rpc_method: rpcMethod,
+				});
 				try {
-					// Call directly - the method is already bound correctly
+					if (prop === "setName") {
+						const result = await (original as (...a: unknown[]) => unknown)(...args);
+						hasInitializedName = true;
+						stubLogger.info("Durable Object RPC succeeded", {
+							event: "do.rpc.succeeded",
+							rpc_method: rpcMethod,
+							duration_ms: timer(),
+							result_status: "ok",
+						});
+						return Result.ok(result);
+					}
+
+					await ensureAgentName();
+
 					// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-call -- dynamic call
 					const result = await (original as (...a: unknown[]) => unknown)(...args);
-
-					// Try to deserialize if it's a SerializedResult
 					const deserialized = Result.deserialize(result);
 					if (deserialized !== null) {
+						stubLogger.info("Durable Object RPC succeeded", {
+							event: "do.rpc.succeeded",
+							rpc_method: rpcMethod,
+							duration_ms: timer(),
+							result_status: deserialized.status,
+							...(deserialized.status === "error" ? normalizeError(deserialized.error) : {}),
+						});
 						return deserialized;
 					}
 
-					// Not a Result - wrap in Ok
+					stubLogger.info("Durable Object RPC succeeded", {
+						event: "do.rpc.succeeded",
+						rpc_method: rpcMethod,
+						duration_ms: timer(),
+						result_status: "ok",
+					});
 					return Result.ok(result);
 				} catch (error) {
+					stubLogger.error("Durable Object RPC failed", {
+						event: "do.rpc.failed",
+						rpc_method: rpcMethod,
+						duration_ms: timer(),
+						...normalizeError(error),
+					});
 					return Result.err(
 						new DurableObjectError({
-							method: String(prop),
+							method: rpcMethod,
 							message: error instanceof Error ? error.message : String(error),
 							cause: error,
 						}),

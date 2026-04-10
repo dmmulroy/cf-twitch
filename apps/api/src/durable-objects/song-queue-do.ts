@@ -1178,11 +1178,16 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	}
 
 	private async clearRefreshSchedule(): Promise<void> {
-		if (this.state.refreshScheduleId !== null) {
-			await this.cancelSchedule(this.state.refreshScheduleId);
-		}
+		const refreshSchedules = this.getSchedules().filter(
+			(schedule) => schedule.callback === "refreshQueueTick",
+		);
+		await Promise.all(refreshSchedules.map((schedule) => this.cancelSchedule(schedule.id)));
 
-		if (this.state.refreshScheduleId !== null || this.state.refreshDueAt !== null) {
+		if (
+			refreshSchedules.length > 0 ||
+			this.state.refreshScheduleId !== null ||
+			this.state.refreshDueAt !== null
+		) {
 			this.updateState({
 				refreshScheduleId: null,
 				refreshDueAt: null,
@@ -1191,11 +1196,16 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	}
 
 	private async clearCleanupSchedule(): Promise<void> {
-		if (this.state.cleanupScheduleId !== null) {
-			await this.cancelSchedule(this.state.cleanupScheduleId);
-		}
+		const cleanupSchedules = this.getSchedules().filter(
+			(schedule) => schedule.callback === "cleanupStalePendingTick",
+		);
+		await Promise.all(cleanupSchedules.map((schedule) => this.cancelSchedule(schedule.id)));
 
-		if (this.state.cleanupScheduleId !== null || this.state.cleanupDueAt !== null) {
+		if (
+			cleanupSchedules.length > 0 ||
+			this.state.cleanupScheduleId !== null ||
+			this.state.cleanupDueAt !== null
+		) {
 			this.updateState({
 				cleanupScheduleId: null,
 				cleanupDueAt: null,

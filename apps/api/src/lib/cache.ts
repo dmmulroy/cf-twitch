@@ -5,6 +5,8 @@
  * All visitors share the same edge-cached response within TTL.
  */
 
+import { logger, normalizeError } from "./logger";
+
 import type { Result } from "better-result";
 import type { Context } from "hono";
 
@@ -30,22 +32,41 @@ export async function withEdgeCache<T, E extends { message: string }>(
 ): Promise<Response> {
 	const cache = caches.default;
 	const cacheKey = new Request(c.req.url, { method: "GET" });
+	const cacheLogger = logger.child({
+		component: "cache",
+		route: c.req.path,
+		cache_key: cacheKey.url,
+		ttl_seconds: maxAge,
+	});
 
-	// Check edge cache first
-	const cached = await cache.match(cacheKey);
-	if (cached) {
-		return cached;
+	cacheLogger.info("Looking up edge cache", {
+		event: "cache.lookup",
+	});
+
+	try {
+		const cached = await cache.match(cacheKey);
+		if (cached) {
+			cacheLogger.info("Edge cache hit", {
+				event: "cache.hit",
+			});
+			return cached;
+		}
+	} catch (error) {
+		cacheLogger.warn("Edge cache lookup failed", {
+			event: "cache.fetch_failed",
+			...normalizeError(error),
+		});
 	}
 
-	// Cache miss - fetch data
+	cacheLogger.info("Edge cache miss", {
+		event: "cache.miss",
+	});
 	const result = await fetcher();
 
 	if (result.status === "error") {
-		// Errors are NOT cached
 		return onError(result.error);
 	}
 
-	// Success - create response and cache
 	const response = new Response(JSON.stringify(result.value), {
 		status: 200,
 		headers: {
@@ -55,7 +76,9 @@ export async function withEdgeCache<T, E extends { message: string }>(
 		},
 	});
 
-	// Store in edge cache (non-blocking)
+	cacheLogger.info("Scheduling edge cache store", {
+		event: "cache.store_scheduled",
+	});
 	c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
 
 	return response;

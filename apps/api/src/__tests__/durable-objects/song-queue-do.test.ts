@@ -438,6 +438,37 @@ describe("SongQueueDO", () => {
 					}),
 				]),
 			);
+			expect(
+				result.schedules.filter((schedule) => schedule.callback === "refreshQueueTick"),
+			).toHaveLength(1);
+		});
+
+		it("keeps a single refresh schedule when refreshQueueTick reschedules itself", async () => {
+			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
+			mockSpotifyCurrentlyPlaying(fetchMock);
+			mockSpotifyQueue(fetchMock);
+			await stub.getSongQueue(10);
+
+			mockSpotifyCurrentlyPlaying(fetchMock);
+			mockSpotifyQueue(fetchMock);
+			await runInDurableObject(stub, async (instance: SongQueueDO) => {
+				await instance.refreshQueueTick();
+			});
+
+			mockSpotifyCurrentlyPlaying(fetchMock);
+			mockSpotifyQueue(fetchMock);
+			const result = await runInDurableObject(stub, async (instance: SongQueueDO) => {
+				await instance.refreshQueueTick();
+				return {
+					state: instance.state,
+					schedules: instance.getSchedules(),
+				};
+			});
+
+			expect(result.state.refreshScheduleId).not.toBeNull();
+			expect(
+				result.schedules.filter((schedule) => schedule.callback === "refreshQueueTick"),
+			).toHaveLength(1);
 		});
 
 		it("cleans up stale pending requests via the scheduled callback", async () => {

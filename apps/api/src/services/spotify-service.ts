@@ -145,7 +145,10 @@ export class SpotifyService {
 		code: string,
 		redirectUri: string,
 	): Promise<Result<SpotifyTokenResponse, SpotifyTokenExchangeError | SpotifyParseError>> {
-		logger.info("Exchanging Spotify authorization code for tokens");
+		logger.info("Exchanging Spotify authorization code for tokens", {
+			redirect_uri: redirectUri,
+			component: "service",
+		});
 
 		const fetchResult = await Result.tryPromise({
 			try: () =>
@@ -202,12 +205,20 @@ export class SpotifyService {
 		if (!parsed.success) {
 			logger.error("Failed to parse Spotify token response", {
 				error: parsed.error.message,
+				component: "service",
 			});
 			return Result.err(
 				new SpotifyParseError({ context: "token exchange", parseError: parsed.error.message }),
 			);
 		}
 
+		logger.info("Spotify token exchange succeeded", {
+			event: "spotify.exchange_token.succeeded",
+			component: "service",
+			redirect_uri: redirectUri,
+			expires_in: parsed.data.expires_in,
+			scope_count: parsed.data.scope?.split(" ").filter(Boolean).length ?? 0,
+		});
 		return Result.ok(parsed.data);
 	}
 
@@ -234,6 +245,11 @@ export class SpotifyService {
 		}
 		const token = tokenResult.value;
 
+		logger.info("Spotify get track started", {
+			event: "spotify.get_track.started",
+			component: "service",
+			track_id: trackId,
+		});
 		const fetchResult = await Result.tryPromise({
 			try: () =>
 				fetch(`https://api.spotify.com/v1/tracks/${trackId}`, {
@@ -309,7 +325,12 @@ export class SpotifyService {
 
 		const track = parsed.data;
 
-		// Find the smallest album cover (prefer 64x64 or smallest available)
+		logger.info("Spotify get track succeeded", {
+			event: "spotify.get_track.succeeded",
+			component: "service",
+			track_id: track.id,
+			track_name: track.name,
+		});
 		const albumCover = track.album.images.sort((a, b) => a.height - b.height)[0];
 
 		return Result.ok({

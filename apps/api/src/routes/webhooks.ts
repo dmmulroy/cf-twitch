@@ -14,8 +14,9 @@ import { type ChatCommandStatus, writeChatCommandMetric } from "../lib/analytics
 import { parseCommandWithArg } from "../lib/commands";
 import { getStub } from "../lib/durable-objects";
 import { CommandNotUpdateableError } from "../lib/errors";
-import { logger } from "../lib/logger";
+import { logger, normalizeError, startTimer, withLogContext } from "../lib/logger";
 import { type Permission, getUserPermission, hasPermission } from "../lib/permissions";
+import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import { TwitchService } from "../services/twitch-service";
 
 import type { UnlockedAchievement } from "../durable-objects/achievements-do";
@@ -29,6 +30,8 @@ import type { Env } from "../index";
 // =============================================================================
 
 const RANDOM_EMOTES = ["PogChamp", "Kappa", "LUL", "SeemsGood", "HeyGuys"];
+
+const webhooks = new Hono<AppRouteEnv<Env>>();
 
 interface ParsedChatCommand {
 	command: string;
@@ -47,36 +50,73 @@ function parseCommand(text: string): ParsedChatCommand | null {
 }
 
 async function handleSongCommand(): Promise<string> {
+	logger.info("Chat song command started", {
+		event: "chat_command.song.started",
+		component: "route",
+		command: "song",
+	});
 	const stub = getStub("SONG_QUEUE_DO");
 	const result = await stub.getCurrentlyPlaying();
 
 	if (result.status === "error") {
-		logger.error("Failed to get currently playing", { error: result.error.message });
+		logger.error("Chat song command failed", {
+			event: "chat_command.song.failed",
+			component: "route",
+			command: "song",
+			...result.error,
+		});
 		return "Sorry, couldn't get the current song info.";
 	}
 
 	const { track } = result.value;
 	if (!track) {
+		logger.info("Chat song command succeeded", {
+			event: "chat_command.song.succeeded",
+			component: "route",
+			command: "song",
+			track_id: undefined,
+		});
 		return "No track currently playing.";
 	}
 
 	const artistStr = track.artists.join(", ");
 	const attribution =
 		track.requesterUserId === "unknown" ? "" : ` - requested by @${track.requesterDisplayName}`;
-
+	logger.info("Chat song command succeeded", {
+		event: "chat_command.song.succeeded",
+		component: "route",
+		command: "song",
+		track_id: track.id,
+	});
 	return `Now playing: "${track.name}" by ${artistStr}${attribution}`;
 }
 
 async function handleQueueCommand(): Promise<string> {
+	logger.info("Chat queue command started", {
+		event: "chat_command.queue.started",
+		component: "route",
+		command: "queue",
+	});
 	const stub = getStub("SONG_QUEUE_DO");
 	const result = await stub.getSongQueue(4);
 
 	if (result.status === "error") {
-		logger.error("Failed to get queue", { error: result.error.message });
+		logger.error("Chat queue command failed", {
+			event: "chat_command.queue.failed",
+			component: "route",
+			command: "queue",
+			...result.error,
+		});
 		return "Sorry, couldn't get the queue info.";
 	}
 
 	const { tracks } = result.value;
+	logger.info("Chat queue command succeeded", {
+		event: "chat_command.queue.succeeded",
+		component: "route",
+		command: "queue",
+		returned_count: tracks.length,
+	});
 	if (tracks.length === 0) {
 		return "Queue is empty.";
 	}
@@ -105,18 +145,31 @@ function applyOutputTemplate(template: string | null, renderedValue: string): st
 }
 
 async function handleStoredCommand(command: Command, userName: string): Promise<string> {
+	logger.info("Stored chat command started", {
+		event: "chat_command.stored.started",
+		component: "route",
+		command: command.name,
+	});
 	const stub = getStub("COMMANDS_DO");
 	const result = await stub.getCommandValue(command.name);
 
 	if (result.status === "error") {
-		logger.error("Failed to get command value", {
+		logger.error("Stored chat command failed", {
+			event: "chat_command.stored.failed",
+			component: "route",
 			command: command.name,
-			error: result.error.message,
+			...result.error,
 		});
 		return `Sorry, couldn't retrieve !${command.name}.`;
 	}
 
 	const value = result.value;
+	logger.info("Stored chat command succeeded", {
+		event: "chat_command.stored.succeeded",
+		component: "route",
+		command: command.name,
+		message_length: value?.length ?? 0,
+	});
 	if (value === null || value.length === 0) {
 		return command.emptyResponse ?? `${command.name} info is not available.`;
 	}
@@ -133,7 +186,11 @@ async function handleTimeCommand(): Promise<string> {
 		hour12: true,
 		timeZoneName: "short",
 	});
-
+	logger.info("Time chat command succeeded", {
+		event: "chat_command.time.succeeded",
+		component: "route",
+		command: "time",
+	});
 	return `Current time is: ${formatter.format(new Date())}`;
 }
 
@@ -143,11 +200,18 @@ async function handleSkillIssueCommand(): Promise<string> {
 
 	if (result.status === "error") {
 		logger.error("Failed to increment skillissue counter", {
-			error: result.error.message,
+			component: "route",
+			command: "skillissue",
+			...result.error,
 		});
 		return "Couldn't count that skill issue right now.";
 	}
-
+	logger.info("Skillissue command incremented", {
+		event: "chat_command.skillissue.incremented",
+		component: "route",
+		command: "skillissue",
+		count: result.value,
+	});
 	return `@dillon has ${result.value} SkillIssue so far`;
 }
 
@@ -173,18 +237,34 @@ async function handleUpdateCommand(
 	userName: string,
 ): Promise<string> {
 	if (!arg) {
+		logger.warn("Update chat command validation failed", {
+			event: "chat_command.update.validation_failed",
+			component: "route",
+			command: "update",
+		});
 		return "Usage: !update <command> <value>";
 	}
 
 	const parts = arg.split(/\s+/);
 	const targetCommandRaw = parts[0];
 	if (!targetCommandRaw) {
+		logger.warn("Update chat command validation failed", {
+			event: "chat_command.update.validation_failed",
+			component: "route",
+			command: "update",
+		});
 		return "Usage: !update <command> <value>";
 	}
 
 	const targetCommand = targetCommandRaw.toLowerCase();
 	const newValue = arg.slice(targetCommandRaw.length).trim();
 	if (newValue.length === 0) {
+		logger.warn("Update chat command validation failed", {
+			event: "chat_command.update.validation_failed",
+			component: "route",
+			command: "update",
+			target_user: targetCommand,
+		});
 		return `Usage: !update ${targetCommand} <value>`;
 	}
 
@@ -192,33 +272,61 @@ async function handleUpdateCommand(
 	const commandResult = await stub.getCommand(targetCommand);
 	if (commandResult.status === "error") {
 		logger.error("Failed to look up command for update", {
+			event: "webhook.twitch.chat_message.command_lookup_failed",
+			component: "route",
 			command: targetCommand,
-			error: commandResult.error.message,
+			...commandResult.error,
 		});
 		return "Sorry, couldn't update the command.";
 	}
 
 	const command = commandResult.value;
 	if (command.writePermission === null) {
+		logger.warn("Update chat command permission denied", {
+			event: "chat_command.update.permission_denied",
+			component: "route",
+			command: targetCommand,
+			required_permission: null,
+			caller_permission: userPermission,
+		});
 		return `!${targetCommand} is not updateable.`;
 	}
 
 	if (!hasPermission(userPermission, command.writePermission)) {
+		logger.warn("Update chat command permission denied", {
+			event: "chat_command.update.permission_denied",
+			component: "route",
+			command: targetCommand,
+			required_permission: command.writePermission,
+			caller_permission: userPermission,
+		});
 		return getInsufficientWritePermissionMessage(command.writePermission, targetCommand);
 	}
 
 	const result = await stub.setCommandValue(targetCommand, newValue, userName);
 	if (result.status === "error") {
 		if (CommandNotUpdateableError.is(result.error)) {
+			logger.warn("Update chat command validation failed", {
+				event: "chat_command.update.validation_failed",
+				component: "route",
+				command: targetCommand,
+			});
 			return `!${targetCommand} is not updateable.`;
 		}
 		logger.error("Failed to update command", {
+			component: "route",
 			command: targetCommand,
-			error: result.error.message,
+			...result.error,
 		});
 		return "Sorry, couldn't update the command.";
 	}
 
+	logger.info("Update chat command succeeded", {
+		event: "chat_command.update.succeeded",
+		component: "route",
+		command: targetCommand,
+		updated_by: userName,
+	});
 	return `Updated !${targetCommand}`;
 }
 
@@ -227,16 +335,28 @@ async function handleAchievementsCommand(
 	callerDisplayName: string,
 ): Promise<string> {
 	const targetUser = arg ?? callerDisplayName;
-
 	const stub = getStub("ACHIEVEMENTS_DO");
 	const result = await stub.getUnlockedAchievements(targetUser);
 
 	if (result.status === "error") {
-		logger.error("Failed to get achievements", { user: targetUser, error: result.error.message });
+		logger.error("Achievements chat command failed", {
+			event: "chat_command.achievements.failed",
+			component: "route",
+			command: "achievements",
+			target_user: targetUser,
+			...result.error,
+		});
 		return `Sorry, couldn't retrieve achievements for @${targetUser}.`;
 	}
 
 	const achievements: UnlockedAchievement[] = result.value;
+	logger.info("Achievements chat command succeeded", {
+		event: "chat_command.achievements.succeeded",
+		component: "route",
+		command: "achievements",
+		target_user: targetUser,
+		unlocked_count: achievements.length,
+	});
 	if (achievements.length === 0) {
 		return `@${targetUser} hasn't unlocked any achievements yet.`;
 	}
@@ -267,7 +387,13 @@ async function handleStatsCommand(
 		totalAchievementCount = definitionsResult.value.length;
 		achievementStats = `${unlockedCount}/${totalAchievementCount}`;
 	} else {
-		logger.warn("Failed to get achievement stats", { user: targetUser });
+		logger.warn("Stats chat command partial failure", {
+			event: "chat_command.stats.partial_failure",
+			component: "route",
+			command: "stats",
+			target_user: targetUser,
+			reason: "achievement_stats_unavailable",
+		});
 	}
 
 	const raffleStub = getStub("KEYBOARD_RAFFLE_DO");
@@ -302,9 +428,13 @@ async function handleStatsCommand(
 	if (songResult.status === "ok") {
 		songCount = songResult.value;
 	} else {
-		logger.warn("Failed to get song count", {
-			user: isSelf ? callerUserId : targetUser,
-			error: songResult.error.message,
+		logger.warn("Stats chat command partial failure", {
+			event: "chat_command.stats.partial_failure",
+			component: "route",
+			command: "stats",
+			target_user: targetUser,
+			reason: "song_count_unavailable",
+			...songResult.error,
 		});
 	}
 
@@ -312,9 +442,13 @@ async function handleStatsCommand(
 	if (raffleResult.status === "ok") {
 		raffleStats = formatRaffleStats(raffleResult.value);
 	} else if (!UserStatsNotFoundError.is(raffleResult.error)) {
-		logger.warn("Failed to get raffle stats", {
-			user: isSelf ? callerUserId : targetUser,
-			error: raffleResult.error.message,
+		logger.warn("Stats chat command partial failure", {
+			event: "chat_command.stats.partial_failure",
+			component: "route",
+			command: "stats",
+			target_user: targetUser,
+			reason: "raffle_stats_unavailable",
+			...raffleResult.error,
 		});
 	}
 
@@ -328,9 +462,25 @@ async function handleStatsCommand(
 		UserStatsNotFoundError.is(raffleResult.error);
 
 	if (noStatsForTargetUser) {
+		logger.info("Stats chat command succeeded", {
+			event: "chat_command.stats.succeeded",
+			component: "route",
+			command: "stats",
+			target_user: targetUser,
+			song_count: songCount,
+			unlocked_count: unlockedCount ?? 0,
+		});
 		return `No records found for @${targetUser} yet — no songs, achievements, or raffle stats.`;
 	}
 
+	logger.info("Stats chat command succeeded", {
+		event: "chat_command.stats.succeeded",
+		component: "route",
+		command: "stats",
+		target_user: targetUser,
+		song_count: songCount,
+		unlocked_count: unlockedCount ?? 0,
+	});
 	return `@${targetUser} — Songs: ${songCount} | Achievements: ${achievementStats} | Raffles: ${raffleStats}`;
 }
 
@@ -339,11 +489,22 @@ async function handleRaffleLeaderboardCommand(): Promise<string> {
 	const result = await stub.getLeaderboard({ sortBy: "wins", limit: 5 });
 
 	if (result.status === "error") {
-		logger.error("Failed to get raffle leaderboard", { error: result.error.message });
+		logger.error("Raffle leaderboard chat command failed", {
+			event: "chat_command.raffle_leaderboard.failed",
+			component: "route",
+			command: "raffle-leaderboard",
+			...result.error,
+		});
 		return "Sorry, couldn't retrieve the raffle leaderboard.";
 	}
 
 	const entries: LeaderboardEntry[] = result.value;
+	logger.info("Raffle leaderboard chat command succeeded", {
+		event: "chat_command.raffle_leaderboard.succeeded",
+		component: "route",
+		command: "raffle-leaderboard",
+		returned_count: entries.length,
+	});
 	if (entries.length === 0) {
 		return "No raffle rolls recorded yet.";
 	}
@@ -365,9 +526,12 @@ async function handleCommandsCommand(userPermission: Permission): Promise<string
 	const result = await stub.getCommandsByPermission(userPermission);
 
 	if (result.status === "error") {
-		logger.error("Failed to get commands", {
-			error: result.error.message,
-			permission: userPermission,
+		logger.error("Commands chat command failed", {
+			event: "chat_command.commands.failed",
+			component: "route",
+			command: "commands",
+			caller_permission: userPermission,
+			...result.error,
 		});
 		return "Sorry, couldn't retrieve the commands list.";
 	}
@@ -410,6 +574,13 @@ async function handleCommandsCommand(userPermission: Permission): Promise<string
 		);
 	}
 
+	logger.info("Commands chat command succeeded", {
+		event: "chat_command.commands.succeeded",
+		component: "route",
+		command: "commands",
+		caller_permission: userPermission,
+		returned_count: commands.length,
+	});
 	return sections.join(" | ");
 }
 
@@ -435,18 +606,22 @@ async function handleChatCommand(
 	parsed: ParsedChatCommand,
 	command: Command,
 ): Promise<void> {
-	const startTime = Date.now();
+	const timer = startTimer();
 	let status: ChatCommandStatus = "success";
 	let error: string | undefined;
 	const userPermission = getUserPermission(chatMessage.badges);
-
-	logger.info("Processing chat command", {
+	const chatLogger = logger.child({
+		component: "route",
+		message_id: chatMessage.message_id,
+		user_id: chatMessage.chatter_user_id,
+		user_display_name: chatMessage.chatter_user_name,
 		command: parsed.command,
-		arg: parsed.arg,
-		user: chatMessage.chatter_user_name,
-		messageId: chatMessage.message_id,
-		handlerKey: command.handlerKey,
-		responseType: command.responseType,
+		handler_key: command.handlerKey,
+		response_type: command.responseType,
+	});
+
+	chatLogger.info("Processing chat command", {
+		event: "chat_command.processing.started",
 	});
 
 	let responseMessage: string;
@@ -454,9 +629,9 @@ async function handleChatCommand(
 		const handlerKey = command.handlerKey;
 		const handler = handlerKey ? computedCommandHandlers[handlerKey] : undefined;
 		if (!handler) {
-			logger.warn("No computed command handler registered", {
-				command: command.name,
-				handlerKey,
+			chatLogger.warn("No computed command handler registered", {
+				event: "webhook.twitch.chat_message.command_failed",
+				reason: "missing_handler",
 			});
 			responseMessage = `!${parsed.command} is configured but has no live handler.`;
 		} else {
@@ -477,29 +652,34 @@ async function handleChatCommand(
 	if (sendResult.status === "error") {
 		status = "error";
 		error = sendResult.error.message;
-		logger.warn("Failed to send chat response", {
-			error: sendResult.error.message,
-			command: parsed.command,
-			messageId: chatMessage.message_id,
+		chatLogger.warn("Failed to send chat response", {
+			event: "chat_command.response.send_failed",
+			message_length: responseMessage.length,
+			...sendResult.error,
 		});
 	} else {
-		logger.info("Chat response sent", {
-			command: parsed.command,
-			messageId: chatMessage.message_id,
+		chatLogger.info("Chat response sent", {
+			event: "chat_command.response.send_succeeded",
+			message_length: responseMessage.length,
 		});
 	}
+
+	chatLogger.info("Completed chat command processing", {
+		event: "chat_command.processing.completed",
+		status,
+		duration_ms: timer(),
+		error_message: error,
+	});
 
 	writeChatCommandMetric(env.ANALYTICS, {
 		command: parsed.command,
 		userId: chatMessage.chatter_user_id,
 		userName: chatMessage.chatter_user_name,
 		status,
-		durationMs: Date.now() - startTime,
+		durationMs: timer(),
 		error,
 	});
 }
-
-const webhooks = new Hono<{ Bindings: Env }>();
 
 // Zod schemas for EventSub webhook payloads
 const EventSubHeadersSchema = z.object({
@@ -648,241 +828,414 @@ function isTimestampValid(timestamp: string): boolean {
  */
 // AI: create hono middleware for handling the header validation
 webhooks.post("/twitch", async (c) => {
+	const routeLogger = getRequestLogger(c).child({ route: "/webhooks/twitch", component: "route" });
 	const headers = c.req.header();
-
-	// Parse and validate EventSub headers
 	const headersParsed = EventSubHeadersSchema.safeParse(headers);
 	if (!headersParsed.success) {
-		logger.error("Invalid EventSub headers", {
-			error: headersParsed.error.message,
+		routeLogger.error("Invalid EventSub headers", {
+			event: "webhook.twitch.headers_invalid",
+			error: headersParsed.error,
 		});
 		return c.json({ error: "Invalid headers" }, 400);
 	}
 
 	const {
 		"twitch-eventsub-message-id": messageId,
+		"twitch-eventsub-message-retry": retryCount,
 		"twitch-eventsub-message-type": messageType,
 		"twitch-eventsub-message-signature": signature,
 		"twitch-eventsub-message-timestamp": timestamp,
 		"twitch-eventsub-subscription-type": subscriptionType,
 	} = headersParsed.data;
 
-	// Verify timestamp (reject messages older than 10 minutes)
-	if (!isTimestampValid(timestamp)) {
-		logger.error("EventSub message timestamp too old", {
-			timestamp,
-			messageId,
-		});
-		return c.json({ error: "Message too old" }, 403);
-	}
-
-	// Get raw body for signature verification
-	const rawBody = await c.req.text();
-
-	// Verify signature
-	const isValid = await verifySignature(
-		c.env.TWITCH_EVENTSUB_SECRET,
-		messageId,
-		timestamp,
-		rawBody,
-		signature,
-	);
-
-	if (!isValid) {
-		logger.error("EventSub signature verification failed", {
-			messageId,
-			subscriptionType,
-		});
-		return c.json({ error: "Invalid signature" }, 403);
-	}
-
-	// Parse body
-	const bodyResult = Result.try({
-		try: () => JSON.parse(rawBody) as unknown,
-		catch: (e) => new Error(`Invalid JSON: ${String(e)}`),
-	});
-
-	if (bodyResult.status === "error") {
-		logger.error("Failed to parse webhook body", { error: bodyResult.error.message });
-		return c.json({ error: "Invalid JSON body" }, 400);
-	}
-
-	const body = bodyResult.value;
-
-	// Handle challenge verification
-	if (messageType === "webhook_callback_verification") {
-		const parsed = EventSubChallengeSchema.safeParse(body);
-		if (!parsed.success) {
-			logger.error("Invalid challenge payload", {
-				error: parsed.error.message,
+	return withLogContext(
+		{
+			trace_id: messageId,
+			message_id: messageId,
+			subscription_type: subscriptionType,
+		},
+		async () => {
+			const webhookLogger = routeLogger.child({
+				trace_id: messageId,
+				message_id: messageId,
+				subscription_type: subscriptionType,
 			});
-			return c.json({ error: "Invalid payload" }, 400);
-		}
-
-		logger.info("EventSub challenge received", {
-			subscriptionId: parsed.data.subscription.id,
-			type: parsed.data.subscription.type,
-		});
-
-		// Return the challenge
-		return c.text(parsed.data.challenge, 200);
-	}
-
-	// Handle revocation
-	if (messageType === "revocation") {
-		logger.warn("EventSub subscription revoked", {
-			subscriptionType,
-			messageId,
-		});
-		return c.json({ success: true }, 200);
-	}
-
-	// Handle notification
-	if (messageType === "notification") {
-		const parsed = EventSubNotificationSchema.safeParse(body);
-		if (!parsed.success) {
-			logger.error("Invalid notification payload", {
-				error: parsed.error.message,
+			const rawBody = await c.req.text();
+			webhookLogger.info("Twitch webhook received", {
+				event: "webhook.twitch.received",
+				message_id: messageId,
+				message_type: messageType,
+				subscription_type: subscriptionType,
+				retry_count: Number(retryCount),
+				timestamp,
+				body_size_bytes: rawBody.length,
 			});
-			return c.json({ error: "Invalid payload" }, 400);
-		}
 
-		const { subscription, event } = parsed.data;
+			if (!isTimestampValid(timestamp)) {
+				webhookLogger.warn("EventSub message timestamp too old", {
+					event: "webhook.twitch.timestamp_invalid",
+					message_id: messageId,
+					timestamp,
+				});
+				return c.json({ error: "Message too old" }, 403);
+			}
 
-		logger.info("EventSub notification received", {
-			type: subscription.type,
-			subscriptionId: subscription.id,
-		});
+			const isValid = await verifySignature(
+				c.env.TWITCH_EVENTSUB_SECRET,
+				messageId,
+				timestamp,
+				rawBody,
+				signature,
+			);
 
-		// Route events based on subscription type
-		// AI: create smaller handler functions for handling each subscription type
-		try {
-			switch (subscription.type) {
-				case "stream.online": {
-					// Signal StreamLifecycleDO via RPC using EventSub message timestamp
-					// to handle out-of-order delivery safely.
-					const stub = getStub("STREAM_LIFECYCLE_DO");
-					await stub.onStreamOnline(timestamp);
-					logger.info("Stream online event processed", { timestamp });
-					break;
+			if (!isValid) {
+				webhookLogger.warn("EventSub signature verification failed", {
+					event: "webhook.twitch.signature_invalid",
+					message_id: messageId,
+					subscription_type: subscriptionType,
+				});
+				return c.json({ error: "Invalid signature" }, 403);
+			}
+
+			const bodyResult = Result.try({
+				try: () => JSON.parse(rawBody) as unknown,
+				catch: (e) => new Error(`Invalid JSON: ${String(e)}`),
+			});
+
+			if (bodyResult.status === "error") {
+				webhookLogger.error("Failed to parse webhook body", {
+					event: "webhook.twitch.body_parse_failed",
+					message_id: messageId,
+					body_size_bytes: rawBody.length,
+					...normalizeError(bodyResult.error),
+				});
+				return c.json({ error: "Invalid JSON body" }, 400);
+			}
+
+			const body = bodyResult.value;
+
+			if (messageType === "webhook_callback_verification") {
+				const parsed = EventSubChallengeSchema.safeParse(body);
+				if (!parsed.success) {
+					webhookLogger.error("Invalid challenge payload", {
+						event: "webhook.twitch.body_parse_failed",
+						message_id: messageId,
+						error: parsed.error,
+					});
+					return c.json({ error: "Invalid payload" }, 400);
 				}
 
-				case "stream.offline": {
-					// Signal StreamLifecycleDO via RPC using EventSub message timestamp
-					// to handle out-of-order delivery safely.
-					const stub = getStub("STREAM_LIFECYCLE_DO");
-					await stub.onStreamOffline(timestamp);
-					logger.info("Stream offline event processed", { timestamp });
-					break;
+				webhookLogger.info("EventSub challenge received", {
+					event: "webhook.twitch.challenge.received",
+					subscription_id: parsed.data.subscription.id,
+					subscription_type: parsed.data.subscription.type,
+				});
+				webhookLogger.info("Responding to EventSub challenge", {
+					event: "webhook.twitch.challenge.responded",
+					subscription_id: parsed.data.subscription.id,
+					subscription_type: parsed.data.subscription.type,
+				});
+				return c.text(parsed.data.challenge, 200);
+			}
+
+			if (messageType === "revocation") {
+				webhookLogger.warn("EventSub subscription revoked", {
+					event: "webhook.twitch.revocation.received",
+					message_id: messageId,
+					subscription_type: subscriptionType,
+				});
+				return c.json({ success: true }, 200);
+			}
+
+			if (messageType === "notification") {
+				const parsed = EventSubNotificationSchema.safeParse(body);
+				if (!parsed.success) {
+					webhookLogger.error("Invalid notification payload", {
+						event: "webhook.twitch.body_parse_failed",
+						message_id: messageId,
+						error: parsed.error,
+					});
+					return c.json({ error: "Invalid payload" }, 400);
 				}
 
-				case "channel.channel_points_custom_reward_redemption.add": {
-					// Parse and validate redemption event
-					const redemptionResult = RedemptionEventSchema.safeParse(event);
-					if (!redemptionResult.success) {
-						logger.error("Invalid redemption event payload", {
-							error: redemptionResult.error.message,
-							messageId,
-						});
-						break;
-					}
-					const redemption = redemptionResult.data;
-					const rewardId = redemption.reward.id;
+				const { subscription, event } = parsed.data;
+				webhookLogger.info("EventSub notification received", {
+					event: "webhook.twitch.notification.received",
+					message_id: messageId,
+					subscription_id: subscription.id,
+					subscription_type: subscription.type,
+					event_timestamp:
+						typeof event["redeemed_at"] === "string"
+							? event["redeemed_at"]
+							: typeof event["started_at"] === "string"
+								? event["started_at"]
+								: timestamp,
+				});
 
-					// Route to appropriate saga DO based on reward ID
-					// Each saga instance is keyed by redemption ID for isolation
-					if (c.env.SONG_REQUEST_REWARD_ID && rewardId === c.env.SONG_REQUEST_REWARD_ID) {
-						const sagaId = c.env.SONG_REQUEST_SAGA_DO.idFromName(redemption.id);
-						const stub = c.env.SONG_REQUEST_SAGA_DO.get(sagaId);
-						const result = await stub.start(redemption);
-
-						if (result.status === "error") {
-							logger.error("Song request saga failed to start", {
-								redemptionId: redemption.id,
-								error: result.error.message,
+				try {
+					switch (subscription.type) {
+						case "stream.online": {
+							webhookLogger.info("Routing stream online event", {
+								event: "webhook.twitch.stream_online.routed",
+								message_id: messageId,
+								event_timestamp: timestamp,
 							});
-						} else {
-							logger.info("Song request saga started", { redemptionId: redemption.id });
-						}
-					} else if (
-						c.env.KEYBOARD_RAFFLE_REWARD_ID &&
-						rewardId === c.env.KEYBOARD_RAFFLE_REWARD_ID
-					) {
-						const sagaId = c.env.KEYBOARD_RAFFLE_SAGA_DO.idFromName(redemption.id);
-						const stub = c.env.KEYBOARD_RAFFLE_SAGA_DO.get(sagaId);
-						const result = await stub.start(redemption);
-
-						if (result.status === "error") {
-							logger.error("Keyboard raffle saga failed to start", {
-								redemptionId: redemption.id,
-								error: result.error.message,
-							});
-						} else {
-							logger.info("Keyboard raffle saga started", { redemptionId: redemption.id });
-						}
-					} else {
-						logger.warn("Unknown reward ID, skipping redemption", {
-							rewardId,
-							rewardTitle: redemption.reward.title,
-							messageId,
-						});
-					}
-					break;
-				}
-
-				case "channel.chat.message": {
-					// Parse and validate chat message event
-					const chatResult = ChatMessageEventSchema.safeParse(event);
-					if (!chatResult.success) {
-						logger.error("Invalid chat message event payload", {
-							error: chatResult.error.message,
-							messageId,
-						});
-						break;
-					}
-					const chatMessage = chatResult.data;
-
-					const messageText = chatMessage.message.text.trim().toLowerCase();
-					const parsed = parseCommand(messageText);
-					if (parsed) {
-						const commandsStub = getStub("COMMANDS_DO");
-						const commandResult = await commandsStub.getCommand(parsed.command);
-
-						if (commandResult.status === "ok" && commandResult.value.enabled) {
-							const userPermission = getUserPermission(chatMessage.badges);
-							if (hasPermission(userPermission, commandResult.value.permission)) {
-								await handleChatCommand(chatMessage, c.env, parsed, commandResult.value);
+							const stub = getStub("STREAM_LIFECYCLE_DO");
+							const result = await stub.onStreamOnline(timestamp);
+							if (result.status === "error") {
+								webhookLogger.error("Stream online event failed", {
+									event: "webhook.twitch.stream_online.failed",
+									message_id: messageId,
+									event_timestamp: timestamp,
+									...result.error,
+								});
+							} else {
+								webhookLogger.info("Stream online event processed", {
+									event: "webhook.twitch.stream_online.processed",
+									message_id: messageId,
+									event_timestamp: timestamp,
+								});
 							}
+							break;
+						}
+
+						case "stream.offline": {
+							webhookLogger.info("Routing stream offline event", {
+								event: "webhook.twitch.stream_offline.routed",
+								message_id: messageId,
+								event_timestamp: timestamp,
+							});
+							const stub = getStub("STREAM_LIFECYCLE_DO");
+							const result = await stub.onStreamOffline(timestamp);
+							if (result.status === "error") {
+								webhookLogger.error("Stream offline event failed", {
+									event: "webhook.twitch.stream_offline.failed",
+									message_id: messageId,
+									event_timestamp: timestamp,
+									...result.error,
+								});
+							} else {
+								webhookLogger.info("Stream offline event processed", {
+									event: "webhook.twitch.stream_offline.processed",
+									message_id: messageId,
+									event_timestamp: timestamp,
+								});
+							}
+							break;
+						}
+
+						case "channel.channel_points_custom_reward_redemption.add": {
+							const redemptionResult = RedemptionEventSchema.safeParse(event);
+							if (!redemptionResult.success) {
+								webhookLogger.error("Invalid redemption event payload", {
+									event: "webhook.twitch.redemption.payload_invalid",
+									message_id: messageId,
+									error: redemptionResult.error,
+								});
+								break;
+							}
+							const redemption = redemptionResult.data;
+							const rewardId = redemption.reward.id;
+							webhookLogger.info("Redemption received", {
+								event: "webhook.twitch.redemption.received",
+								redemption_id: redemption.id,
+								reward_id: rewardId,
+								reward_title: redemption.reward.title,
+								user_id: redemption.user_id,
+								user_display_name: redemption.user_name,
+								input_length: redemption.user_input.length,
+							});
+
+							if (c.env.SONG_REQUEST_REWARD_ID && rewardId === c.env.SONG_REQUEST_REWARD_ID) {
+								webhookLogger.info("Song request route selected", {
+									event: "webhook.twitch.redemption.route_selected",
+									redemption_id: redemption.id,
+									reward_id: rewardId,
+									saga_id: redemption.id,
+									outcome: "song_request",
+								});
+								const stub = getStub("SONG_REQUEST_SAGA_DO", redemption.id);
+								const result = await stub.start(redemption);
+								if (result.status === "error") {
+									webhookLogger.error("Song request saga failed to start", {
+										event: "webhook.twitch.redemption.song_request_saga_failed",
+										redemption_id: redemption.id,
+										reward_id: rewardId,
+										saga_id: redemption.id,
+										...result.error,
+									});
+								} else {
+									webhookLogger.info("Song request saga started", {
+										event: "webhook.twitch.redemption.song_request_saga_started",
+										redemption_id: redemption.id,
+										reward_id: rewardId,
+										saga_id: redemption.id,
+										user_id: redemption.user_id,
+										user_display_name: redemption.user_name,
+									});
+								}
+							} else if (
+								c.env.KEYBOARD_RAFFLE_REWARD_ID &&
+								rewardId === c.env.KEYBOARD_RAFFLE_REWARD_ID
+							) {
+								webhookLogger.info("Keyboard raffle route selected", {
+									event: "webhook.twitch.redemption.route_selected",
+									redemption_id: redemption.id,
+									reward_id: rewardId,
+									saga_id: redemption.id,
+									outcome: "keyboard_raffle",
+								});
+								const stub = getStub("KEYBOARD_RAFFLE_SAGA_DO", redemption.id);
+								const result = await stub.start(redemption);
+								if (result.status === "error") {
+									webhookLogger.error("Keyboard raffle saga failed to start", {
+										event: "webhook.twitch.redemption.keyboard_raffle_saga_failed",
+										redemption_id: redemption.id,
+										reward_id: rewardId,
+										saga_id: redemption.id,
+										...result.error,
+									});
+								} else {
+									webhookLogger.info("Keyboard raffle saga started", {
+										event: "webhook.twitch.redemption.keyboard_raffle_saga_started",
+										redemption_id: redemption.id,
+										reward_id: rewardId,
+										saga_id: redemption.id,
+										user_id: redemption.user_id,
+										user_display_name: redemption.user_name,
+									});
+								}
+							} else {
+								webhookLogger.warn("Unknown reward ID, skipping redemption", {
+									event: "webhook.twitch.redemption.unknown_reward",
+									redemption_id: redemption.id,
+									reward_id: rewardId,
+									reward_title: redemption.reward.title,
+									user_id: redemption.user_id,
+									user_display_name: redemption.user_name,
+								});
+							}
+							break;
+						}
+
+						case "channel.chat.message": {
+							const chatResult = ChatMessageEventSchema.safeParse(event);
+							if (!chatResult.success) {
+								webhookLogger.error("Invalid chat message event payload", {
+									event: "webhook.twitch.chat_message.payload_invalid",
+									message_id: messageId,
+									error: chatResult.error,
+								});
+								break;
+							}
+							const chatMessage = chatResult.data;
+							const userPermission = getUserPermission(chatMessage.badges);
+							const messageText = chatMessage.message.text.trim().toLowerCase();
+							webhookLogger.info("Chat message received", {
+								event: "webhook.twitch.chat_message.received",
+								message_id: chatMessage.message_id,
+								chatter_user_id: chatMessage.chatter_user_id,
+								chatter_user_name: chatMessage.chatter_user_name,
+								badges_count: chatMessage.badges.length,
+								message_length: chatMessage.message.text.length,
+								user_permission: userPermission,
+							});
+							const parsed = parseCommand(messageText);
+							if (!parsed) {
+								webhookLogger.debug("Ignoring non-command chat message", {
+									event: "webhook.twitch.chat_message.ignored",
+									reason: "not_a_command",
+									message_id: chatMessage.message_id,
+								});
+								break;
+							}
+
+							webhookLogger.info("Chat command parsed", {
+								event: "webhook.twitch.chat_message.command_parsed",
+								message_id: chatMessage.message_id,
+								command: parsed.command,
+								has_arg: parsed.arg !== null,
+							});
+							const commandsStub = getStub("COMMANDS_DO");
+							const commandResult = await commandsStub.getCommand(parsed.command);
+
+							if (commandResult.status === "error") {
+								webhookLogger.error("Chat command lookup failed", {
+									event: "webhook.twitch.chat_message.command_lookup_failed",
+									message_id: chatMessage.message_id,
+									command: parsed.command,
+									...commandResult.error,
+								});
+								break;
+							}
+
+							if (!commandResult.value.enabled) {
+								webhookLogger.debug("Ignoring disabled chat command", {
+									event: "webhook.twitch.chat_message.ignored",
+									reason: "disabled",
+									message_id: chatMessage.message_id,
+									command: parsed.command,
+								});
+								break;
+							}
+
+							if (!hasPermission(userPermission, commandResult.value.permission)) {
+								webhookLogger.debug("Ignoring chat command due to permission", {
+									event: "webhook.twitch.chat_message.ignored",
+									reason: "permission_denied",
+									message_id: chatMessage.message_id,
+									command: parsed.command,
+									user_permission: userPermission,
+								});
+								break;
+							}
+
+							try {
+								await handleChatCommand(chatMessage, c.env, parsed, commandResult.value);
+								webhookLogger.info("Chat command executed", {
+									event: "webhook.twitch.chat_message.command_executed",
+									message_id: chatMessage.message_id,
+									command: parsed.command,
+									response_type: commandResult.value.responseType,
+								});
+							} catch (error) {
+								webhookLogger.error("Chat command failed", {
+									event: "webhook.twitch.chat_message.command_failed",
+									message_id: chatMessage.message_id,
+									command: parsed.command,
+									...normalizeError(error),
+								});
+							}
+							break;
+						}
+
+						default: {
+							webhookLogger.warn("Unhandled EventSub subscription type", {
+								event: "webhook.twitch.notification.received",
+								outcome: "unhandled_subscription_type",
+								subscription_type: subscription.type,
+							});
 						}
 					}
-					// Ignore other chat messages silently
-					break;
-				}
-
-				default: {
-					logger.warn("Unhandled EventSub subscription type", {
-						type: subscription.type,
+				} catch (error) {
+					webhookLogger.error("Error processing EventSub notification", {
+						event: "webhook.twitch.body_parse_failed",
+						subscription_type: subscription.type,
+						...normalizeError(error),
 					});
 				}
+
+				return c.json({ success: true }, 200);
 			}
-		} catch (error) {
-			logger.error("Error processing EventSub notification", {
-				type: subscription.type,
-				error: error instanceof Error ? error.message : String(error),
+
+			webhookLogger.warn("Unknown EventSub message type", {
+				event: "webhook.twitch.headers_invalid",
+				message_type: messageType,
+				message_id: messageId,
 			});
-			// Still return 200 to avoid retries for transient errors
-		}
-
-		// Return 200 to acknowledge receipt
-		return c.json({ success: true }, 200);
-	}
-
-	// Unknown message type
-	logger.warn("Unknown EventSub message type", {
-		messageType,
-		messageId,
-	});
-	return c.json({ error: "Unknown message type" }, 400);
+			return c.json({ error: "Unknown message type" }, 400);
+		},
+	);
 });
 
 export default webhooks;

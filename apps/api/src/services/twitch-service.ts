@@ -120,7 +120,10 @@ export class TwitchService {
 		code: string,
 		redirectUri: string,
 	): Promise<Result<TwitchTokenResponse, TwitchTokenExchangeError | TwitchParseError>> {
-		logger.info("Exchanging Twitch authorization code for tokens");
+		logger.info("Exchanging Twitch authorization code for tokens", {
+			redirect_uri: redirectUri,
+			component: "service",
+		});
 
 		const fetchResult = await Result.tryPromise({
 			try: () =>
@@ -178,12 +181,20 @@ export class TwitchService {
 		if (!parsed.success) {
 			logger.error("Failed to parse Twitch token response", {
 				error: parsed.error.message,
+				component: "service",
 			});
 			return Result.err(
 				new TwitchParseError({ context: "token exchange", parseError: parsed.error.message }),
 			);
 		}
 
+		logger.info("Twitch token exchange succeeded", {
+			event: "twitch.exchange_token.succeeded",
+			component: "service",
+			redirect_uri: redirectUri,
+			expires_in: parsed.data.expires_in,
+			scope_count: parsed.data.scope.length,
+		});
 		return Result.ok(parsed.data);
 	}
 
@@ -201,6 +212,11 @@ export class TwitchService {
 		}
 		const accessToken = tokenResult.value;
 
+		logger.info("Twitch get stream info started", {
+			event: "twitch.get_stream_info.started",
+			component: "service",
+			user_login: userLogin,
+		});
 		const fetchResult = await Result.tryPromise({
 			try: () =>
 				fetch(`https://api.twitch.tv/helix/streams?user_login=${userLogin}`, {
@@ -261,14 +277,32 @@ export class TwitchService {
 
 		// If data array is empty, stream is offline
 		if (parsed.data.data.length === 0) {
+			logger.info("Twitch stream is offline", {
+				event: "twitch.get_stream_info.offline",
+				component: "service",
+				user_login: userLogin,
+			});
 			return Result.ok(null);
 		}
 
 		const stream = parsed.data.data[0];
 		if (!stream) {
+			logger.info("Twitch stream is offline", {
+				event: "twitch.get_stream_info.offline",
+				component: "service",
+				user_login: userLogin,
+			});
 			return Result.ok(null);
 		}
 
+		logger.info("Twitch get stream info succeeded", {
+			event: "twitch.get_stream_info.succeeded",
+			component: "service",
+			user_login: userLogin,
+			viewer_count: stream.viewer_count,
+			started_at: stream.started_at,
+			game_name: stream.game_name,
+		});
 		return Result.ok({
 			viewerCount: stream.viewer_count,
 			startedAt: stream.started_at,

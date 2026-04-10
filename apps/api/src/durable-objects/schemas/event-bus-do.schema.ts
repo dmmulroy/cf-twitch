@@ -57,6 +57,8 @@ export const BaseEventSchema = z.object({
 	timestamp: z.string().datetime(),
 	/** Publisher DO name */
 	source: z.string(),
+	/** Cross-system correlation root */
+	correlationId: z.string().optional(),
 });
 
 export type BaseEvent = z.infer<typeof BaseEventSchema>;
@@ -254,6 +256,7 @@ export function createSongRequestSuccessEvent(params: {
 	userDisplayName: string;
 	sagaId: string;
 	trackId: string;
+	correlationId?: string;
 }): SongRequestSuccessEvent {
 	return {
 		id: params.id,
@@ -261,6 +264,7 @@ export function createSongRequestSuccessEvent(params: {
 		v: 1,
 		timestamp: new Date().toISOString(),
 		source: EventSource.SongRequestSaga,
+		correlationId: params.correlationId,
 		userId: params.userId,
 		userDisplayName: params.userDisplayName,
 		sagaId: params.sagaId,
@@ -281,6 +285,7 @@ export function createRaffleRollEvent(params: {
 	distance: number;
 	isWinner: boolean;
 	isNewRecord: boolean;
+	correlationId?: string;
 }): RaffleRollEvent {
 	return {
 		id: params.id,
@@ -288,6 +293,7 @@ export function createRaffleRollEvent(params: {
 		v: 1,
 		timestamp: new Date().toISOString(),
 		source: EventSource.KeyboardRaffleSaga,
+		correlationId: params.correlationId,
 		userId: params.userId,
 		userDisplayName: params.userDisplayName,
 		sagaId: params.sagaId,
@@ -306,6 +312,7 @@ export function createStreamOnlineEvent(params: {
 	id: string;
 	streamId: string;
 	startedAt: string;
+	correlationId?: string;
 }): StreamOnlineEvent {
 	return {
 		id: params.id,
@@ -313,6 +320,7 @@ export function createStreamOnlineEvent(params: {
 		v: 1,
 		timestamp: new Date().toISOString(),
 		source: EventSource.StreamLifecycle,
+		correlationId: params.correlationId,
 		streamId: params.streamId,
 		startedAt: params.startedAt,
 	};
@@ -325,6 +333,7 @@ export function createStreamOfflineEvent(params: {
 	id: string;
 	streamId: string;
 	endedAt: string;
+	correlationId?: string;
 }): StreamOfflineEvent {
 	return {
 		id: params.id,
@@ -332,6 +341,7 @@ export function createStreamOfflineEvent(params: {
 		v: 1,
 		timestamp: new Date().toISOString(),
 		source: EventSource.StreamLifecycle,
+		correlationId: params.correlationId,
 		streamId: params.streamId,
 		endedAt: params.endedAt,
 	};

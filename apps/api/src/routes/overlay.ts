@@ -7,9 +7,12 @@
 import { Hono } from "hono";
 import { html } from "hono/html";
 
+import { logger } from "../lib/logger";
+import { type AppRouteEnv } from "../lib/request-context";
+
 import type { Env } from "../index";
 
-const overlay = new Hono<{ Bindings: Env }>();
+const overlay = new Hono<AppRouteEnv<Env>>();
 
 /**
  * GET /overlay/now-playing
@@ -17,6 +20,11 @@ const overlay = new Hono<{ Bindings: Env }>();
  * Polls /api/now-playing every 5 seconds for updates
  */
 overlay.get("/now-playing", (c) => {
+	logger.info("Served now playing overlay page", {
+		event: "overlay.now_playing_page.served",
+		component: "route",
+		route: "/overlay/now-playing",
+	});
 	const overlayHtml = html`
 		<!doctype html>
 		<html lang="en">

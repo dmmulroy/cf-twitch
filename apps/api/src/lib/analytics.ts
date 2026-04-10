@@ -223,8 +223,10 @@ export function safeWriteMetric(
 		});
 	} catch (error) {
 		logger.error("Failed to write analytics metric", {
-			eventName,
-			error: error instanceof Error ? error.message : String(error),
+			event: "analytics.write.failed",
+			component: "analytics",
+			metric_name: eventName,
+			error: error,
 		});
 	}
 }
