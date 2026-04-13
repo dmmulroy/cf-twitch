@@ -23,6 +23,7 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/saga-do/migrations";
+import { getSongQueue } from "../lib/song-queue-client";
 import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	InvalidSpotifyUrlError,
@@ -351,8 +352,8 @@ class _SongRequestSagaDO extends Agent<Env, SongRequestSagaAgentState> {
 		const persistResult = await runner.executeStepWithRollback(
 			"persist-request",
 			async () => {
-				const stub = getStub("SONG_QUEUE_DO");
-				const result = await stub.persistRequest({
+				using songQueue = await getSongQueue();
+				const result = await songQueue.persistRequest({
 					eventId: sagaId,
 					trackId: trackInfo?.id ?? "",
 					trackName: trackInfo?.name ?? "",
@@ -373,8 +374,8 @@ class _SongRequestSagaDO extends Agent<Env, SongRequestSagaAgentState> {
 			},
 			async (undoPayload) => {
 				const payload = undoPayload as { eventId: string };
-				const stub = getStub("SONG_QUEUE_DO");
-				const result = await stub.deleteRequest(payload.eventId);
+				using songQueue = await getSongQueue();
+				const result = await songQueue.deleteRequest(payload.eventId);
 				if (result.status === "error") {
 					logger.error("Failed to rollback song request", {
 						eventId: payload.eventId,

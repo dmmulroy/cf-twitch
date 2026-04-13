@@ -84,6 +84,8 @@ The Durable Object exposes a small public method such as:
 connect(name: string): Promise<SongQueueRpcHandle>
 ```
 
+**Implementation note:** in this codebase, the concrete method is named `connectRpc(name)` instead of `connect(name)` because `DurableObjectStub` already inherits a built-in `connect()` method from `Fetcher` for socket connections. Using `connect()` for the RPC handle would collide with that platform API.
+
 This method is the explicit control-plane entrypoint.
 
 It may:
@@ -482,7 +484,7 @@ export async function getSongQueue(name = "song-queue"): Promise<SongQueueClient
 	// This is a better place than per-method stub interception.
 	// await ensureAgentInitialized(stub, name);
 
-	const handle = await stub.connect(name);
+	const handle = await stub.connectRpc(name);
 	return new SongQueueClient(handle);
 }
 ```

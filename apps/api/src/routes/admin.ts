@@ -12,6 +12,7 @@ import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
 import { CommandNotFoundError, DLQItemNotFoundError } from "../lib/errors";
+import { getSongQueue } from "../lib/song-queue-client";
 import { logger } from "../lib/logger";
 import { type AppRouteEnv } from "../lib/request-context";
 
@@ -408,12 +409,12 @@ admin.get("/debug/stats/:user", async (c) => {
 
 	const achievementsStub = getStub("ACHIEVEMENTS_DO");
 	const raffleStub = getStub("KEYBOARD_RAFFLE_DO");
-	const songQueueStub = getStub("SONG_QUEUE_DO");
+	using songQueue = await getSongQueue();
 
 	const [unlockedResult, definitionsResult, songResult, raffleResult] = await Promise.all([
 		achievementsStub.getUnlockedAchievements(targetUser),
 		achievementsStub.getDefinitions(),
-		songQueueStub.getUserRequestCountByDisplayName(targetUser),
+		songQueue.getUserRequestCountByDisplayName(targetUser),
 		raffleStub.getUserStatsByDisplayName(targetUser),
 	]);
 

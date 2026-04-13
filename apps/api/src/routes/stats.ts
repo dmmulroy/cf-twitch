@@ -12,6 +12,7 @@ import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import { withEdgeCache } from "../lib/cache";
 import { getStub } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
+import { getSongQueue } from "../lib/song-queue-client";
 import { logger } from "../lib/logger";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 
@@ -84,7 +85,10 @@ stats.get("/top-tracks", async (c) => {
 	});
 	const result = await withEdgeCache(
 		c,
-		() => getStub("SONG_QUEUE_DO").getTopTracks(query.data.limit),
+		async () => {
+			using songQueue = await getSongQueue();
+			return songQueue.getTopTracks(query.data.limit);
+		},
 		(error) => {
 			if (isDOInfraError(error)) {
 				logger.error("DO infrastructure error", { method: error.method, message: error.message });
@@ -128,7 +132,10 @@ stats.get("/top-tracks/:user", async (c) => {
 
 	const result = await withEdgeCache(
 		c,
-		() => getStub("SONG_QUEUE_DO").getTopTracksByUser(userId, query.data.limit),
+		async () => {
+			using songQueue = await getSongQueue();
+			return songQueue.getTopTracksByUser(userId, query.data.limit);
+		},
 		(error) => {
 			if (isDOInfraError(error)) {
 				logger.error("DO infrastructure error", { method: error.method, message: error.message });
@@ -171,7 +178,10 @@ stats.get("/top-requesters", async (c) => {
 	});
 	const result = await withEdgeCache(
 		c,
-		() => getStub("SONG_QUEUE_DO").getTopRequesters(query.data.limit),
+		async () => {
+			using songQueue = await getSongQueue();
+			return songQueue.getTopRequesters(query.data.limit);
+		},
 		(error) => {
 			if (isDOInfraError(error)) {
 				logger.error("DO infrastructure error", { method: error.method, message: error.message });

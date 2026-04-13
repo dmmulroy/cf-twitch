@@ -14,6 +14,7 @@ import { type ChatCommandStatus, writeChatCommandMetric } from "../lib/analytics
 import { parseCommandWithArg } from "../lib/commands";
 import { getStub } from "../lib/durable-objects";
 import { CommandNotUpdateableError } from "../lib/errors";
+import { getSongQueue } from "../lib/song-queue-client";
 import { logger, normalizeError, startTimer, withLogContext } from "../lib/logger";
 import { type Permission, getUserPermission, hasPermission } from "../lib/permissions";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
@@ -55,8 +56,8 @@ async function handleSongCommand(): Promise<string> {
 		component: "route",
 		command: "song",
 	});
-	const stub = getStub("SONG_QUEUE_DO");
-	const result = await stub.getCurrentlyPlaying();
+	using songQueue = await getSongQueue();
+	const result = await songQueue.getCurrentlyPlaying();
 
 	if (result.status === "error") {
 		logger.error("Chat song command failed", {
@@ -97,8 +98,8 @@ async function handleQueueCommand(): Promise<string> {
 		component: "route",
 		command: "queue",
 	});
-	const stub = getStub("SONG_QUEUE_DO");
-	const result = await stub.getSongQueue(4);
+	using songQueue = await getSongQueue();
+	const result = await songQueue.getSongQueue(4);
 
 	if (result.status === "error") {
 		logger.error("Chat queue command failed", {
@@ -397,7 +398,7 @@ async function handleStatsCommand(
 	}
 
 	const raffleStub = getStub("KEYBOARD_RAFFLE_DO");
-	const songQueueStub = getStub("SONG_QUEUE_DO");
+	using songQueue = await getSongQueue();
 
 	const formatRaffleStats = (entry: {
 		totalRolls: number;
@@ -417,8 +418,8 @@ async function handleStatsCommand(
 
 	const [songResult, raffleResult] = await Promise.all([
 		isSelf
-			? songQueueStub.getUserRequestCount(callerUserId)
-			: songQueueStub.getUserRequestCountByDisplayName(targetUser),
+			? songQueue.getUserRequestCount(callerUserId)
+			: songQueue.getUserRequestCountByDisplayName(targetUser),
 		isSelf
 			? raffleStub.getUserStats(callerUserId)
 			: raffleStub.getUserStatsByDisplayName(targetUser),

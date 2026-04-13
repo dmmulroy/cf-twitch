@@ -8,6 +8,7 @@
 
 import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
+import { RpcTarget } from "cloudflare:workers";
 import {
 	and,
 	asc,
@@ -31,6 +32,7 @@ import migrations from "../../drizzle/song-queue-do/migrations";
 import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import { SongQueueDbError, SongRequestNotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { toRpcResult, type RpcResult } from "../lib/rpc-result";
 import { SpotifyService, type SpotifyTrack, type TrackInfo } from "../services/spotify-service";
 import * as schema from "./schemas/song-queue-do.schema";
 import {
@@ -44,6 +46,8 @@ import {
 } from "./schemas/song-queue-do.schema";
 
 import type { Env } from "../index";
+
+export const SONG_QUEUE_DO_NAME = "song-queue";
 
 const MAX_STALENESS_MS = 15_000;
 const REFRESH_AFTER_MUTATION_DELAY_SECONDS = 1;
@@ -102,6 +106,24 @@ export interface TopRequester {
 	requestCount: number;
 }
 
+export interface SongQueue {
+	persistRequest(request: InsertPendingRequest): Promise<Result<void, SongQueueDbError>>;
+	deleteRequest(eventId: string): Promise<Result<void, SongQueueDbError>>;
+	getSongQueue(limit: number): Promise<Result<QueueResult, SongQueueDbError>>;
+	getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueDbError>>;
+	getRequestHistory(
+		limit: number,
+		offset: number,
+		since?: string,
+		until?: string,
+	): Promise<Result<RequestHistoryResult, SongQueueDbError>>;
+	getUserRequestCount(userId: string): Promise<Result<number, SongQueueDbError>>;
+	getUserRequestCountByDisplayName(displayName: string): Promise<Result<number, SongQueueDbError>>;
+	getTopTracks(limit: number): Promise<Result<TopTrack[], SongQueueDbError>>;
+	getTopTracksByUser(userId: string, limit: number): Promise<Result<TopTrack[], SongQueueDbError>>;
+	getTopRequesters(limit: number): Promise<Result<TopRequester[], SongQueueDbError>>;
+}
+
 interface SongQueueAgentState {
 	lastSyncAt: string | null;
 	refreshScheduleId: string | null;
@@ -142,6 +164,74 @@ function toTrackInfo(track: SpotifyTrack): TrackInfo {
 	};
 }
 
+type RpcHandleFromResultMethods<T> = {
+	[K in keyof T as K extends symbol ? never : K]: T[K] extends (
+		...args: infer Args
+	) => Promise<Result<infer Value, infer Error>>
+		? (...args: Args) => Promise<RpcResult<Value, Error>>
+		: never;
+};
+
+export type SongQueueRpcHandleStub = RpcHandleFromResultMethods<SongQueue> & {
+	[Symbol.dispose]?: () => void;
+};
+
+class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
+	constructor(private readonly queue: SongQueue) {
+		super();
+	}
+
+	persistRequest(request: InsertPendingRequest): Promise<RpcResult<void, SongQueueDbError>> {
+		return this.queue.persistRequest(request).then(toRpcResult);
+	}
+
+	deleteRequest(eventId: string): Promise<RpcResult<void, SongQueueDbError>> {
+		return this.queue.deleteRequest(eventId).then(toRpcResult);
+	}
+
+	getSongQueue(limit: number): Promise<RpcResult<QueueResult, SongQueueDbError>> {
+		return this.queue.getSongQueue(limit).then(toRpcResult);
+	}
+
+	getCurrentlyPlaying(): Promise<RpcResult<CurrentlyPlayingResult, SongQueueDbError>> {
+		return this.queue.getCurrentlyPlaying().then(toRpcResult);
+	}
+
+	getRequestHistory(
+		limit: number,
+		offset: number,
+		since?: string,
+		until?: string,
+	): Promise<RpcResult<RequestHistoryResult, SongQueueDbError>> {
+		return this.queue.getRequestHistory(limit, offset, since, until).then(toRpcResult);
+	}
+
+	getUserRequestCount(userId: string): Promise<RpcResult<number, SongQueueDbError>> {
+		return this.queue.getUserRequestCount(userId).then(toRpcResult);
+	}
+
+	getUserRequestCountByDisplayName(
+		displayName: string,
+	): Promise<RpcResult<number, SongQueueDbError>> {
+		return this.queue.getUserRequestCountByDisplayName(displayName).then(toRpcResult);
+	}
+
+	getTopTracks(limit: number): Promise<RpcResult<TopTrack[], SongQueueDbError>> {
+		return this.queue.getTopTracks(limit).then(toRpcResult);
+	}
+
+	getTopTracksByUser(
+		userId: string,
+		limit: number,
+	): Promise<RpcResult<TopTrack[], SongQueueDbError>> {
+		return this.queue.getTopTracksByUser(userId, limit).then(toRpcResult);
+	}
+
+	getTopRequesters(limit: number): Promise<RpcResult<TopRequester[], SongQueueDbError>> {
+		return this.queue.getTopRequesters(limit).then(toRpcResult);
+	}
+}
+
 /**
  * SongQueueDO - Agent-native coordinator for song request queue management
  */
@@ -172,12 +262,43 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 		});
 	}
 
+	async connectRpc(): Promise<SongQueueRpcHandleStub> {
+		await this.setName(SONG_QUEUE_DO_NAME);
+
+		const queue: SongQueue = {
+			persistRequest: (request) => this.persistRequestInternal(request),
+			deleteRequest: (eventId) => this.deleteRequestInternal(eventId),
+			getSongQueue: (limit) => this.getSongQueueInternal(limit),
+			getCurrentlyPlaying: () => this.getCurrentlyPlayingInternal(),
+			getRequestHistory: (limit, offset, since, until) =>
+				this.getRequestHistoryInternal(limit, offset, since, until),
+			getUserRequestCount: (userId) => this.getUserRequestCountInternal(userId),
+			getUserRequestCountByDisplayName: (displayName) =>
+				this.getUserRequestCountByDisplayNameInternal(displayName),
+			getTopTracks: (limit) => this.getTopTracksInternal(limit),
+			getTopTracksByUser: (userId, limit) => this.getTopTracksByUserInternal(userId, limit),
+			getTopRequesters: (limit) => this.getTopRequestersInternal(limit),
+		};
+
+		return new SongQueueClient(queue);
+	}
+
 	/**
 	 * Persist a song request (idempotent via event_id)
 	 * Invalidates cache and schedules a near-term refresh.
+	 *
+	 * Shared private implementations are kept because the @rpc decorator
+	 * serializes Result values, while the RpcTarget handle needs the raw Result
+	 * to serialize at the transport boundary.
 	 */
 	@rpc
 	async persistRequest(request: InsertPendingRequest): Promise<Result<void, SongQueueDbError>> {
+		return this.persistRequestInternal(request);
+	}
+
+	private async persistRequestInternal(
+		request: InsertPendingRequest,
+	): Promise<Result<void, SongQueueDbError>> {
 		const result = await Result.tryPromise({
 			try: () => this.db.insert(pendingRequests).values(request).onConflictDoNothing(),
 			catch: (cause) =>
@@ -214,6 +335,10 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async deleteRequest(eventId: string): Promise<Result<void, SongQueueDbError>> {
+		return this.deleteRequestInternal(eventId);
+	}
+
+	private deleteRequestInternal(eventId: string): Promise<Result<void, SongQueueDbError>> {
 		return Result.tryPromise({
 			try: async () => {
 				await this.db.delete(pendingRequests).where(eq(pendingRequests.eventId, eventId));
@@ -297,6 +422,12 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueDbError>> {
+		return this.getCurrentlyPlayingInternal();
+	}
+
+	private async getCurrentlyPlayingInternal(): Promise<
+		Result<CurrentlyPlayingResult, SongQueueDbError>
+	> {
 		await this.ensureFresh();
 
 		return Result.tryPromise({
@@ -326,6 +457,10 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async getSongQueue(limit = 50): Promise<Result<QueueResult, SongQueueDbError>> {
+		return this.getSongQueueInternal(limit);
+	}
+
+	private async getSongQueueInternal(limit = 50): Promise<Result<QueueResult, SongQueueDbError>> {
 		await this.ensureFresh();
 
 		return Result.tryPromise({
@@ -367,6 +502,15 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async getRequestHistory(
+		limit = 50,
+		offset = 0,
+		since?: string,
+		until?: string,
+	): Promise<Result<RequestHistoryResult, SongQueueDbError>> {
+		return this.getRequestHistoryInternal(limit, offset, since, until);
+	}
+
+	private getRequestHistoryInternal(
 		limit = 50,
 		offset = 0,
 		since?: string,
@@ -431,6 +575,10 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async getUserRequestCount(userId: string): Promise<Result<number, SongQueueDbError>> {
+		return this.getUserRequestCountInternal(userId);
+	}
+
+	private getUserRequestCountInternal(userId: string): Promise<Result<number, SongQueueDbError>> {
 		return Result.tryPromise({
 			try: async () => {
 				const countRows = await this.db
@@ -450,6 +598,12 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async getUserRequestCountByDisplayName(
+		displayName: string,
+	): Promise<Result<number, SongQueueDbError>> {
+		return this.getUserRequestCountByDisplayNameInternal(displayName);
+	}
+
+	private getUserRequestCountByDisplayNameInternal(
 		displayName: string,
 	): Promise<Result<number, SongQueueDbError>> {
 		return Result.tryPromise({
@@ -474,6 +628,10 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async getTopTracks(limit = 10): Promise<Result<TopTrack[], SongQueueDbError>> {
+		return this.getTopTracksInternal(limit);
+	}
+
+	private async getTopTracksInternal(limit = 10): Promise<Result<TopTrack[], SongQueueDbError>> {
 		const result = await Result.tryPromise({
 			try: () =>
 				this.db
@@ -501,6 +659,13 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async getTopTracksByUser(
+		userId: string,
+		limit = 10,
+	): Promise<Result<TopTrack[], SongQueueDbError>> {
+		return this.getTopTracksByUserInternal(userId, limit);
+	}
+
+	private async getTopTracksByUserInternal(
 		userId: string,
 		limit = 10,
 	): Promise<Result<TopTrack[], SongQueueDbError>> {
@@ -532,6 +697,12 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 	 */
 	@rpc
 	async getTopRequesters(limit = 10): Promise<Result<TopRequester[], SongQueueDbError>> {
+		return this.getTopRequestersInternal(limit);
+	}
+
+	private async getTopRequestersInternal(
+		limit = 10,
+	): Promise<Result<TopRequester[], SongQueueDbError>> {
 		const result = await Result.tryPromise({
 			try: () =>
 				this.db

@@ -1,5 +1,5 @@
 /**
- * Regression tests for getStub() Agent naming.
+ * Regression tests for SongQueue client Agent naming.
  *
  * Production traffic was hitting Agent-backed DO RPC methods before the Agent
  * runtime had persisted a name, causing errors like:
@@ -10,6 +10,7 @@ import { env, fetchMock, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { SongQueueDO } from "../../durable-objects/song-queue-do";
+import { getSongQueue } from "../../lib/song-queue-client";
 import { getStub } from "../../lib/durable-objects";
 import {
 	VALID_TOKEN_RESPONSE,
@@ -17,8 +18,8 @@ import {
 	mockSpotifyQueue,
 } from "../fixtures/spotify";
 
-describe("getStub", () => {
-	it("auto-initializes Agent names before SongQueueDO schedules refresh work", async () => {
+describe("getSongQueue", () => {
+	it("connects to SongQueueDO and initializes Agent names before scheduling refresh work", async () => {
 		const spotifyTokenStub = getStub("SPOTIFY_TOKEN_DO");
 		const setTokensResult = await spotifyTokenStub.setTokens(VALID_TOKEN_RESPONSE);
 		expect(setTokensResult.status).toBe("ok");
@@ -26,8 +27,8 @@ describe("getStub", () => {
 		mockSpotifyCurrentlyPlaying(fetchMock);
 		mockSpotifyQueue(fetchMock);
 
-		const songQueueStub = getStub("SONG_QUEUE_DO");
-		const queueResult = await songQueueStub.getSongQueue(10);
+		using songQueue = await getSongQueue();
+		const queueResult = await songQueue.getSongQueue(10);
 
 		expect(queueResult.status).toBe("ok");
 		if (queueResult.status === "ok") {
@@ -48,5 +49,23 @@ describe("getStub", () => {
 				}),
 			]),
 		);
+	});
+
+	it("returns currently playing through the SongQueue client facade", async () => {
+		const spotifyTokenStub = getStub("SPOTIFY_TOKEN_DO");
+		const setTokensResult = await spotifyTokenStub.setTokens(VALID_TOKEN_RESPONSE);
+		expect(setTokensResult.status).toBe("ok");
+
+		mockSpotifyCurrentlyPlaying(fetchMock);
+		mockSpotifyQueue(fetchMock);
+
+		using songQueue = await getSongQueue();
+		const nowPlayingResult = await songQueue.getCurrentlyPlaying();
+
+		expect(nowPlayingResult.status).toBe("ok");
+		if (nowPlayingResult.status === "ok") {
+			expect(nowPlayingResult.value.track?.id).toBe("4iV5W9uYEdYUVa79Axb7Rh");
+			expect(nowPlayingResult.value.position).toBe(0);
+		}
 	});
 });

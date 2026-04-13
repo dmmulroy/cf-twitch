@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
+import { getSongQueue } from "../lib/song-queue-client";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import { TwitchService } from "../services/twitch-service";
 
@@ -80,8 +81,8 @@ api.get("/now-playing", async (c) => {
 	routeLogger.info("Loading now playing", {
 		event: "api.now_playing.started",
 	});
-	const stub = getStub("SONG_QUEUE_DO");
-	const result = await stub.getCurrentlyPlaying();
+	using songQueue = await getSongQueue();
+	const result = await songQueue.getCurrentlyPlaying();
 
 	if (result.status === "error") {
 		routeLogger.error("Failed to get now playing", {
@@ -124,8 +125,8 @@ api.get("/queue", async (c) => {
 		limit,
 	});
 
-	const stub = getStub("SONG_QUEUE_DO");
-	const result = await stub.getSongQueue(limit);
+	using songQueue = await getSongQueue();
+	const result = await songQueue.getSongQueue(limit);
 
 	if (result.status === "error") {
 		routeLogger.error("Failed to get queue", {
@@ -159,8 +160,8 @@ api.get("/song-requests/history", async (c) => {
 		event: "api.song_request_history.started",
 		limit,
 	});
-	const stub = getStub("SONG_QUEUE_DO");
-	const result = await stub.getRequestHistory(limit);
+	using songQueue = await getSongQueue();
+	const result = await songQueue.getRequestHistory(limit);
 
 	if (result.status === "error") {
 		routeLogger.error("Failed to get song request history", {
@@ -174,7 +175,7 @@ api.get("/song-requests/history", async (c) => {
 	routeLogger.info("Loaded song request history", {
 		event: "api.song_request_history.succeeded",
 		limit,
-		returned_count: result.value.history.length,
+		returned_count: result.value.requests.length,
 		total_count: result.value.totalCount,
 	});
 	return c.json(result.value);
@@ -409,7 +410,7 @@ api.post("/debug/reconcile-stream-state", async (c) => {
 		broadcaster_name: c.env.TWITCH_BROADCASTER_NAME,
 	});
 	const streamStub = getStub("STREAM_LIFECYCLE_DO");
-	const songQueueStub = getStub("SONG_QUEUE_DO");
+	using songQueue = await getSongQueue();
 	const twitchService = new TwitchService(c.env);
 
 	const [streamStateResult, twitchStreamResult] = await Promise.all([
@@ -484,7 +485,7 @@ api.post("/debug/reconcile-stream-state", async (c) => {
 
 	let queueWarmup: "not_needed" | "ok" | "error" = "not_needed";
 	if (action === "set_online") {
-		const queueWarmResult = await songQueueStub.getCurrentlyPlaying();
+		const queueWarmResult = await songQueue.getCurrentlyPlaying();
 		if (queueWarmResult.status === "error") {
 			queueWarmup = "error";
 			routeLogger.warn("Queue warmup failed after stream reconciliation", {
@@ -547,12 +548,12 @@ api.get("/debug/status", async (c) => {
 		event: "api.debug.status.started",
 	});
 	const streamStub = getStub("STREAM_LIFECYCLE_DO");
-	const songQueueStub = getStub("SONG_QUEUE_DO");
+	using songQueue = await getSongQueue();
 	const twitchService = new TwitchService(c.env);
 
 	const [streamResult, queueResult, twitchResult] = await Promise.all([
 		streamStub.getStreamState(),
-		songQueueStub.getSongQueue(5),
+		songQueue.getSongQueue(5),
 		twitchService.getStreamInfo(c.env.TWITCH_BROADCASTER_NAME),
 	]);
 
