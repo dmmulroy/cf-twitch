@@ -19,9 +19,9 @@
 
 ### Token DOs (Spotify/Twitch)
 
-- Singleton row (`id = 1`), `refreshPromise` coalesces concurrent refreshes
+- Agent state owns current token state, `refreshPromise` coalesces concurrent refreshes
 - `StreamLifecycleHandler` interface: `onStreamOnline()` / `onStreamOffline()`
-- Proactive alarm refresh 5min before expiry when stream is live
+- Proactive refresh 5min before expiry when stream is live
 
 ### SongQueueDO Sync Algorithm
 
@@ -45,12 +45,11 @@
 
 | Location                               | Tables                                                          |
 | -------------------------------------- | --------------------------------------------------------------- |
-| `schemas/token-schema.ts`              | `token_set` (shared by both token DOs)                          |
 | `schemas/saga.schema.ts`               | `saga_runs`, `saga_steps` (shared by saga DOs)                  |
 | `schemas/song-queue-do.schema.ts`      | `pending_requests`, `request_history`, `spotify_queue_snapshot` |
 | `schemas/achievements-do.schema.ts`    | `achievement_definitions`, `user_achievements`                  |
 | `schemas/keyboard-raffle-do.schema.ts` | `rolls`, `raffle_leaderboard` (view)                            |
-| `stream-lifecycle-do.schema.ts`        | `stream_state`, `viewer_snapshots` (orphan - should move)       |
+| `stream-lifecycle-do.schema.ts`        | `viewer_snapshots`                                              |
 
 ## Violations
 

@@ -51,7 +51,6 @@ describe("StreamLifecycleDO", () => {
 		expect(result.status).toBe("ok");
 		if (result.status === "ok") {
 			expect(result.value).toMatchObject({
-				id: 1,
 				isLive: false,
 				startedAt: null,
 				endedAt: null,

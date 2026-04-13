@@ -619,7 +619,8 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 		const result = await this.runSyncCycle();
 		if (result.status === "error") {
 			logger.error("Scheduled song queue refresh failed", {
-				error: result.error.message,
+				error: result.error,
+				cause: result.error.cause,
 				consecutiveSyncFailures: this.state.consecutiveSyncFailures,
 			});
 		}
@@ -667,7 +668,10 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 		this.syncLock = null;
 
 		if (result.status === "error") {
-			logger.error("Sync failed, using stale data", { error: result.error.message });
+			logger.error("Sync failed, using stale data", {
+				error: result.error,
+				cause: result.error.cause,
+			});
 		}
 
 		return Result.ok();
@@ -739,7 +743,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> {
 			return Result.err(
 				new SongQueueDbError({
 					operation: "syncFromSpotify.fetchQueue",
-					cause: new Error(queueResult.error.message),
+					cause: queueResult.error,
 				}),
 			);
 		}

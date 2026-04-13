@@ -138,6 +138,20 @@ export function mockSpotifyQueue(mock: typeof FetchMock): void {
 }
 
 /**
+ * Mock Spotify queue endpoint with an error status
+ */
+export function mockSpotifyQueueError(
+	mock: typeof FetchMock,
+	status: number,
+	body = "Service unavailable",
+): void {
+	mock
+		.get("https://api.spotify.com")
+		.intercept({ path: "/v1/me/player/queue" })
+		.reply(status, body);
+}
+
+/**
  * Mock Spotify skip track endpoint
  */
 export function mockSpotifySkipTrack(mock: typeof FetchMock): void {

@@ -1,20 +1,15 @@
 /**
  * TwitchTokenDO - Manages OAuth tokens for Twitch API with automatic refresh
  *
- * Agent state owns the current token state. Legacy SQLite storage is only used
- * once during startup to migrate old token_set rows from the DurableObject era.
+ * Agent state owns the current token state and refresh scheduling.
  *
  * All public RPC methods return Result types for type-safe error handling.
  */
 
 import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/durable-sqlite";
-import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
-import migrations from "../../drizzle/token-do/migrations";
 import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	NoRefreshTokenError,
@@ -25,10 +20,8 @@ import {
 	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
-import * as tokenSchema from "./schemas/token-schema";
 
 import type { Env } from "../index";
-import type { TokenSet } from "./schemas/token-schema";
 
 /**
  * Zod schema for Twitch token API responses
@@ -67,7 +60,6 @@ class _TwitchTokenDO
 	extends Agent<Env, TwitchTokenAgentState>
 	implements StreamLifecycleHandler<TokenError>
 {
-	private legacyDb: ReturnType<typeof drizzle<typeof tokenSchema>>;
 	private refreshPromise: Promise<Result<string, TokenError>> | null = null;
 
 	initialState: TwitchTokenAgentState = {
@@ -79,14 +71,10 @@ class _TwitchTokenDO
 
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
-		this.legacyDb = drizzle(this.ctx.storage, { schema: tokenSchema });
 	}
 
 	async onStart(): Promise<void> {
 		await this.ctx.blockConcurrencyWhile(async () => {
-			await migrate(this.legacyDb, migrations);
-			await this.migrateLegacyStateOnce();
-			await this.clearLegacyAlarmState();
 			await this.restoreOrRecomputeRefreshSchedule();
 		});
 	}
@@ -260,51 +248,6 @@ class _TwitchTokenDO
 		const nextState = { ...this.state, ...partial };
 		this.setState(nextState);
 		return nextState;
-	}
-
-	private async migrateLegacyStateOnce(): Promise<void> {
-		const legacyToken = await this.legacyDb.query.tokenSet.findFirst({
-			where: eq(tokenSchema.tokenSet.id, 1),
-		});
-
-		if (!legacyToken) {
-			return;
-		}
-
-		if (this.isAgentStateUninitialized()) {
-			this.setState({
-				token: this.toAgentTokenState(legacyToken),
-				isStreamLive: legacyToken.isStreamLive,
-				refreshScheduleId: null,
-				refreshRetryCount: 0,
-			});
-		}
-
-		await this.legacyDb.delete(tokenSchema.tokenSet).where(eq(tokenSchema.tokenSet.id, 1));
-	}
-
-	private isAgentStateUninitialized(): boolean {
-		return (
-			this.state.token === null &&
-			this.state.isStreamLive === false &&
-			this.state.refreshScheduleId === null &&
-			this.state.refreshRetryCount === 0
-		);
-	}
-
-	private toAgentTokenState(token: TokenSet): TwitchTokenState {
-		return {
-			accessToken: token.accessToken,
-			refreshToken: token.refreshToken,
-			tokenType: token.tokenType,
-			expiresIn: token.expiresIn,
-			expiresAt: token.expiresAt,
-		};
-	}
-
-	private async clearLegacyAlarmState(): Promise<void> {
-		await this.ctx.storage.deleteAlarm();
-		await this.ctx.storage.delete("alarmRetryCount");
 	}
 
 	private async restoreOrRecomputeRefreshSchedule(): Promise<void> {

@@ -1,24 +1,19 @@
 /**
  * CommandsDO - Chat command registry and dynamic values
  *
- * Agent state owns command definitions, values, and counters. Legacy SQLite
- * tables are only used once during startup to import existing command data.
+ * Agent state owns command definitions, values, and counters.
  */
 
 import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { drizzle } from "drizzle-orm/durable-sqlite";
-import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
-import migrations from "../../drizzle/commands-do/migrations";
 import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import { CommandsDbError, CommandNotFoundError, CommandNotUpdateableError } from "../lib/errors";
 import { logger } from "../lib/logger";
-import * as schema from "./schemas/commands-do.schema";
-import { type Permission } from "./schemas/commands-do.schema";
 
 import type { Env } from "../index";
+import type { Permission } from "../lib/permissions";
 
 const CommandNameSchema = z
 	.string()
@@ -75,95 +70,8 @@ const CommandCounterStateSchema = z.object({
 	updatedAt: IsoTimestampSchema,
 });
 
-const LegacyCommandImportSchema = z
-	.object({
-		name: CommandNameSchema,
-		description: z.string().min(1).max(200),
-		category: CategorySchema,
-		responseType: ResponseTypeSchema,
-		permission: PermissionSchema,
-		enabled: z.boolean(),
-		createdAt: IsoTimestampSchema,
-	})
-	.transform((command): Command => {
-		const base: Command = {
-			name: command.name,
-			description: command.description,
-			category: command.category,
-			responseType: command.responseType,
-			permission: command.permission,
-			enabled: command.enabled,
-			createdAt: command.createdAt,
-			aliases: [],
-			valueSourceName: command.responseType === "computed" ? null : command.name,
-			counterSourceName: null,
-			handlerKey: command.responseType === "computed" ? command.name : null,
-			outputTemplate: command.responseType === "computed" ? null : GenericStoredOutputTemplate,
-			emptyResponse:
-				command.responseType === "computed" ? null : `${command.name} info is not available.`,
-			writePermission: command.responseType === "dynamic" ? "moderator" : null,
-		};
-
-		if (command.name === "today" || command.name === "project") {
-			return {
-				...base,
-				valueSourceName: "today",
-				outputTemplate: DynamicCommandOutputTemplate,
-				emptyResponse: DynamicCommandEmptyResponse,
-				writePermission: "moderator",
-			};
-		}
-
-		if (command.name === "leak" && command.responseType === "dynamic") {
-			return {
-				...base,
-				writePermission: "vip",
-			};
-		}
-
-		if (command.name === "skillissue") {
-			return {
-				...base,
-				counterSourceName: "skillissue",
-			};
-		}
-
-		return base;
-	});
-
-const LegacyCommandValueImportSchema = z
-	.object({
-		commandName: CommandNameSchema,
-		value: CommandValueSchema,
-		updatedAt: IsoTimestampSchema,
-		updatedBy: z.string().min(1).max(100).nullable(),
-	})
-	.transform((row) => ({
-		commandName: row.commandName,
-		state: {
-			value: row.value,
-			updatedAt: row.updatedAt,
-			updatedBy: row.updatedBy,
-		},
-	}));
-
-const LegacyCommandCounterImportSchema = z
-	.object({
-		commandName: CommandNameSchema,
-		count: z.number().int().min(0),
-		updatedAt: IsoTimestampSchema,
-	})
-	.transform((row) => ({
-		commandName: row.commandName,
-		state: {
-			count: row.count,
-			updatedAt: row.updatedAt,
-		},
-	}));
-
 export interface CommandsAgentState {
 	revision: number;
-	legacyImportCompleted: boolean;
 	commandsByName: Record<string, Command>;
 	valuesByName: Record<string, z.infer<typeof CommandValueStateSchema>>;
 	countersByName: Record<string, z.infer<typeof CommandCounterStateSchema>>;
@@ -210,12 +118,336 @@ export type UpdateCommandInput = z.infer<typeof UpdateCommandInputSchema>;
 type CommandValueState = z.infer<typeof CommandValueStateSchema>;
 type CommandCounterState = z.infer<typeof CommandCounterStateSchema>;
 
-class _CommandsDO extends Agent<Env, CommandsAgentState> {
-	private legacyDb: ReturnType<typeof drizzle<typeof schema>>;
+function createDefaultCommandInputs(now: string): CreateCommandInput[] {
+	return [
+		{
+			name: "keyboard",
+			description: "Shows keyboard info and build video",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue:
+				"ZSA Voyager with Choc White switches: https://www.youtube.com/watch?v=WfIfxaXC_Q4",
+			createdAt: now,
+		},
+		{
+			name: "socials",
+			description: "Shows social media links",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "GitHub: github.com/dmmulroy | X: x.com/dillon_mulroy",
+			createdAt: now,
+		},
+		{
+			name: "github",
+			description: "Shows GitHub link",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "Follow me on GitHub! -> https://github.com/dmmulroy",
+			createdAt: now,
+		},
+		{
+			name: "twitter",
+			description: "Shows Twitter/X link",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "Follow me on Twitter (X)! -> https://twitter.com/dillon_mulroy",
+			createdAt: now,
+		},
+		{
+			name: "schedule",
+			description: "Shows stream schedule",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "My stream schedule -> https://www.twitch.tv/dmmulroy/schedule",
+			createdAt: now,
+		},
+		{
+			name: "font",
+			description: "Shows preferred coding font",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "MonoLisa - https://www.monolisa.dev",
+			createdAt: now,
+		},
+		{
+			name: "dotfiles",
+			description: "Shows dotfiles repository link",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue:
+				"My dotfiles can be found here: https://github.com/dmmulroy/.dotfiles !neovim for a youtube walkthrough of my neovim config.",
+			createdAt: now,
+		},
+		{
+			name: "today",
+			description: "Shows what's being worked on today",
+			category: "info",
+			responseType: "dynamic",
+			permission: "everyone",
+			outputTemplate: DynamicCommandOutputTemplate,
+			emptyResponse: DynamicCommandEmptyResponse,
+			writePermission: "moderator",
+			initialValue: "",
+			createdAt: now,
+		},
+		{
+			name: "project",
+			description: "Shows current project (alias for today)",
+			category: "info",
+			responseType: "dynamic",
+			permission: "everyone",
+			valueSourceName: "today",
+			outputTemplate: DynamicCommandOutputTemplate,
+			emptyResponse: DynamicCommandEmptyResponse,
+			writePermission: "moderator",
+			createdAt: now,
+		},
+		{
+			name: "achievements",
+			description: "Shows user's unlocked achievements",
+			category: "stats",
+			responseType: "computed",
+			permission: "everyone",
+			handlerKey: "achievements",
+			createdAt: now,
+		},
+		{
+			name: "stats",
+			description: "Shows user's song/achievement/raffle stats",
+			category: "stats",
+			responseType: "computed",
+			permission: "everyone",
+			handlerKey: "stats",
+			createdAt: now,
+		},
+		{
+			name: "raffle-leaderboard",
+			description: "Shows top raffle winners",
+			category: "stats",
+			responseType: "computed",
+			permission: "everyone",
+			handlerKey: "raffle-leaderboard",
+			createdAt: now,
+		},
+		{
+			name: "commands",
+			description: "Lists available commands",
+			category: "meta",
+			responseType: "computed",
+			permission: "everyone",
+			handlerKey: "commands",
+			createdAt: now,
+		},
+		{
+			name: "update",
+			description: "Updates dynamic command values",
+			category: "meta",
+			responseType: "computed",
+			permission: "vip",
+			handlerKey: "update",
+			createdAt: now,
+		},
+		{
+			name: "song",
+			description: "Request a song via Spotify URL",
+			category: "music",
+			responseType: "computed",
+			permission: "everyone",
+			handlerKey: "song",
+			createdAt: now,
+		},
+		{
+			name: "queue",
+			description: "Shows current song queue",
+			category: "music",
+			responseType: "computed",
+			permission: "everyone",
+			handlerKey: "queue",
+			createdAt: now,
+		},
+		{
+			name: "functor",
+			description: "A fun one-liner response",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "Functor? I hardly know her!",
+			createdAt: now,
+		},
+		{
+			name: "location",
+			description: "Shows streamer timezone",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "I am in Eastern Standard Time!",
+			createdAt: now,
+		},
+		{
+			name: "ocaml",
+			description: "OCaml command response",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "dmmulrOCaml",
+			createdAt: now,
+		},
+		{
+			name: "lurk",
+			description: "Lurk acknowledgement command",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "${user} is here but they are Lurking! Thank you for watching! ${random.emote}",
+			createdAt: now,
+		},
+		{
+			name: "youtube",
+			description: "Shows YouTube channel link",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "Check out my youtube! https://www.youtube.com/@dmmulroy",
+			createdAt: now,
+		},
+		{
+			name: "unlurk",
+			description: "Unlurk acknowledgement command",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "${user} is back on the saddle! Thanks for coming back! ${random.emote}",
+			createdAt: now,
+		},
+		{
+			name: "errors",
+			description: "Error meme link",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "https://twitter.com/vitalyf/status/1582270207229251585",
+			createdAt: now,
+		},
+		{
+			name: "vibes",
+			description: "Vibes check command",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "Immaculate",
+			createdAt: now,
+		},
+		{
+			name: "neovim",
+			description: "Neovim config walkthrough link",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue:
+				"Here is a youtube video walkthrough of my neovim config: https://youtu.be/oo_I5lAmdi0",
+			createdAt: now,
+		},
+		{
+			name: "dict",
+			description: "Clip command",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "https://clips.twitch.tv/SlipperySarcasticMosquitoTwitchRPG-9V43D-1B4NjpX1B0",
+			createdAt: now,
+		},
+		{
+			name: "beam",
+			description: "BEAM slogan command",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "BEAM WORK MAKES THE DREAM WORK",
+			createdAt: now,
+		},
+		{
+			name: "linux",
+			description: "GNU/Linux copypasta command",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue:
+				"I'd just like to interject for a moment. What you're refering to as Linux, is in fact, GNU/Linux, or as I've recently taken to calling it, GNU plus Linux. Linux is not an operating system unto itself, but rather another free component of a fully functioning GNU system made useful by the GNU corelibs, shell utilities and vital system components comprising a full OS as defined by POSIX.",
+			createdAt: now,
+		},
+		{
+			name: "time",
+			description: "Shows current Eastern time",
+			category: "info",
+			responseType: "computed",
+			permission: "everyone",
+			handlerKey: "time",
+			createdAt: now,
+		},
+		{
+			name: "leak",
+			description: "Security leak meme command",
+			category: "meta",
+			responseType: "dynamic",
+			permission: "everyone",
+			writePermission: "vip",
+			initialValue:
+				"Dillon last leaked his keys on 23 Jan 2026 (before on 09 Dec 2025 ), admin secret on 16 Feb 2026",
+			createdAt: now,
+		},
+		{
+			name: "skillissue",
+			description: "Increments and shows skill issue count",
+			category: "stats",
+			responseType: "computed",
+			permission: "vip",
+			handlerKey: "skillissue",
+			counterSourceName: "skillissue",
+			initialCounter: 0,
+			createdAt: now,
+		},
+		{
+			name: "truth",
+			description: "Truth clip command",
+			category: "meta",
+			responseType: "static",
+			permission: "everyone",
+			initialValue:
+				"https://www.twitch.tv/dmmulroy/clip/RichObedientWalletKeyboardCat-UiKKTpgvCKHVyFHd",
+			createdAt: now,
+		},
+		{
+			name: "job",
+			description: "Shows current job",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue:
+				"I am Principal Engineer and Rockstar TypeScript Developer at Cloudflare 1.1.1.1",
+			createdAt: now,
+		},
+		{
+			name: "browser",
+			description: "Shows browser recommendation link",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "Helium Browser: https://helium.computer",
+			createdAt: now,
+		},
+	];
+}
 
+class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	initialState: CommandsAgentState = {
 		revision: 0,
-		legacyImportCompleted: false,
 		commandsByName: {},
 		valuesByName: {},
 		countersByName: {},
@@ -223,17 +455,15 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
-		this.legacyDb = drizzle(this.ctx.storage, { schema });
 	}
 
 	async onStart(): Promise<void> {
 		await this.ctx.blockConcurrencyWhile(async () => {
-			await migrate(this.legacyDb, migrations);
-			const importResult = await this.importLegacyStateOnce();
-			if (importResult.status === "error") {
-				logger.error("Failed to import legacy commands state", {
-					error: importResult.error.message,
-					operation: importResult.error.operation,
+			const bootstrapResult = this.bootstrapDefaultState();
+			if (bootstrapResult.status === "error") {
+				logger.error("Failed to bootstrap default commands state", {
+					error: bootstrapResult.error.message,
+					operation: bootstrapResult.error.operation,
 				});
 			}
 		});
@@ -246,7 +476,6 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 
 		logger.info("CommandsDO state changed", {
 			revision: state.revision,
-			legacyImportCompleted: state.legacyImportCompleted,
 			commandCount: Object.keys(state.commandsByName).length,
 			valueCount: Object.keys(state.valuesByName).length,
 			counterCount: Object.keys(state.countersByName).length,
@@ -261,10 +490,6 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		nextState: CommandsAgentState,
 		operation: string,
 	): Result<void, CommandsDbError> {
-		if (!nextState.legacyImportCompleted) {
-			return Result.ok();
-		}
-
 		if (nextState.revision < 0) {
 			return Result.err(this.validationError(operation, "Commands state revision must be >= 0"));
 		}
@@ -681,7 +906,6 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 				{
 					...this.state,
 					revision: this.state.revision + 1,
-					legacyImportCompleted: true,
 					commandsByName: nextCommandsByName,
 					valuesByName: this.pruneValues(nextCommandsByName, nextValuesByName),
 					countersByName: this.pruneCounters(nextCommandsByName, nextCountersByName),
@@ -795,7 +1019,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 					computed: number;
 				};
 				revision: number;
-				legacyImportCompleted: boolean;
+				initialized: boolean;
 			},
 			CommandsDbError
 		>
@@ -831,7 +1055,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 						computed: allCommands.filter((command) => command.responseType === "computed").length,
 					},
 					revision: this.state.revision,
-					legacyImportCompleted: this.state.legacyImportCompleted,
+					initialized: this.isInitializedState(),
 				};
 			},
 			catch: (cause) => new CommandsDbError({ operation: "getDebugSnapshot", cause }),
@@ -865,70 +1089,63 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		});
 	}
 
-	private async importLegacyStateOnce(): Promise<Result<void, CommandsDbError>> {
-		if (this.state.legacyImportCompleted) {
+	private isInitializedState(state: CommandsAgentState = this.state): boolean {
+		return (
+			Object.keys(state.commandsByName).length > 0 ||
+			Object.keys(state.valuesByName).length > 0 ||
+			Object.keys(state.countersByName).length > 0 ||
+			state.revision > 0
+		);
+	}
+
+	private bootstrapDefaultState(): Result<void, CommandsDbError> {
+		if (this.isInitializedState()) {
 			return Result.ok();
 		}
 
-		return Result.gen(async function* (this: _CommandsDO) {
-			// Use Promise.all intentionally: legacy import should fail atomically if any
-			// table read fails. allSettled() would allow partial startup hydration.
-			const legacyRowsResult = yield* Result.await(
-				Result.tryPromise({
-					try: () =>
-						Promise.all([
-							this.legacyDb.query.commands.findMany(),
-							this.legacyDb.query.commandValues.findMany(),
-							this.legacyDb.query.commandCounters.findMany(),
-						]),
-					catch: (cause) =>
-						new CommandsDbError({ operation: "importLegacyStateOnce.readLegacyRows", cause }),
-				}),
-			);
-			const [legacyCommands, legacyValues, legacyCounters] = legacyRowsResult;
+		const now = new Date().toISOString();
+		const commandsByName: Record<string, Command> = {};
+		const valuesByName: Record<string, CommandValueState> = {};
+		const countersByName: Record<string, CommandCounterState> = {};
 
-			const commandsByName: Record<string, Command> = {};
-			for (const legacyCommand of legacyCommands) {
-				const importedCommand = yield* this.parseLegacyCommandForImport(legacyCommand);
-				commandsByName[importedCommand.name] = importedCommand;
+		for (const input of createDefaultCommandInputs(now)) {
+			const command = this.buildCommandDefinition(input);
+			commandsByName[command.name] = command;
+
+			if (
+				command.valueSourceName !== null &&
+				input.initialValue !== null &&
+				input.initialValue !== undefined
+			) {
+				valuesByName[command.valueSourceName] = {
+					value: input.initialValue,
+					updatedAt: now,
+					updatedBy: null,
+				};
 			}
 
-			const importedValues: Record<string, CommandValueState> = {};
-			for (const legacyValue of legacyValues) {
-				const importedValue = yield* this.parseLegacyValueForImport(legacyValue);
-				importedValues[importedValue.commandName] = importedValue.state;
+			const counterName = command.counterSourceName;
+			if (
+				counterName !== null &&
+				input.initialCounter !== null &&
+				input.initialCounter !== undefined
+			) {
+				countersByName[counterName] = {
+					count: input.initialCounter,
+					updatedAt: now,
+				};
 			}
+		}
 
-			const importedCounters: Record<string, CommandCounterState> = {};
-			for (const legacyCounter of legacyCounters) {
-				const importedCounter = yield* this.parseLegacyCounterForImport(legacyCounter);
-				importedCounters[importedCounter.commandName] = importedCounter.state;
-			}
-
-			yield* this.persistState(
-				{
-					revision: 1,
-					legacyImportCompleted: true,
-					commandsByName,
-					valuesByName: this.pruneValues(
-						commandsByName,
-						this.normalizeImportedValues(commandsByName, importedValues),
-					),
-					countersByName: this.pruneCounters(
-						commandsByName,
-						this.normalizeImportedCounters(commandsByName, importedCounters),
-					),
-				},
-				"importLegacyStateOnce",
-			);
-
-			logger.info("Imported legacy commands into Agent state", {
-				commandCount: legacyCommands.length,
-				valueCount: legacyValues.length,
-				counterCount: legacyCounters.length,
-			});
-			return Result.ok();
-		}, this);
+		return this.persistState(
+			{
+				revision: 1,
+				commandsByName,
+				valuesByName: this.pruneValues(commandsByName, valuesByName),
+				countersByName: this.pruneCounters(commandsByName, countersByName),
+			},
+			"bootstrapDefaultState",
+		);
 	}
 
 	private parseCommandName(name: string, operation: string): Result<string, CommandsDbError> {
@@ -971,103 +1188,6 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		}
 
 		return Result.ok(parseResult.data);
-	}
-
-	private parseLegacyCommandForImport(command: unknown): Result<Command, CommandsDbError> {
-		const parseResult = LegacyCommandImportSchema.safeParse(command);
-		if (!parseResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "importLegacyStateOnce.parseCommand",
-					cause: new Error(parseResult.error.message),
-				}),
-			);
-		}
-
-		return Result.ok(parseResult.data);
-	}
-
-	private parseLegacyValueForImport(commandValue: unknown): Result<
-		{
-			commandName: string;
-			state: CommandValueState;
-		},
-		CommandsDbError
-	> {
-		const parseResult = LegacyCommandValueImportSchema.safeParse(commandValue);
-		if (!parseResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "importLegacyStateOnce.parseValue",
-					cause: new Error(parseResult.error.message),
-				}),
-			);
-		}
-
-		return Result.ok(parseResult.data);
-	}
-
-	private parseLegacyCounterForImport(commandCounter: unknown): Result<
-		{
-			commandName: string;
-			state: CommandCounterState;
-		},
-		CommandsDbError
-	> {
-		const parseResult = LegacyCommandCounterImportSchema.safeParse(commandCounter);
-		if (!parseResult.success) {
-			return Result.err(
-				new CommandsDbError({
-					operation: "importLegacyStateOnce.parseCounter",
-					cause: new Error(parseResult.error.message),
-				}),
-			);
-		}
-
-		return Result.ok(parseResult.data);
-	}
-
-	private normalizeImportedValues(
-		commandsByName: Record<string, Command>,
-		importedValues: Record<string, CommandValueState>,
-	): Record<string, CommandValueState> {
-		const nextValues = { ...importedValues };
-
-		for (const command of Object.values(commandsByName)) {
-			if (command.valueSourceName === null || command.valueSourceName === command.name) {
-				continue;
-			}
-
-			const aliasValue = importedValues[command.name];
-			if (aliasValue && nextValues[command.valueSourceName] === undefined) {
-				nextValues[command.valueSourceName] = aliasValue;
-			}
-			delete nextValues[command.name];
-		}
-
-		return nextValues;
-	}
-
-	private normalizeImportedCounters(
-		commandsByName: Record<string, Command>,
-		importedCounters: Record<string, CommandCounterState>,
-	): Record<string, CommandCounterState> {
-		const nextCounters = { ...importedCounters };
-
-		for (const command of Object.values(commandsByName)) {
-			const counterName = this.getCounterStorageName(command);
-			if (counterName === command.name) {
-				continue;
-			}
-
-			const aliasCounter = importedCounters[command.name];
-			if (aliasCounter && nextCounters[counterName] === undefined) {
-				nextCounters[counterName] = aliasCounter;
-			}
-			delete nextCounters[command.name];
-		}
-
-		return nextCounters;
 	}
 
 	private resolveCommand(name: string): Command | undefined {

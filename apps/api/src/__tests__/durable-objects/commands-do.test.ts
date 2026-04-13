@@ -1,16 +1,14 @@
 /**
  * CommandsDO integration tests
  *
- * Tests Agent-backed command persistence, legacy hydration, runtime CRUD,
+ * Tests Agent-backed command persistence, default bootstrap, runtime CRUD,
  * shared value sources, and counter behavior.
  */
 
-import { env, runInDurableObject } from "cloudflare:test";
-import { drizzle } from "drizzle-orm/durable-sqlite";
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { type CommandsAgentState, CommandsDO } from "../../durable-objects/commands-do";
-import * as legacySchema from "../../durable-objects/schemas/commands-do.schema";
+import { CommandsDO } from "../../durable-objects/commands-do";
 
 async function createCommandsStub(name: string): Promise<DurableObjectStub<CommandsDO>> {
 	const id = env.COMMANDS_DO.idFromName(name);
@@ -20,69 +18,30 @@ async function createCommandsStub(name: string): Promise<DurableObjectStub<Comma
 	return stub;
 }
 
-function initialCommandsState(): CommandsAgentState {
-	return {
-		revision: 0,
-		legacyImportCompleted: false,
-		commandsByName: {},
-		valuesByName: {},
-		countersByName: {},
-	};
-}
-
 describe("CommandsDO", () => {
-	it("hydrates Agent state from legacy tables on startup", async () => {
+	it("bootstraps default commands on first start", async () => {
 		const stub = await createCommandsStub(`commands-${crypto.randomUUID()}`);
-		const now = new Date().toISOString();
 
-		await runInDurableObject(stub, async (instance: CommandsDO) => {
-			const db = drizzle(instance.ctx.storage, { schema: legacySchema });
-			await db.insert(legacySchema.commands).values({
-				name: "custom-legacy",
-				description: "Legacy imported command",
-				category: "info",
-				responseType: "dynamic",
-				permission: "everyone",
-				enabled: true,
-				createdAt: now,
-			});
-			await db.insert(legacySchema.commandValues).values({
-				commandName: "custom-legacy",
-				value: "legacy value",
-				updatedAt: now,
-				updatedBy: "migration",
-			});
-			await db.insert(legacySchema.commandCounters).values({
-				commandName: "custom-legacy",
-				count: 7,
-				updatedAt: now,
-			});
-
-			instance.setState(initialCommandsState());
-			await instance.onStart();
-		});
-
-		const commandResult = await stub.getCommand("custom-legacy");
-		expect(commandResult.status).toBe("ok");
-		if (commandResult.status === "ok") {
-			expect(commandResult.value.responseType).toBe("dynamic");
-			expect(commandResult.value.writePermission).toBe("moderator");
+		const keyboardResult = await stub.getCommand("keyboard");
+		expect(keyboardResult.status).toBe("ok");
+		if (keyboardResult.status === "ok") {
+			expect(keyboardResult.value.responseType).toBe("static");
 		}
 
-		const valueResult = await stub.getCommandValue("custom-legacy");
-		expect(valueResult.status).toBe("ok");
-		if (valueResult.status === "ok") {
-			expect(valueResult.value).toBe("legacy value");
+		const todayResult = await stub.getCommandValue("today");
+		expect(todayResult.status).toBe("ok");
+		if (todayResult.status === "ok") {
+			expect(todayResult.value).toBe("");
 		}
 
-		const counterResult = await stub.getCommandCounter("custom-legacy");
-		expect(counterResult.status).toBe("ok");
-		if (counterResult.status === "ok") {
-			expect(counterResult.value).toBe(7);
+		const projectResult = await stub.getCommand("project");
+		expect(projectResult.status).toBe("ok");
+		if (projectResult.status === "ok") {
+			expect(projectResult.value.valueSourceName).toBe("today");
 		}
 	});
 
-	it("creates, updates, and deletes runtime commands without touching legacy migrations", async () => {
+	it("creates, updates, and deletes runtime commands", async () => {
 		const stub = await createCommandsStub(`commands-${crypto.randomUUID()}`);
 
 		const createResult = await stub.createCommand({

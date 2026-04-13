@@ -4,7 +4,7 @@
 
 import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { and, eq, gte, lte } from "drizzle-orm";
+import { and, gte, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
@@ -16,27 +16,24 @@ import { logger } from "../lib/logger";
 import { TwitchService } from "../services/twitch-service";
 import { createStreamOfflineEvent, createStreamOnlineEvent } from "./schemas/event-bus-do.schema";
 import * as schema from "./stream-lifecycle-do.schema";
-import {
-	type StreamState,
-	type ViewerSnapshot,
-	streamState,
-	viewerSnapshots,
-} from "./stream-lifecycle-do.schema";
+import { type ViewerSnapshot, viewerSnapshots } from "./stream-lifecycle-do.schema";
 
 import type { Env } from "../index";
 
-const STREAM_STATE_ID = 1;
 const VIEWER_POLL_INTERVAL_SECONDS = 60;
 
 const RecordViewerCountBodySchema = z.object({
 	count: z.number(),
 });
 
-interface StreamLifecycleAgentState {
+interface StreamLifecycleState {
 	isLive: boolean;
 	startedAt: string | null;
 	endedAt: string | null;
 	peakViewerCount: number;
+}
+
+interface StreamLifecycleAgentState extends StreamLifecycleState {
 	streamSessionId: string | null;
 	viewerPollScheduleId: string | null;
 }
@@ -62,7 +59,6 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	async onStart(): Promise<void> {
 		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
-			await this.migrateLegacyStreamState();
 
 			if (this.state.isLive) {
 				await this.ensureViewerPollingSchedule();
@@ -184,7 +180,7 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	 * Get current stream state
 	 */
 	@rpc
-	async getStreamState(): Promise<Result<StreamState, DurableObjectError>> {
+	async getStreamState(): Promise<Result<StreamLifecycleState, DurableObjectError>> {
 		return Result.ok(this.toStreamState());
 	}
 
@@ -311,43 +307,8 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 		}
 	}
 
-	private async migrateLegacyStreamState(): Promise<void> {
-		const legacyState = await this.db.query.streamState.findFirst({
-			where: eq(streamState.id, STREAM_STATE_ID),
-		});
-
-		if (!legacyState) {
-			return;
-		}
-
-		const agentStateLooksUninitialized =
-			this.state.startedAt === null &&
-			this.state.endedAt === null &&
-			this.state.peakViewerCount === 0 &&
-			this.state.isLive === false &&
-			this.state.streamSessionId === null;
-		const legacyHasState =
-			legacyState.isLive ||
-			legacyState.startedAt !== null ||
-			legacyState.endedAt !== null ||
-			legacyState.peakViewerCount !== 0;
-
-		if (agentStateLooksUninitialized && legacyHasState) {
-			this.setState({
-				...this.state,
-				isLive: legacyState.isLive,
-				startedAt: legacyState.startedAt,
-				endedAt: legacyState.endedAt,
-				peakViewerCount: legacyState.peakViewerCount,
-			});
-		}
-
-		await this.db.delete(streamState).where(eq(streamState.id, STREAM_STATE_ID));
-	}
-
-	private toStreamState(state: StreamLifecycleAgentState = this.state): StreamState {
+	private toStreamState(state: StreamLifecycleAgentState = this.state): StreamLifecycleState {
 		return {
-			id: STREAM_STATE_ID,
 			isLive: state.isLive,
 			startedAt: state.startedAt,
 			endedAt: state.endedAt,

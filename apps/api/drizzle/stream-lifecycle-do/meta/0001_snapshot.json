@@ -1,0 +1,42 @@
+{
+	"version": "6",
+	"dialect": "sqlite",
+	"id": "1bb781cc-bbae-4971-b2fe-efacf9fb991b",
+	"prevId": "7d0b0c43-05e8-44f0-8dd3-80229dc6898d",
+	"tables": {
+		"viewer_snapshots": {
+			"name": "viewer_snapshots",
+			"columns": {
+				"timestamp": {
+					"name": "timestamp",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"viewer_count": {
+					"name": "viewer_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				}
+			},
+			"indexes": {},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"checkConstraints": {}
+		}
+	},
+	"views": {},
+	"enums": {},
+	"_meta": {
+		"schemas": {},
+		"tables": {},
+		"columns": {}
+	},
+	"internal": {
+		"indexes": {}
+	}
+}

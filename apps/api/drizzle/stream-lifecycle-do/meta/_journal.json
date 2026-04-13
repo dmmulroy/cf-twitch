@@ -8,6 +8,13 @@
 			"when": 1769007413896,
 			"tag": "0000_tan_bulldozer",
 			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "6",
+			"when": 1776085478215,
+			"tag": "0001_mysterious_betty_ross",
+			"breakpoints": true
 		}
 	]
 }

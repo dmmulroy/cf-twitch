@@ -529,6 +529,7 @@ export class SpotifyService {
 		Result<
 			SpotifyQueue,
 			| DurableObjectError
+			| SpotifyNoActiveDeviceError
 			| SpotifyUnauthorizedError
 			| SpotifyNetworkError
 			| SpotifyParseError
@@ -558,6 +559,12 @@ export class SpotifyService {
 		}
 
 		const response = fetchResult.value;
+
+		// Handle 404 - no active device
+		if (response.status === 404) {
+			logger.warn("Spotify getQueue: no active device");
+			return Result.err(new SpotifyNoActiveDeviceError());
+		}
 
 		// Handle 401 - unauthorized
 		if (response.status === 401) {

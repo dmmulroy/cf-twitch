@@ -7,7 +7,7 @@
 
 import { env, fetchMock, runInDurableObject } from "cloudflare:test";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
 	pendingRequests,
@@ -24,6 +24,7 @@ import {
 	VALID_TOKEN_RESPONSE,
 	mockSpotifyCurrentlyPlaying,
 	mockSpotifyQueue,
+	mockSpotifyQueueError,
 } from "../fixtures/spotify";
 
 async function seedSnapshot(
@@ -572,6 +573,63 @@ describe("SongQueueDO", () => {
 			if (queueResult.status === "ok") {
 				expect(queueResult.value.tracks[0]?.id).toBe("stale-queue-track");
 			}
+		});
+
+		it("logs the underlying Spotify error when stale snapshot fallback is used", async () => {
+			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
+			const staleSyncedAt = new Date(Date.now() - 60_000).toISOString();
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+			await runInDurableObject(stub, async (instance: SongQueueDO) => {
+				await seedSnapshot(instance, [
+					{
+						position: 1,
+						trackId: "stale-queue-track",
+						trackName: "Stale Queue Track",
+						artists: JSON.stringify(["Stale Artist"]),
+						album: "Stale Album",
+						albumCoverUrl: null,
+						syncedAt: staleSyncedAt,
+						source: "autoplay",
+						eventId: null,
+						requesterUserId: null,
+						requesterDisplayName: null,
+						requestedAt: null,
+					},
+				]);
+				instance.setState({
+					...instance.state,
+					lastSyncAt: staleSyncedAt,
+				});
+			});
+
+			mockSpotifyCurrentlyPlaying(fetchMock, false);
+			mockSpotifyQueueError(fetchMock, 503);
+
+			const result = await stub.getSongQueue(10);
+			expect(result.status).toBe("ok");
+
+			const syncFallbackLog = errorSpy.mock.calls
+				.map((call) => call[0])
+				.find(
+					(entry): entry is string =>
+						typeof entry === "string" && entry.includes("Sync failed, using stale data"),
+				);
+
+			expect(syncFallbackLog).toBeDefined();
+			if (syncFallbackLog) {
+				const parsed = JSON.parse(syncFallbackLog);
+				expect(parsed).toMatchObject({
+					error_tag: "SongQueueDbError",
+					cause: {
+						error_tag: "SpotifyNetworkError",
+					},
+				});
+				expect(typeof parsed.cause?.error_message).toBe("string");
+				expect(parsed.cause?.error_message).toContain("getQueue");
+			}
+
+			errorSpy.mockRestore();
 		});
 
 		it("invalidates freshness after persistRequest so the next read resyncs", async () => {

@@ -128,25 +128,24 @@ function getUserPermission(badges: Badge[]): Permission {
 
 ## Deliverables
 
-| #   | Deliverable                                      | Effort | Depends    | Files                                                             |
-| --- | ------------------------------------------------ | ------ | ---------- | ----------------------------------------------------------------- |
-| D1  | CommandsDO schema + DO class                     | M      | -          | `durable-objects/commands-do.ts`, `schemas/commands-do.schema.ts` |
-| D2  | SongQueueDO.getUserRequestCount()                | S      | -          | `durable-objects/song-queue-do.ts`                                |
-| D3  | Permission helper                                | S      | -          | `lib/permissions.ts`                                              |
-| D4  | Command parsing refactor                         | S      | -          | `routes/webhooks.ts`                                              |
-| D5  | Static handlers (!keyboard, !socials, !dotfiles) | S      | D1, D4     | `routes/webhooks.ts`                                              |
-| D6  | Dynamic handlers (!today, !project, !update)     | M      | D1, D3, D4 | `routes/webhooks.ts`                                              |
-| D7  | Computed handlers (!achievements, !stats)        | M      | D1, D2, D4 | `routes/webhooks.ts`                                              |
-| D8  | !raffle-leaderboard handler                      | S      | D1, D4     | `routes/webhooks.ts`                                              |
-| D9  | !commands handler                                | S      | D1, D3, D4 | `routes/webhooks.ts`                                              |
-| D10 | Migrate !song/!queue to registry                 | S      | D1         | `routes/webhooks.ts`                                              |
-| D11 | Wrangler config + index exports                  | S      | D1         | `wrangler.jsonc`, `index.ts`                                      |
-| D12 | Tests                                            | M      | D1-D11     | `__tests__/commands-do.test.ts`                                   |
+| #   | Deliverable                                      | Effort | Depends    | Files                              |
+| --- | ------------------------------------------------ | ------ | ---------- | ---------------------------------- |
+| D1  | CommandsDO Agent state + DO class                | M      | -          | `durable-objects/commands-do.ts`   |
+| D2  | SongQueueDO.getUserRequestCount()                | S      | -          | `durable-objects/song-queue-do.ts` |
+| D3  | Permission helper                                | S      | -          | `lib/permissions.ts`               |
+| D4  | Command parsing refactor                         | S      | -          | `routes/webhooks.ts`               |
+| D5  | Static handlers (!keyboard, !socials, !dotfiles) | S      | D1, D4     | `routes/webhooks.ts`               |
+| D6  | Dynamic handlers (!today, !project, !update)     | M      | D1, D3, D4 | `routes/webhooks.ts`               |
+| D7  | Computed handlers (!achievements, !stats)        | M      | D1, D2, D4 | `routes/webhooks.ts`               |
+| D8  | !raffle-leaderboard handler                      | S      | D1, D4     | `routes/webhooks.ts`               |
+| D9  | !commands handler                                | S      | D1, D3, D4 | `routes/webhooks.ts`               |
+| D10 | Migrate !song/!queue to registry                 | S      | D1         | `routes/webhooks.ts`               |
+| D11 | Wrangler config + index exports                  | S      | D1         | `wrangler.jsonc`, `index.ts`       |
+| D12 | Tests                                            | M      | D1-D11     | `__tests__/commands-do.test.ts`    |
 
 ## Key Files to Modify
 
 - `apps/api/src/durable-objects/commands-do.ts` (new)
-- `apps/api/src/durable-objects/schemas/commands-do.schema.ts` (new)
 - `apps/api/src/durable-objects/song-queue-do.ts` (add method)
 - `apps/api/src/lib/permissions.ts` (new)
 - `apps/api/src/routes/webhooks.ts` (command handlers)
