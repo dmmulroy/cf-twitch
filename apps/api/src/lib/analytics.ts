@@ -5,7 +5,14 @@
 import { logger } from "./logger";
 
 /**
- * Song request metric data
+ * Song request metric data.
+ *
+ * @param requester - Viewer who requested the song.
+ * @param trackId - Spotify track identifier.
+ * @param trackName - Human-readable track name.
+ * @param status - Fulfillment status for the request.
+ * @param latencyMs - Request latency in milliseconds.
+ * @returns A serializable song request metric payload.
  */
 export interface SongRequestMetric {
 	requester: string;
@@ -16,7 +23,14 @@ export interface SongRequestMetric {
 }
 
 /**
- * Raffle roll metric data
+ * Raffle roll metric data.
+ *
+ * @param user - Viewer who rolled.
+ * @param roll - Viewer roll value.
+ * @param winningNumber - Winning raffle number.
+ * @param distance - Distance between roll and winning number.
+ * @param status - Whether the roll won or lost.
+ * @returns A serializable raffle roll metric payload.
  */
 export interface RaffleRollMetric {
 	user: string;
@@ -27,7 +41,13 @@ export interface RaffleRollMetric {
 }
 
 /**
- * Error metric data
+ * Error metric data.
+ *
+ * @param errorType - Error category or tag.
+ * @param errorMessage - Human-readable error message.
+ * @param endpoint - Optional endpoint associated with the error.
+ * @param statusCode - Optional HTTP status code associated with the error.
+ * @returns A serializable error metric payload.
  */
 export interface ErrorMetric {
 	errorType: string;
@@ -37,7 +57,13 @@ export interface ErrorMetric {
 }
 
 /**
- * Achievement unlock metric data
+ * Achievement unlock metric data.
+ *
+ * @param user - Viewer who unlocked the achievement.
+ * @param achievementId - Achievement identifier.
+ * @param achievementName - Human-readable achievement name.
+ * @param category - Achievement category.
+ * @returns A serializable achievement unlock metric payload.
  */
 export interface AchievementUnlockMetric {
 	user: string;
@@ -51,17 +77,31 @@ export interface AchievementUnlockMetric {
 // =============================================================================
 
 /**
- * Chat command types
+ * Chat command metric command identifier.
+ *
+ * @param command - Canonical command name.
+ * @returns A string command identifier.
  */
 export type ChatCommandType = string;
 
 /**
- * Chat command status
+ * Chat command metric status bucket.
+ *
+ * @param status - Success, ignored, or error status value.
+ * @returns A supported chat command metric status.
  */
-export type ChatCommandStatus = "success" | "error";
+export type ChatCommandStatus = "success" | "ignored" | "error";
 
 /**
- * Chat command metric data
+ * Chat command metric data.
+ *
+ * @param command - Canonical command name.
+ * @param userId - Twitch user identifier.
+ * @param userName - Twitch display name.
+ * @param status - Execution status bucket.
+ * @param durationMs - Executor duration in milliseconds.
+ * @param error - Optional error message for failed executions.
+ * @returns A serializable chat command metric payload.
  */
 export interface ChatCommandMetric {
 	command: ChatCommandType;
@@ -73,11 +113,11 @@ export interface ChatCommandMetric {
 }
 
 /**
- * Write a chat command metric to Analytics Engine
+ * Write a chat command metric to Analytics Engine.
  *
- * Index: "chat-command" (category-level queries)
- * Blobs: command, userId, userName, status, error
- * Doubles: durationMs
+ * @param analytics - Analytics Engine dataset binding.
+ * @param metric - Chat command metric payload to write.
+ * @returns Nothing.
  */
 export function writeChatCommandMetric(
 	analytics: AnalyticsEngineDataset,
@@ -100,12 +140,18 @@ export function writeChatCommandMetric(
 // =============================================================================
 
 /**
- * Saga types for lifecycle tracking
+ * Saga metric type identifier.
+ *
+ * @param sagaType - Supported saga type value.
+ * @returns A supported saga metric type.
  */
 export type SagaType = "song-request-saga" | "keyboard-raffle-saga";
 
 /**
- * Saga lifecycle events
+ * Saga lifecycle event identifier.
+ *
+ * @param event - Supported saga lifecycle event value.
+ * @returns A supported saga lifecycle event.
  */
 export type SagaEvent =
 	| "started"
@@ -114,15 +160,21 @@ export type SagaEvent =
 	| "step_failed"
 	| "step_compensated"
 	| "step_compensation_failed"
-	| "fulfilled" // point of no return
+	| "fulfilled"
 	| "compensating"
 	| "completed"
 	| "failed";
 
 /**
- * Saga lifecycle metric data
+ * Saga lifecycle metric data.
  *
- * sagaId doubles as traceId for cross-service correlation (DO instance ID)
+ * @param sagaType - Type of saga emitting the metric.
+ * @param sagaId - Saga identifier that doubles as a trace identifier.
+ * @param event - Lifecycle event being recorded.
+ * @param stepName - Optional step name for step-level events.
+ * @param error - Optional error message for failed events.
+ * @param durationMs - Optional duration in milliseconds.
+ * @returns A serializable saga lifecycle metric payload.
  */
 export interface SagaLifecycleMetric {
 	sagaType: SagaType;
@@ -134,29 +186,28 @@ export interface SagaLifecycleMetric {
 }
 
 /**
- * Write a saga lifecycle metric to Analytics Engine
+ * Write a saga lifecycle metric to Analytics Engine.
  *
- * Index: sagaType (enables efficient filtering by saga type)
- * Blobs: sagaId, event, stepName, error (truncated to 900 bytes)
- * Doubles: durationMs
+ * @param analytics - Analytics Engine dataset binding.
+ * @param metric - Saga lifecycle metric payload to write.
+ * @returns Nothing.
  */
 export function writeSagaLifecycleMetric(
 	analytics: AnalyticsEngineDataset,
 	metric: SagaLifecycleMetric,
 ): void {
 	safeWriteMetric(analytics, metric.sagaType, {
-		blobs: [
-			metric.sagaId,
-			metric.event,
-			metric.stepName ?? "",
-			(metric.error ?? "").slice(0, 900), // truncate to AE blob limit
-		],
+		blobs: [metric.sagaId, metric.event, metric.stepName ?? "", (metric.error ?? "").slice(0, 900)],
 		doubles: [metric.durationMs ?? 0],
 	});
 }
 
 /**
- * Write a song request metric to Analytics Engine
+ * Write a song request metric to Analytics Engine.
+ *
+ * @param analytics - Analytics Engine dataset binding.
+ * @param metric - Song request metric payload to write.
+ * @returns Nothing.
  */
 export function writeSongRequestMetric(
 	analytics: AnalyticsEngineDataset,
@@ -169,7 +220,11 @@ export function writeSongRequestMetric(
 }
 
 /**
- * Write a raffle roll metric to Analytics Engine
+ * Write a raffle roll metric to Analytics Engine.
+ *
+ * @param analytics - Analytics Engine dataset binding.
+ * @param metric - Raffle roll metric payload to write.
+ * @returns Nothing.
  */
 export function writeRaffleRollMetric(
 	analytics: AnalyticsEngineDataset,
@@ -182,7 +237,11 @@ export function writeRaffleRollMetric(
 }
 
 /**
- * Write an error metric to Analytics Engine
+ * Write an error metric to Analytics Engine.
+ *
+ * @param analytics - Analytics Engine dataset binding.
+ * @param metric - Error metric payload to write.
+ * @returns Nothing.
  */
 export function writeErrorMetric(analytics: AnalyticsEngineDataset, metric: ErrorMetric): void {
 	safeWriteMetric(analytics, "error", {
@@ -192,10 +251,11 @@ export function writeErrorMetric(analytics: AnalyticsEngineDataset, metric: Erro
 }
 
 /**
- * Write an achievement unlock metric to Analytics Engine
+ * Write an achievement unlock metric to Analytics Engine.
  *
- * Index: "achievement_unlock" (enables achievement-specific queries)
- * Blobs: user, achievementId, achievementName, category
+ * @param analytics - Analytics Engine dataset binding.
+ * @param metric - Achievement unlock metric payload to write.
+ * @returns Nothing.
  */
 export function writeAchievementUnlockMetric(
 	analytics: AnalyticsEngineDataset,
@@ -208,7 +268,12 @@ export function writeAchievementUnlockMetric(
 }
 
 /**
- * Safe wrapper around analytics.writeDataPoint that catches and logs failures
+ * Safely write an Analytics Engine data point and log failures.
+ *
+ * @param analytics - Analytics Engine dataset binding.
+ * @param eventName - Event name to place in the Analytics Engine index.
+ * @param data - Optional blob and double values for the data point.
+ * @returns Nothing.
  */
 export function safeWriteMetric(
 	analytics: AnalyticsEngineDataset,
