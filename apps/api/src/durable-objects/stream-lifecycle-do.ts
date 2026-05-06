@@ -10,6 +10,7 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/stream-lifecycle-do/migrations";
+import { type Clock, type IsoTimestamp, SystemClock } from "../lib/clock";
 import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
 import { logger } from "../lib/logger";
@@ -17,6 +18,15 @@ import { TwitchService } from "../services/twitch-service";
 import { createStreamOfflineEvent, createStreamOnlineEvent } from "./schemas/event-bus-do.schema";
 import * as schema from "./stream-lifecycle-do.schema";
 import { type ViewerSnapshot, viewerSnapshots } from "./stream-lifecycle-do.schema";
+import {
+	goOffline,
+	goOnline,
+	initialOfflineState,
+	parsePersistedStreamLifecycleState,
+	type LiveStreamAgentState,
+	type StreamLifecycleAgentState,
+	type StreamLifecycleState,
+} from "./stream-lifecycle-state";
 
 import type { Env } from "../index";
 
@@ -26,30 +36,12 @@ const RecordViewerCountBodySchema = z.object({
 	count: z.number(),
 });
 
-interface StreamLifecycleState {
-	isLive: boolean;
-	startedAt: string | null;
-	endedAt: string | null;
-	peakViewerCount: number;
-}
-
-interface StreamLifecycleAgentState extends StreamLifecycleState {
-	streamSessionId: string | null;
-	viewerPollScheduleId: string | null;
-}
-
 class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private nextViewerSnapshotAtMs = 0;
+	private readonly clock: Clock = new SystemClock();
 
-	initialState: StreamLifecycleAgentState = {
-		isLive: false,
-		startedAt: null,
-		endedAt: null,
-		peakViewerCount: 0,
-		streamSessionId: null,
-		viewerPollScheduleId: null,
-	};
+	initialState: StreamLifecycleAgentState = initialOfflineState();
 
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
@@ -60,11 +52,11 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
 
-			if (this.state.isLive) {
+			const normalized = parsePersistedStreamLifecycleState(this.state, this.clock);
+			this.setState(normalized);
+
+			if (normalized._tag === "LiveStream") {
 				await this.ensureViewerPollingSchedule();
-			} else if (this.state.viewerPollScheduleId !== null) {
-				await this.cancelSchedule(this.state.viewerPollScheduleId);
-				this.setState({ ...this.state, viewerPollScheduleId: null });
 			}
 		});
 	}
@@ -76,40 +68,36 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	 * When provided, stale out-of-order events are ignored.
 	 */
 	async onStreamOnline(eventTimestamp?: string): Promise<void> {
-		const now = this.resolveTransitionTimestamp(eventTimestamp);
+		const transitionAt = this.clock.resolveIsoTimestamp(eventTimestamp);
 		const latestTransitionAt = this.getLatestTransitionAt(this.state);
 
-		if (latestTransitionAt && new Date(now).getTime() < new Date(latestTransitionAt).getTime()) {
+		if (latestTransitionAt && this.clock.isBefore(transitionAt, latestTransitionAt)) {
 			logger.warn("Ignoring stale stream.online event", {
-				eventTimestamp: now,
+				eventTimestamp: transitionAt,
 				latestTransitionAt,
-				isLive: this.state.isLive,
+				stateTag: this.state._tag,
 			});
 			return;
 		}
 
-		if (this.state.isLive) {
+		if (this.state._tag === "LiveStream") {
 			logger.info("Ignoring duplicate stream.online event", {
-				eventTimestamp: now,
+				eventTimestamp: transitionAt,
 				startedAt: this.state.startedAt,
 			});
 			return;
 		}
 
 		const streamSessionId = crypto.randomUUID();
-		this.setState({
-			...this.state,
-			isLive: true,
-			startedAt: now,
-			endedAt: null,
-			peakViewerCount: 0,
-			streamSessionId,
-		});
+		this.setState(goOnline(this.state, transitionAt, streamSessionId));
 
-		logger.info("Stream online", { timestamp: now, streamSessionId });
+		logger.info("Stream online", { timestamp: transitionAt, streamSessionId });
 
-		await this.notifyTokenDOsOnline(now, streamSessionId);
-		await this.ensureViewerPollingSchedule();
+		const sideEffects = await Promise.allSettled([
+			this.notifyTokenDOsOnline(transitionAt, streamSessionId),
+			this.ensureViewerPollingSchedule(),
+		]);
+		this.logRejectedSideEffects("stream online", sideEffects);
 	}
 
 	/**
@@ -119,43 +107,39 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	 * When provided, stale out-of-order events are ignored.
 	 */
 	async onStreamOffline(eventTimestamp?: string): Promise<void> {
-		const now = this.resolveTransitionTimestamp(eventTimestamp);
+		const transitionAt = this.clock.resolveIsoTimestamp(eventTimestamp);
 		const latestTransitionAt = this.getLatestTransitionAt(this.state);
 
-		if (latestTransitionAt && new Date(now).getTime() < new Date(latestTransitionAt).getTime()) {
+		if (latestTransitionAt && this.clock.isBefore(transitionAt, latestTransitionAt)) {
 			logger.warn("Ignoring stale stream.offline event", {
-				eventTimestamp: now,
+				eventTimestamp: transitionAt,
 				latestTransitionAt,
-				isLive: this.state.isLive,
+				stateTag: this.state._tag,
 			});
 			return;
 		}
 
-		if (!this.state.isLive) {
+		if (this.state._tag === "OfflineStream") {
 			logger.info("Ignoring duplicate stream.offline event", {
-				eventTimestamp: now,
+				eventTimestamp: transitionAt,
 				endedAt: this.state.endedAt,
 			});
 			return;
 		}
 
-		const streamSessionId = this.state.streamSessionId ?? crypto.randomUUID();
-		this.setState({
-			...this.state,
-			isLive: false,
-			endedAt: now,
-			streamSessionId,
+		const liveState = this.state;
+		this.setState(goOffline(liveState, transitionAt));
+
+		logger.info("Stream offline", {
+			timestamp: transitionAt,
+			streamSessionId: liveState.streamSessionId,
 		});
 
-		logger.info("Stream offline", { timestamp: now, streamSessionId });
-
-		await this.notifyTokenDOsOffline(now, streamSessionId);
-		await this.cancelViewerPollingSchedule();
-		this.setState({
-			...this.state,
-			streamSessionId: null,
-			viewerPollScheduleId: null,
-		});
+		const sideEffects = await Promise.allSettled([
+			this.notifyTokenDOsOffline(transitionAt, liveState.streamSessionId),
+			this.cancelViewerPollingSchedule(liveState),
+		]);
+		this.logRejectedSideEffects("stream offline", sideEffects);
 	}
 
 	/**
@@ -210,14 +194,14 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	 * Quick check if stream is live
 	 */
 	async getIsLive(): Promise<boolean> {
-		return this.state.isLive;
+		return this.state._tag === "LiveStream";
 	}
 
 	/**
 	 * Scheduled callback: polls viewer count when stream is live.
 	 */
 	async pollViewerCountTick(): Promise<void> {
-		if (!this.state.isLive) {
+		if (this.state._tag !== "LiveStream") {
 			return;
 		}
 
@@ -308,22 +292,35 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	}
 
 	private toStreamState(state: StreamLifecycleAgentState = this.state): StreamLifecycleState {
+		if (state._tag === "LiveStream") {
+			return {
+				isLive: true,
+				startedAt: state.startedAt,
+				endedAt: null,
+				peakViewerCount: state.peakViewerCount,
+			};
+		}
+
 		return {
-			isLive: state.isLive,
-			startedAt: state.startedAt,
+			isLive: false,
+			startedAt: state.lastStartedAt,
 			endedAt: state.endedAt,
 			peakViewerCount: state.peakViewerCount,
 		};
 	}
 
 	private createViewerSnapshotTimestamp(): string {
-		const nowMs = Date.now();
+		const nowMs = this.clock.now().getTime();
 		const nextMs = nowMs > this.nextViewerSnapshotAtMs ? nowMs : this.nextViewerSnapshotAtMs + 1;
 		this.nextViewerSnapshotAtMs = nextMs;
 		return new Date(nextMs).toISOString();
 	}
 
 	private async ensureViewerPollingSchedule(): Promise<void> {
+		if (this.state._tag !== "LiveStream") {
+			return;
+		}
+
 		const schedule = await this.scheduleEvery(VIEWER_POLL_INTERVAL_SECONDS, "pollViewerCountTick");
 
 		if (this.state.viewerPollScheduleId === schedule.id) {
@@ -333,12 +330,12 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 		this.setState({ ...this.state, viewerPollScheduleId: schedule.id });
 	}
 
-	private async cancelViewerPollingSchedule(): Promise<void> {
-		if (this.state.viewerPollScheduleId === null) {
+	private async cancelViewerPollingSchedule(liveState: LiveStreamAgentState): Promise<void> {
+		if (liveState.viewerPollScheduleId === null) {
 			return;
 		}
 
-		await this.cancelSchedule(this.state.viewerPollScheduleId);
+		await this.cancelSchedule(liveState.viewerPollScheduleId);
 	}
 
 	/**
@@ -364,39 +361,35 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 		return streamInfo.viewerCount;
 	}
 
-	/**
-	 * Resolve transition timestamp from upstream event metadata.
-	 * Falls back to current server time when absent or invalid.
-	 */
-	private resolveTransitionTimestamp(eventTimestamp?: string): string {
-		if (!eventTimestamp) {
-			return new Date().toISOString();
+	private logRejectedSideEffects(
+		transition: "stream online" | "stream offline",
+		results: PromiseSettledResult<unknown>[],
+	): void {
+		for (const result of results) {
+			if (result.status === "rejected") {
+				logger.error("Stream lifecycle side effect failed", {
+					transition,
+					error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+				});
+			}
 		}
-
-		const parsedMs = new Date(eventTimestamp).getTime();
-		if (Number.isNaN(parsedMs)) {
-			logger.warn("Invalid stream lifecycle event timestamp, using server time", {
-				eventTimestamp,
-			});
-			return new Date().toISOString();
-		}
-
-		return new Date(parsedMs).toISOString();
 	}
 
 	/**
 	 * Get the latest state transition timestamp from persisted stream state.
 	 */
-	private getLatestTransitionAt(
-		state: Pick<StreamLifecycleAgentState, "startedAt" | "endedAt">,
-	): string | null {
-		if (state.startedAt && state.endedAt) {
-			return new Date(state.startedAt).getTime() >= new Date(state.endedAt).getTime()
-				? state.startedAt
-				: state.endedAt;
+	private getLatestTransitionAt(state: StreamLifecycleAgentState): IsoTimestamp | null {
+		if (state._tag === "LiveStream") {
+			return state.startedAt;
 		}
 
-		return state.startedAt ?? state.endedAt ?? null;
+		if (state.lastStartedAt && state.endedAt) {
+			return this.clock.isBefore(state.lastStartedAt, state.endedAt)
+				? state.endedAt
+				: state.lastStartedAt;
+		}
+
+		return state.lastStartedAt ?? state.endedAt ?? null;
 	}
 
 	/**

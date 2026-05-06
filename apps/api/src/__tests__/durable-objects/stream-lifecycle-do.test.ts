@@ -99,10 +99,31 @@ describe("StreamLifecycleDO", () => {
 		}
 	});
 
+	it("ignores duplicate lifecycle events", async () => {
+		await stub.onStreamOnline("2026-01-22T12:00:00.000Z");
+		await stub.onStreamOnline("2026-01-22T12:30:00.000Z");
+		await stub.onStreamOffline("2026-01-22T13:00:00.000Z");
+		await stub.onStreamOffline("2026-01-22T13:30:00.000Z");
+
+		const state = await runInDurableObject(stub, (instance: StreamLifecycleDO) =>
+			instance.getStreamState(),
+		);
+
+		expect(state.status).toBe("ok");
+		if (state.status === "ok") {
+			expect(state.value).toMatchObject({
+				isLive: false,
+				startedAt: "2026-01-22T12:00:00.000Z",
+				endedAt: "2026-01-22T13:00:00.000Z",
+			});
+		}
+	});
+
 	it("ignores stale out-of-order lifecycle events", async () => {
 		await stub.onStreamOnline("2026-01-22T12:00:00.000Z");
 		await stub.onStreamOffline("2026-01-22T13:00:00.000Z");
 		await stub.onStreamOnline("2026-01-22T12:30:00.000Z");
+		await stub.onStreamOffline("2026-01-22T12:45:00.000Z");
 
 		const state = await runInDurableObject(stub, (instance: StreamLifecycleDO) =>
 			instance.getStreamState(),
