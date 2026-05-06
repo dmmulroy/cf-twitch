@@ -9,8 +9,8 @@ import { z } from "zod";
 
 import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
-import { getSongQueue } from "../lib/song-queue-client";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
+import { getSongQueue } from "../lib/song-queue-client";
 import { TwitchService } from "../services/twitch-service";
 
 import type { Env } from "../index";

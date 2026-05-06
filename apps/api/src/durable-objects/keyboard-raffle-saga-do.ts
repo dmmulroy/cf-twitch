@@ -37,6 +37,7 @@ import * as sagaSchema from "./schemas/saga.schema";
 import { type SagaStatus, sagaRuns } from "./schemas/saga.schema";
 
 import type { Env } from "../index";
+import type { KeyboardRaffleRedemption } from "../lib/channel-point-redemptions";
 
 /**
  * Params for starting a keyboard raffle saga
@@ -61,7 +62,7 @@ export const KeyboardRaffleParamsSchema = z.object({
 	redeemed_at: z.string(),
 });
 
-export type KeyboardRaffleParams = z.infer<typeof KeyboardRaffleParamsSchema>;
+export type KeyboardRaffleParams = KeyboardRaffleRedemption;
 
 /**
  * Status response for getStatus RPC

@@ -64,6 +64,14 @@ _Avoid_: Scoreboard when referring to persisted raffle standings
 A named milestone a **Viewer** can unlock through song requests, raffles, stream-session behavior, or engagement streaks.
 _Avoid_: Badge unless referring only to presentation
 
+**Achievement Definition**:
+The persisted metadata for an **Achievement**, including its id, name, threshold, trigger event, category, and scope.
+_Avoid_: Rule when referring only to stored milestone metadata
+
+**Achievement Rule**:
+Logic that interprets domain evidence and current achievement facts to decide **Achievement Progress**, unlocks, **Request Streak** changes, session resets, and side-effect intents.
+_Avoid_: Definition when referring to behavior
+
 **Achievement Progress**:
 A **Viewer**'s accumulated or session-scoped progress toward unlocking an **Achievement**.
 _Avoid_: Points, XP

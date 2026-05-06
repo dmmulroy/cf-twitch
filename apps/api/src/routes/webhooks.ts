@@ -9,8 +9,13 @@ import { Result } from "better-result";
 import { Hono } from "hono";
 import { z } from "zod";
 
+import {
+	parseKnownRewardRedemption,
+	type RewardRoutingConfig,
+} from "../lib/channel-point-redemptions";
 import { makeChatCommandExecutor } from "../lib/chat-command";
 import { getStub } from "../lib/durable-objects";
+import { RewardRoutingConfigError, UnknownRewardError } from "../lib/errors";
 import { normalizeError, withLogContext } from "../lib/logger";
 import { getUserPermission } from "../lib/permissions";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
@@ -384,74 +389,97 @@ webhooks.post("/twitch", async (c) => {
 								input_length: redemption.user_input.length,
 							});
 
-							if (c.env.SONG_REQUEST_REWARD_ID && rewardId === c.env.SONG_REQUEST_REWARD_ID) {
-								webhookLogger.info("Song request route selected", {
-									event: "webhook.twitch.redemption.route_selected",
-									redemption_id: redemption.id,
-									reward_id: rewardId,
-									saga_id: redemption.id,
-									outcome: "song_request",
-								});
-								const stub = getStub("SONG_REQUEST_SAGA_DO", redemption.id);
-								const result = await stub.start(redemption);
-								if (result.status === "error") {
-									webhookLogger.error("Song request saga failed to start", {
-										event: "webhook.twitch.redemption.song_request_saga_failed",
+							const routingConfig: RewardRoutingConfig = {
+								songRequestRewardId: c.env.SONG_REQUEST_REWARD_ID,
+								keyboardRaffleRewardId: c.env.KEYBOARD_RAFFLE_REWARD_ID,
+							};
+							const knownRedemptionResult = parseKnownRewardRedemption(redemption, routingConfig);
+
+							if (knownRedemptionResult.status === "error") {
+								if (UnknownRewardError.is(knownRedemptionResult.error)) {
+									webhookLogger.warn("Unknown reward ID, skipping redemption", {
+										event: "webhook.twitch.redemption.unknown_reward",
 										redemption_id: redemption.id,
 										reward_id: rewardId,
-										saga_id: redemption.id,
-										...result.error,
-									});
-								} else {
-									webhookLogger.info("Song request saga started", {
-										event: "webhook.twitch.redemption.song_request_saga_started",
-										redemption_id: redemption.id,
-										reward_id: rewardId,
-										saga_id: redemption.id,
+										reward_title: redemption.reward.title,
 										user_id: redemption.user_id,
 										user_display_name: redemption.user_name,
 									});
+								} else if (RewardRoutingConfigError.is(knownRedemptionResult.error)) {
+									webhookLogger.error("Reward routing config invalid", {
+										event: "webhook.twitch.redemption.routing_config_invalid",
+										redemption_id: redemption.id,
+										reward_id: rewardId,
+										config_key: knownRedemptionResult.error.configKey,
+										error_message: knownRedemptionResult.error.message,
+									});
 								}
-							} else if (
-								c.env.KEYBOARD_RAFFLE_REWARD_ID &&
-								rewardId === c.env.KEYBOARD_RAFFLE_REWARD_ID
-							) {
-								webhookLogger.info("Keyboard raffle route selected", {
-									event: "webhook.twitch.redemption.route_selected",
-									redemption_id: redemption.id,
-									reward_id: rewardId,
-									saga_id: redemption.id,
-									outcome: "keyboard_raffle",
-								});
-								const stub = getStub("KEYBOARD_RAFFLE_SAGA_DO", redemption.id);
-								const result = await stub.start(redemption);
-								if (result.status === "error") {
-									webhookLogger.error("Keyboard raffle saga failed to start", {
-										event: "webhook.twitch.redemption.keyboard_raffle_saga_failed",
+								break;
+							}
+
+							const knownRedemption = knownRedemptionResult.value;
+							switch (knownRedemption._tag) {
+								case "SongRequestRedemption": {
+									webhookLogger.info("Song request route selected", {
+										event: "webhook.twitch.redemption.route_selected",
 										redemption_id: redemption.id,
 										reward_id: rewardId,
 										saga_id: redemption.id,
-										...result.error,
+										outcome: "song_request",
 									});
-								} else {
-									webhookLogger.info("Keyboard raffle saga started", {
-										event: "webhook.twitch.redemption.keyboard_raffle_saga_started",
+									const stub = getStub("SONG_REQUEST_SAGA_DO", redemption.id);
+									const result = await stub.start(knownRedemption);
+									if (result.status === "error") {
+										webhookLogger.error("Song request saga failed to start", {
+											event: "webhook.twitch.redemption.song_request_saga_failed",
+											redemption_id: redemption.id,
+											reward_id: rewardId,
+											saga_id: redemption.id,
+											...result.error,
+										});
+									} else {
+										webhookLogger.info("Song request saga started", {
+											event: "webhook.twitch.redemption.song_request_saga_started",
+											redemption_id: redemption.id,
+											reward_id: rewardId,
+											saga_id: redemption.id,
+											user_id: redemption.user_id,
+											user_display_name: redemption.user_name,
+										});
+									}
+									break;
+								}
+
+								case "KeyboardRaffleRedemption": {
+									webhookLogger.info("Keyboard raffle route selected", {
+										event: "webhook.twitch.redemption.route_selected",
 										redemption_id: redemption.id,
 										reward_id: rewardId,
 										saga_id: redemption.id,
-										user_id: redemption.user_id,
-										user_display_name: redemption.user_name,
+										outcome: "keyboard_raffle",
 									});
+									const stub = getStub("KEYBOARD_RAFFLE_SAGA_DO", redemption.id);
+									const result = await stub.start(knownRedemption);
+									if (result.status === "error") {
+										webhookLogger.error("Keyboard raffle saga failed to start", {
+											event: "webhook.twitch.redemption.keyboard_raffle_saga_failed",
+											redemption_id: redemption.id,
+											reward_id: rewardId,
+											saga_id: redemption.id,
+											...result.error,
+										});
+									} else {
+										webhookLogger.info("Keyboard raffle saga started", {
+											event: "webhook.twitch.redemption.keyboard_raffle_saga_started",
+											redemption_id: redemption.id,
+											reward_id: rewardId,
+											saga_id: redemption.id,
+											user_id: redemption.user_id,
+											user_display_name: redemption.user_name,
+										});
+									}
+									break;
 								}
-							} else {
-								webhookLogger.warn("Unknown reward ID, skipping redemption", {
-									event: "webhook.twitch.redemption.unknown_reward",
-									redemption_id: redemption.id,
-									reward_id: rewardId,
-									reward_title: redemption.reward.title,
-									user_id: redemption.user_id,
-									user_display_name: redemption.user_name,
-								});
 							}
 							break;
 						}

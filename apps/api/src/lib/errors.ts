@@ -323,6 +323,31 @@ export class InvalidSpotifyUrlError extends TaggedError("InvalidSpotifyUrlError"
 	}
 }
 
+export class UnknownRewardError extends TaggedError("UnknownRewardError")<{
+	redemptionId: string;
+	rewardId: string;
+	rewardTitle: string;
+	message: string;
+}>() {
+	constructor(args: { redemptionId: string; rewardId: string; rewardTitle: string }) {
+		super({
+			...args,
+			message: `Unknown reward ${args.rewardId} (${args.rewardTitle}) for redemption ${args.redemptionId}`,
+		});
+	}
+}
+
+export class RewardRoutingConfigError extends TaggedError("RewardRoutingConfigError")<{
+	configKey: "SONG_REQUEST_REWARD_ID" | "KEYBOARD_RAFFLE_REWARD_ID" | "REWARD_ID_CONFLICT";
+	message: string;
+}>() {
+	constructor(args: {
+		configKey: "SONG_REQUEST_REWARD_ID" | "KEYBOARD_RAFFLE_REWARD_ID" | "REWARD_ID_CONFLICT";
+	}) {
+		super({ ...args, message: `Invalid reward routing config: ${args.configKey}` });
+	}
+}
+
 // =============================================================================
 // Song Queue Errors
 // =============================================================================

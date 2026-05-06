@@ -24,6 +24,7 @@ import {
 import { logger } from "../lib/logger";
 
 import type { Env } from "../index";
+import type { SpotifyTrackId, SpotifyTrackUri } from "../lib/spotify-track-id";
 
 // Zod schema for Spotify OAuth token response
 const SpotifyTokenResponseSchema = z.object({
@@ -226,7 +227,7 @@ export class SpotifyService {
 	 * Get track info by ID
 	 */
 	async getTrack(
-		trackId: string,
+		trackId: SpotifyTrackId,
 	): Promise<
 		Result<
 			TrackInfo,
@@ -350,7 +351,7 @@ export class SpotifyService {
 	 * guaranteed via step ID.
 	 */
 	async addToQueue(
-		trackUri: string,
+		trackUri: SpotifyTrackUri,
 	): Promise<
 		Result<
 			void,

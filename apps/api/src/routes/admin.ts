@@ -12,9 +12,9 @@ import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
 import { CommandNotFoundError, DLQItemNotFoundError } from "../lib/errors";
-import { getSongQueue } from "../lib/song-queue-client";
 import { logger } from "../lib/logger";
 import { type AppRouteEnv } from "../lib/request-context";
+import { getSongQueue } from "../lib/song-queue-client";
 
 import type { Env } from "../index";
 

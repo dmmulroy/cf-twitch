@@ -23,7 +23,6 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/saga-do/migrations";
-import { getSongQueue } from "../lib/song-queue-client";
 import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	InvalidSpotifyUrlError,
@@ -35,6 +34,12 @@ import {
 } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { SagaRunner, SagaRunnerDbError } from "../lib/saga-runner";
+import { getSongQueue } from "../lib/song-queue-client";
+import {
+	parseSpotifyTrackInput,
+	spotifyTrackUri,
+	type SpotifyTrackId,
+} from "../lib/spotify-track-id";
 import { SpotifyService, type TrackInfo } from "../services/spotify-service";
 import { TwitchService } from "../services/twitch-service";
 import { createSongRequestSuccessEvent } from "./schemas/event-bus-do.schema";
@@ -42,6 +47,7 @@ import * as sagaSchema from "./schemas/saga.schema";
 import { type SagaStatus, sagaRuns } from "./schemas/saga.schema";
 
 import type { Env } from "../index";
+import type { SongRequestRedemption } from "../lib/channel-point-redemptions";
 
 /**
  * Params for starting a song request saga
@@ -66,7 +72,7 @@ export const SongRequestParamsSchema = z.object({
 	redeemed_at: z.string(),
 });
 
-export type SongRequestParams = z.infer<typeof SongRequestParamsSchema>;
+export type SongRequestParams = SongRequestRedemption;
 
 /**
  * Status response for getStatus RPC
@@ -83,31 +89,6 @@ export interface SongRequestSagaStatus {
 interface SongRequestSagaAgentState {
 	retryScheduleId: string | null;
 	retryDueAt: string | null;
-}
-
-/**
- * Parse Spotify URL and extract track ID
- * Supports:
- * - https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh
- * - spotify:track:4iV5W9uYEdYUVa79Axb7Rh
- * - https://open.spotify.com/intl-de/track/4iV5W9uYEdYUVa79Axb7Rh?si=abc123
- */
-function parseSpotifyUrl(input: string): string | null {
-	const trimmed = input.trim();
-
-	const uriMatch = trimmed.match(/^spotify:track:([a-zA-Z0-9]+)$/);
-	if (uriMatch?.[1]) {
-		return uriMatch[1];
-	}
-
-	const urlMatch = trimmed.match(
-		/^https?:\/\/open\.spotify\.com(?:\/intl-[a-z]{2})?\/track\/([a-zA-Z0-9]+)/,
-	);
-	if (urlMatch?.[1]) {
-		return urlMatch[1];
-	}
-
-	return null;
 }
 
 /**
@@ -296,30 +277,34 @@ class _SongRequestSagaDO extends Agent<Env, SongRequestSagaAgentState> {
 			return Result.ok();
 		}
 
-		let trackId: string | undefined;
 		let trackInfo: TrackInfo | undefined;
 
-		// Step 1: Parse Spotify URL
+		// Step 1: Parse Spotify track input
 		const parseResult = await runner.executeStep("parse-spotify-url", async () => {
-			const id = parseSpotifyUrl(params.user_input);
-			if (!id) {
-				throw new InvalidSpotifyUrlError({ url: params.user_input });
+			const trackIdResult = parseSpotifyTrackInput(params.user_input);
+			if (trackIdResult.status === "error") {
+				throw trackIdResult.error;
 			}
-			logger.info("Parsed Spotify URL", { sagaId, trackId: id, input: params.user_input });
-			return { result: id };
+
+			logger.info("Parsed Spotify track input", {
+				sagaId,
+				trackId: trackIdResult.value,
+				input: params.user_input,
+			});
+			return { result: trackIdResult.value };
 		});
 
 		if (parseResult.status === "error") {
 			return this.handleStepError(parseResult.error, params);
 		}
-		trackId = parseResult.value;
+		const trackId: SpotifyTrackId = parseResult.value;
 
 		// Step 2: Get track info from Spotify
 		const trackInfoResult = await runner.executeStep(
 			"get-track-info",
 			async () => {
 				const spotifyService = new SpotifyService(this.env);
-				const result = await spotifyService.getTrack(trackId as string);
+				const result = await spotifyService.getTrack(trackId);
 
 				if (result.status === "error") {
 					const err = result.error;
@@ -403,18 +388,18 @@ class _SongRequestSagaDO extends Agent<Env, SongRequestSagaAgentState> {
 					const alreadyQueued = queueResult.value.queue.some((t) => t.id === trackId);
 					if (alreadyQueued) {
 						logger.info("Track already in Spotify queue, skipping add", { sagaId, trackId });
-						return { result: trackId as string, undoPayload: { trackId } };
+						return { result: trackId, undoPayload: { trackId } };
 					}
 				}
 
-				const result = await spotifyService.addToQueue(`spotify:track:${trackId}`);
+				const result = await spotifyService.addToQueue(spotifyTrackUri(trackId));
 
 				if (result.status === "error") {
 					throw result.error;
 				}
 
 				logger.info("Added track to Spotify queue", { sagaId, trackId });
-				return { result: trackId as string, undoPayload: { trackId } };
+				return { result: trackId, undoPayload: { trackId } };
 			},
 			async (undoPayload) => {
 				const payload = undoPayload as { trackId: string };
@@ -526,7 +511,7 @@ class _SongRequestSagaDO extends Agent<Env, SongRequestSagaAgentState> {
 					userId: params.user_id,
 					userDisplayName: params.user_name,
 					sagaId,
-					trackId: trackId ?? "",
+					trackId,
 				});
 
 				const result = await eventBusStub.publish(event);

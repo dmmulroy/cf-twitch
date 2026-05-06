@@ -10,8 +10,8 @@ import { env, fetchMock, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { SongQueueDO } from "../../durable-objects/song-queue-do";
-import { getSongQueue } from "../../lib/song-queue-client";
 import { getStub } from "../../lib/durable-objects";
+import { getSongQueue } from "../../lib/song-queue-client";
 import {
 	VALID_TOKEN_RESPONSE,
 	mockSpotifyCurrentlyPlaying,

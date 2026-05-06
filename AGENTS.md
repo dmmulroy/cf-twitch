@@ -57,6 +57,20 @@ cf-twitch/
 | `KeyboardRaffleSagaDO` | `durable-objects/keyboard-raffle-saga-do.ts` | 6-step saga orchestration     |
 | `EventBusDO`           | `durable-objects/event-bus-do.ts`            | Event routing + retry + DLQ   |
 
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `dmmulroy/cf-twitch` using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the default five-label vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a single-context domain docs layout: root `CONTEXT.md` plus `docs/adr/` when present. See `docs/agents/domain.md`.
+
 ## Project-Specific Conventions
 
 ### Database / ORM
