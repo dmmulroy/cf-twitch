@@ -123,9 +123,4 @@
 		"KEYBOARD_RAFFLE_REWARD_ID": "29afa291-244a-47a8-8be8-ded13995e83d",
 		"TWITCH_BROADCASTER_NAME": "dillon",
 	},
-	"tail_consumers": [
-		{
-			"service": "cf-twitch-tail",
-		},
-	],
 }
