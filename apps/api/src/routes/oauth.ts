@@ -5,16 +5,17 @@
  * Protected by OAUTH_SETUP_SECRET - must be provided via header or query param.
  */
 
+import { BetterMusic } from "better-music";
+import { Result } from "better-result";
 import { Hono } from "hono";
+import { SpotifyTokenExchangeError } from "~/lib/errors";
 
 import { getStub } from "../lib/durable-objects";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
-import { SpotifyService } from "../services/spotify-service";
 import { TwitchService } from "../services/twitch-service";
 
 import type { Env } from "../index";
 
-const SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize";
 const TWITCH_AUTH_URL = "https://id.twitch.tv/oauth2/authorize";
 
 /**
@@ -35,6 +36,20 @@ const TWITCH_SCOPES = [
 	"user:read:chat",
 	"user:write:chat",
 ].join(" ");
+
+const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
+const adapter = {
+	get: async (_key: string) => spotifyStub.getValidToken(),
+	set: async (_key: string, value: string) => {
+		await spotifyStub.setTokens(value);
+	},
+};
+
+export let betterMusicClient = BetterMusic.withPKCE(adapter, [
+	"user-modify-playback-state",
+	"user-read-playback-state",
+	"user-read-currently-playing",
+]);
 
 const oauth = new Hono<AppRouteEnv<Env>>();
 
@@ -95,11 +110,7 @@ oauth.get("/spotify/authorize", (c) => {
 	const origin = getOrigin(c);
 	const redirectUri = `${origin}/oauth/spotify/callback`;
 
-	const authUrl = new URL(SPOTIFY_AUTH_URL);
-	authUrl.searchParams.set("client_id", c.env.SPOTIFY_CLIENT_ID);
-	authUrl.searchParams.set("response_type", "code");
-	authUrl.searchParams.set("redirect_uri", redirectUri);
-	authUrl.searchParams.set("scope", SPOTIFY_SCOPES);
+	const authUrl = betterMusicClient.auth.getAuthorizationUrl();
 
 	routeLogger.info("Redirecting to Spotify authorization", {
 		event: "oauth.spotify.authorize.redirecting",
@@ -120,6 +131,7 @@ oauth.get("/spotify/callback", async (c) => {
 		component: "route",
 	});
 	const code = c.req.query("code");
+	const state = c.req.query("state");
 	const error = c.req.query("error");
 	const origin = getOrigin(c);
 	const redirectUri = `${origin}/oauth/spotify/callback`;
@@ -152,14 +164,32 @@ oauth.get("/spotify/callback", async (c) => {
 		return c.json({ error: "No authorization code received" }, 400);
 	}
 
+	if (!state) {
+		routeLogger.warn("Spotify callback missing state", {
+			event: "oauth.spotify.callback.missing_state",
+			code_present: false,
+			error_present: false,
+			redirect_uri: redirectUri,
+		});
+		return c.json({ error: "No state received" });
+	}
+
 	routeLogger.info("Spotify token exchange started", {
 		event: "oauth.spotify.callback.exchange_started",
 		code_present: true,
 		redirect_uri: redirectUri,
 	});
 
-	const spotifyService = new SpotifyService(c.env);
-	const tokensResult = await spotifyService.exchangeToken(code, redirectUri);
+	const tokensResult = await Result.tryPromise({
+		try: async () => {
+			return await betterMusicClient.auth.exchangeCodeForTokens({ code: code, state: state });
+		},
+		catch: (cause) =>
+			new SpotifyTokenExchangeError({
+				status: 0,
+				message: `PKCE token exchange failed: ${String(cause)}`,
+			}),
+	});
 
 	if (tokensResult.status === "error") {
 		routeLogger.error("Spotify token exchange failed", {
@@ -170,25 +200,15 @@ oauth.get("/spotify/callback", async (c) => {
 		return c.json({ error: tokensResult.error.message, code: tokensResult.error._tag }, 500);
 	}
 
-	const tokens = tokensResult.value;
-	const stub = getStub("SPOTIFY_TOKEN_DO");
-	await stub.setTokens(tokens);
-
-	routeLogger.info("Spotify tokens stored", {
-		event: "oauth.spotify.callback.tokens_stored",
-		scope_count: tokens.scope?.split(" ").filter(Boolean).length ?? 0,
-		expires_in: tokens.expires_in,
-	});
 	routeLogger.info("Spotify OAuth callback completed", {
 		event: "oauth.spotify.callback.completed",
-		scope_count: tokens.scope?.split(" ").filter(Boolean).length ?? 0,
-		expires_in: tokens.expires_in,
+		scope_count: SPOTIFY_SCOPES.split(" ").filter(Boolean).length ?? 0,
 	});
 
 	return c.json({
 		success: true,
 		message: "Spotify authorization complete",
-		scopes: tokens.scope,
+		scopes: SPOTIFY_SCOPES,
 	});
 });
 
