@@ -8,7 +8,11 @@
 import { Hono } from "hono";
 
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
-import { TwitchService, type EventSubSubscriptionType } from "../services/twitch-service";
+import {
+	TwitchService,
+	type EventSubSubscription,
+	type EventSubSubscriptionType,
+} from "../services/twitch-service";
 
 import type { Env } from "../index";
 
@@ -18,6 +22,21 @@ interface SubscriptionConfig {
 	type: EventSubSubscriptionType;
 	version: string;
 	condition: Record<string, string>;
+}
+
+function hasMatchingSubscription(
+	existing: EventSubSubscription[],
+	config: SubscriptionConfig,
+	callbackUrl: string,
+): boolean {
+	return existing.some((sub) => {
+		if (sub.type !== config.type) return false;
+		if (sub.version !== config.version) return false;
+		if (sub.status !== "enabled") return false;
+		if (sub.transport.callback !== callbackUrl) return false;
+
+		return Object.entries(config.condition).every(([key, value]) => sub.condition[key] === value);
+	});
 }
 
 /**
@@ -77,13 +96,48 @@ eventsub.post("/setup", async (c) => {
 				user_id: TWITCH_BROADCASTER_ID, // Bot user ID (using broadcaster for now)
 			},
 		},
+		{
+			type: "channel.raid",
+			version: "1",
+			condition: {
+				to_broadcaster_user_id: TWITCH_BROADCASTER_ID,
+			},
+		},
 	];
 
+	const existingResult = await twitchService.listEventSubSubscriptions();
+	if (existingResult.status === "error") {
+		routeLogger.error("Failed to list existing EventSub subscriptions", {
+			event: "eventsub.setup.list_existing_failed",
+			...existingResult.error,
+		});
+		return c.json(
+			{
+				success: false,
+				message: existingResult.error.message,
+				code: existingResult.error._tag,
+			},
+			500,
+		);
+	}
+
 	const results = [];
+	const skipped = [];
 	const errors = [];
 
 	// Create each subscription
 	for (const config of subscriptions) {
+		if (hasMatchingSubscription(existingResult.value, config, callbackUrl)) {
+			skipped.push(config);
+			routeLogger.info("Skipping existing EventSub subscription", {
+				event: "eventsub.subscription.create.skipped_existing",
+				subscription_type: config.type,
+				version: config.version,
+				callback_url: callbackUrl,
+			});
+			continue;
+		}
+
 		routeLogger.info("Creating EventSub subscription", {
 			event: "eventsub.subscription.create.started",
 			subscription_type: config.type,
@@ -127,6 +181,7 @@ eventsub.post("/setup", async (c) => {
 		callback_url: callbackUrl,
 		subscription_count: subscriptions.length,
 		created_count: results.length,
+		skipped_count: skipped.length,
 		failed_count: errors.length,
 	});
 
@@ -136,6 +191,7 @@ eventsub.post("/setup", async (c) => {
 				success: false,
 				message: "Some subscriptions failed to create",
 				created: results,
+				skipped,
 				errors,
 			},
 			500,
@@ -144,8 +200,9 @@ eventsub.post("/setup", async (c) => {
 
 	return c.json({
 		success: true,
-		message: "All EventSub subscriptions created successfully",
+		message: "All EventSub subscriptions are configured",
 		subscriptions: results,
+		skipped,
 	});
 });
 

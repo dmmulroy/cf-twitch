@@ -16,6 +16,7 @@ import {
 	TwitchParseError,
 	TwitchRateLimitError,
 	TwitchRedemptionUpdateError,
+	TwitchShoutoutCreateError,
 	TwitchSubscriptionCreateError,
 	TwitchSubscriptionDeleteError,
 	TwitchTokenExchangeError,
@@ -94,7 +95,8 @@ export type EventSubSubscriptionType =
 	| "stream.online"
 	| "stream.offline"
 	| "channel.channel_points_custom_reward_redemption.add"
-	| "channel.chat.message";
+	| "channel.chat.message"
+	| "channel.raid";
 
 export interface EventSubSubscription {
 	id: string;
@@ -102,6 +104,10 @@ export interface EventSubSubscription {
 	type: string;
 	version: string;
 	condition: Record<string, unknown>;
+	transport: {
+		method: string;
+		callback?: string;
+	};
 }
 
 /** Errors that can occur during Twitch operations */
@@ -425,6 +431,7 @@ export class TwitchService {
 			type: subscription.type,
 			version: subscription.version,
 			condition: subscription.condition,
+			transport: subscription.transport,
 		});
 	}
 
@@ -503,6 +510,7 @@ export class TwitchService {
 				type: sub.type,
 				version: sub.version,
 				condition: sub.condition,
+				transport: sub.transport,
 			})),
 		);
 	}
@@ -574,11 +582,9 @@ export class TwitchService {
 				try: async () => {
 					const response = await fetch("https://api.twitch.tv/helix/chat/messages", {
 						method: "POST",
-						headers: {
-							"Client-ID": this.env.TWITCH_CLIENT_ID,
-							Authorization: `Bearer ${accessToken}`,
+						headers: this.userTokenHeaders(accessToken, {
 							"Content-Type": "application/json",
-						},
+						}),
 						body: JSON.stringify({
 							broadcaster_id: this.env.TWITCH_BROADCASTER_ID,
 							sender_id: this.env.TWITCH_BROADCASTER_ID,
@@ -634,9 +640,72 @@ export class TwitchService {
 	}
 
 	/**
-	 * Update a channel points redemption status
-	 * Uses Result.tryPromise with automatic retry and rate limit handling
+	 * Create a native Twitch shoutout from the broadcaster chat context.
+	 * Uses Result.tryPromise with automatic retry and rate limit handling.
 	 */
+	async createShoutout(toBroadcasterId: string) {
+		const tokenResult = await this.getToken();
+		if (tokenResult.status === "error") {
+			return Result.err(tokenResult.error);
+		}
+		const accessToken = tokenResult.value;
+
+		return Result.tryPromise(
+			{
+				try: async () => {
+					const url = new URL("https://api.twitch.tv/helix/chat/shoutouts");
+					url.searchParams.set("from_broadcaster_id", this.env.TWITCH_BROADCASTER_ID);
+					url.searchParams.set("to_broadcaster_id", toBroadcasterId);
+					url.searchParams.set("moderator_id", this.env.TWITCH_BROADCASTER_ID);
+
+					const response = await fetch(url, {
+						method: "POST",
+						headers: this.userTokenHeaders(accessToken),
+					});
+
+					if (response.status === 204) return;
+
+					if (response.status === 429) {
+						const retryAfter = response.headers.get("Retry-After");
+						throw new TwitchRateLimitError({
+							retryAfterMs: retryAfter ? Number.parseInt(retryAfter, 10) * 1000 : 120_000,
+						});
+					}
+
+					const errorBody = await response.text();
+
+					if (response.status >= 400 && response.status < 500) {
+						throw new TwitchShoutoutCreateError({
+							status: response.status,
+							toBroadcasterId,
+							errorBody,
+						});
+					}
+
+					throw new TwitchNetworkError({
+						status: response.status,
+						context: "createShoutout",
+					});
+				},
+				catch: (cause) => {
+					if (
+						TwitchRateLimitError.is(cause) ||
+						TwitchShoutoutCreateError.is(cause) ||
+						TwitchNetworkError.is(cause)
+					) {
+						return cause;
+					}
+
+					return new TwitchNetworkError({
+						status: 0,
+						context: `createShoutout: ${String(cause)}`,
+					});
+				},
+			},
+			{ retry: { times: 3, delayMs: 1000, backoff: "exponential" } },
+		);
+	}
+
 	async updateRedemptionStatus(
 		rewardId: string,
 		redemptionId: string,
@@ -655,11 +724,9 @@ export class TwitchService {
 						`https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions?broadcaster_id=${this.env.TWITCH_BROADCASTER_ID}&reward_id=${rewardId}&id=${redemptionId}`,
 						{
 							method: "PATCH",
-							headers: {
-								"Client-ID": this.env.TWITCH_CLIENT_ID,
-								Authorization: `Bearer ${accessToken}`,
+							headers: this.userTokenHeaders(accessToken, {
 								"Content-Type": "application/json",
-							},
+							}),
 							body: JSON.stringify({ status }),
 						},
 					);
@@ -711,6 +778,17 @@ export class TwitchService {
 			},
 			{ retry: { times: 3, delayMs: 1000, backoff: "exponential" } },
 		);
+	}
+
+	/**
+	 * Build shared auth headers for Twitch Helix endpoints that use the broadcaster user token.
+	 * Chat messages, native shoutouts, and redemption updates all require this same auth context.
+	 */
+	private userTokenHeaders(accessToken: string, headers?: HeadersInit): Headers {
+		const result = new Headers(headers);
+		result.set("Client-ID", this.env.TWITCH_CLIENT_ID);
+		result.set("Authorization", `Bearer ${accessToken}`);
+		return result;
 	}
 
 	/**

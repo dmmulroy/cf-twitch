@@ -145,7 +145,7 @@ export function writeChatCommandMetric(
  * @param sagaType - Supported saga type value.
  * @returns A supported saga metric type.
  */
-export type SagaType = "song-request-saga" | "keyboard-raffle-saga";
+export type SagaType = "song-request-saga" | "keyboard-raffle-saga" | "raid-shoutout-saga";
 
 /**
  * Saga lifecycle event identifier.

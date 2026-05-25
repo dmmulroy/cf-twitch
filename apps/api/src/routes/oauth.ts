@@ -34,6 +34,7 @@ const TWITCH_SCOPES = [
 	"channel:manage:redemptions",
 	"user:read:chat",
 	"user:write:chat",
+	"moderator:manage:shoutouts",
 ].join(" ");
 
 const oauth = new Hono<AppRouteEnv<Env>>();

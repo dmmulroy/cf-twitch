@@ -64,6 +64,10 @@
 				"name": "COMMANDS_DO",
 				"class_name": "CommandsDO",
 			},
+			{
+				"name": "RAID_SHOUTOUT_SAGA_DO",
+				"class_name": "RaidShoutoutSagaDO",
+			},
 		],
 	},
 	"migrations": [
@@ -101,6 +105,10 @@
 		{
 			"tag": "v7",
 			"new_sqlite_classes": ["CommandsDO"],
+		},
+		{
+			"tag": "v8",
+			"new_sqlite_classes": ["RaidShoutoutSagaDO"],
 		},
 	],
 	"analytics_engine_datasets": [

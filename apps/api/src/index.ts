@@ -123,6 +123,7 @@ export { SongRequestSagaDO } from "./durable-objects/song-request-saga-do";
 export { KeyboardRaffleSagaDO } from "./durable-objects/keyboard-raffle-saga-do";
 export { EventBusDO } from "./durable-objects/event-bus-do";
 export { CommandsDO } from "./durable-objects/commands-do";
+export { RaidShoutoutSagaDO } from "./durable-objects/raid-shoutout-saga-do";
 
 // Service exports
 export { SpotifyService } from "./services/spotify-service";

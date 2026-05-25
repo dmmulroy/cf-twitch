@@ -13,7 +13,13 @@ export const VALID_TOKEN_RESPONSE: TwitchTokenResponse = {
 	token_type: "bearer",
 	expires_in: 14400,
 	refresh_token: "test-twitch-refresh-token",
-	scope: ["channel:read:redemptions", "channel:manage:redemptions", "chat:write"],
+	scope: [
+		"channel:read:redemptions",
+		"channel:manage:redemptions",
+		"user:read:chat",
+		"user:write:chat",
+		"moderator:manage:shoutouts",
+	],
 };
 
 /**

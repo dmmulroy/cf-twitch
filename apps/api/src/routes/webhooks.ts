@@ -95,6 +95,16 @@ const ChatMessageEventSchema = z.object({
 	badges: z.array(ChatBadgeSchema),
 });
 
+const RaidEventSchema = z.object({
+	from_broadcaster_user_id: z.string(),
+	from_broadcaster_user_login: z.string(),
+	from_broadcaster_user_name: z.string(),
+	to_broadcaster_user_id: z.string(),
+	to_broadcaster_user_login: z.string(),
+	to_broadcaster_user_name: z.string(),
+	viewers: z.number(),
+});
+
 const EventSubNotificationSchema = z.object({
 	subscription: z.object({
 		id: z.string(),
@@ -481,6 +491,51 @@ webhooks.post("/twitch", async (c) => {
 									break;
 								}
 							}
+							break;
+						}
+
+						case "channel.raid": {
+							const raidResult = RaidEventSchema.safeParse(event);
+							if (!raidResult.success) {
+								webhookLogger.error("Invalid raid event payload", {
+									event: "webhook.twitch.raid.payload_invalid",
+									message_id: messageId,
+									error: raidResult.error,
+								});
+								break;
+							}
+
+							const raid = raidResult.data;
+							webhookLogger.info("Raid received", {
+								event: "webhook.twitch.raid.received",
+								message_id: messageId,
+								from_broadcaster_user_id: raid.from_broadcaster_user_id,
+								from_broadcaster_user_login: raid.from_broadcaster_user_login,
+								from_broadcaster_user_name: raid.from_broadcaster_user_name,
+								viewers: raid.viewers,
+							});
+
+							const stub = getStub("RAID_SHOUTOUT_SAGA_DO", messageId);
+							const result = await stub.start({
+								messageId,
+								receivedAt: timestamp,
+								raider: {
+									userId: raid.from_broadcaster_user_id,
+									login: raid.from_broadcaster_user_login,
+									displayName: raid.from_broadcaster_user_name,
+								},
+								viewers: raid.viewers,
+							});
+
+							if (result.status === "error") {
+								webhookLogger.error("Raid shoutout saga failed", {
+									event: "webhook.twitch.raid.shoutout_saga_failed",
+									message_id: messageId,
+									error_tag: result.error._tag,
+									error_message: result.error.message,
+								});
+							}
+
 							break;
 						}
 

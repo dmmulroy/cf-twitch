@@ -253,6 +253,20 @@ export class TwitchChatSendError extends TaggedError("TwitchChatSendError")<{
 	}
 }
 
+export class TwitchShoutoutCreateError extends TaggedError("TwitchShoutoutCreateError")<{
+	status: number;
+	toBroadcasterId: string;
+	errorBody: string;
+	message: string;
+}>() {
+	constructor(args: { status: number; toBroadcasterId: string; errorBody: string }) {
+		super({
+			...args,
+			message: `Failed to create Twitch shoutout for ${args.toBroadcasterId}: ${args.status} - ${args.errorBody}`,
+		});
+	}
+}
+
 export class TwitchRedemptionUpdateError extends TaggedError("TwitchRedemptionUpdateError")<{
 	rewardId: string;
 	redemptionId: string;
@@ -289,6 +303,7 @@ export type TwitchApiError =
 	| TwitchSubscriptionCreateError
 	| TwitchSubscriptionDeleteError
 	| TwitchChatSendError
+	| TwitchShoutoutCreateError
 	| TwitchRedemptionUpdateError
 	| TwitchTokenExchangeError;
 
