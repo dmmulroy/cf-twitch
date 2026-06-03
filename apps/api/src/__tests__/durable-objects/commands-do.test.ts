@@ -39,6 +39,26 @@ describe("CommandsDO", () => {
 		if (projectResult.status === "ok") {
 			expect(projectResult.value.valueSourceName).toBe("today");
 		}
+
+		const dotfilesResult = await stub.getCommand("df");
+		expect(dotfilesResult.status).toBe("ok");
+		if (dotfilesResult.status === "ok") {
+			expect(dotfilesResult.value.name).toBe("dotfiles");
+			expect(dotfilesResult.value.aliases).toContain("df");
+		}
+
+		const planResult = await stub.getCommand("plan");
+		expect(planResult.status).toBe("ok");
+		if (planResult.status === "ok") {
+			expect(planResult.value.responseType).toBe("static");
+			expect(planResult.value.permission).toBe("everyone");
+		}
+
+		const planValueResult = await stub.getCommandValue("plan");
+		expect(planValueResult.status).toBe("ok");
+		if (planValueResult.status === "ok") {
+			expect(planValueResult.value).toBe("Plannotator: https://plannotator.ai");
+		}
 	});
 
 	it("creates, updates, and deletes runtime commands", async () => {

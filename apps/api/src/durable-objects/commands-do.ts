@@ -75,6 +75,7 @@ export interface CommandsAgentState {
 	commandsByName: Record<string, Command>;
 	valuesByName: Record<string, z.infer<typeof CommandValueStateSchema>>;
 	countersByName: Record<string, z.infer<typeof CommandCounterStateSchema>>;
+	appliedMigrations?: string[];
 }
 
 export const CreateCommandInputSchema = z.object({
@@ -117,6 +118,34 @@ export type UpdateCommandInput = z.infer<typeof UpdateCommandInputSchema>;
 
 type CommandValueState = z.infer<typeof CommandValueStateSchema>;
 type CommandCounterState = z.infer<typeof CommandCounterStateSchema>;
+
+function createPlanCommandInput(now: string): CreateCommandInput {
+	return {
+		name: "plan",
+		description: "Shows Plannotator link",
+		category: "info",
+		responseType: "static",
+		permission: "everyone",
+		initialValue: "Plannotator: https://plannotator.ai",
+		createdAt: now,
+	};
+}
+
+const DefaultCommandMigrations = [
+	{
+		id: "2026-05-27-add-plan-command",
+		kind: "create",
+		createInput: createPlanCommandInput,
+	},
+	{
+		id: "2026-05-27-add-df-dotfiles-alias",
+		kind: "add-alias",
+		commandName: "dotfiles",
+		alias: "df",
+	},
+] as const;
+
+const DefaultCommandMigrationIds = DefaultCommandMigrations.map((migration) => migration.id);
 
 function createDefaultCommandInputs(now: string): CreateCommandInput[] {
 	return [
@@ -181,6 +210,7 @@ function createDefaultCommandInputs(now: string): CreateCommandInput[] {
 			category: "info",
 			responseType: "static",
 			permission: "everyone",
+			aliases: ["df"],
 			initialValue:
 				"My dotfiles can be found here: https://github.com/dmmulroy/.dotfiles !neovim for a youtube walkthrough of my neovim config.",
 			createdAt: now,
@@ -209,6 +239,7 @@ function createDefaultCommandInputs(now: string): CreateCommandInput[] {
 			writePermission: "moderator",
 			createdAt: now,
 		},
+		createPlanCommandInput(now),
 		{
 			name: "achievements",
 			description: "Shows user's unlocked achievements",
@@ -451,6 +482,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		commandsByName: {},
 		valuesByName: {},
 		countersByName: {},
+		appliedMigrations: [],
 	};
 
 	constructor(ctx: AgentContext, env: Env) {
@@ -464,6 +496,15 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 				logger.error("Failed to bootstrap default commands state", {
 					error: bootstrapResult.error.message,
 					operation: bootstrapResult.error.operation,
+				});
+				return;
+			}
+
+			const migrationResult = this.applyDefaultCommandMigrations();
+			if (migrationResult.status === "error") {
+				logger.error("Failed to apply default command migrations", {
+					error: migrationResult.error.message,
+					operation: migrationResult.error.operation,
 				});
 			}
 		});
@@ -1104,47 +1145,67 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		}
 
 		const now = new Date().toISOString();
-		const commandsByName: Record<string, Command> = {};
-		const valuesByName: Record<string, CommandValueState> = {};
-		const countersByName: Record<string, CommandCounterState> = {};
+		let nextState: CommandsAgentState = {
+			revision: 1,
+			commandsByName: {},
+			valuesByName: {},
+			countersByName: {},
+			appliedMigrations: [...DefaultCommandMigrationIds],
+		};
 
 		for (const input of createDefaultCommandInputs(now)) {
-			const command = this.buildCommandDefinition(input);
-			commandsByName[command.name] = command;
+			nextState = this.addCommandInputToState(nextState, input, now);
+		}
 
-			if (
-				command.valueSourceName !== null &&
-				input.initialValue !== null &&
-				input.initialValue !== undefined
-			) {
-				valuesByName[command.valueSourceName] = {
-					value: input.initialValue,
-					updatedAt: now,
-					updatedBy: null,
-				};
+		return this.persistState(nextState, "bootstrapDefaultState");
+	}
+
+	private applyDefaultCommandMigrations(): Result<void, CommandsDbError> {
+		const now = new Date().toISOString();
+		let nextState: CommandsAgentState = {
+			...this.state,
+			appliedMigrations: this.state.appliedMigrations ?? [],
+		};
+		let changed = this.state.appliedMigrations === undefined;
+
+		for (const migration of DefaultCommandMigrations) {
+			if (nextState.appliedMigrations?.includes(migration.id) === true) {
+				continue;
 			}
 
-			const counterName = command.counterSourceName;
-			if (
-				counterName !== null &&
-				input.initialCounter !== null &&
-				input.initialCounter !== undefined
-			) {
-				countersByName[counterName] = {
-					count: input.initialCounter,
-					updatedAt: now,
-				};
+			if (migration.kind === "create") {
+				const input = migration.createInput(now);
+				if (this.resolveCommandInState(nextState, input.name) === undefined) {
+					nextState = this.addCommandInputToState(nextState, input, now);
+				}
+			} else if (migration.kind === "add-alias") {
+				const command = this.resolveCommandInState(nextState, migration.commandName);
+				if (
+					command !== undefined &&
+					!command.aliases.includes(migration.alias) &&
+					this.resolveCommandInState(nextState, migration.alias) === undefined
+				) {
+					nextState = this.addCommandAliasToState(nextState, command.name, migration.alias);
+				}
 			}
+
+			nextState = {
+				...nextState,
+				appliedMigrations: [...(nextState.appliedMigrations ?? []), migration.id],
+			};
+			changed = true;
+		}
+
+		if (!changed) {
+			return Result.ok();
 		}
 
 		return this.persistState(
 			{
-				revision: 1,
-				commandsByName,
-				valuesByName: this.pruneValues(commandsByName, valuesByName),
-				countersByName: this.pruneCounters(commandsByName, countersByName),
+				...nextState,
+				revision: this.state.revision + 1,
 			},
-			"bootstrapDefaultState",
+			"applyDefaultCommandMigrations",
 		);
 	}
 
@@ -1191,12 +1252,16 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	}
 
 	private resolveCommand(name: string): Command | undefined {
-		const direct = this.state.commandsByName[name];
+		return this.resolveCommandInState(this.state, name);
+	}
+
+	private resolveCommandInState(state: CommandsAgentState, name: string): Command | undefined {
+		const direct = state.commandsByName[name];
 		if (direct !== undefined) {
 			return direct;
 		}
 
-		for (const command of Object.values(this.state.commandsByName)) {
+		for (const command of Object.values(state.commandsByName)) {
 			if (command.aliases.includes(name)) {
 				return command;
 			}
@@ -1207,6 +1272,78 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 
 	private getCounterStorageName(command: Command): string {
 		return command.counterSourceName ?? command.name;
+	}
+
+	private addCommandInputToState(
+		state: CommandsAgentState,
+		input: CreateCommandInput,
+		now: string,
+	): CommandsAgentState {
+		const command = this.buildCommandDefinition(input);
+		const nextCommandsByName = {
+			...state.commandsByName,
+			[command.name]: command,
+		};
+		let nextValuesByName = state.valuesByName;
+		if (
+			command.valueSourceName !== null &&
+			input.initialValue !== null &&
+			input.initialValue !== undefined
+		) {
+			nextValuesByName = {
+				...state.valuesByName,
+				[command.valueSourceName]: {
+					value: input.initialValue,
+					updatedAt: now,
+					updatedBy: null,
+				},
+			};
+		}
+
+		let nextCountersByName = state.countersByName;
+		const counterName = command.counterSourceName;
+		if (
+			counterName !== null &&
+			input.initialCounter !== null &&
+			input.initialCounter !== undefined
+		) {
+			nextCountersByName = {
+				...state.countersByName,
+				[counterName]: {
+					count: input.initialCounter,
+					updatedAt: now,
+				},
+			};
+		}
+
+		return {
+			...state,
+			commandsByName: nextCommandsByName,
+			valuesByName: this.pruneValues(nextCommandsByName, nextValuesByName),
+			countersByName: this.pruneCounters(nextCommandsByName, nextCountersByName),
+		};
+	}
+
+	private addCommandAliasToState(
+		state: CommandsAgentState,
+		commandName: string,
+		alias: string,
+	): CommandsAgentState {
+		const command = state.commandsByName[commandName];
+		if (command === undefined) {
+			return state;
+		}
+
+		return {
+			...state,
+			commandsByName: {
+				...state.commandsByName,
+				[command.name]: {
+					...command,
+					aliases: [...command.aliases, alias],
+				},
+			},
+		};
 	}
 
 	private buildCommandDefinition(input: CreateCommandInput): Command {
