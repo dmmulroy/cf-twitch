@@ -10,6 +10,7 @@ import api from "./routes/api";
 import eventsub from "./routes/eventsub-setup";
 import oauth from "./routes/oauth";
 import overlay from "./routes/overlay";
+import profile from "./routes/profile";
 import stats from "./routes/stats";
 import webhooks from "./routes/webhooks";
 
@@ -102,6 +103,9 @@ app.route("/api/admin", admin);
 
 // Mount overlay routes
 app.route("/overlay", overlay);
+
+// Mount profile route
+app.route("/profile", profile);
 
 // Health check
 app.get("/health", (c) => {
