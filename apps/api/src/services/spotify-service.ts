@@ -7,15 +7,15 @@
 
 import { Result } from "better-result";
 import { z } from "zod";
+import { betterMusicClient } from "~/routes/oauth";
 
 import { getStub } from "../lib/durable-objects";
 import {
 	DurableObjectError,
+	SpotifyInvalidTrackError,
 	SpotifyNetworkError,
 	SpotifyNoActiveDeviceError,
 	SpotifyParseError,
-	SpotifyRateLimitError,
-	SpotifyTokenExchangeError,
 	SpotifyTrackNotFoundError,
 	SpotifyUnauthorizedError,
 	type SpotifyApiError,
@@ -61,12 +61,6 @@ const SpotifyTrackSchema = z.object({
 
 export type SpotifyTrack = z.infer<typeof SpotifyTrackSchema>;
 
-// Zod schema for currently playing response
-const CurrentlyPlayingSchema = z.object({
-	is_playing: z.boolean(),
-	item: SpotifyTrackSchema.nullable(),
-});
-
 // Zod schema for queue response
 const SpotifyQueueSchema = z.object({
 	currently_playing: SpotifyTrackSchema.nullable(),
@@ -81,10 +75,6 @@ const SpotifyDeviceSchema = z.object({
 	is_active: z.boolean(),
 	name: z.string(),
 	type: z.string(),
-});
-
-const SpotifyDevicesResponseSchema = z.object({
-	devices: z.array(SpotifyDeviceSchema),
 });
 
 export type SpotifyDevice = z.infer<typeof SpotifyDeviceSchema>;
@@ -140,191 +130,35 @@ export class SpotifyService {
 	constructor(public env: Env) {}
 
 	/**
-	 * Exchange OAuth authorization code for access/refresh tokens
-	 */
-	async exchangeToken(
-		code: string,
-		redirectUri: string,
-	): Promise<Result<SpotifyTokenResponse, SpotifyTokenExchangeError | SpotifyParseError>> {
-		logger.info("Exchanging Spotify authorization code for tokens", {
-			redirect_uri: redirectUri,
-			component: "service",
-		});
-
-		const fetchResult = await Result.tryPromise({
-			try: () =>
-				fetch("https://accounts.spotify.com/api/token", {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/x-www-form-urlencoded",
-						Authorization: `Basic ${btoa(`${this.env.SPOTIFY_CLIENT_ID}:${this.env.SPOTIFY_CLIENT_SECRET}`)}`,
-					},
-					body: new URLSearchParams({
-						grant_type: "authorization_code",
-						code,
-						redirect_uri: redirectUri,
-					}),
-				}),
-			catch: (cause) =>
-				new SpotifyTokenExchangeError({
-					status: 0,
-					message: `Network error: ${String(cause)}`,
-				}),
-		});
-
-		if (fetchResult.status === "error") {
-			logger.error("Spotify token exchange network error", { error: fetchResult.error.message });
-			return Result.err(fetchResult.error);
-		}
-
-		const response = fetchResult.value;
-
-		if (!response.ok) {
-			const errorText = await response.text();
-			logger.error("Spotify token exchange failed", {
-				status: response.status,
-				error: errorText,
-			});
-			return Result.err(
-				new SpotifyTokenExchangeError({ status: response.status, message: errorText }),
-			);
-		}
-
-		// Parse response with Zod
-		const jsonResult = await Result.tryPromise({
-			try: () => response.json(),
-			catch: (cause) =>
-				new SpotifyParseError({ context: "token exchange", parseError: String(cause) }),
-		});
-
-		if (jsonResult.status === "error") {
-			return Result.err(jsonResult.error);
-		}
-
-		const parsed = SpotifyTokenResponseSchema.safeParse(jsonResult.value);
-
-		if (!parsed.success) {
-			logger.error("Failed to parse Spotify token response", {
-				error: parsed.error.message,
-				component: "service",
-			});
-			return Result.err(
-				new SpotifyParseError({ context: "token exchange", parseError: parsed.error.message }),
-			);
-		}
-
-		logger.info("Spotify token exchange succeeded", {
-			event: "spotify.exchange_token.succeeded",
-			component: "service",
-			redirect_uri: redirectUri,
-			expires_in: parsed.data.expires_in,
-			scope_count: parsed.data.scope?.split(" ").filter(Boolean).length ?? 0,
-		});
-		return Result.ok(parsed.data);
-	}
-
-	/**
 	 * Get track info by ID
 	 */
 	async getTrack(
 		trackId: SpotifyTrackId,
-	): Promise<
-		Result<
-			TrackInfo,
-			| DurableObjectError
-			| SpotifyTrackNotFoundError
-			| SpotifyRateLimitError
-			| SpotifyUnauthorizedError
-			| SpotifyNetworkError
-			| SpotifyParseError
-			| TokenError
-		>
-	> {
-		const tokenResult = await this.getToken();
-		if (tokenResult.status === "error") {
-			return Result.err(tokenResult.error);
-		}
-		const token = tokenResult.value;
-
+	): Promise<Result<TrackInfo, SpotifyTrackNotFoundError | SpotifyInvalidTrackError>> {
 		logger.info("Spotify get track started", {
 			event: "spotify.get_track.started",
 			component: "service",
 			track_id: trackId,
 		});
-		const fetchResult = await Result.tryPromise({
-			try: () =>
-				fetch(`https://api.spotify.com/v1/tracks/${trackId}`, {
-					headers: {
-						Authorization: `Bearer ${token}`,
-					},
-				}),
-			catch: (cause) =>
-				new SpotifyNetworkError({ status: 0, context: `getTrack: ${String(cause)}` }),
+
+		const getTrackResult = await Result.tryPromise({
+			try: async () => {
+				return await betterMusicClient.client.track.get({ id: trackId });
+			},
+			catch: () => {
+				logger.warn("Failed to get track", { trackId });
+				return Result.err(new SpotifyTrackNotFoundError({ trackId }));
+			},
 		});
 
-		if (fetchResult.status === "error") {
-			logger.error("Spotify getTrack network error", { trackId, error: fetchResult.error.message });
-			return Result.err(fetchResult.error);
-		}
-
-		const response = fetchResult.value;
-
-		// Handle 404 - track not found
-		if (response.status === 404) {
-			logger.warn("Spotify track not found", { trackId });
-			return Result.err(new SpotifyTrackNotFoundError({ trackId }));
-		}
-
-		// Handle 429 - rate limited
-		if (response.status === 429) {
-			const retryAfter = response.headers.get("Retry-After");
-			const retryAfterMs = retryAfter ? Number.parseInt(retryAfter, 10) * 1000 : 1000;
-			logger.warn("Spotify rate limited", { trackId, retryAfterMs });
-			return Result.err(new SpotifyRateLimitError({ retryAfterMs }));
-		}
-
-		// Handle 401 - unauthorized
-		if (response.status === 401) {
-			logger.error("Spotify unauthorized for getTrack", { trackId });
-			return Result.err(new SpotifyUnauthorizedError());
-		}
-
-		// Handle other errors
-		if (!response.ok) {
-			logger.error("Spotify getTrack failed", {
-				status: response.status,
+		if (getTrackResult.status === "error") {
+			logger.error("Spotify getTrack error", {
 				trackId,
 			});
-			return Result.err(new SpotifyNetworkError({ status: response.status, context: "getTrack" }));
+			return getTrackResult.error;
 		}
 
-		// Parse response with Zod
-		const jsonResult = await Result.tryPromise({
-			try: () => response.json(),
-			catch: (cause) => new SpotifyParseError({ context: "track", parseError: String(cause) }),
-		});
-
-		if (jsonResult.status === "error") {
-			logger.error("Failed to parse Spotify track JSON", {
-				trackId,
-				error: jsonResult.error.message,
-			});
-			return Result.err(jsonResult.error);
-		}
-
-		const parsed = SpotifyTrackSchema.safeParse(jsonResult.value);
-
-		if (!parsed.success) {
-			logger.error("Failed to parse Spotify track response", {
-				trackId,
-				error: parsed.error.message,
-			});
-			return Result.err(
-				new SpotifyParseError({ context: "track", parseError: parsed.error.message }),
-			);
-		}
-
-		const track = parsed.data;
+		const track = getTrackResult.value;
 
 		logger.info("Spotify get track succeeded", {
 			event: "spotify.get_track.succeeded",
@@ -332,13 +166,27 @@ export class SpotifyService {
 			track_id: track.id,
 			track_name: track.name,
 		});
-		const albumCover = track.album.images.sort((a, b) => a.height - b.height)[0];
+
+		if (track.id === undefined || track.name === undefined || track.album?.name === undefined) {
+			logger.error("Track is missing one required field", {
+				trackId,
+			});
+			return Result.err(
+				new SpotifyInvalidTrackError({
+					message: "Track is missing one required field",
+				}),
+			);
+		}
+
+		const albumCover = track.album?.images
+			? [...track.album.images].sort((a, b) => (a.height ?? 0) - (b.height ?? 0))[0]
+			: undefined;
 
 		return Result.ok({
 			id: track.id,
 			name: track.name,
-			artists: track.artists.map((a) => a.name),
-			album: track.album.name,
+			artists: track.artists.flatMap((a) => (a.name ? [a.name] : [])),
+			album: track.album?.name,
 			albumCoverUrl: albumCover?.url ?? null,
 		});
 	}
@@ -350,175 +198,65 @@ export class SpotifyService {
 	 * again. Retries must be handled at the workflow step level where idempotency is
 	 * guaranteed via step ID.
 	 */
-	async addToQueue(
-		trackUri: SpotifyTrackUri,
-	): Promise<
-		Result<
-			void,
-			| DurableObjectError
-			| SpotifyNoActiveDeviceError
-			| SpotifyRateLimitError
-			| SpotifyUnauthorizedError
-			| SpotifyNetworkError
-			| TokenError
-		>
-	> {
-		const tokenResult = await this.getToken();
-		if (tokenResult.status === "error") {
-			return Result.err(tokenResult.error);
-		}
-		const token = tokenResult.value;
-
-		const fetchResult = await Result.tryPromise({
-			try: () =>
-				fetch(`https://api.spotify.com/v1/me/player/queue?uri=${encodeURIComponent(trackUri)}`, {
-					method: "POST",
-					headers: {
-						Authorization: `Bearer ${token}`,
-					},
-				}),
-			catch: (cause) =>
-				new SpotifyNetworkError({ status: 0, context: `addToQueue: ${String(cause)}` }),
+	async addToQueue(trackUri: SpotifyTrackUri): Promise<Result<void, SpotifyNetworkError>> {
+		const result = await Result.tryPromise({
+			try: async () => {
+				return await betterMusicClient.client.player.addToPlaybackQueue({
+					uri: trackUri,
+				});
+			},
+			catch: (cause) => {
+				logger.warn("Spotify addToQueue failed", { cause });
+				return new SpotifyNetworkError({ status: 0, context: "addToQueue" });
+			},
 		});
 
-		if (fetchResult.status === "error") {
-			logger.error("Spotify addToQueue network error", {
-				trackUri,
-				error: fetchResult.error.message,
-			});
-			return Result.err(fetchResult.error);
-		}
-
-		const response = fetchResult.value;
-
-		// 200 or 204 = success (Spotify docs say 204, but sometimes returns 200)
-		if (response.status === 200 || response.status === 204) {
+		if (result.status === "error") {
+			return Result.err(result.error);
+		} else {
 			return Result.ok();
 		}
-
-		// Handle 404 - no active device
-		if (response.status === 404) {
-			logger.warn("Spotify addToQueue: no active device", { trackUri });
-			return Result.err(new SpotifyNoActiveDeviceError());
-		}
-
-		// Handle 429 - rate limited
-		if (response.status === 429) {
-			const retryAfter = response.headers.get("Retry-After");
-			const retryAfterMs = retryAfter ? Number.parseInt(retryAfter, 10) * 1000 : 1000;
-			logger.warn("Spotify rate limited", { trackUri, retryAfterMs });
-			return Result.err(new SpotifyRateLimitError({ retryAfterMs }));
-		}
-
-		// Handle 401 - unauthorized
-		if (response.status === 401) {
-			logger.error("Spotify unauthorized for addToQueue", { trackUri });
-			return Result.err(new SpotifyUnauthorizedError());
-		}
-
-		// Other errors
-		logger.error("Spotify addToQueue failed", { trackUri, status: response.status });
-		return Result.err(new SpotifyNetworkError({ status: response.status, context: "addToQueue" }));
 	}
 
 	/**
 	 * Get currently playing track
 	 */
-	async getCurrentlyPlaying(): Promise<
-		Result<
-			TrackInfo | null,
-			| DurableObjectError
-			| SpotifyUnauthorizedError
-			| SpotifyNetworkError
-			| SpotifyParseError
-			| TokenError
-		>
-	> {
-		const tokenResult = await this.getToken();
-		if (tokenResult.status === "error") {
-			return Result.err(tokenResult.error);
-		}
-		const token = tokenResult.value;
-
-		const fetchResult = await Result.tryPromise({
-			try: () =>
-				fetch("https://api.spotify.com/v1/me/player/currently-playing", {
-					headers: {
-						Authorization: `Bearer ${token}`,
-					},
-				}),
-			catch: (cause) =>
-				new SpotifyNetworkError({ status: 0, context: `getCurrentlyPlaying: ${String(cause)}` }),
+	async getCurrentlyPlaying(): Promise<Result<TrackInfo | null, SpotifyNetworkError | Error>> {
+		const currentlyPlaying = await Result.tryPromise({
+			try: async () => {
+				return await betterMusicClient.client.player.getCurrentlyPlaying();
+			},
+			catch: (cause) => {
+				logger.warn("Spotify getCurrentlyPlaying failed", { cause });
+				return new SpotifyNetworkError({ status: 0, context: "getCurrentlyPlaying" });
+			},
 		});
 
-		if (fetchResult.status === "error") {
-			logger.error("Spotify getCurrentlyPlaying network error", {
-				error: fetchResult.error.message,
-			});
-			return Result.err(fetchResult.error);
+		if (currentlyPlaying.status === "error") {
+			return Result.err(currentlyPlaying.error);
 		}
 
-		const response = fetchResult.value;
-
-		// 204 = nothing playing
-		if (response.status === 204) {
+		if (!currentlyPlaying.value.is_playing || !currentlyPlaying.value.item) {
 			return Result.ok(null);
 		}
 
-		// Handle 401 - unauthorized
-		if (response.status === 401) {
-			logger.error("Spotify unauthorized for getCurrentlyPlaying");
-			return Result.err(new SpotifyUnauthorizedError());
+		const track = currentlyPlaying.value.item;
+		if (track.type !== "track") return Result.ok(null);
+
+		if (track.id === undefined || track.name === undefined || track.album?.name === undefined) {
+			logger.error("Track is missing one required field");
+			return Result.err(new Error("Track is missing one required field"));
 		}
 
-		// Handle other errors
-		if (!response.ok) {
-			logger.error("Spotify getCurrentlyPlaying failed", {
-				status: response.status,
-			});
-			return Result.err(
-				new SpotifyNetworkError({ status: response.status, context: "getCurrentlyPlaying" }),
-			);
-		}
-
-		// Parse response with Zod
-		const jsonResult = await Result.tryPromise({
-			try: () => response.json(),
-			catch: (cause) =>
-				new SpotifyParseError({ context: "currently playing", parseError: String(cause) }),
-		});
-
-		if (jsonResult.status === "error") {
-			logger.error("Failed to parse Spotify currently playing JSON", {
-				error: jsonResult.error.message,
-			});
-			return Result.err(jsonResult.error);
-		}
-
-		const parsed = CurrentlyPlayingSchema.safeParse(jsonResult.value);
-
-		if (!parsed.success) {
-			logger.error("Failed to parse currently playing response", {
-				error: parsed.error.message,
-			});
-			return Result.err(
-				new SpotifyParseError({ context: "currently playing", parseError: parsed.error.message }),
-			);
-		}
-
-		// Not playing or no item
-		if (!parsed.data.is_playing || !parsed.data.item) {
-			return Result.ok(null);
-		}
-
-		const track = parsed.data.item;
-		const albumCover = track.album.images.sort((a, b) => a.height - b.height)[0];
+		const albumCover = track.album?.images
+			? [...track.album.images].sort((a, b) => (a.height ?? 0) - (b.height ?? 0))[0]
+			: undefined;
 
 		return Result.ok({
 			id: track.id,
 			name: track.name,
-			artists: track.artists.map((a) => a.name),
-			album: track.album.name,
+			artists: track.artists.map((a) => a.name).filter((name) => name !== undefined),
+			album: track.album?.name,
 			albumCoverUrl: albumCover?.url ?? null,
 		});
 	}
@@ -526,80 +264,36 @@ export class SpotifyService {
 	/**
 	 * Get user's queue
 	 */
-	async getQueue(): Promise<
-		Result<
-			SpotifyQueue,
-			| DurableObjectError
-			| SpotifyNoActiveDeviceError
-			| SpotifyUnauthorizedError
-			| SpotifyNetworkError
-			| SpotifyParseError
-			| TokenError
-		>
-	> {
-		const tokenResult = await this.getToken();
-		if (tokenResult.status === "error") {
-			return Result.err(tokenResult.error);
-		}
-		const token = tokenResult.value;
-
-		const fetchResult = await Result.tryPromise({
-			try: () =>
-				fetch("https://api.spotify.com/v1/me/player/queue", {
-					headers: {
-						Authorization: `Bearer ${token}`,
-					},
-				}),
-			catch: (cause) =>
-				new SpotifyNetworkError({ status: 0, context: `getQueue: ${String(cause)}` }),
+	async getQueue(): Promise<Result<SpotifyQueue, SpotifyNetworkError>> {
+		const queue = await Result.tryPromise({
+			try: async () => {
+				return await betterMusicClient.client.player.getQueue();
+			},
+			catch: (cause) => {
+				logger.error("Spotify getQueue failed", { cause });
+				return new SpotifyNetworkError({ status: 0, context: "getQueue" });
+			},
 		});
 
-		if (fetchResult.status === "error") {
-			logger.error("Spotify getQueue network error", { error: fetchResult.error.message });
-			return Result.err(fetchResult.error);
+		if (queue.status === "error") {
+			return Result.err(queue.error);
 		}
 
-		const response = fetchResult.value;
-
-		// Handle 404 - no active device
-		if (response.status === 404) {
-			logger.warn("Spotify getQueue: no active device");
-			return Result.err(new SpotifyNoActiveDeviceError());
-		}
-
-		// Handle 401 - unauthorized
-		if (response.status === 401) {
-			logger.error("Spotify unauthorized for getQueue");
-			return Result.err(new SpotifyUnauthorizedError());
-		}
-
-		// Handle other errors
-		if (!response.ok) {
-			logger.error("Spotify getQueue failed", {
-				status: response.status,
-			});
-			return Result.err(new SpotifyNetworkError({ status: response.status, context: "getQueue" }));
-		}
-
-		// Parse response with Zod
-		const jsonResult = await Result.tryPromise({
-			try: () => response.json(),
-			catch: (cause) => new SpotifyParseError({ context: "queue", parseError: String(cause) }),
+		const parsed = SpotifyQueueSchema.safeParse({
+			currently_playing: queue.value.currently_playing,
+			queue: queue.value.queue,
 		});
-
-		if (jsonResult.status === "error") {
-			logger.error("Failed to parse Spotify queue JSON", { error: jsonResult.error.message });
-			return Result.err(jsonResult.error);
-		}
-
-		const parsed = SpotifyQueueSchema.safeParse(jsonResult.value);
 
 		if (!parsed.success) {
-			logger.error("Failed to parse Spotify queue response", {
-				error: parsed.error.message,
+			logger.error("Spotify queue validation failed", {
+				error: parsed.error,
 			});
+
 			return Result.err(
-				new SpotifyParseError({ context: "queue", parseError: parsed.error.message }),
+				new SpotifyNetworkError({
+					status: 0,
+					context: "queue validation",
+				}),
 			);
 		}
 
@@ -610,60 +304,56 @@ export class SpotifyService {
 	 * Skip to the next track in playback
 	 * Used for rollback when a queued track needs to be removed but is now playing
 	 */
-	async skipTrack(): Promise<
-		Result<
-			void,
-			| DurableObjectError
-			| SpotifyNoActiveDeviceError
-			| SpotifyUnauthorizedError
-			| SpotifyNetworkError
-			| TokenError
-		>
-	> {
-		const tokenResult = await this.getToken();
-		if (tokenResult.status === "error") {
-			return Result.err(tokenResult.error);
-		}
-		const token = tokenResult.value;
-
-		const fetchResult = await Result.tryPromise({
-			try: () =>
-				fetch("https://api.spotify.com/v1/me/player/next", {
-					method: "POST",
-					headers: {
-						Authorization: `Bearer ${token}`,
-					},
-				}),
-			catch: (cause) =>
-				new SpotifyNetworkError({ status: 0, context: `skipTrack: ${String(cause)}` }),
+	async skipTrack(): Promise<Result<void, SpotifyNetworkError>> {
+		const result = await Result.tryPromise({
+			try: async () => {
+				betterMusicClient.client.player.skipToNext({});
+			},
+			catch: (cause) => {
+				logger.warn("Spotify skipToNext failed", { cause });
+				return new SpotifyNetworkError({ status: 0, context: "skipToNext" });
+			},
 		});
 
-		if (fetchResult.status === "error") {
-			logger.error("Spotify skipTrack network error", { error: fetchResult.error.message });
-			return Result.err(fetchResult.error);
-		}
-
-		const response = fetchResult.value;
-
-		// 204 = success
-		if (response.status === 204) {
+		if (result.status === "error") {
+			return Result.err(result.error);
+		} else {
 			return Result.ok();
 		}
+	}
 
-		// 404 = no active device
-		if (response.status === 404) {
-			logger.warn("Spotify skipTrack: no active device");
-			return Result.err(new SpotifyNoActiveDeviceError());
+	/**
+	 * Get active device ID using official API
+	 */
+	async getActiveDevice(): Promise<Result<SpotifyDevice | null, SpotifyNetworkError | Error>> {
+		const devices = await Result.tryPromise({
+			try: async () => {
+				return await betterMusicClient.client.player.getDevices();
+			},
+			catch: (cause) => {
+				logger.warn("Spotify getDevices failed", { cause });
+				return new SpotifyNetworkError({ status: 0, context: "getActiveDevices" });
+			},
+		});
+
+		if (devices.status === "error") {
+			return Result.err(devices.error);
 		}
 
-		// 401 = unauthorized
-		if (response.status === 401) {
-			logger.error("Spotify unauthorized for skipTrack");
-			return Result.err(new SpotifyUnauthorizedError());
+		const activeDevice = devices.value.devices.find((d) => d.is_active) ?? null;
+
+		const parsed = SpotifyDeviceSchema.safeParse(activeDevice);
+
+		if (!parsed.success) {
+			logger.error("Spotify queue validation failed", {
+				error: parsed.error,
+				device: activeDevice,
+			});
+
+			return Result.err(new Error("Invalid active device"));
 		}
 
-		logger.error("Spotify skipTrack failed", { status: response.status });
-		return Result.err(new SpotifyNetworkError({ status: response.status, context: "skipTrack" }));
+		return Result.ok(parsed.data);
 	}
 
 	// =============================================================================
@@ -671,65 +361,6 @@ export class SpotifyService {
 	// These methods use Spotify's internal APIs that are not officially supported.
 	// They may break at any time without notice.
 	// =============================================================================
-
-	/**
-	 * Get active device ID using official API
-	 */
-	async getActiveDevice(): Promise<
-		Result<
-			SpotifyDevice | null,
-			| DurableObjectError
-			| SpotifyUnauthorizedError
-			| SpotifyNetworkError
-			| SpotifyParseError
-			| TokenError
-		>
-	> {
-		return Result.gen(async function* (this: SpotifyService) {
-			const token = yield* Result.await(this.getToken());
-
-			const response = yield* Result.await(
-				Result.tryPromise({
-					try: () =>
-						fetch("https://api.spotify.com/v1/me/player/devices", {
-							headers: { Authorization: `Bearer ${token}` },
-						}),
-					catch: (cause) =>
-						new SpotifyNetworkError({ status: 0, context: `getActiveDevice: ${String(cause)}` }),
-				}),
-			);
-
-			if (response.status === 401) {
-				logger.error("Spotify unauthorized for getActiveDevice");
-				return Result.err(new SpotifyUnauthorizedError());
-			}
-
-			if (!response.ok) {
-				logger.error("Spotify getActiveDevice failed", { status: response.status });
-				return Result.err(
-					new SpotifyNetworkError({ status: response.status, context: "getActiveDevice" }),
-				);
-			}
-
-			const json = yield* Result.await(
-				Result.tryPromise({
-					try: () => response.json(),
-					catch: (cause) =>
-						new SpotifyParseError({ context: "devices", parseError: String(cause) }),
-				}),
-			);
-
-			const parsed = SpotifyDevicesResponseSchema.safeParse(json);
-			if (!parsed.success) {
-				return Result.err(
-					new SpotifyParseError({ context: "devices", parseError: parsed.error.message }),
-				);
-			}
-
-			const activeDevice = parsed.data.devices.find((d) => d.is_active) ?? null;
-			return Result.ok(activeDevice);
-		}, this);
-	}
 
 	/**
 	 * INTERNAL API: Get client token for connect-state API
@@ -875,6 +506,7 @@ export class SpotifyService {
 			| SpotifyParseError
 			| SpotifyUnauthorizedError
 			| TokenError
+			| Error
 		>
 	> {
 		logger.info("Attempting to remove track from queue via internal API", { trackUri });
