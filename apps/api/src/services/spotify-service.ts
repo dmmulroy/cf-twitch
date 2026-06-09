@@ -12,9 +12,11 @@ import { betterMusicClient } from "~/routes/oauth";
 import { getStub } from "../lib/durable-objects";
 import {
 	DurableObjectError,
+	SpotifyInvalidTrackError,
 	SpotifyNetworkError,
 	SpotifyNoActiveDeviceError,
 	SpotifyParseError,
+	SpotifyTrackNotFoundError,
 	SpotifyUnauthorizedError,
 	type SpotifyApiError,
 	type TokenError,
@@ -130,59 +132,61 @@ export class SpotifyService {
 	/**
 	 * Get track info by ID
 	 */
-	async getTrack(trackId: SpotifyTrackId): Promise<Result<TrackInfo, Error>> {
+	async getTrack(
+		trackId: SpotifyTrackId,
+	): Promise<Result<TrackInfo, SpotifyTrackNotFoundError | SpotifyInvalidTrackError>> {
 		logger.info("Spotify get track started", {
 			event: "spotify.get_track.started",
 			component: "service",
 			track_id: trackId,
 		});
 
-		const track = await Result.tryPromise({
+		const getTrackResult = await Result.tryPromise({
 			try: async () => {
 				return await betterMusicClient.client.track.get({ id: trackId });
 			},
-			catch: (cause) => {
+			catch: () => {
 				logger.warn("Failed to get track", { trackId });
-				return new Error(`Failed to get track: ${cause}`);
+				return Result.err(new SpotifyTrackNotFoundError({ trackId }));
 			},
 		});
 
-		if (track.status === "error") {
+		if (getTrackResult.status === "error") {
 			logger.error("Spotify getTrack error", {
 				trackId,
 			});
-			return Result.err(track.error);
+			return getTrackResult.error;
 		}
 
-		const okTrack = track.value;
+		const track = getTrackResult.value;
 
 		logger.info("Spotify get track succeeded", {
 			event: "spotify.get_track.succeeded",
 			component: "service",
-			track_id: okTrack.id,
-			track_name: okTrack.name,
+			track_id: track.id,
+			track_name: track.name,
 		});
 
-		if (
-			okTrack.id === undefined ||
-			okTrack.name === undefined ||
-			okTrack.album?.name === undefined
-		) {
+		if (track.id === undefined || track.name === undefined || track.album?.name === undefined) {
 			logger.error("Track is missing one required field", {
 				trackId,
 			});
-			return Result.err(new Error("Track is missing one required field"));
+			return Result.err(
+				new SpotifyInvalidTrackError({
+					message: "Track is missing one required field",
+				}),
+			);
 		}
 
-		const albumCover = okTrack.album?.images
-			? [...okTrack.album.images].sort((a, b) => (a.height ?? 0) - (b.height ?? 0))[0]
+		const albumCover = track.album?.images
+			? [...track.album.images].sort((a, b) => (a.height ?? 0) - (b.height ?? 0))[0]
 			: undefined;
 
 		return Result.ok({
-			id: okTrack.id,
-			name: okTrack.name,
-			artists: okTrack.artists.map((a) => a.name).filter((name) => name !== undefined),
-			album: okTrack.album?.name,
+			id: track.id,
+			name: track.name,
+			artists: track.artists.flatMap((a) => (a.name ? [a.name] : [])),
+			album: track.album?.name,
 			albumCoverUrl: albumCover?.url ?? null,
 		});
 	}
@@ -318,12 +322,6 @@ export class SpotifyService {
 		}
 	}
 
-	// =============================================================================
-	// Internal Connect State API (undocumented - use at your own risk)
-	// These methods use Spotify's internal APIs that are not officially supported.
-	// They may break at any time without notice.
-	// =============================================================================
-
 	/**
 	 * Get active device ID using official API
 	 */
@@ -357,6 +355,12 @@ export class SpotifyService {
 
 		return Result.ok(parsed.data);
 	}
+
+	// =============================================================================
+	// Internal Connect State API (undocumented - use at your own risk)
+	// These methods use Spotify's internal APIs that are not officially supported.
+	// They may break at any time without notice.
+	// =============================================================================
 
 	/**
 	 * INTERNAL API: Get client token for connect-state API

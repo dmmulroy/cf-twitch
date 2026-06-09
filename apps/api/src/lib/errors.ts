@@ -140,6 +140,16 @@ export class SpotifyTokenExchangeError extends TaggedError("SpotifyTokenExchange
 	}
 }
 
+export class SpotifyInvalidTrackError extends TaggedError("SpotifyInvalidTrackError")<{
+	message: string;
+}>() {
+	constructor(args: { message: string }) {
+		super({
+			message: args.message,
+		});
+	}
+}
+
 /** Union of all Spotify API errors */
 export type SpotifyApiError =
 	| SpotifyRateLimitError
