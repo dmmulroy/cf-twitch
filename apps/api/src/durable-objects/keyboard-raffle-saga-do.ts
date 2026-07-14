@@ -29,8 +29,9 @@ import {
 	SagaStepError,
 	SagaStepRetrying,
 } from "../lib/errors";
+import { LegacySagaRunner } from "../lib/legacy-saga-runner";
 import { logger } from "../lib/logger";
-import { SagaRunner, SagaRunnerDbError } from "../lib/saga-runner";
+import { SagaRunnerDbError } from "../lib/saga-runner";
 import { TwitchService } from "../services/twitch-service";
 import { createRaffleRollEvent } from "./schemas/event-bus-do.schema";
 import * as sagaSchema from "./schemas/saga.schema";
@@ -97,7 +98,7 @@ function generateRandomInt(min: number, max: number): number {
  */
 class _KeyboardRaffleSagaDO extends Agent<Env, KeyboardRaffleSagaAgentState> {
 	private db: ReturnType<typeof drizzle<typeof sagaSchema>>;
-	private runner: SagaRunner | null = null;
+	private runner: LegacySagaRunner | null = null;
 
 	initialState: KeyboardRaffleSagaAgentState = {
 		retryScheduleId: null,
@@ -128,9 +129,9 @@ class _KeyboardRaffleSagaDO extends Agent<Env, KeyboardRaffleSagaAgentState> {
 	/**
 	 * Get or create saga runner for this instance
 	 */
-	private getRunner(): SagaRunner {
+	private getRunner(): LegacySagaRunner {
 		if (!this.runner) {
-			this.runner = new SagaRunner(
+			this.runner = new LegacySagaRunner(
 				this.ctx.id.toString(),
 				this.db,
 				{

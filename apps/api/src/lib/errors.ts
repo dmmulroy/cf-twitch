@@ -624,6 +624,23 @@ export class SagaPersistedDataError extends TaggedError("SagaPersistedDataError"
 	}
 }
 
+/** Expected failure while coordinating a saga retry with the runtime scheduler. */
+export class SagaScheduleError extends TaggedError("SagaScheduleError")<{
+	readonly sagaId: string;
+	readonly operation: "schedule" | "cancel";
+	readonly message: string;
+	readonly cause?: unknown;
+}>() {
+	constructor(args: {
+		readonly sagaId: string;
+		readonly operation: "schedule" | "cancel";
+		readonly message: string;
+		readonly cause?: unknown;
+	}) {
+		super(args);
+	}
+}
+
 export class SagaStepError extends TaggedError("SagaStepError")<{
 	stepName: string;
 	sagaId: string;
@@ -695,6 +712,7 @@ export class SagaAlreadyExistsError extends TaggedError("SagaAlreadyExistsError"
 export type SagaError =
 	| SagaCodecParseError
 	| SagaPersistedDataError
+	| SagaScheduleError
 	| SagaStepError
 	| SagaStepRetrying
 	| SagaCompensationError

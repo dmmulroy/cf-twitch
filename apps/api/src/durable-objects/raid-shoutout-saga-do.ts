@@ -7,8 +7,9 @@ import { z } from "zod";
 import migrations from "../../drizzle/saga-do/migrations";
 import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import { SagaAlreadyExistsError, SagaNotFoundError, SagaStepRetrying } from "../lib/errors";
+import { LegacySagaRunner } from "../lib/legacy-saga-runner";
 import { logger } from "../lib/logger";
-import { SagaRunner, SagaRunnerDbError } from "../lib/saga-runner";
+import { SagaRunnerDbError } from "../lib/saga-runner";
 import { TwitchService } from "../services/twitch-service";
 import * as sagaSchema from "./schemas/saga.schema";
 
@@ -35,7 +36,7 @@ interface RaidShoutoutSagaState {
 
 class _RaidShoutoutSagaDO extends Agent<Env, RaidShoutoutSagaState> {
 	private db: ReturnType<typeof drizzle<typeof sagaSchema>>;
-	private runner: SagaRunner | null = null;
+	private runner: LegacySagaRunner | null = null;
 
 	initialState: RaidShoutoutSagaState = {
 		retryScheduleId: null,
@@ -53,9 +54,9 @@ class _RaidShoutoutSagaDO extends Agent<Env, RaidShoutoutSagaState> {
 		});
 	}
 
-	private getRunner(): SagaRunner {
+	private getRunner(): LegacySagaRunner {
 		if (!this.runner) {
-			this.runner = new SagaRunner(
+			this.runner = new LegacySagaRunner(
 				this.ctx.id.toString(),
 				this.db,
 				{
