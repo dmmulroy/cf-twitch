@@ -1,8 +1,9 @@
-import { env, fetchMock, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { env, exports } from "cloudflare:workers";
+import { describe, expect, it } from "vite-plus/test";
 
 import { TwitchTokenDO } from "../../durable-objects/twitch-token-do";
 import { VALID_TOKEN_RESPONSE, mockTwitchChatMessage } from "../fixtures/twitch";
+import { fetchMock } from "../helpers/fetch-mock";
 
 async function ensureTwitchTokenStub(): Promise<DurableObjectStub<TwitchTokenDO>> {
 	const id = env.TWITCH_TOKEN_DO.idFromName("twitch-token");
@@ -81,7 +82,7 @@ describe("Twitch webhooks", () => {
 		mockTwitchChatMessage(fetchMock);
 		mockTwitchShoutout(raiderUserId);
 
-		const response = await SELF.fetch("http://localhost/webhooks/twitch", {
+		const response = await exports.default.fetch("http://localhost/webhooks/twitch", {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",

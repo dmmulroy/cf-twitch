@@ -3,7 +3,7 @@
  */
 
 import type { SpotifyTokenResponse } from "../../durable-objects/spotify-token-do";
-import type { fetchMock as FetchMock } from "cloudflare:test";
+import type { FetchMock } from "../helpers/fetch-mock";
 
 /**
  * Valid token response from Spotify OAuth
@@ -59,7 +59,7 @@ export const CURRENTLY_PLAYING_RESPONSE = {
  * Mock Spotify token refresh endpoint
  */
 export function mockSpotifyTokenRefresh(
-	mock: typeof FetchMock,
+	mock: FetchMock,
 	response: SpotifyTokenResponse = VALID_TOKEN_RESPONSE,
 ): void {
 	mock
@@ -74,7 +74,7 @@ export function mockSpotifyTokenRefresh(
  * Mock Spotify token refresh with error
  */
 export function mockSpotifyTokenRefreshError(
-	mock: typeof FetchMock,
+	mock: FetchMock,
 	status: number,
 	body = "Unauthorized",
 ): void {
@@ -87,7 +87,7 @@ export function mockSpotifyTokenRefreshError(
 /**
  * Mock Spotify get track endpoint
  */
-export function mockSpotifyGetTrack(mock: typeof FetchMock, trackId: string): void {
+export function mockSpotifyGetTrack(mock: FetchMock, trackId: string): void {
 	mock
 		.get("https://api.spotify.com")
 		.intercept({ path: `/v1/tracks/${trackId}` })
@@ -99,7 +99,7 @@ export function mockSpotifyGetTrack(mock: typeof FetchMock, trackId: string): vo
 /**
  * Mock Spotify add to queue endpoint
  */
-export function mockSpotifyAddToQueue(mock: typeof FetchMock): void {
+export function mockSpotifyAddToQueue(mock: FetchMock): void {
 	mock
 		.get("https://api.spotify.com")
 		.intercept({ path: /\/v1\/me\/player\/queue/, method: "POST" })
@@ -109,7 +109,7 @@ export function mockSpotifyAddToQueue(mock: typeof FetchMock): void {
 /**
  * Mock Spotify currently playing endpoint
  */
-export function mockSpotifyCurrentlyPlaying(mock: typeof FetchMock, playing = true): void {
+export function mockSpotifyCurrentlyPlaying(mock: FetchMock, playing = true): void {
 	if (playing) {
 		mock
 			.get("https://api.spotify.com")
@@ -128,7 +128,7 @@ export function mockSpotifyCurrentlyPlaying(mock: typeof FetchMock, playing = tr
 /**
  * Mock Spotify queue endpoint
  */
-export function mockSpotifyQueue(mock: typeof FetchMock): void {
+export function mockSpotifyQueue(mock: FetchMock): void {
 	mock
 		.get("https://api.spotify.com")
 		.intercept({ path: "/v1/me/player/queue" })
@@ -141,7 +141,7 @@ export function mockSpotifyQueue(mock: typeof FetchMock): void {
  * Mock Spotify queue endpoint with an error status
  */
 export function mockSpotifyQueueError(
-	mock: typeof FetchMock,
+	mock: FetchMock,
 	status: number,
 	body = "Service unavailable",
 ): void {
@@ -154,7 +154,7 @@ export function mockSpotifyQueueError(
 /**
  * Mock Spotify skip track endpoint
  */
-export function mockSpotifySkipTrack(mock: typeof FetchMock): void {
+export function mockSpotifySkipTrack(mock: FetchMock): void {
 	mock
 		.get("https://api.spotify.com")
 		.intercept({ path: "/v1/me/player/next", method: "POST" })

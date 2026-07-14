@@ -1,9 +1,10 @@
-import { env, fetchMock } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vite-plus/test";
 
 import { TwitchTokenDO } from "../../durable-objects/twitch-token-do";
 import { TwitchService } from "../../services/twitch-service";
 import { VALID_TOKEN_RESPONSE } from "../fixtures/twitch";
+import { fetchMock } from "../helpers/fetch-mock";
 
 async function ensureTwitchTokenStub(): Promise<DurableObjectStub<TwitchTokenDO>> {
 	const id = env.TWITCH_TOKEN_DO.idFromName("twitch-token");

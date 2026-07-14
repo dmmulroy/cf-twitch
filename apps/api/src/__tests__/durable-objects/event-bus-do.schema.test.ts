@@ -4,7 +4,7 @@
  * Tests Zod validators and type guards for domain events.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
 	EventSchema,

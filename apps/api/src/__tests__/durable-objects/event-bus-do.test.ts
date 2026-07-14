@@ -4,9 +4,10 @@
  * Tests public EventBus behavior through the Agent interface.
  */
 
-import { env, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { EventBusDO } from "../../durable-objects/event-bus-do";
 import * as eventBusSchema from "../../durable-objects/schemas/event-bus-do.schema";

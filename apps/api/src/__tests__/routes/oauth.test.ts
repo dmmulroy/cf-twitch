@@ -1,9 +1,9 @@
-import { env, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { env, exports } from "cloudflare:workers";
+import { describe, expect, it } from "vite-plus/test";
 
 describe("OAuth routes", () => {
 	it("requests Twitch shoutout management scope during authorization", async () => {
-		const response = await SELF.fetch("http://localhost/oauth/twitch/authorize", {
+		const response = await exports.default.fetch("http://localhost/oauth/twitch/authorize", {
 			redirect: "manual",
 			headers: { "x-setup-secret": env.OAUTH_SETUP_SECRET },
 		});

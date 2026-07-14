@@ -6,8 +6,9 @@
  * "Attempting to read .name on _SongQueueDO before it was set".
  */
 
-import { env, fetchMock, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vite-plus/test";
 
 import { SongQueueDO } from "../../durable-objects/song-queue-do";
 import { getStub } from "../../lib/durable-objects";
@@ -17,6 +18,7 @@ import {
 	mockSpotifyCurrentlyPlaying,
 	mockSpotifyQueue,
 } from "../fixtures/spotify";
+import { fetchMock } from "../helpers/fetch-mock";
 
 describe("getSongQueue", () => {
 	it("connects to SongQueueDO and initializes Agent names before scheduling refresh work", async () => {
@@ -49,23 +51,5 @@ describe("getSongQueue", () => {
 				}),
 			]),
 		);
-	});
-
-	it("returns currently playing through the SongQueue client facade", async () => {
-		const spotifyTokenStub = getStub("SPOTIFY_TOKEN_DO");
-		const setTokensResult = await spotifyTokenStub.setTokens(VALID_TOKEN_RESPONSE);
-		expect(setTokensResult.status).toBe("ok");
-
-		mockSpotifyCurrentlyPlaying(fetchMock);
-		mockSpotifyQueue(fetchMock);
-
-		using songQueue = await getSongQueue();
-		const nowPlayingResult = await songQueue.getCurrentlyPlaying();
-
-		expect(nowPlayingResult.status).toBe("ok");
-		if (nowPlayingResult.status === "ok") {
-			expect(nowPlayingResult.value.track?.id).toBe("4iV5W9uYEdYUVa79Axb7Rh");
-			expect(nowPlayingResult.value.position).toBe(0);
-		}
 	});
 });

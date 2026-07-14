@@ -5,9 +5,10 @@
  * scheduling, and reconciliation behavior.
  */
 
-import { env, fetchMock, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
 	pendingRequests,
@@ -26,6 +27,7 @@ import {
 	mockSpotifyQueue,
 	mockSpotifyQueueError,
 } from "../fixtures/spotify";
+import { fetchMock } from "../helpers/fetch-mock";
 
 async function seedSnapshot(
 	instance: SongQueueDO,
@@ -50,9 +52,10 @@ describe("SongQueueDO", () => {
 	let tokenStub: DurableObjectStub<SpotifyTokenDO>;
 
 	beforeEach(async () => {
-		const songQueueId = env.SONG_QUEUE_DO.idFromName("song-queue");
+		const songQueueName = `song-queue-${crypto.randomUUID()}`;
+		const songQueueId = env.SONG_QUEUE_DO.idFromName(songQueueName);
 		stub = env.SONG_QUEUE_DO.get(songQueueId);
-		await stub.setName("song-queue");
+		await stub.setName(songQueueName);
 		await stub.getRequestHistory(1, 0);
 
 		const tokenId = env.SPOTIFY_TOKEN_DO.idFromName("spotify-token");

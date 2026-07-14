@@ -2,7 +2,7 @@
 	"compilerOptions": {
 		"target": "ES2022",
 		"module": "ES2022",
-		"lib": ["ES2022"],
+		"lib": ["ES2022", "ESNext.Disposable"],
 		"moduleResolution": "bundler",
 		"resolveJsonModule": true,
 		"allowJs": true,
@@ -12,7 +12,6 @@
 		"noEmit": true,
 		"isolatedModules": true,
 		"allowSyntheticDefaultImports": true,
-		"esModuleInterop": false,
 		"forceConsistentCasingInFileNames": true,
 		"strict": true,
 		"noUnusedLocals": true,

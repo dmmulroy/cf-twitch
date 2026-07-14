@@ -4,7 +4,7 @@
  * Tests public raffle behavior through the Agent interface.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { getStub } from "../../lib/durable-objects";
 

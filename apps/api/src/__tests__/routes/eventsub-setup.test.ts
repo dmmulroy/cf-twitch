@@ -1,6 +1,8 @@
-import { env, fetchMock, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { env, exports } from "cloudflare:workers";
+import { describe, expect, it } from "vite-plus/test";
 import { z } from "zod";
+
+import { fetchMock } from "../helpers/fetch-mock";
 
 const EventSubSetupResponseSchema = z.object({
 	success: z.boolean(),
@@ -96,7 +98,9 @@ describe("EventSub setup routes", () => {
 		mockCreateSubscription("redemptions", "channel.channel_points_custom_reward_redemption.add");
 		mockCreateSubscription("chat-message", "channel.chat.message");
 
-		const response = await SELF.fetch("http://localhost/eventsub/setup", { method: "POST" });
+		const response = await exports.default.fetch("http://localhost/eventsub/setup", {
+			method: "POST",
+		});
 
 		expect(response.status).toBe(200);
 		const json = await response.json();

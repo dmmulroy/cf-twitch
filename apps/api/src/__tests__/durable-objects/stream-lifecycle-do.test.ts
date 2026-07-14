@@ -5,8 +5,9 @@
  * through the Durable Object public interface.
  */
 
-import { env, fetchMock, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { StreamLifecycleDO } from "../../durable-objects/stream-lifecycle-do";
 import { mockTwitchGetStreams, mockTwitchTokenRefresh } from "../fixtures/twitch";
@@ -15,6 +16,7 @@ import {
 	ensureNamedSpotifyTokenStub,
 	ensureNamedTwitchTokenStub,
 } from "../helpers/durable-objects";
+import { fetchMock } from "../helpers/fetch-mock";
 
 const ONLINE_AT = "2026-01-22T12:00:00.000Z";
 const OFFLINE_AT = "2026-01-22T13:00:00.000Z";

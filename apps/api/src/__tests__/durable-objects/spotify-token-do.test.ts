@@ -4,8 +4,9 @@
  * Tests token management, refresh flows, and stream lifecycle handling.
  */
 
-import { env, fetchMock, runInDurableObject } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { SpotifyTokenDO } from "../../durable-objects/spotify-token-do";
 import {
@@ -13,14 +14,17 @@ import {
 	mockSpotifyTokenRefreshError,
 	VALID_TOKEN_RESPONSE,
 } from "../fixtures/spotify";
+import { fetchMock } from "../helpers/fetch-mock";
 
 describe("SpotifyTokenDO", () => {
+	let objectName: string;
 	let stub: DurableObjectStub<SpotifyTokenDO>;
 
 	beforeEach(async () => {
-		const id = env.SPOTIFY_TOKEN_DO.idFromName("spotify-token");
+		objectName = `spotify-token-${crypto.randomUUID()}`;
+		const id = env.SPOTIFY_TOKEN_DO.idFromName(objectName);
 		stub = env.SPOTIFY_TOKEN_DO.get(id);
-		await stub.setName("spotify-token");
+		await stub.setName(objectName);
 		await stub.getValidToken().catch(() => undefined);
 	});
 
@@ -361,7 +365,7 @@ describe("SpotifyTokenDO", () => {
 			});
 
 			// Create new stub to same ID (simulates restart)
-			const newStub = env.SPOTIFY_TOKEN_DO.get(env.SPOTIFY_TOKEN_DO.idFromName("spotify-token"));
+			const newStub = env.SPOTIFY_TOKEN_DO.get(env.SPOTIFY_TOKEN_DO.idFromName(objectName));
 
 			const result = await runInDurableObject(newStub, (instance: SpotifyTokenDO) =>
 				instance.getValidToken(),

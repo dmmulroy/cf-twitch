@@ -5,8 +5,8 @@
  * shared value sources, and counter behavior.
  */
 
-import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vite-plus/test";
 
 import { CommandsDO } from "../../durable-objects/commands-do";
 
@@ -58,6 +58,19 @@ describe("CommandsDO", () => {
 		expect(planValueResult.status).toBe("ok");
 		if (planValueResult.status === "ok") {
 			expect(planValueResult.value).toBe("Plannotator: https://plannotator.ai");
+		}
+
+		const herdrResult = await stub.getCommand("herdr");
+		expect(herdrResult.status).toBe("ok");
+		if (herdrResult.status === "ok") {
+			expect(herdrResult.value.responseType).toBe("static");
+			expect(herdrResult.value.permission).toBe("everyone");
+		}
+
+		const herdrValueResult = await stub.getCommandValue("herdr");
+		expect(herdrValueResult.status).toBe("ok");
+		if (herdrValueResult.status === "ok") {
+			expect(herdrValueResult.value).toBe("Herdr: https://herdr.dev/");
 		}
 	});
 

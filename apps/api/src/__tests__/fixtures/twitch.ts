@@ -3,7 +3,7 @@
  */
 
 import type { TwitchTokenResponse } from "../../durable-objects/twitch-token-do";
-import type { fetchMock as FetchMock } from "cloudflare:test";
+import type { FetchMock } from "../helpers/fetch-mock";
 
 /**
  * Valid token response from Twitch OAuth
@@ -53,7 +53,7 @@ export const STREAM_INFO = {
  * Mock Twitch token refresh endpoint
  */
 export function mockTwitchTokenRefresh(
-	mock: typeof FetchMock,
+	mock: FetchMock,
 	response: TwitchTokenResponse = VALID_TOKEN_RESPONSE,
 ): void {
 	mock
@@ -68,7 +68,7 @@ export function mockTwitchTokenRefresh(
  * Mock Twitch token refresh with error
  */
 export function mockTwitchTokenRefreshError(
-	mock: typeof FetchMock,
+	mock: FetchMock,
 	status: number,
 	body = "Unauthorized",
 ): void {
@@ -81,7 +81,7 @@ export function mockTwitchTokenRefreshError(
 /**
  * Mock Twitch get streams endpoint
  */
-export function mockTwitchGetStreams(mock: typeof FetchMock, live = true): void {
+export function mockTwitchGetStreams(mock: FetchMock, live = true): void {
 	mock
 		.get("https://api.twitch.tv")
 		.intercept({ path: /\/helix\/streams/ })
@@ -99,7 +99,7 @@ export function mockTwitchGetStreams(mock: typeof FetchMock, live = true): void 
 /**
  * Mock Twitch redemption update endpoint
  */
-export function mockTwitchRedemptionUpdate(mock: typeof FetchMock): void {
+export function mockTwitchRedemptionUpdate(mock: FetchMock): void {
 	mock
 		.get("https://api.twitch.tv")
 		.intercept({ path: /\/helix\/channel_points\/custom_rewards\/redemptions/, method: "PATCH" })
@@ -111,7 +111,7 @@ export function mockTwitchRedemptionUpdate(mock: typeof FetchMock): void {
 /**
  * Mock Twitch chat message endpoint
  */
-export function mockTwitchChatMessage(mock: typeof FetchMock): void {
+export function mockTwitchChatMessage(mock: FetchMock): void {
 	mock
 		.get("https://api.twitch.tv")
 		.intercept({ path: "/helix/chat/messages", method: "POST" })

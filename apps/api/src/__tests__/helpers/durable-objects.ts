@@ -1,4 +1,5 @@
-import { env, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 
 import { AchievementsDO } from "../../durable-objects/achievements-do";
 import { SpotifyTokenDO } from "../../durable-objects/spotify-token-do";

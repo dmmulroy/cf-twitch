@@ -1,19 +1,17 @@
-/**
- * Global test setup - activates fetchMock and disables network
- *
- * NOTE: Tests that call code using getStub() are skipped because getStub()
- * imports global env from cloudflare:workers which isn't available in vitest.
- * The proper fix is refactoring getStub() to accept env as parameter.
- */
+import { exports } from "cloudflare:workers";
+import { afterEach, beforeAll } from "vite-plus/test";
 
-import { fetchMock } from "cloudflare:test";
-import { afterEach, beforeAll } from "vitest";
+import { fetchMock } from "./helpers/fetch-mock";
 
-beforeAll(() => {
-	fetchMock.activate();
-	fetchMock.disableNetConnect();
-});
+beforeAll(async () => {
+	fetchMock.install();
+	await exports.default.fetch("http://warmup/");
+}, 30_000);
 
 afterEach(() => {
-	fetchMock.assertNoPendingInterceptors();
+	try {
+		fetchMock.assertNoPendingInterceptors();
+	} finally {
+		fetchMock.reset();
+	}
 });

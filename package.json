@@ -4,27 +4,22 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build": "pnpm --filter \"./apps/*\" run build",
-		"dev": "pnpm --filter cf-twitch-api run dev",
-		"deploy": "pnpm --filter \"./apps/*\" run deploy",
-		"typecheck": "pnpm --filter \"./apps/*\" run typecheck",
-		"lint": "oxlint .",
-		"lint:fix": "oxlint --fix .",
-		"fmt": "oxfmt .",
-		"fmt:check": "oxfmt --check .",
-		"check": "pnpm lint && pnpm fmt:check",
-		"share:init": "node ./scripts/share-hf-init.mjs",
-		"share:secrets": "node ./scripts/share-hf-secrets.mjs",
-		"share:collect": "pnpm share:secrets && pi-share-hf collect --workspace .pi/hf-sessions --env-file .envrc --secret .pi/hf-private/secrets.txt --deny .pi/hf-private/deny.txt AGENTS.md docs/prd.md docs/cf-prototype-architecture.md docs/effect-twitch-architecture.md",
-		"share:review": "pnpm share:secrets && pi-share-hf review --workspace .pi/hf-sessions --deny .pi/hf-private/deny.txt AGENTS.md docs/prd.md docs/cf-prototype-architecture.md docs/effect-twitch-architecture.md",
-		"share:list": "pi-share-hf list --workspace .pi/hf-sessions --uploadable",
-		"share:upload:dry": "pi-share-hf upload --workspace .pi/hf-sessions --dry-run",
-		"share:upload": "pi-share-hf upload --workspace .pi/hf-sessions"
+		"build": "vp run --filter \"./apps/*\" build",
+		"dev": "vp run --filter cf-twitch-api dev",
+		"deploy": "vp run --filter \"./apps/*\" deploy",
+		"typecheck": "vp run --filter \"./apps/*\" typecheck",
+		"lint": "vp lint .",
+		"lint:fix": "vp lint --fix .",
+		"fmt": "vp fmt .",
+		"fmt:check": "vp fmt --check .",
+		"check": "vp check && vp run --filter \"./apps/*\" typecheck"
 	},
 	"devDependencies": {
-		"oxfmt": "^0.24.0",
-		"oxlint": "^1.39.0",
+		"@types/node": "^24.13.3",
 		"typescript": "^5.7.2",
+		"vite": "catalog:",
+		"vite-plus": "catalog:",
 		"wrangler": "^4.60.0"
-	}
+	},
+	"packageManager": "pnpm@10.33.0"
 }

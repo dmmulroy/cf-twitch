@@ -131,6 +131,18 @@ function createPlanCommandInput(now: string): CreateCommandInput {
 	};
 }
 
+function createHerdrCommandInput(now: string): CreateCommandInput {
+	return {
+		name: "herdr",
+		description: "Shows Herdr link",
+		category: "info",
+		responseType: "static",
+		permission: "everyone",
+		initialValue: "Herdr: https://herdr.dev/",
+		createdAt: now,
+	};
+}
+
 const DefaultCommandMigrations = [
 	{
 		id: "2026-05-27-add-plan-command",
@@ -142,6 +154,11 @@ const DefaultCommandMigrations = [
 		kind: "add-alias",
 		commandName: "dotfiles",
 		alias: "df",
+	},
+	{
+		id: "2026-06-25-add-herdr-command",
+		kind: "create",
+		createInput: createHerdrCommandInput,
 	},
 ] as const;
 
@@ -240,6 +257,7 @@ function createDefaultCommandInputs(now: string): CreateCommandInput[] {
 			createdAt: now,
 		},
 		createPlanCommandInput(now),
+		createHerdrCommandInput(now),
 		{
 			name: "achievements",
 			description: "Shows user's unlocked achievements",

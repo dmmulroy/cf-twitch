@@ -5,9 +5,10 @@
  * scheduling, scheduled resume, and failure/completion status transitions.
  */
 
-import { env, fetchMock, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { EventBusDO } from "../../durable-objects/event-bus-do";
 import * as sagaSchema from "../../durable-objects/schemas/saga.schema";
@@ -30,6 +31,7 @@ import {
 	ensureAchievementsSingletonStub,
 	waitForAchievementQueuesToDrain,
 } from "../helpers/durable-objects";
+import { fetchMock } from "../helpers/fetch-mock";
 
 async function createSongRequestSagaStub(
 	name: string,

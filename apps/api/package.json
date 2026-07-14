@@ -6,11 +6,11 @@
 	"scripts": {
 		"dev": "wrangler dev",
 		"deploy": "wrangler deploy",
-		"test": "vitest run",
-		"test:watch": "vitest",
+		"test": "vp test run",
+		"test:watch": "vp test",
 		"typecheck": "tsc --noEmit",
-		"build": "pnpm run typecheck",
-		"db:generate": "pnpm run db:generate:song-queue && pnpm run db:generate:stream-lifecycle && pnpm run db:generate:keyboard-raffle",
+		"build": "vp run typecheck",
+		"db:generate": "vp run db:generate:song-queue && vp run db:generate:stream-lifecycle && vp run db:generate:keyboard-raffle",
 		"db:generate:song-queue": "drizzle-kit generate --config=drizzle/song-queue-do/drizzle.config.ts",
 		"db:generate:stream-lifecycle": "drizzle-kit generate --config=drizzle/stream-lifecycle-do/drizzle.config.ts",
 		"db:generate:keyboard-raffle": "drizzle-kit generate --config=drizzle/keyboard-raffle-do/drizzle.config.ts"
@@ -23,12 +23,19 @@
 		"zod": "^4.3.5"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.12.21",
+		"@babel/core": "^7.29.7",
+		"@babel/plugin-proposal-decorators": "^7.29.0",
+		"@cloudflare/vitest-pool-workers": "^0.18.0",
+		"@cloudflare/workers-types": "^4.20260702.1",
+		"@rolldown/plugin-babel": "^0.2.3",
 		"drizzle-kit": "^0.31.8",
+		"esbuild": "^0.28.1",
 		"ts-morph": "^27.0.2",
 		"tsx": "^4.21.0",
 		"typescript": "^5.7.2",
-		"vitest": "^3.2.4",
+		"vite": "catalog:",
+		"vite-plus": "catalog:",
+		"vitest": "catalog:",
 		"wrangler": "^4.60.0"
 	}
 }
