@@ -573,6 +573,57 @@ export interface StreamLifecycleHandler<E = never> {
 // Saga Errors
 // =============================================================================
 
+/** The persisted saga field whose serialized value failed at the boundary. */
+export type SagaPersistedField = "params" | "step-result" | "step-undo";
+
+/**
+ * Expected failure returned when a named saga codec cannot decode or encode a value.
+ * `parseError` is Zod's formatted diagnostic and `codecName` is stable context.
+ */
+export class SagaCodecParseError extends TaggedError("SagaCodecParseError")<{
+	readonly codecName: string;
+	readonly parseError: string;
+	readonly message: string;
+}>() {
+	constructor(args: { readonly codecName: string; readonly parseError: string }) {
+		super({
+			...args,
+			message: `Invalid ${args.codecName}: ${args.parseError}`,
+		});
+	}
+}
+
+/**
+ * Safe expected failure for malformed or unencodable saga persistence data.
+ *
+ * The projection deliberately contains only stable identity and schema context;
+ * raw JSON, payloads, environments, tokens, and arbitrary causes are excluded.
+ */
+export class SagaPersistedDataError extends TaggedError("SagaPersistedDataError")<{
+	readonly sagaId: string;
+	readonly field: SagaPersistedField;
+	readonly stepName?: string;
+	readonly codecName: string;
+	readonly parseError: string;
+	readonly message: string;
+}>() {
+	constructor(args: {
+		readonly sagaId: string;
+		readonly field: SagaPersistedField;
+		readonly stepName?: string;
+		readonly codecName: string;
+		readonly parseError: string;
+	}) {
+		super({
+			...args,
+			message:
+				args.stepName === undefined
+					? `Invalid persisted saga ${args.field}`
+					: `Invalid persisted ${args.field} for step "${args.stepName}"`,
+		});
+	}
+}
+
 export class SagaStepError extends TaggedError("SagaStepError")<{
 	stepName: string;
 	sagaId: string;
@@ -642,6 +693,8 @@ export class SagaAlreadyExistsError extends TaggedError("SagaAlreadyExistsError"
 
 /** Union of all saga-related errors */
 export type SagaError =
+	| SagaCodecParseError
+	| SagaPersistedDataError
 	| SagaStepError
 	| SagaStepRetrying
 	| SagaCompensationError
