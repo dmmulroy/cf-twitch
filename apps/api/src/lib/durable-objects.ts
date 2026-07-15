@@ -39,6 +39,7 @@ import { env as globalEnv } from "cloudflare:workers";
 
 import { DurableObjectError } from "./errors";
 import { logger, normalizeError, startTimer } from "./logger";
+import { serializeRpcError } from "./rpc-result";
 
 // =============================================================================
 // rpcReturn - Result Serialization for RPC
@@ -58,13 +59,6 @@ export function withRpcSerialization<T extends new (...args: any[]) => object>(B
 // =============================================================================
 
 import { Ok, Err } from "better-result";
-
-/**
- * Check if a value is a Result instance
- */
-function isResult(value: unknown): value is Ok<unknown, unknown> | Err<unknown, unknown> {
-	return value instanceof Ok || value instanceof Err;
-}
 
 /**
  * Method decorator for DO methods that return Results over RPC.
@@ -89,8 +83,14 @@ export function rpc<This, Args extends unknown[], Return>(
 	return async function (this: This, ...args: Args): Promise<Return> {
 		const result = await method.call(this, ...args);
 
-		if (isResult(result)) {
-			return Result.serialize(result) as Return;
+		if (result instanceof Ok || result instanceof Err) {
+			const serialized =
+				result instanceof Ok
+					? { status: "ok", value: result.value }
+					: { status: "error", error: serializeRpcError(result.error) };
+			// SAFETY: The decorator preserves the method's declared Result contract while replacing
+			// its runtime representation with the structurally equivalent RPC-safe projection.
+			return serialized as Return;
 		}
 
 		return result;
@@ -111,8 +111,16 @@ export function rpc<This, Args extends unknown[], Return>(
  * }
  * ```
  */
-export function rpcReturn<T, E>(result: Result<T, E>): ReturnType<typeof Result.serialize<T, E>> {
-	return Result.serialize(result);
+export function rpcReturn<T, E>(
+	result: Result<T, E>,
+):
+	| { readonly status: "ok"; readonly value: T }
+	| { readonly status: "error"; readonly error: unknown } {
+	if (result instanceof Ok) {
+		return { status: "ok", value: result.value };
+	}
+
+	return { status: "error", error: serializeRpcError(result.error) };
 }
 
 // =============================================================================

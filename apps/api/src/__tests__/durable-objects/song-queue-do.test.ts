@@ -17,7 +17,7 @@ import {
 	type InsertSpotifyQueueSnapshotItem,
 } from "../../durable-objects/schemas/song-queue-do.schema";
 import * as songQueueSchema from "../../durable-objects/schemas/song-queue-do.schema";
-import { SongQueueDO } from "../../durable-objects/song-queue-do";
+import { SONG_QUEUE_DO_NAME, SongQueueDO } from "../../durable-objects/song-queue-do";
 import { SpotifyTokenDO } from "../../durable-objects/spotify-token-do";
 import { createPendingRequest, TEST_PENDING_REQUEST } from "../fixtures/song-request";
 import {
@@ -84,6 +84,34 @@ describe("SongQueueDO", () => {
 
 			expect(result1.status).toBe("ok");
 			expect(result2.status).toBe("ok");
+		});
+
+		it("preserves typed database error context through the RpcTarget handle", async () => {
+			const rpcId = env.SONG_QUEUE_DO.idFromName(`song-queue-rpc-${crypto.randomUUID()}`);
+			const rpcStub = env.SONG_QUEUE_DO.get(rpcId);
+			await rpcStub.setName(SONG_QUEUE_DO_NAME);
+			await rpcStub.getRequestHistory(1, 0);
+			await runInDurableObject(rpcStub, (instance: SongQueueDO) => {
+				instance.ctx.storage.sql.exec(`
+					CREATE TRIGGER fail_pending_request_insert
+					BEFORE INSERT ON pending_requests
+					BEGIN
+						SELECT RAISE(FAIL, 'pending request storage unavailable');
+					END
+				`);
+			});
+			const handle = await rpcStub.connectRpc();
+
+			const result = structuredClone(await handle.persistRequest(TEST_PENDING_REQUEST));
+
+			expect(result).toMatchObject({
+				status: "error",
+				error: {
+					_tag: "SongQueueDbError",
+					operation: `persistRequest(${TEST_PENDING_REQUEST.eventId})`,
+					message: `Song queue DB error during persistRequest(${TEST_PENDING_REQUEST.eventId})`,
+				},
+			});
 		});
 
 		it("schedules refresh and cleanup work after a new request", async () => {

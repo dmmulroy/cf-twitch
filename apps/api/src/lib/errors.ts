@@ -576,6 +576,20 @@ export interface StreamLifecycleHandler<E = never> {
 /** The persisted saga field whose serialized value failed at the boundary. */
 export type SagaPersistedField = "params" | "step-result" | "step-undo";
 
+/** Expected failure returned when saga input cannot be parsed into canonical parameters. */
+export class SagaInputParseError extends TaggedError("SagaInputParseError")<{
+	readonly codecName: string;
+	readonly parseError: string;
+	readonly message: string;
+}>() {
+	constructor(args: { readonly codecName: string; readonly parseError: string }) {
+		super({
+			...args,
+			message: `Invalid saga input for ${args.codecName}`,
+		});
+	}
+}
+
 /**
  * Expected failure returned when a named saga codec cannot decode or encode a value.
  * `parseError` is Zod's formatted diagnostic and `codecName` is stable context.
@@ -627,13 +641,13 @@ export class SagaPersistedDataError extends TaggedError("SagaPersistedDataError"
 /** Expected failure while coordinating a saga retry with the runtime scheduler. */
 export class SagaScheduleError extends TaggedError("SagaScheduleError")<{
 	readonly sagaId: string;
-	readonly operation: "schedule" | "cancel";
+	readonly operation: "inspect" | "schedule" | "cancel";
 	readonly message: string;
 	readonly cause?: unknown;
 }>() {
 	constructor(args: {
 		readonly sagaId: string;
-		readonly operation: "schedule" | "cancel";
+		readonly operation: "inspect" | "schedule" | "cancel";
 		readonly message: string;
 		readonly cause?: unknown;
 	}) {
@@ -710,6 +724,7 @@ export class SagaAlreadyExistsError extends TaggedError("SagaAlreadyExistsError"
 
 /** Union of all saga-related errors */
 export type SagaError =
+	| SagaInputParseError
 	| SagaCodecParseError
 	| SagaPersistedDataError
 	| SagaScheduleError

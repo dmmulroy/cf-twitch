@@ -31,7 +31,35 @@ export type RpcResult<T, E> = SerializedResult<T, E>;
  * ```
  */
 export function toRpcResult<T, E>(result: Result<T, E>): RpcResult<T, E> {
-	return Result.serialize(result);
+	const serialized = Result.serialize(result);
+	if (serialized.status === "ok") return serialized;
+
+	return {
+		status: "error",
+		// SAFETY: RPC error serialization preserves E's enumerable data contract while
+		// replacing an uncloneable Error prototype with a plain transport projection.
+		error: serializeRpcError(serialized.error) as E,
+	};
+}
+
+/**
+ * Projects an Error into a plain RPC-safe object while preserving typed context.
+ *
+ * Non-Error values already use their transport representation and pass through
+ * unchanged. Standard Error fields are copied explicitly because they are not
+ * enumerable; custom tagged-error fields are retained through object entries.
+ *
+ * @param error Error value crossing a Durable Object RPC boundary.
+ * @returns An RPC-safe error projection, or the original non-Error value.
+ */
+export function serializeRpcError(error: unknown): unknown {
+	if (!(error instanceof Error)) return error;
+
+	return {
+		...Object.fromEntries(Object.entries(error)),
+		name: error.name,
+		message: error.message,
+	};
 }
 
 /**
