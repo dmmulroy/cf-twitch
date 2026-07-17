@@ -3,7 +3,7 @@
  */
 
 import type { InsertPendingRequest } from "../../durable-objects/schemas/song-queue-do.schema";
-import type { SongRequestParams } from "../../workflows/song-request";
+import type { SongRequestParams } from "../../durable-objects/song-request-saga-do";
 
 /**
  * Test pending request data

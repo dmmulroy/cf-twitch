@@ -12,13 +12,16 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { EventBusDO } from "../../durable-objects/event-bus-do";
 import * as sagaSchema from "../../durable-objects/schemas/saga.schema";
+import * as songQueueSchema from "../../durable-objects/schemas/song-queue-do.schema";
 import { SongQueueDO } from "../../durable-objects/song-queue-do";
 import { SongRequestSagaDO } from "../../durable-objects/song-request-saga-do";
 import { SpotifyTokenDO } from "../../durable-objects/spotify-token-do";
 import { TwitchTokenDO } from "../../durable-objects/twitch-token-do";
-import { createSongRequestParams } from "../fixtures/song-request";
+import { TEST_PENDING_REQUEST, createSongRequestParams } from "../fixtures/song-request";
 import {
 	VALID_TOKEN_RESPONSE as VALID_SPOTIFY_TOKEN_RESPONSE,
+	mockSpotifyAddToQueue,
+	mockSpotifyCurrentlyPlaying,
 	mockSpotifyGetTrack,
 	mockSpotifyQueue,
 } from "../fixtures/spotify";
@@ -93,7 +96,34 @@ async function cancelSongQueueSchedules(stub: DurableObjectStub<SongQueueDO>): P
 	});
 }
 
+function mockTwitchRedemptionFailure(status: number): void {
+	for (let attempt = 0; attempt < 4; attempt += 1) {
+		fetchMock
+			.get("https://api.twitch.tv")
+			.intercept({
+				path: /\/helix\/channel_points\/custom_rewards\/redemptions/,
+				method: "PATCH",
+			})
+			.reply(status, "Redemption update failed");
+	}
+}
+
 describe("SongRequestSagaDO", () => {
+	it("rejects invalid parameters before persistence or business effects", async () => {
+		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
+
+		const result = await stub.start({ user_input: 42 });
+
+		expect(result.status).toBe("error");
+		if (result.status === "error") {
+			expect(result.error).toMatchObject({
+				_tag: "SagaInputParseError",
+				codecName: "song-request-params",
+			});
+		}
+		expect(await stub.getStatus()).toEqual({ status: "ok", value: null });
+	});
+
 	it("returns null status before a saga starts", async () => {
 		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
 
@@ -121,7 +151,7 @@ describe("SongRequestSagaDO", () => {
 			.intercept({ path: `/v1/tracks/${trackId}` })
 			.reply(503, "Service unavailable");
 
-		const startResult = await stub.start(params);
+		const startResult = await stub.start({ ...params, _tag: "SongRequestRedemption" });
 		expect(startResult.status).toBe("error");
 		if (startResult.status === "error") {
 			expect(startResult.error).toMatchObject({
@@ -162,6 +192,316 @@ describe("SongRequestSagaDO", () => {
 				status: "COMPLETED",
 			});
 		}
+
+		const duplicateResult = await stub.start({
+			...params,
+			user_name: "DifferentViewer",
+			user_input: "spotify:track:DifferentValidTrackId",
+		});
+		expect(duplicateResult.status).toBe("ok");
+
+		const persistedParams = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			return (await db.query.sagaRuns.findFirst())?.paramsJson;
+		});
+		expect(persistedParams).toBe(JSON.stringify(params));
+	});
+
+	it("stops before business orchestration when persisted parameters are malformed", async () => {
+		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
+		const params = createSongRequestParams({ id: `redemption-${crypto.randomUUID()}` });
+		await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const now = new Date().toISOString();
+			await db.insert(sagaSchema.sagaRuns).values({
+				id: instance.ctx.id.toString(),
+				status: "RUNNING",
+				paramsJson: JSON.stringify({ ...params, user_input: 42 }),
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+
+		const result = await stub.start(params);
+
+		expect(result.status).toBe("error");
+		if (result.status === "error") {
+			expect(result.error).toMatchObject({
+				_tag: "SagaPersistedDataError",
+				field: "params",
+				codecName: "song-request-params",
+			});
+		}
+		const steps = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			return db.query.sagaSteps.findMany();
+		});
+		expect(steps).toEqual([]);
+	});
+
+	it("rejects a malformed cached Spotify Track without repeating the lookup", async () => {
+		await ensureTwitchTokenStub();
+		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
+		const params = createSongRequestParams({ id: `redemption-${crypto.randomUUID()}` });
+		const trackId = "4iV5W9uYEdYUVa79Axb7Rh";
+		await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const sagaId = instance.ctx.id.toString();
+			const now = new Date().toISOString();
+			await db.insert(sagaSchema.sagaRuns).values({
+				id: sagaId,
+				status: "RUNNING",
+				paramsJson: JSON.stringify(params),
+				createdAt: now,
+				updatedAt: now,
+			});
+			await db.insert(sagaSchema.sagaSteps).values([
+				{
+					sagaId,
+					stepName: "parse-spotify-url",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(trackId),
+				},
+				{
+					sagaId,
+					stepName: "get-track-info",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify({ id: trackId }),
+				},
+			]);
+		});
+		mockTwitchRedemptionUpdate(fetchMock);
+		mockTwitchChatMessage(fetchMock);
+
+		const result = await stub.start(params);
+
+		expect(result.status).toBe("error");
+		if (result.status === "error") {
+			expect(result.error).toMatchObject({
+				_tag: "SagaPersistedDataError",
+				field: "step-result",
+				stepName: "get-track-info",
+				codecName: "song-request-spotify-track",
+			});
+		}
+		const steps = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			return db.query.sagaSteps.findMany();
+		});
+		expect(steps).toHaveLength(2);
+		expect(steps).toEqual(
+			expect.arrayContaining([expect.objectContaining({ stepName: "get-track-info", attempt: 1 })]),
+		);
+	});
+
+	it("never passes a malformed cached undo payload to compensation", async () => {
+		await ensureTwitchTokenStub();
+		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
+		const params = createSongRequestParams({ id: `redemption-${crypto.randomUUID()}` });
+		const trackId = "4iV5W9uYEdYUVa79Axb7Rh";
+		await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const sagaId = instance.ctx.id.toString();
+			const now = new Date().toISOString();
+			await db.insert(sagaSchema.sagaRuns).values({
+				id: sagaId,
+				status: "RUNNING",
+				paramsJson: JSON.stringify(params),
+				createdAt: now,
+				updatedAt: now,
+			});
+			await db.insert(sagaSchema.sagaSteps).values([
+				{
+					sagaId,
+					stepName: "parse-spotify-url",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(trackId),
+				},
+				{
+					sagaId,
+					stepName: "get-track-info",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify({
+						id: trackId,
+						name: "Test Track",
+						artists: ["Test Artist"],
+						album: "Test Album",
+						albumCoverUrl: null,
+					}),
+				},
+				{
+					sagaId,
+					stepName: "persist-request",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(sagaId),
+					undoJson: JSON.stringify({ eventId: 42 }),
+				},
+			]);
+		});
+		mockTwitchRedemptionUpdate(fetchMock);
+		mockTwitchChatMessage(fetchMock);
+
+		const result = await stub.start(params);
+
+		expect(result.status).toBe("error");
+		if (result.status === "error") {
+			expect(result.error).toMatchObject({
+				_tag: "SagaPersistedDataError",
+				field: "step-undo",
+				stepName: "persist-request",
+				codecName: "song-request-persist-request-undo",
+			});
+		}
+		const persistStep = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			return db.query.sagaSteps.findFirst({
+				where: (step, operators) => operators.eq(step.stepName, "persist-request"),
+			});
+		});
+		expect(persistStep).toMatchObject({ state: "SUCCEEDED" });
+	});
+
+	it("replays valid cached values and preserves post-fulfillment effects on corruption", async () => {
+		await ensureTwitchTokenStub();
+		const songQueueStub = await ensureSongQueueStub();
+		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
+		const sagaId = stub.id.toString();
+		const params = createSongRequestParams({ id: `redemption-${crypto.randomUUID()}` });
+		const trackId = "4iV5W9uYEdYUVa79Axb7Rh";
+		const persistedTrack = {
+			id: trackId,
+			name: "Test Track",
+			artists: ["Test Artist"],
+			album: "Test Album",
+			albumCoverUrl: null,
+		};
+		const persisted = await songQueueStub.persistRequest({
+			...TEST_PENDING_REQUEST,
+			eventId: sagaId,
+			requesterUserId: params.user_id,
+			requesterDisplayName: params.user_name,
+		});
+		expect(persisted.status).toBe("ok");
+
+		await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const now = new Date().toISOString();
+			await db.insert(sagaSchema.sagaRuns).values({
+				id: sagaId,
+				status: "RUNNING",
+				paramsJson: JSON.stringify(params),
+				fulfilledAt: now,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await db.insert(sagaSchema.sagaSteps).values([
+				{
+					sagaId,
+					stepName: "parse-spotify-url",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(trackId),
+				},
+				{
+					sagaId,
+					stepName: "get-track-info",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(persistedTrack),
+				},
+				{
+					sagaId,
+					stepName: "persist-request",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(sagaId),
+					undoJson: JSON.stringify({ eventId: sagaId }),
+				},
+				{
+					sagaId,
+					stepName: "add-to-spotify-queue",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(trackId),
+					undoJson: JSON.stringify({ trackId }),
+				},
+				{
+					sagaId,
+					stepName: "fulfill-redemption",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: "null",
+				},
+				{
+					sagaId,
+					stepName: "send-chat-confirmation",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify("not-the-no-result-dto"),
+				},
+			]);
+		});
+
+		fetchMock
+			.get("https://api.twitch.tv")
+			.intercept({
+				path: /\/helix\/channel_points\/custom_rewards\/redemptions/,
+				method: "PATCH",
+			})
+			.reply(200, JSON.stringify({ data: [{}] }));
+		fetchMock
+			.get("https://api.twitch.tv")
+			.intercept({ path: "/helix/chat/messages", method: "POST" })
+			.reply(200, JSON.stringify({ data: [{}] }));
+
+		const result = await stub.start(params);
+
+		expect(result.status).toBe("error");
+		if (result.status === "error") {
+			expect(result.error).toMatchObject({
+				_tag: "SagaPersistedDataError",
+				field: "step-result",
+				stepName: "send-chat-confirmation",
+				codecName: "no-result",
+			});
+		}
+		const pendingRequest = await runInDurableObject(
+			songQueueStub,
+			async (instance: SongQueueDO) => {
+				const db = drizzle(instance.ctx.storage, { schema: songQueueSchema });
+				return db.query.pendingRequests.findFirst({
+					where: (request, operators) => operators.eq(request.eventId, sagaId),
+				});
+			},
+		);
+		expect(pendingRequest).toMatchObject({ eventId: sagaId });
+
+		const stepStates = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			return db.query.sagaSteps.findMany();
+		});
+		expect(stepStates).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ stepName: "persist-request", state: "SUCCEEDED" }),
+				expect.objectContaining({ stepName: "add-to-spotify-queue", state: "SUCCEEDED" }),
+			]),
+		);
+
+		let unconsumedEffects = "";
+		try {
+			fetchMock.assertNoPendingInterceptors();
+		} catch (error) {
+			unconsumedEffects = error instanceof Error ? error.message : String(error);
+		}
+		expect(unconsumedEffects).toContain("PATCH https://api.twitch.tv");
+		expect(unconsumedEffects).toContain("POST https://api.twitch.tv/helix/chat/messages");
+		fetchMock.reset();
+		await cancelSongQueueSchedules(songQueueStub);
 	});
 
 	it("restores a pending retry schedule from durable saga rows during startup", async () => {
@@ -172,7 +512,7 @@ describe("SongRequestSagaDO", () => {
 			id: `redemption-${crypto.randomUUID()}`,
 		});
 
-		const schedules = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+		const restoration = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
 			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
 			await db.insert(sagaSchema.sagaRuns).values({
 				id: instance.ctx.id.toString(),
@@ -195,18 +535,71 @@ describe("SongRequestSagaDO", () => {
 				retryDueAt: "2099-01-01T00:00:00.000Z",
 			});
 			await instance.onStart();
-			return instance.getSchedules();
+			return { schedules: instance.getSchedules(), state: instance.state };
 		});
 
-		expect(schedules).toEqual(
+		expect(restoration.schedules).toHaveLength(1);
+		expect(restoration.schedules[0]).toMatchObject({
+			type: "scheduled",
+			callback: "retrySagaTick",
+			payload: dueAt,
+			time: Math.floor(new Date(dueAt).getTime() / 1000),
+		});
+		expect(restoration.state).toMatchObject({
+			retryScheduleId: restoration.schedules[0]?.id,
+			retryDueAt: dueAt,
+		});
+	});
+
+	it("compensates the Pending Request and refunds a permanent pre-fulfillment failure", async () => {
+		await ensureSpotifyTokenStub();
+		await ensureTwitchTokenStub();
+		const songQueueStub = await ensureSongQueueStub();
+		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
+		const params = createSongRequestParams({ id: `redemption-${crypto.randomUUID()}` });
+		const trackId = "4iV5W9uYEdYUVa79Axb7Rh";
+
+		mockSpotifyGetTrack(fetchMock, trackId);
+		fetchMock
+			.get("https://api.spotify.com")
+			.intercept({ path: "/v1/me/player/queue" })
+			.reply(200, JSON.stringify({ currently_playing: null, queue: [] }), {
+				headers: { "content-type": "application/json" },
+			});
+		mockSpotifyAddToQueue(fetchMock);
+		mockTwitchRedemptionFailure(400);
+		mockSpotifyCurrentlyPlaying(fetchMock, false);
+		mockTwitchRedemptionUpdate(fetchMock);
+		mockTwitchChatMessage(fetchMock);
+
+		const result = await stub.start(params);
+
+		expect(result.status).toBe("error");
+		const status = await stub.getStatus();
+		expect(status).toMatchObject({ status: "ok", value: { status: "FAILED" } });
+		const pendingRequest = await runInDurableObject(
+			songQueueStub,
+			async (instance: SongQueueDO) => {
+				const db = drizzle(instance.ctx.storage, { schema: songQueueSchema });
+				return db.query.pendingRequests.findFirst({
+					where: (request, operators) => operators.eq(request.eventId, stub.id.toString()),
+				});
+			},
+		);
+		expect(pendingRequest).toBeUndefined();
+
+		const compensatedSteps = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			return db.query.sagaSteps.findMany();
+		});
+		expect(compensatedSteps).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({
-					type: "scheduled",
-					callback: "retrySagaTick",
-				}),
+				expect.objectContaining({ stepName: "persist-request", state: "COMPENSATED" }),
+				expect.objectContaining({ stepName: "add-to-spotify-queue", state: "COMPENSATED" }),
 			]),
 		);
-	});
+		await cancelSongQueueSchedules(songQueueStub);
+	}, 20_000);
 
 	it("fails invalid Spotify URLs and records FAILED saga status", async () => {
 		await ensureTwitchTokenStub();

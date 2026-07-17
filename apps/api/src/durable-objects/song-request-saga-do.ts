@@ -1,59 +1,34 @@
-/**
- * SongRequestSagaDO - Handles song request saga with durable step execution
- *
- * Each instance is keyed by redemption ID for per-saga isolation.
- * Uses SagaRunner for step execution with retry and compensation support.
- *
- * Flow:
- * 1. parse-spotify-url → extract track ID (NonRetryable on invalid)
- * 2. get-track-info → fetch from Spotify API
- * 3. persist-request → SongQueueDO (rollbackable)
- * 4. add-to-spotify-queue → with rollback (skip if currently playing)
- * 5. write-history → SongQueueDO (rollbackable)
- * 6. fulfill-redemption → POINT OF NO RETURN
- * 7. send-chat-confirmation → best-effort
- * 8. publish-event → fire-and-forget song_request_success to EventBusDO
- */
-
-import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
-import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/durable-sqlite";
-import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
-import migrations from "../../drizzle/saga-do/migrations";
-import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
+import { noResultCodec, stringCodec, zodSagaCodec } from "../lib/codecs";
+import { getStub, withRpcSerialization } from "../lib/durable-objects";
 import {
 	InvalidSpotifyUrlError,
-	SagaAlreadyExistsError,
 	SagaNotFoundError,
-	SagaStepError,
+	SagaPersistedDataError,
 	SagaStepRetrying,
 	isRetryableError,
 } from "../lib/errors";
-import { LegacySagaRunner } from "../lib/legacy-saga-runner";
 import { logger } from "../lib/logger";
-import { SagaRunnerDbError } from "../lib/saga-runner";
+import { SagaHost, type SagaHostDefinition, type SagaHostStatus } from "../lib/saga-host";
+import {
+	SagaRunner,
+	type SagaRollbackStepDefinition,
+	type SagaStepDefinition,
+	type SagaStepExecutionError,
+} from "../lib/saga-runner";
 import { getSongQueue } from "../lib/song-queue-client";
 import {
 	parseSpotifyTrackInput,
 	spotifyTrackUri,
 	type SpotifyTrackId,
 } from "../lib/spotify-track-id";
-import { SpotifyService, type TrackInfo } from "../services/spotify-service";
+import { SpotifyService } from "../services/spotify-service";
 import { TwitchService } from "../services/twitch-service";
 import { createSongRequestSuccessEvent } from "./schemas/event-bus-do.schema";
-import * as sagaSchema from "./schemas/saga.schema";
-import { type SagaStatus, sagaRuns } from "./schemas/saga.schema";
 
-import type { Env } from "../index";
-import type { SongRequestRedemption } from "../lib/channel-point-redemptions";
-
-/**
- * Params for starting a song request saga
- * Matches workflow SongRequestParams structure
- */
+/** Boundary schema for canonical Song Request redemption parameters. */
 export const SongRequestParamsSchema = z.object({
 	id: z.string(),
 	broadcaster_user_id: z.string(),
@@ -73,219 +48,150 @@ export const SongRequestParamsSchema = z.object({
 	redeemed_at: z.string(),
 });
 
-export type SongRequestParams = SongRequestRedemption;
+/** Canonical Song Request parameters persisted without webhook routing metadata. */
+export type SongRequestParams = z.infer<typeof SongRequestParamsSchema>;
 
-/**
- * Status response for getStatus RPC
- */
-export interface SongRequestSagaStatus {
-	sagaId: string;
-	status: SagaStatus;
-	fulfilledAt: string | null;
-	error: string | null;
-	createdAt: string;
-	updatedAt: string;
+/** Named persistence codec for canonical Song Request parameters. */
+export const SongRequestParamsCodec = zodSagaCodec({
+	name: "song-request-params",
+	codec: z.codec(SongRequestParamsSchema, SongRequestParamsSchema, {
+		decode: (value) => value,
+		encode: (value) => value,
+	}),
+});
+
+/** Shared host status projection retained under the Song Request API name. */
+export type SongRequestSagaStatus = SagaHostStatus;
+
+type SongRequestSagaError = SagaStepExecutionError | SagaNotFoundError;
+
+const SongRequestSpotifyTrackSchema = z.object({
+	id: z.string(),
+	name: z.string(),
+	artists: z.array(z.string()),
+	album: z.string(),
+	albumCoverUrl: z.string().nullable(),
+});
+
+type SongRequestSpotifyTrack = z.infer<typeof SongRequestSpotifyTrackSchema>;
+
+const SongRequestSpotifyTrackCodec = zodSagaCodec({
+	name: "song-request-spotify-track",
+	codec: z.codec(SongRequestSpotifyTrackSchema, SongRequestSpotifyTrackSchema, {
+		decode: (value) => value,
+		encode: (value) => value,
+	}),
+});
+
+const SPOTIFY_TRACK_ID_PATTERN = /^[a-zA-Z0-9]+$/;
+
+function isPersistedSpotifyTrackId(value: unknown): value is SpotifyTrackId {
+	return typeof value === "string" && SPOTIFY_TRACK_ID_PATTERN.test(value);
 }
 
-interface SongRequestSagaAgentState {
-	retryScheduleId: string | null;
-	retryDueAt: string | null;
+function parsePersistedSpotifyTrackId(value: string): SpotifyTrackId {
+	const parsed = parseSpotifyTrackInput(`spotify:track:${value}`);
+	if (parsed.status === "error") {
+		throw new Error("Spotify Track ID schema and parser disagree");
+	}
+	return parsed.value;
 }
 
-/**
- * SongRequestSagaDO - Agent-native song request saga orchestration
- *
- * Each instance handles a single song request (keyed by redemption ID).
- * SQLite remains the source of truth for saga runs/steps while Agent state
- * coordinates retry scheduling.
- */
-class _SongRequestSagaDO extends Agent<Env, SongRequestSagaAgentState> {
-	private db: ReturnType<typeof drizzle<typeof sagaSchema>>;
-	private runner: LegacySagaRunner | null = null;
+const SpotifyTrackIdSchema = z.string().regex(SPOTIFY_TRACK_ID_PATTERN);
+const CanonicalSpotifyTrackIdSchema = z.custom<SpotifyTrackId>(isPersistedSpotifyTrackId);
 
-	initialState: SongRequestSagaAgentState = {
-		retryScheduleId: null,
-		retryDueAt: null,
-	};
+const SpotifyTrackIdCodec = zodSagaCodec({
+	name: "spotify-track-id",
+	codec: z.codec(SpotifyTrackIdSchema, CanonicalSpotifyTrackIdSchema, {
+		decode: parsePersistedSpotifyTrackId,
+		encode: (value) => value,
+	}),
+});
 
-	constructor(ctx: AgentContext, env: Env) {
-		super(ctx, env);
-		this.db = drizzle(this.ctx.storage, { schema: sagaSchema });
+const PersistRequestUndoSchema = z.object({ eventId: z.string() });
+type PersistRequestUndo = z.infer<typeof PersistRequestUndoSchema>;
+const PersistRequestUndoCodec = zodSagaCodec({
+	name: "song-request-persist-request-undo",
+	codec: z.codec(PersistRequestUndoSchema, PersistRequestUndoSchema, {
+		decode: (value) => value,
+		encode: (value) => value,
+	}),
+});
+
+const AddToSpotifyQueueUndoSchema = z.object({ trackId: SpotifyTrackIdSchema });
+type AddToSpotifyQueueUndo = { readonly trackId: SpotifyTrackId };
+const AddToSpotifyQueueUndoCanonicalSchema = z.object({ trackId: CanonicalSpotifyTrackIdSchema });
+const AddToSpotifyQueueUndoCodec = zodSagaCodec<AddToSpotifyQueueUndo>({
+	name: "song-request-add-to-spotify-queue-undo",
+	codec: z.codec(AddToSpotifyQueueUndoSchema, AddToSpotifyQueueUndoCanonicalSchema, {
+		decode: (value) => ({ trackId: parsePersistedSpotifyTrackId(value.trackId) }),
+		encode: (value) => ({ trackId: value.trackId }),
+	}),
+});
+
+const ParseSpotifyUrlStep: SagaStepDefinition<SpotifyTrackId> = {
+	name: "parse-spotify-url",
+	resultCodec: SpotifyTrackIdCodec,
+};
+
+const GetTrackInfoStep: SagaStepDefinition<SongRequestSpotifyTrack> = {
+	name: "get-track-info",
+	resultCodec: SongRequestSpotifyTrackCodec,
+	options: { timeout: 30000, maxRetries: 3 },
+};
+
+const PersistRequestStep: SagaRollbackStepDefinition<string, PersistRequestUndo> = {
+	name: "persist-request",
+	resultCodec: stringCodec,
+	undoCodec: PersistRequestUndoCodec,
+	options: { timeout: 10000, maxRetries: 2 },
+};
+
+const AddToSpotifyQueueStep: SagaRollbackStepDefinition<SpotifyTrackId, AddToSpotifyQueueUndo> = {
+	name: "add-to-spotify-queue",
+	resultCodec: SpotifyTrackIdCodec,
+	undoCodec: AddToSpotifyQueueUndoCodec,
+	options: { timeout: 30000, maxRetries: 3 },
+};
+
+const FulfillRedemptionStep: SagaStepDefinition<void> = {
+	name: "fulfill-redemption",
+	resultCodec: noResultCodec,
+	options: { timeout: 30000, maxRetries: 3 },
+};
+
+const SendChatConfirmationStep: SagaStepDefinition<void> = {
+	name: "send-chat-confirmation",
+	resultCodec: noResultCodec,
+	options: { timeout: 10000, maxRetries: 2 },
+};
+
+const PublishEventStep: SagaStepDefinition<void> = {
+	name: "publish-event",
+	resultCodec: noResultCodec,
+	options: { timeout: 10000, maxRetries: 2 },
+};
+
+const SONG_REQUEST_SAGA: SagaHostDefinition<SongRequestParams> = {
+	sagaType: "song-request-saga",
+	paramsCodec: SongRequestParamsCodec,
+};
+
+/** Song Request orchestration hosted by the shared saga lifecycle. */
+class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaError> {
+	protected get sagaDefinition(): SagaHostDefinition<SongRequestParams> {
+		return SONG_REQUEST_SAGA;
 	}
 
-	async onStart(): Promise<void> {
-		await this.ctx.blockConcurrencyWhile(async () => {
-			await migrate(this.db, migrations);
-			await this.ctx.storage.deleteAlarm();
-
-			const restoreResult = await this.restoreOrRecomputeRetrySchedule();
-			if (restoreResult.status === "error") {
-				logger.error("Failed to restore song request retry schedule", {
-					sagaId: this.ctx.id.toString(),
-					error: restoreResult.error.message,
-				});
-				await this.clearRetrySchedule();
-			}
-		});
-	}
-
-	/**
-	 * Get or create saga runner for this instance
-	 */
-	private getRunner(): LegacySagaRunner {
-		if (!this.runner) {
-			this.runner = new LegacySagaRunner(
-				this.ctx.id.toString(),
-				this.db,
-				{
-					scheduleRetry: async (delayMs: number) => {
-						await this.scheduleRetryIn(delayMs);
-					},
-				},
-				this.env.ANALYTICS,
-				"song-request-saga",
-			);
-		}
-		return this.runner;
-	}
-
-	private async restoreOrRecomputeRetrySchedule(): Promise<Result<void, SagaRunnerDbError>> {
-		return Result.gen(async function* (this: _SongRequestSagaDO) {
-			const runner = this.getRunner();
-			const saga = yield* Result.await(runner.getSaga());
-			if (saga?.status !== "RUNNING") {
-				await this.clearRetrySchedule();
-				return Result.ok();
-			}
-
-			const pendingRetryStep = yield* Result.await(runner.getNextRetryStep());
-			if (!pendingRetryStep?.nextRetryAt) {
-				await this.clearRetrySchedule();
-				return Result.ok();
-			}
-
-			if (
-				this.state.retryScheduleId !== null &&
-				this.state.retryDueAt === pendingRetryStep.nextRetryAt &&
-				this.getSchedule(this.state.retryScheduleId) !== undefined
-			) {
-				return Result.ok();
-			}
-
-			await this.scheduleRetryAt(pendingRetryStep.nextRetryAt);
-			return Result.ok();
-		}, this);
-	}
-
-	private async scheduleRetryIn(delayMs: number): Promise<void> {
-		const dueAt = new Date(Date.now() + delayMs).toISOString();
-		await this.scheduleRetryAt(dueAt);
-	}
-
-	private async scheduleRetryAt(whenIso: string): Promise<void> {
-		await this.clearRetrySchedule();
-		const schedule = await this.schedule(new Date(whenIso), "retrySagaTick", whenIso, {
-			idempotent: true,
-			retry: { maxAttempts: 1 },
-		});
-		this.setState({
-			...this.state,
-			retryScheduleId: schedule.id,
-			retryDueAt: whenIso,
-		});
-	}
-
-	private async clearRetrySchedule(): Promise<void> {
-		if (this.state.retryScheduleId !== null) {
-			await this.cancelSchedule(this.state.retryScheduleId);
-		}
-
-		if (this.state.retryScheduleId !== null || this.state.retryDueAt !== null) {
-			this.setState({
-				...this.state,
-				retryScheduleId: null,
-				retryDueAt: null,
-			});
-		}
-	}
-
-	/**
-	 * Start the song request saga (idempotent)
-	 *
-	 * If saga already exists, returns success (idempotent).
-	 * Otherwise, initializes saga and begins execution.
-	 */
-	@rpc
-	async start(
+	protected async runSaga(
 		params: SongRequestParams,
-	): Promise<
-		Result<void, SagaAlreadyExistsError | SagaRunnerDbError | SagaStepError | SagaStepRetrying>
-	> {
-		const runner = this.getRunner();
+		runner: SagaRunner<SongRequestParams>,
+	): Promise<Result<void, SongRequestSagaError>> {
 		const sagaId = this.ctx.id.toString();
 
-		logger.info("Starting song request saga", {
-			sagaId,
-			redemptionId: params.id,
-			user: params.user_name,
-			input: params.user_input,
-		});
-
-		const initResult = await runner.initSaga(params);
-
-		if (initResult.status === "error") {
-			if (SagaAlreadyExistsError.is(initResult.error)) {
-				logger.info("Saga already exists, resuming", { sagaId });
-			} else {
-				return Result.err(initResult.error);
-			}
-		}
-
-		return this.execute();
-	}
-
-	/**
-	 * Execute the saga steps
-	 */
-	private async execute(): Promise<
-		Result<void, SagaRunnerDbError | SagaStepError | SagaStepRetrying>
-	> {
-		const runner = this.getRunner();
-		const sagaId = this.ctx.id.toString();
-
-		// Status gating: only proceed if saga is in RUNNING state
-		const isRunningResult = await runner.isRunning();
-		if (isRunningResult.status === "error") {
-			return Result.err(isRunningResult.error);
-		}
-		if (!isRunningResult.value) {
-			logger.info("Saga not in RUNNING state, skipping execution", { sagaId });
-			return Result.ok();
-		}
-
-		const paramsResult = await runner.getParams<SongRequestParams>();
-		if (paramsResult.status === "error") {
-			if (SagaNotFoundError.is(paramsResult.error)) {
-				logger.error("Saga not found during execute", { sagaId });
-				return Result.ok();
-			}
-			return Result.err(paramsResult.error);
-		}
-
-		const params = paramsResult.value;
-		if (!params) {
-			logger.error("No params found for saga", { sagaId });
-			return Result.ok();
-		}
-
-		let trackInfo: TrackInfo | undefined;
-
-		// Step 1: Parse Spotify track input
-		const parseResult = await runner.executeStep("parse-spotify-url", async () => {
+		const parseResult = await runner.executeStep(ParseSpotifyUrlStep, async () => {
 			const trackIdResult = parseSpotifyTrackInput(params.user_input);
-			if (trackIdResult.status === "error") {
-				throw trackIdResult.error;
-			}
+			if (trackIdResult.status === "error") throw trackIdResult.error;
 
 			logger.info("Parsed Spotify track input", {
 				sagaId,
@@ -294,268 +200,216 @@ class _SongRequestSagaDO extends Agent<Env, SongRequestSagaAgentState> {
 			});
 			return { result: trackIdResult.value };
 		});
-
 		if (parseResult.status === "error") {
-			return this.handleStepError(parseResult.error, params);
+			return this.handleStepError(parseResult.error, params, runner);
 		}
-		const trackId: SpotifyTrackId = parseResult.value;
+		const trackId = parseResult.value;
 
-		// Step 2: Get track info from Spotify
-		const trackInfoResult = await runner.executeStep(
-			"get-track-info",
-			async () => {
-				const spotifyService = new SpotifyService(this.env);
-				const result = await spotifyService.getTrack(trackId);
-
-				if (result.status === "error") {
-					const err = result.error;
-					if (err._tag === "SpotifyTrackNotFoundError") {
-						throw new InvalidSpotifyUrlError({ url: `spotify:track:${trackId}` });
-					}
-					if (isRetryableError(err)) {
-						throw err;
-					}
-					throw new Error(err.message);
+		const trackInfoResult = await runner.executeStep(GetTrackInfoStep, async () => {
+			const spotify = new SpotifyService(this.env);
+			const result = await spotify.getTrack(trackId);
+			if (result.status === "error") {
+				if (result.error._tag === "SpotifyTrackNotFoundError") {
+					throw new InvalidSpotifyUrlError({ url: spotifyTrackUri(trackId) });
 				}
+				if (isRetryableError(result.error)) throw result.error;
+				throw new Error(result.error.message);
+			}
 
-				logger.info("Got track info", {
-					sagaId,
-					trackId: result.value.id,
-					name: result.value.name,
-				});
-
-				return { result: result.value };
-			},
-			{ timeout: 30000, maxRetries: 3 },
-		);
-
+			logger.info("Got track info", {
+				sagaId,
+				trackId: result.value.id,
+				name: result.value.name,
+			});
+			return { result: result.value };
+		});
 		if (trackInfoResult.status === "error") {
-			return this.handleStepError(trackInfoResult.error, params);
+			return this.handleStepError(trackInfoResult.error, params, runner);
 		}
-		trackInfo = trackInfoResult.value;
+		const trackInfo = trackInfoResult.value;
 
-		// Step 3: Persist request in SongQueueDO (with rollback)
 		const persistResult = await runner.executeStepWithRollback(
-			"persist-request",
+			PersistRequestStep,
 			async () => {
 				using songQueue = await getSongQueue();
 				const result = await songQueue.persistRequest({
 					eventId: sagaId,
-					trackId: trackInfo?.id ?? "",
-					trackName: trackInfo?.name ?? "",
-					artists: JSON.stringify(trackInfo?.artists ?? []),
-					album: trackInfo?.album ?? "",
-					albumCoverUrl: trackInfo?.albumCoverUrl,
+					trackId: trackInfo.id,
+					trackName: trackInfo.name,
+					artists: JSON.stringify(trackInfo.artists),
+					album: trackInfo.album,
+					albumCoverUrl: trackInfo.albumCoverUrl,
 					requesterUserId: params.user_id,
 					requesterDisplayName: params.user_name,
 					requestedAt: new Date().toISOString(),
 				});
-
-				if (result.status === "error") {
-					throw result.error;
-				}
+				if (result.status === "error") throw result.error;
 
 				logger.info("Persisted song request", { sagaId });
 				return { result: sagaId, undoPayload: { eventId: sagaId } };
 			},
 			async (undoPayload) => {
-				const payload = undoPayload as { eventId: string };
 				using songQueue = await getSongQueue();
-				const result = await songQueue.deleteRequest(payload.eventId);
+				const result = await songQueue.deleteRequest(undoPayload.eventId);
 				if (result.status === "error") {
 					logger.error("Failed to rollback song request", {
-						eventId: payload.eventId,
+						eventId: undoPayload.eventId,
 						error: result.error.message,
 					});
 				} else {
-					logger.info("Rolled back song request", { eventId: payload.eventId });
+					logger.info("Rolled back song request", { eventId: undoPayload.eventId });
 				}
 			},
-			{ timeout: 10000, maxRetries: 2 },
 		);
-
 		if (persistResult.status === "error") {
-			return this.handleStepError(persistResult.error, params);
+			return this.handleStepError(persistResult.error, params, runner);
 		}
 
-		// Step 4: Add to Spotify queue (with rollback - skip if playing)
 		const addToQueueResult = await runner.executeStepWithRollback(
-			"add-to-spotify-queue",
+			AddToSpotifyQueueStep,
 			async () => {
-				const spotifyService = new SpotifyService(this.env);
-
-				const queueResult = await spotifyService.getQueue();
-				if (queueResult.status === "ok") {
-					const alreadyQueued = queueResult.value.queue.some((t) => t.id === trackId);
-					if (alreadyQueued) {
-						logger.info("Track already in Spotify queue, skipping add", { sagaId, trackId });
-						return { result: trackId, undoPayload: { trackId } };
-					}
+				const spotify = new SpotifyService(this.env);
+				const queueResult = await spotify.getQueue();
+				if (
+					queueResult.status === "ok" &&
+					queueResult.value.queue.some((track) => track.id === trackId)
+				) {
+					logger.info("Track already in Spotify queue, skipping add", { sagaId, trackId });
+					return { result: trackId, undoPayload: { trackId } };
 				}
 
-				const result = await spotifyService.addToQueue(spotifyTrackUri(trackId));
-
-				if (result.status === "error") {
-					throw result.error;
-				}
+				const result = await spotify.addToQueue(spotifyTrackUri(trackId));
+				if (result.status === "error") throw result.error;
 
 				logger.info("Added track to Spotify queue", { sagaId, trackId });
 				return { result: trackId, undoPayload: { trackId } };
 			},
 			async (undoPayload) => {
-				const payload = undoPayload as { trackId: string };
-				const spotifyService = new SpotifyService(this.env);
-				const currentResult = await spotifyService.getCurrentlyPlaying();
-
+				const spotify = new SpotifyService(this.env);
+				const currentResult = await spotify.getCurrentlyPlaying();
 				if (currentResult.status === "error") {
 					logger.warn("Could not check currently playing for rollback", {
-						trackId: payload.trackId,
+						trackId: undoPayload.trackId,
 						error: currentResult.error.message,
 					});
 					return;
 				}
 
 				const currentTrack = currentResult.value;
-				if (currentTrack && currentTrack.id === payload.trackId) {
-					const skipResult = await spotifyService.skipTrack();
+				if (currentTrack?.id === undoPayload.trackId) {
+					const skipResult = await spotify.skipTrack();
 					if (skipResult.status === "error") {
 						logger.warn("Failed to skip track during rollback", {
-							trackId: payload.trackId,
+							trackId: undoPayload.trackId,
 							error: skipResult.error.message,
 						});
 					} else {
-						logger.info("Skipped track during rollback", { trackId: payload.trackId });
+						logger.info("Skipped track during rollback", { trackId: undoPayload.trackId });
 					}
 				} else {
 					logger.warn("Track queued but not playing, cannot remove from Spotify queue", {
-						trackId: payload.trackId,
+						trackId: undoPayload.trackId,
 						currentlyPlaying: currentTrack?.id ?? null,
 					});
 				}
 			},
-			{ timeout: 30000, maxRetries: 3 },
 		);
-
 		if (addToQueueResult.status === "error") {
-			return this.handleStepError(addToQueueResult.error, params);
+			return this.handleStepError(addToQueueResult.error, params, runner);
 		}
 
-		// Note: History is written by SongQueueDO.reconcilePlayed() when the song
-		// actually finishes playing, not here. This allows the sync algorithm to
-		// properly attribute pending requests to queue positions.
+		const fulfillResult = await runner.executeStep(FulfillRedemptionStep, async () => {
+			const twitch = new TwitchService(this.env);
+			const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "FULFILLED");
+			if (result.status === "error") throw result.error;
 
-		// Step 5: Fulfill redemption (POINT OF NO RETURN - no compensation after this)
-		const fulfillResult = await runner.executeStep(
-			"fulfill-redemption",
-			async () => {
-				const twitchService = new TwitchService(this.env);
-				const result = await twitchService.updateRedemptionStatus(
-					params.reward.id,
-					params.id,
-					"FULFILLED",
-				);
-
-				if (result.status === "error") {
-					throw result.error;
-				}
-
-				logger.info("Fulfilled redemption", {
-					sagaId,
-					redemptionId: params.id,
-					rewardId: params.reward.id,
-				});
-
-				return { result: undefined };
-			},
-			{ timeout: 30000, maxRetries: 3 },
-		);
-
+			logger.info("Fulfilled redemption", {
+				sagaId,
+				redemptionId: params.id,
+				rewardId: params.reward.id,
+			});
+			return { result: undefined };
+		});
 		if (fulfillResult.status === "error") {
-			return this.handleStepError(fulfillResult.error, params);
+			return this.handleStepError(fulfillResult.error, params, runner);
 		}
 
-		// Mark point of no return immediately after fulfill
-		await runner.markPointOfNoReturn();
+		const pointOfNoReturn = await runner.markPointOfNoReturn();
+		if (pointOfNoReturn.status === "error") return Result.err(pointOfNoReturn.error);
 
-		// Step 6: Send chat confirmation (best effort)
-		await runner.executeStep(
-			"send-chat-confirmation",
-			async () => {
-				const twitchService = new TwitchService(this.env);
-				const artistStr = trackInfo?.artists.join(", ") ?? "Unknown Artist";
-				const message = `@${params.user_name} added "${trackInfo?.name ?? "Unknown Track"}" by ${artistStr} to the queue!`;
-
-				const result = await twitchService.sendChatMessage(message);
-
-				if (result.status === "error") {
-					logger.warn("Failed to send chat confirmation", {
-						sagaId,
-						error: result.error.message,
-						user: params.user_name,
-					});
-				} else {
-					logger.info("Sent chat confirmation", { sagaId, user: params.user_name });
-				}
-
-				return { result: undefined };
-			},
-			{ timeout: 10000, maxRetries: 2 },
-		);
-
-		// Step 7: Publish event to EventBusDO (fire-and-forget)
-		await runner.executeStep(
-			"publish-event",
-			async () => {
-				const eventBusStub = getStub("EVENT_BUS_DO");
-				const event = createSongRequestSuccessEvent({
-					id: crypto.randomUUID(),
-					userId: params.user_id,
-					userDisplayName: params.user_name,
+		const chatResult = await runner.executeStep(SendChatConfirmationStep, async () => {
+			const twitch = new TwitchService(this.env);
+			const artistNames = trackInfo.artists.join(", ");
+			const message = `@${params.user_name} added "${trackInfo.name}" by ${artistNames} to the queue!`;
+			const result = await twitch.sendChatMessage(message);
+			if (result.status === "error") {
+				logger.warn("Failed to send chat confirmation", {
 					sagaId,
-					trackId,
+					error: result.error.message,
+					user: params.user_name,
 				});
+			} else {
+				logger.info("Sent chat confirmation", { sagaId, user: params.user_name });
+			}
+			return { result: undefined };
+		});
+		if (chatResult.status === "error") {
+			if (SagaPersistedDataError.is(chatResult.error)) {
+				return this.handleStepError(chatResult.error, params, runner);
+			}
+			logger.warn("Best-effort chat confirmation step did not complete", {
+				sagaId,
+				error: chatResult.error.message,
+			});
+		}
 
-				const result = await eventBusStub.publish(event);
+		const publishResult = await runner.executeStep(PublishEventStep, async () => {
+			const eventBus = getStub("EVENT_BUS_DO");
+			const event = createSongRequestSuccessEvent({
+				id: crypto.randomUUID(),
+				userId: params.user_id,
+				userDisplayName: params.user_name,
+				sagaId,
+				trackId,
+			});
+			const result = await eventBus.publish(event);
+			if (result.status === "error") {
+				logger.warn("Failed to publish song_request_success event", {
+					sagaId,
+					error: result.error.message,
+				});
+			} else {
+				logger.info("Published song_request_success event", { sagaId, eventId: event.id });
+			}
+			return { result: undefined };
+		});
+		if (publishResult.status === "error") {
+			if (SagaPersistedDataError.is(publishResult.error)) {
+				return this.handleStepError(publishResult.error, params, runner);
+			}
+			logger.warn("Fire-and-forget EventBus publication step did not complete", {
+				sagaId,
+				error: publishResult.error.message,
+			});
+		}
 
-				if (result.status === "error") {
-					logger.warn("Failed to publish song_request_success event", {
-						sagaId,
-						error: result.error.message,
-					});
-				} else {
-					logger.info("Published song_request_success event", {
-						sagaId,
-						eventId: event.id,
-					});
-				}
-
-				return { result: undefined };
-			},
-			{ timeout: 10000, maxRetries: 2 },
-		);
-
-		// Mark saga as complete
-		await runner.complete();
+		const completion = await runner.complete();
+		if (completion.status === "error") return Result.err(completion.error);
 
 		logger.info("Song request saga completed successfully", {
 			sagaId,
 			trackId,
 			requester: params.user_name,
 		});
-
 		return Result.ok();
 	}
 
-	/**
-	 * Handle step error - either schedule retry or run compensation
-	 */
 	private async handleStepError(
-		error: SagaStepError | SagaStepRetrying | SagaRunnerDbError,
+		error: SagaStepExecutionError,
 		params: SongRequestParams,
-	): Promise<Result<void, SagaStepError | SagaStepRetrying | SagaRunnerDbError>> {
-		const runner = this.getRunner();
+		runner: SagaRunner<SongRequestParams>,
+	): Promise<Result<void, SagaStepExecutionError>> {
 		const sagaId = this.ctx.id.toString();
-
 		if (SagaStepRetrying.is(error)) {
 			logger.info("Step scheduled for retry", {
 				sagaId,
@@ -568,145 +422,63 @@ class _SongRequestSagaDO extends Agent<Env, SongRequestSagaAgentState> {
 
 		logger.error("Saga step failed permanently", {
 			sagaId,
-			stepName: SagaStepError.is(error) ? error.stepName : "unknown",
+			stepName: "stepName" in error ? error.stepName : "unknown",
 			error: error.message,
 		});
+		const pointOfNoReturn = await runner.isPointOfNoReturnReached();
+		if (pointOfNoReturn.status === "error") return Result.err(pointOfNoReturn.error);
 
-		const ponrResult = await runner.isPointOfNoReturnReached();
-		const ponrReached = ponrResult.status === "ok" && ponrResult.value;
-
-		if (!ponrReached) {
-			await runner.compensateAll();
+		if (!pointOfNoReturn.value) {
+			const compensation = await runner.compensateAll();
+			if (compensation.status === "error") {
+				logger.error("One or more Song Request compensations failed", {
+					sagaId,
+					failedSteps: compensation.error.map((failure) => failure.stepName),
+				});
+			}
 			await this.refundRedemption(params);
 			await this.sendFailureMessage(params);
 		}
 
-		await runner.fail(error.message);
-
-		return Result.err(error);
+		const failed = await runner.fail(error.message);
+		return failed.status === "error" ? Result.err(failed.error) : Result.err(error);
 	}
 
-	/**
-	 * Refund the redemption (cancel)
-	 */
 	private async refundRedemption(params: SongRequestParams): Promise<void> {
-		const sagaId = this.ctx.id.toString();
-
-		const twitchService = new TwitchService(this.env);
-		const result = await twitchService.updateRedemptionStatus(
-			params.reward.id,
-			params.id,
-			"CANCELED",
-		);
-
+		const twitch = new TwitchService(this.env);
+		const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "CANCELED");
 		if (result.status === "error") {
 			logger.error("Failed to refund redemption", {
-				sagaId,
+				sagaId: this.ctx.id.toString(),
 				redemptionId: params.id,
 				error: result.error.message,
 			});
 		} else {
-			logger.info("Refunded redemption", { sagaId, redemptionId: params.id });
+			logger.info("Refunded redemption", {
+				sagaId: this.ctx.id.toString(),
+				redemptionId: params.id,
+			});
 		}
 	}
 
-	/**
-	 * Send failure message to chat
-	 */
 	private async sendFailureMessage(params: SongRequestParams): Promise<void> {
-		const sagaId = this.ctx.id.toString();
-
-		const twitchService = new TwitchService(this.env);
+		const twitch = new TwitchService(this.env);
 		const message = `@${params.user_name} your song request was invalid and your points have been refunded. Did you use a valid Spotify track link?`;
-
-		const result = await twitchService.sendChatMessage(message);
+		const result = await twitch.sendChatMessage(message);
 		if (result.status === "error") {
 			logger.warn("Failed to send failure chat message", {
-				sagaId,
+				sagaId: this.ctx.id.toString(),
 				error: result.error.message,
 				user: params.user_name,
 			});
 		} else {
-			logger.info("Sent failure chat message", { sagaId, user: params.user_name });
-		}
-	}
-
-	/**
-	 * Get saga status for debugging/monitoring
-	 */
-	@rpc
-	async getStatus(): Promise<Result<SongRequestSagaStatus | null, SagaRunnerDbError>> {
-		const sagaId = this.ctx.id.toString();
-
-		return Result.tryPromise({
-			try: async () => {
-				const saga = await this.db.query.sagaRuns.findFirst({
-					where: eq(sagaRuns.id, sagaId),
-				});
-
-				if (!saga) {
-					return null;
-				}
-
-				return {
-					sagaId: saga.id,
-					status: saga.status,
-					fulfilledAt: saga.fulfilledAt,
-					error: saga.error,
-					createdAt: saga.createdAt,
-					updatedAt: saga.updatedAt,
-				};
-			},
-			catch: (cause) => new SagaRunnerDbError({ operation: "getStatus", cause }),
-		});
-	}
-
-	/**
-	 * Scheduled callback - resumes saga execution on retry.
-	 */
-	async retrySagaTick(_scheduledFor?: string): Promise<void> {
-		const sagaId = this.ctx.id.toString();
-		logger.info("Song request retry schedule triggered", { sagaId });
-
-		if (this.state.retryScheduleId !== null || this.state.retryDueAt !== null) {
-			this.setState({
-				...this.state,
-				retryScheduleId: null,
-				retryDueAt: null,
+			logger.info("Sent failure chat message", {
+				sagaId: this.ctx.id.toString(),
+				user: params.user_name,
 			});
-		}
-
-		const runner = this.getRunner();
-		const sagaResult = await runner.getSaga();
-		if (sagaResult.status === "error" || !sagaResult.value) {
-			logger.error("Saga not found on scheduled retry", { sagaId });
-			return;
-		}
-
-		const saga = sagaResult.value;
-		if (saga.status !== "RUNNING") {
-			logger.info("Saga not in RUNNING state, skipping scheduled retry", {
-				sagaId,
-				status: saga.status,
-			});
-			return;
-		}
-
-		const executeResult = await this.execute();
-		if (executeResult.status === "error") {
-			if (SagaStepRetrying.is(executeResult.error)) {
-				logger.info("Saga step scheduled for retry", {
-					sagaId,
-					stepName: executeResult.error.stepName,
-				});
-			} else {
-				logger.error("Saga execution failed on scheduled retry", {
-					sagaId,
-					error: executeResult.error.message,
-				});
-			}
 		}
 	}
 }
 
+/** Production Song Request Durable Object with inherited serialized saga RPCs. */
 export const SongRequestSagaDO = withRpcSerialization(_SongRequestSagaDO);
