@@ -1,4 +1,4 @@
-import { Result } from "better-result";
+import { Result, TaggedError } from "better-result";
 import { and, asc, eq, isNotNull, lte } from "drizzle-orm";
 
 import {
@@ -20,14 +20,11 @@ import {
 	SagaStepRetrying,
 	isRetryableError,
 } from "./errors";
-import { SagaRunnerDbError } from "./legacy-saga-runner";
 import { logger } from "./logger";
 import { parsePersistedJson, stringifyPersistedJson } from "./saga-codecs";
 
 import type { SagaPersistedField } from "./errors";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
-
-export { SagaRunnerDbError } from "./legacy-saga-runner";
 
 /** Timeout and retry policy for one saga step. */
 export interface StepOptions {
@@ -81,6 +78,20 @@ export type SagaRunnerError = SagaRunnerDbError | SagaPersistedDataError | SagaS
 export type SagaStepExecutionError = SagaStepError | SagaStepRetrying | SagaRunnerError;
 
 type SagaSchema = { sagaRuns: typeof sagaRuns; sagaSteps: typeof sagaSteps };
+
+/** Expected failure while the saga runner accesses SQLite persistence. */
+export class SagaRunnerDbError extends TaggedError("SagaRunnerDbError")<{
+	readonly operation: string;
+	readonly message: string;
+	readonly cause?: unknown;
+}>() {
+	constructor(args: { readonly operation: string; readonly cause?: unknown }) {
+		super({
+			...args,
+			message: `SagaRunner DB error during ${args.operation}`,
+		});
+	}
+}
 
 type RegisteredCompensation = {
 	readonly stepName: string;
