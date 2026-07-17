@@ -87,6 +87,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 	async onStart(): Promise<void> {
 		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
+			await this.ctx.storage.deleteAlarm();
 
 			const restoration = await this.restoreRetrySchedule();
 			if (restoration.status === "error") {
