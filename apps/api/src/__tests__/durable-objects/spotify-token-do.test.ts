@@ -302,6 +302,33 @@ describe("SpotifyTokenDO", () => {
 			});
 		});
 
+		it("should require reauthorization when Spotify revokes the refresh token", async () => {
+			mockSpotifyTokenRefreshError(
+				fetchMock,
+				400,
+				JSON.stringify({
+					error: "invalid_grant",
+					error_description: "Refresh token revoked",
+				}),
+			);
+
+			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.setTokens({
+					...VALID_TOKEN_RESPONSE,
+					expires_in: -3600,
+				});
+
+				const result = await instance.onStreamOnline();
+				expect(result.status).toBe("error");
+				if (result.status === "error") {
+					expect(result.error).toMatchObject({
+						_tag: "TokenAuthorizationRevokedError",
+						provider: "spotify",
+					});
+				}
+			});
+		});
+
 		it("should return TokenRefreshParseError on malformed JSON", async () => {
 			fetchMock
 				.get("https://accounts.spotify.com")

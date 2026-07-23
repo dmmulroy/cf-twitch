@@ -18,6 +18,13 @@ interface PendingReply {
 	readonly headers?: HeadersInit;
 }
 
+/** Serializable request evidence recorded by the fetch fake. */
+export interface ReceivedRequest {
+	readonly url: string;
+	readonly method: string;
+	readonly body: string | null;
+}
+
 class PendingInterceptor {
 	constructor(
 		private readonly owner: FetchMock,
@@ -54,6 +61,7 @@ class OriginInterceptor {
  */
 export class FetchMock {
 	private readonly pending: PendingReply[] = [];
+	private readonly received: ReceivedRequest[] = [];
 	private installed = false;
 
 	/** Installs a strict `globalThis.fetch` mock for the current test worker. */
@@ -79,9 +87,15 @@ export class FetchMock {
 		throw new Error(`Pending fetch interceptors:\n${pending}`);
 	}
 
-	/** Clears request expectations between tests. */
+	/** Returns copies of requests received during the current test. */
+	getRequests(): ReadonlyArray<ReceivedRequest> {
+		return this.received.map((request) => ({ ...request }));
+	}
+
+	/** Clears request expectations and recorded requests between tests. */
 	reset(): void {
 		this.pending.length = 0;
+		this.received.length = 0;
 	}
 
 	/** Registers a response for the next matching request. */
@@ -91,6 +105,11 @@ export class FetchMock {
 
 	private dispatch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
 		const request = input instanceof Request ? input : new Request(input, init);
+		this.received.push({
+			url: request.url,
+			method: request.method,
+			body: typeof init?.body === "string" ? init.body : null,
+		});
 		const url = new URL(request.url);
 		const method = request.method.toUpperCase();
 		const path = `${url.pathname}${url.search}`;

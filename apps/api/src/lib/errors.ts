@@ -54,10 +54,24 @@ export class TokenRefreshParseError extends TaggedError("TokenRefreshParseError"
 	}
 }
 
+/** Expected failure when a provider revokes authorization and interactive OAuth is required. */
+export class TokenAuthorizationRevokedError extends TaggedError("TokenAuthorizationRevokedError")<{
+	provider: "spotify" | "twitch";
+	message: string;
+}>() {
+	constructor(args: { provider: "spotify" | "twitch" }) {
+		super({
+			...args,
+			message: `${args.provider} authorization was revoked; reauthorization is required`,
+		});
+	}
+}
+
 /** Union of all token-related errors */
 export type TokenError =
 	| NoRefreshTokenError
 	| StreamOfflineNoTokenError
+	| TokenAuthorizationRevokedError
 	| TokenRefreshNetworkError
 	| TokenRefreshParseError;
 
@@ -658,10 +672,11 @@ export class SagaScheduleError extends TaggedError("SagaScheduleError")<{
 export class SagaStepError extends TaggedError("SagaStepError")<{
 	stepName: string;
 	sagaId: string;
+	causeTag: string;
 	error: string;
 	message: string;
 }>() {
-	constructor(args: { stepName: string; sagaId: string; error: string }) {
+	constructor(args: { stepName: string; sagaId: string; causeTag: string; error: string }) {
 		super({
 			...args,
 			message: `Saga step "${args.stepName}" failed: ${args.error}`,

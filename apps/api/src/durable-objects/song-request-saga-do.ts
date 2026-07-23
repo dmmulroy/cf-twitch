@@ -7,8 +7,8 @@ import {
 	InvalidSpotifyUrlError,
 	SagaNotFoundError,
 	SagaPersistedDataError,
+	SagaStepError,
 	SagaStepRetrying,
-	isRetryableError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { SagaHost, type SagaHostDefinition, type SagaHostStatus } from "../lib/saga-host";
@@ -212,8 +212,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 				if (result.error._tag === "SpotifyTrackNotFoundError") {
 					throw new InvalidSpotifyUrlError({ url: spotifyTrackUri(trackId) });
 				}
-				if (isRetryableError(result.error)) throw result.error;
-				throw new Error(result.error.message);
+				throw result.error;
 			}
 
 			logger.info("Got track info", {
@@ -437,7 +436,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 				});
 			}
 			await this.refundRedemption(params);
-			await this.sendFailureMessage(params);
+			await this.sendFailureMessage(params, error);
 		}
 
 		const failed = await runner.fail(error.message);
@@ -461,9 +460,17 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		}
 	}
 
-	private async sendFailureMessage(params: SongRequestParams): Promise<void> {
+	private async sendFailureMessage(
+		params: SongRequestParams,
+		error: SagaStepExecutionError,
+	): Promise<void> {
 		const twitch = new TwitchService(this.env);
-		const message = `@${params.user_name} your song request was invalid and your points have been refunded. Did you use a valid Spotify track link?`;
+		const invalidTrackInput =
+			SagaStepError.is(error) &&
+			(error.stepName === ParseSpotifyUrlStep.name || error.causeTag === "InvalidSpotifyUrlError");
+		const message = invalidTrackInput
+			? `@${params.user_name} your song request was invalid and your points have been refunded. Did you use a valid Spotify track link?`
+			: `@${params.user_name} Spotify song requests are unavailable right now and your points have been refunded.`;
 		const result = await twitch.sendChatMessage(message);
 		if (result.status === "error") {
 			logger.warn("Failed to send failure chat message", {

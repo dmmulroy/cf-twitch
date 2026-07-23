@@ -21,7 +21,7 @@
 					{
 						"enabled": true,
 						"name": "BASE_URL",
-						"value": "https://cf-twitch-api.dillon-mulroy.workers.dev"
+						"value": "https://cf-twitch-api.mulroy.workers.dev"
 					},
 					{
 						"enabled": true,
@@ -101,7 +101,7 @@
 					{
 						"enabled": true,
 						"name": "BASE_URL",
-						"value": "https://cf-twitch-api.dillon-mulroy.workers.dev"
+						"value": "https://cf-twitch-api.mulroy.workers.dev"
 					}
 				]
 			}

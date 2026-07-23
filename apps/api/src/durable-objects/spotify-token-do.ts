@@ -14,6 +14,7 @@ import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	NoRefreshTokenError,
 	StreamOfflineNoTokenError,
+	TokenAuthorizationRevokedError,
 	TokenRefreshNetworkError,
 	TokenRefreshParseError,
 	type StreamLifecycleHandler,
@@ -35,6 +36,11 @@ export const SpotifyTokenResponseSchema = z.object({
 });
 
 export type SpotifyTokenResponse = z.infer<typeof SpotifyTokenResponseSchema>;
+
+const SpotifyOAuthErrorResponseSchema = z.object({
+	error: z.string(),
+	error_description: z.string().optional(),
+});
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 const MAX_REFRESH_RETRIES = 3;
@@ -379,6 +385,19 @@ class _SpotifyTokenDO
 				status: response.status,
 				error: errorText,
 			});
+
+			const errorJson = Result.try({
+				try: () => JSON.parse(errorText) as unknown,
+				catch: () => undefined,
+			});
+			const oauthError =
+				errorJson.status === "ok"
+					? SpotifyOAuthErrorResponseSchema.safeParse(errorJson.value)
+					: undefined;
+			if (oauthError?.success && oauthError.data.error === "invalid_grant") {
+				return Result.err(new TokenAuthorizationRevokedError({ provider: "spotify" }));
+			}
+
 			return Result.err(
 				new TokenRefreshNetworkError({ status: response.status, provider: "spotify" }),
 			);

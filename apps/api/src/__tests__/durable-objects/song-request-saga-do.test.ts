@@ -24,6 +24,7 @@ import {
 	mockSpotifyCurrentlyPlaying,
 	mockSpotifyGetTrack,
 	mockSpotifyQueue,
+	mockSpotifyTokenRefreshError,
 } from "../fixtures/spotify";
 import {
 	VALID_TOKEN_RESPONSE as VALID_TWITCH_TOKEN_RESPONSE,
@@ -601,6 +602,48 @@ describe("SongRequestSagaDO", () => {
 		await cancelSongQueueSchedules(songQueueStub);
 	}, 20_000);
 
+	it("refunds without blaming the viewer when Spotify authorization was revoked", async () => {
+		const spotifyTokenStub = await ensureSpotifyTokenStub();
+		await ensureTwitchTokenStub();
+		await runInDurableObject(spotifyTokenStub, async (instance: SpotifyTokenDO) => {
+			await instance.setTokens({
+				...VALID_SPOTIFY_TOKEN_RESPONSE,
+				expires_in: -3600,
+			});
+			instance.setState({ ...instance.state, isStreamLive: true });
+		});
+
+		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
+		const params = createSongRequestParams({
+			id: `redemption-${crypto.randomUUID()}`,
+			user_input: "https://open.spotify.com/track/6gPd6brcBXlbGdy1obe234?si=302a66660b5d4070",
+		});
+
+		mockSpotifyTokenRefreshError(
+			fetchMock,
+			400,
+			JSON.stringify({
+				error: "invalid_grant",
+				error_description: "Refresh token revoked",
+			}),
+		);
+		mockTwitchRedemptionUpdate(fetchMock);
+		mockTwitchChatMessage(fetchMock);
+
+		const startResult = await stub.start(params);
+
+		expect(startResult.status).toBe("error");
+		const chatRequest = fetchMock
+			.getRequests()
+			.find((request) => new URL(request.url).pathname === "/helix/chat/messages");
+		expect(chatRequest?.body).not.toBeNull();
+		if (chatRequest?.body !== null && chatRequest?.body !== undefined) {
+			expect(JSON.parse(chatRequest.body)).toMatchObject({
+				message: `@${params.user_name} Spotify song requests are unavailable right now and your points have been refunded.`,
+			});
+		}
+	});
+
 	it("fails invalid Spotify URLs and records FAILED saga status", async () => {
 		await ensureTwitchTokenStub();
 
@@ -628,6 +671,15 @@ describe("SongRequestSagaDO", () => {
 				status: "FAILED",
 			});
 			expect(statusResult.value?.error).toContain("Invalid Spotify URL");
+		}
+		const chatRequest = fetchMock
+			.getRequests()
+			.find((request) => new URL(request.url).pathname === "/helix/chat/messages");
+		expect(chatRequest?.body).not.toBeNull();
+		if (chatRequest?.body !== null && chatRequest?.body !== undefined) {
+			expect(JSON.parse(chatRequest.body)).toMatchObject({
+				message: `@${params.user_name} your song request was invalid and your points have been refunded. Did you use a valid Spotify track link?`,
+			});
 		}
 	});
 });

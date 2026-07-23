@@ -108,6 +108,11 @@ const DEFAULT_STEP_OPTIONS: Required<StepOptions> = {
 	maxRetries: 3,
 };
 
+function errorTag(error: unknown): string {
+	if (typeof error !== "object" || error === null || !("_tag" in error)) return "UnknownError";
+	return typeof error._tag === "string" ? error._tag : "UnknownError";
+}
+
 /** Construction dependencies for a typed saga runner. */
 export interface SagaRunnerArgs<P> {
 	readonly sagaId: string;
@@ -519,7 +524,12 @@ export class SagaRunner<P> {
 			if (failedResult.status === "error") return Result.err(failedResult.error);
 			this.emit("step_failed", { stepName: step.name, error: String(error), durationMs });
 			return Result.err(
-				new SagaStepError({ stepName: step.name, sagaId: this.sagaId, error: String(error) }),
+				new SagaStepError({
+					stepName: step.name,
+					sagaId: this.sagaId,
+					causeTag: errorTag(error),
+					error: String(error),
+				}),
 			);
 		}
 
