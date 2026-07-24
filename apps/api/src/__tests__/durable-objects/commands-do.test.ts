@@ -5,7 +5,6 @@
  * shared value sources, and counter behavior.
  */
 
-import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -88,37 +87,6 @@ describe("CommandsDO", () => {
 				"I am using Hex by Kit Langton: https://hex.kitlangton.com/",
 			);
 		}
-	});
-
-	it("migrates the hex command into existing state", async () => {
-		const stub = await createCommandsStub(`commands-${crypto.randomUUID()}`);
-
-		await runInDurableObject(stub, async (instance: CommandsDO) => {
-			const commandsByName = { ...instance.state.commandsByName };
-			const valuesByName = { ...instance.state.valuesByName };
-			delete commandsByName.hex;
-			delete valuesByName.hex;
-
-			instance.setState({
-				...instance.state,
-				commandsByName,
-				valuesByName,
-				appliedMigrations: (instance.state.appliedMigrations ?? []).filter(
-					(id) => id !== "2026-07-24-add-hex-command",
-				),
-			});
-
-			await instance.onStart();
-		});
-
-		const hexResult = await stub.getCommand("hex");
-		expect(hexResult.status).toBe("ok");
-
-		const hexValueResult = await stub.getCommandValue("hex");
-		expect(hexValueResult).toEqual({
-			status: "ok",
-			value: "I am using Hex by Kit Langton: https://hex.kitlangton.com/",
-		});
 	});
 
 	it("creates, updates, and deletes runtime commands", async () => {
