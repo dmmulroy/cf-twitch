@@ -491,6 +491,15 @@ function createDefaultCommandInputs(now: string): CreateCommandInput[] {
 			initialValue: "Helium Browser: https://helium.computer",
 			createdAt: now,
 		},
+		{
+			name: "hex",
+			description: "Shows Hex link",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+			initialValue: "I am using Hex by Kit Langton: https://hex.kitlangton.com/",
+			createdAt: now,
+		},
 	];
 }
 
