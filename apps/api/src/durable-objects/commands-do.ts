@@ -143,6 +143,18 @@ function createHerdrCommandInput(now: string): CreateCommandInput {
 	};
 }
 
+function createHexCommandInput(now: string): CreateCommandInput {
+	return {
+		name: "hex",
+		description: "Shows Hex link",
+		category: "info",
+		responseType: "static",
+		permission: "everyone",
+		initialValue: "I am using Hex by Kit Langton: https://hex.kitlangton.com/",
+		createdAt: now,
+	};
+}
+
 const DefaultCommandMigrations = [
 	{
 		id: "2026-05-27-add-plan-command",
@@ -159,6 +171,11 @@ const DefaultCommandMigrations = [
 		id: "2026-06-25-add-herdr-command",
 		kind: "create",
 		createInput: createHerdrCommandInput,
+	},
+	{
+		id: "2026-07-24-add-hex-command",
+		kind: "create",
+		createInput: createHexCommandInput,
 	},
 ] as const;
 
@@ -258,6 +275,7 @@ function createDefaultCommandInputs(now: string): CreateCommandInput[] {
 		},
 		createPlanCommandInput(now),
 		createHerdrCommandInput(now),
+		createHexCommandInput(now),
 		{
 			name: "achievements",
 			description: "Shows user's unlocked achievements",

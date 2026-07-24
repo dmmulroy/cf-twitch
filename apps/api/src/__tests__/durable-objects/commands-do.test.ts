@@ -72,6 +72,21 @@ describe("CommandsDO", () => {
 		if (herdrValueResult.status === "ok") {
 			expect(herdrValueResult.value).toBe("Herdr: https://herdr.dev/");
 		}
+
+		const hexResult = await stub.getCommand("hex");
+		expect(hexResult.status).toBe("ok");
+		if (hexResult.status === "ok") {
+			expect(hexResult.value.responseType).toBe("static");
+			expect(hexResult.value.permission).toBe("everyone");
+		}
+
+		const hexValueResult = await stub.getCommandValue("hex");
+		expect(hexValueResult.status).toBe("ok");
+		if (hexValueResult.status === "ok") {
+			expect(hexValueResult.value).toBe(
+				"I am using Hex by Kit Langton: https://hex.kitlangton.com/",
+			);
+		}
 	});
 
 	it("creates, updates, and deletes runtime commands", async () => {
