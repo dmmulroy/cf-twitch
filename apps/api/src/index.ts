@@ -24,10 +24,11 @@ export type Env = Cloudflare.Env;
 const app = new Hono<AppRouteEnv<Env>>();
 
 app.use("*", async (c, next) => {
-	const requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
-	const traceId = c.req.header("x-trace-id") ?? requestId;
+	// Request and trace IDs are server-owned so untrusted callers cannot create
+	// collisions in operational correlation data.
+	const requestId = crypto.randomUUID();
+	const traceId = crypto.randomUUID();
 	const queryKeys = [...new URL(c.req.url).searchParams.keys()].sort();
-	const clientIp = c.req.header("cf-connecting-ip");
 	const requestTimer = startTimer();
 	const requestLogger = logger.child({
 		component: "route",
@@ -45,9 +46,7 @@ app.use("*", async (c, next) => {
 	requestLogger.info("HTTP request received", {
 		event: "http.request.received",
 		query_keys: queryKeys,
-		user_agent: c.req.header("user-agent"),
 		cf_ray: c.req.header("cf-ray"),
-		client_ip: clientIp,
 	});
 
 	try {
@@ -61,25 +60,28 @@ app.use("*", async (c, next) => {
 			},
 			() => next(),
 		);
-		const durationMs = requestTimer();
-		c.res.headers.set("x-request-id", requestId);
-		c.res.headers.set("x-trace-id", traceId);
 		requestLogger.info("HTTP request completed", {
 			event: "http.request.completed",
 			status_code: c.res.status,
-			duration_ms: durationMs,
+			duration_ms: requestTimer(),
 		});
-		return;
 	} catch (error) {
-		const durationMs = requestTimer();
 		requestLogger.error("HTTP request failed", {
 			event: "http.request.failed",
 			status_code: 500,
-			duration_ms: durationMs,
+			duration_ms: requestTimer(),
 			...normalizeError(error),
 		});
-		throw error;
+		c.res = c.json({ error: "Internal server error" }, 500);
+	} finally {
+		// Cache API and redirect responses may expose immutable headers. Cloning gives
+		// this Worker middleware ownership of the final response header list.
+		c.res = new Response(c.res.body, c.res);
+		c.res.headers.set("x-request-id", requestId);
+		c.res.headers.set("x-trace-id", traceId);
 	}
+
+	return c.res;
 });
 
 // Mount OAuth routes

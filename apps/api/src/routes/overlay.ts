@@ -223,37 +223,94 @@ overlay.get("/now-playing", (c) => {
 				<script>
 					const NOW_PLAYING_URL = "/api/now-playing";
 					const QUEUE_URL = "/api/queue?limit=1";
-					const TOGGLE_INTERVAL = 5000;
-		
+					const POLL_INTERVAL_MS = 5000;
+					const REQUEST_TIMEOUT_MS = 4000;
+
 					let active = "currentlyPlaying";
-					let currentData = null;
-					let nextUpData = null;
-		
-					async function fetchData() {
+					let pollInFlight = false;
+					let currentState = { status: "loading" };
+					let nextUpState = { status: "loading" };
+
+					function parseTrack(input) {
+						if (!input || typeof input !== "object") return null;
+						if (typeof input.id !== "string" || typeof input.name !== "string") return null;
+						if (!Array.isArray(input.artists)) return null;
+
+						const artists = [];
+						for (const artist of input.artists) {
+							if (typeof artist === "string") {
+								artists.push(artist);
+							} else if (artist && typeof artist === "object" && typeof artist.name === "string") {
+								artists.push(artist.name);
+							} else {
+								return null;
+							}
+						}
+
+						for (const field of ["album", "albumCoverUrl", "requesterDisplayName"]) {
+							if (input[field] !== undefined && input[field] !== null && typeof input[field] !== "string") {
+								return null;
+							}
+						}
+
+						return {
+							id: input.id,
+							name: input.name,
+							artists,
+							album: input.album || null,
+							albumCoverUrl: input.albumCoverUrl || null,
+							requesterDisplayName: input.requesterDisplayName || null,
+						};
+					}
+
+					function parseNowPlayingResponse(input) {
+						if (!input || typeof input !== "object" || !("track" in input)) return null;
+						if (input.track === null) return { status: "empty" };
+						const track = parseTrack(input.track);
+						return track ? { status: "ready", track } : null;
+					}
+
+					function parseQueueResponse(input) {
+						if (!input || typeof input !== "object" || !Array.isArray(input.tracks)) return null;
+						if (input.tracks.length === 0) return { status: "empty" };
+						const track = parseTrack(input.tracks[0]);
+						return track ? { status: "ready", track } : null;
+					}
+
+					async function fetchOverlayState(url, parseResponse) {
+						const controller = new AbortController();
+						const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 						try {
-							const [nowPlayingRes, queueRes] = await Promise.all([
-								fetch(NOW_PLAYING_URL),
-								fetch(QUEUE_URL),
-							]);
-		
-							if (nowPlayingRes.ok) {
-								const data = await nowPlayingRes.json();
-								currentData = data.track ? data : null;
-							}
-		
-							if (queueRes.ok) {
-								const queue = await queueRes.json();
-								nextUpData = queue.tracks?.[0] ? { track: queue.tracks[0] } : null;
-							}
-		
-							updateDisplay();
+							const response = await fetch(url, { signal: controller.signal });
+							if (!response.ok) return { status: "error" };
+							const parsed = parseResponse(await response.json());
+							return parsed || { status: "error" };
 						} catch (error) {
-							console.error("Failed to fetch now playing:", error);
+							console.error("Overlay endpoint request failed", url, error);
+							return { status: "error" };
+						} finally {
+							clearTimeout(timeout);
 						}
 					}
-		
+
+					async function pollOverlayData() {
+						if (pollInFlight) return;
+						pollInFlight = true;
+						try {
+							const [latestCurrentState, latestNextUpState] = await Promise.all([
+								fetchOverlayState(NOW_PLAYING_URL, parseNowPlayingResponse),
+								fetchOverlayState(QUEUE_URL, parseQueueResponse),
+							]);
+							currentState = latestCurrentState;
+							nextUpState = latestNextUpState;
+							updateDisplay();
+						} finally {
+							pollInFlight = false;
+						}
+					}
+
 					function updateDisplay() {
-						const activeData = active === "currentlyPlaying" ? currentData : nextUpData;
+						const activeState = active === "currentlyPlaying" ? currentState : nextUpState;
 						const overlayEl = document.getElementById("overlay");
 						const headerEl = document.getElementById("header");
 						const detailsEl = document.getElementById("track-details");
@@ -261,85 +318,57 @@ overlay.get("/now-playing", (c) => {
 						const artistEl = document.getElementById("track-artist");
 						const requesterEl = document.getElementById("track-requester");
 						const albumArt = document.getElementById("album-art");
-		
-						if (
-							!overlayEl ||
-							!headerEl ||
-							!detailsEl ||
-							!nameEl ||
-							!artistEl ||
-							!requesterEl ||
-							!albumArt
-						) {
-							return;
-						}
-		
-						if (!activeData?.track) {
+
+						if (!overlayEl || !headerEl || !detailsEl || !nameEl || !artistEl || !requesterEl || !albumArt) return;
+
+						if (activeState.status !== "ready") {
 							overlayEl.classList.add("empty-state");
 							detailsEl.classList.add("hidden");
-							headerEl.textContent = "Nothing is currently playing";
+							headerEl.textContent = activeState.status === "error"
+								? active === "currentlyPlaying" ? "Now playing unavailable" : "Next up unavailable"
+								: activeState.status === "loading" ? "Loading..." : "Nothing is currently playing";
 							nameEl.innerHTML = "&nbsp;";
 							artistEl.innerHTML = "&nbsp;";
 							requesterEl.innerHTML = "&nbsp;";
 							albumArt.classList.add("hidden");
 							return;
 						}
-		
+
 						overlayEl.classList.remove("empty-state");
 						detailsEl.classList.remove("hidden");
-		
-						const track = activeData.track;
+						const track = activeState.track;
 						headerEl.textContent = active === "currentlyPlaying" ? "Now Playing" : "Next Up";
-						nameEl.textContent = track.name || "";
-						artistEl.textContent = Array.isArray(track.artists)
-							? track.artists
-									.map((artist) => (typeof artist === "string" ? artist : artist.name))
-									.join(", ")
-							: "";
-		
-						const requester = track.requesterDisplayName || activeData.requesterDisplayName;
-						if (requester && requester !== "Unknown") {
-							requesterEl.textContent = "Requested by @" + requester;
-						} else {
-							requesterEl.innerHTML = "&nbsp;";
-						}
-		
-						const albumUrl = track.albumCoverUrl;
-						if (albumUrl) {
-							albumArt.src = albumUrl;
-							albumArt.alt = (track.album || track.name || "Track") + " album art";
+						nameEl.textContent = track.name;
+						artistEl.textContent = track.artists.join(", ");
+						requesterEl.textContent = track.requesterDisplayName && track.requesterDisplayName !== "Unknown"
+							? "Requested by @" + track.requesterDisplayName
+							: "\u00a0";
+
+						if (track.albumCoverUrl) {
+							albumArt.src = track.albumCoverUrl;
+							albumArt.alt = (track.album || track.name) + " album art";
 							albumArt.classList.remove("hidden");
 						} else {
 							albumArt.classList.add("hidden");
 						}
 					}
-		
-					function toggle() {
-						const hasCurrentlyPlaying = Boolean(currentData?.track);
-						const hasNextUp = Boolean(nextUpData?.track);
-		
-						if (!hasCurrentlyPlaying) {
+
+					function toggleOverlayView() {
+						if (currentState.status !== "ready") {
 							active = "currentlyPlaying";
-							fetchData();
-							return;
-						}
-		
-						if (active === "currentlyPlaying") {
-							if (!hasNextUp) {
-								fetchData();
-								return;
-							}
-		
+						} else if (active === "currentlyPlaying" && nextUpState.status === "ready") {
 							active = "nextUp";
-							updateDisplay();
 						} else {
 							active = "currentlyPlaying";
-							fetchData();
 						}
+						updateDisplay();
 					}
-		
-					fetchData();
-					setInterval(toggle, TOGGLE_INTERVAL);
+
+					void pollOverlayData();
+					setInterval(() => {
+						toggleOverlayView();
+						void pollOverlayData();
+					}, POLL_INTERVAL_MS);
 				</script>
 			</body>
 		</html>

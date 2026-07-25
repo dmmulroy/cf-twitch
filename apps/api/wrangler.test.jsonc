@@ -112,7 +112,7 @@
 		"TWITCH_EVENTSUB_SECRET": "test-eventsub-secret",
 		"TWITCH_BROADCASTER_ID": "12345",
 		"TWITCH_BROADCASTER_NAME": "dillon",
-		"OAUTH_SETUP_SECRET": "test-oauth-setup-secret",
 		"ADMIN_SECRET": "test-admin-secret",
+		"OAUTH_SETUP_SECRET": "test-oauth-setup-secret",
 	},
 }

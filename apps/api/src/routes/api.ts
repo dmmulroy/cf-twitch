@@ -4,29 +4,48 @@
  * Provides endpoints for now playing, queue, and other stream data.
  */
 
+import { Result } from "better-result";
 import { Hono } from "hono";
 import { z } from "zod";
 
 import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
+import { DurableObjectError } from "../lib/errors";
+import { readHttpQueryParameters } from "../lib/http-query-parameters";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import { getSongQueue } from "../lib/song-queue-client";
 import { TwitchService } from "../services/twitch-service";
 
 import type { Env } from "../index";
+import type { SongQueueClient } from "../lib/song-queue-client";
 
 const api = new Hono<AppRouteEnv<Env>>();
 
-/**
- * Query params schema for /api/queue
- */
-const QueueQuerySchema = z.object({
-	limit: z.coerce.number().int().positive().max(100).default(10),
-});
+const BoundedLimitSchema = z.coerce.number().int().min(1).max(100).default(10);
+const QueueQuerySchema = z.object({ limit: BoundedLimitSchema }).strict();
+const RaffleLeaderboardQuerySchema = z
+	.object({
+		sortBy: z.enum(["rolls", "wins", "closest"]).default("closest"),
+		limit: BoundedLimitSchema,
+	})
+	.strict();
+const AchievementLeaderboardQuerySchema = z.object({ limit: BoundedLimitSchema }).strict();
+const SongRequestHistoryQuerySchema = z.object({ limit: BoundedLimitSchema }).strict();
+const TwitchStreamStartedAtSchema = z.iso.datetime({ offset: true });
 
-const AchievementLeaderboardQuerySchema = z.object({
-	limit: z.coerce.number().int().min(1).max(100).default(10),
-});
+async function connectSongQueueForHttp(
+	operation: string,
+): Promise<Result<SongQueueClient, DurableObjectError>> {
+	return Result.tryPromise({
+		try: getSongQueue,
+		catch: (cause) =>
+			new DurableObjectError({
+				method: `connectRpc:${operation}`,
+				message: "Song Queue connection failed",
+				cause,
+			}),
+	});
+}
 
 /**
  * Protect debug routes with ADMIN_SECRET bearer auth.
@@ -85,7 +104,15 @@ api.get("/now-playing", async (c) => {
 	routeLogger.info("Loading now playing", {
 		event: "api.now_playing.started",
 	});
-	using songQueue = await getSongQueue();
+	const connection = await connectSongQueueForHttp("getCurrentlyPlaying");
+	if (connection.status === "error") {
+		routeLogger.error("Failed to connect to Song Queue for now playing", {
+			event: "api.now_playing.failed",
+			error_tag: connection.error._tag,
+		});
+		return c.json({ error: "Service temporarily unavailable" }, 503);
+	}
+	using songQueue = connection.value;
 	const result = await songQueue.getCurrentlyPlaying();
 
 	if (result.status === "error") {
@@ -100,8 +127,6 @@ api.get("/now-playing", async (c) => {
 		event: "api.now_playing.succeeded",
 		has_track: result.value.track !== null,
 		track_id: result.value.track?.id ?? undefined,
-		requester_user_id: result.value.track?.requesterUserId ?? undefined,
-		requester_display_name: result.value.track?.requesterDisplayName ?? undefined,
 	});
 	return c.json(result.value);
 });
@@ -112,9 +137,7 @@ api.get("/now-playing", async (c) => {
  */
 api.get("/queue", async (c) => {
 	const routeLogger = getRequestLogger(c).child({ route: "/api/queue", component: "route" });
-	const queryResult = QueueQuerySchema.safeParse({
-		limit: c.req.query("limit"),
-	});
+	const queryResult = QueueQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
 
 	if (!queryResult.success) {
 		routeLogger.warn("Queue query validation failed", {
@@ -129,7 +152,16 @@ api.get("/queue", async (c) => {
 		limit,
 	});
 
-	using songQueue = await getSongQueue();
+	const connection = await connectSongQueueForHttp("getSongQueue");
+	if (connection.status === "error") {
+		routeLogger.error("Failed to connect to Song Queue for queue", {
+			event: "api.queue.failed",
+			limit,
+			error_tag: connection.error._tag,
+		});
+		return c.json({ error: "Service temporarily unavailable" }, 503);
+	}
+	using songQueue = connection.value;
 	const result = await songQueue.getSongQueue(limit);
 
 	if (result.status === "error") {
@@ -159,12 +191,20 @@ api.get("/song-requests/history", async (c) => {
 		route: "/api/song-requests/history",
 		component: "route",
 	});
-	const limit = Number(c.req.query("limit") ?? 10);
+	const queryResult = SongRequestHistoryQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
+	if (!queryResult.success) {
+		return c.json({ error: "Invalid query parameters", details: queryResult.error.issues }, 400);
+	}
+	const { limit } = queryResult.data;
 	routeLogger.info("Loading song request history", {
 		event: "api.song_request_history.started",
 		limit,
 	});
-	using songQueue = await getSongQueue();
+	const connection = await connectSongQueueForHttp("getRequestHistory");
+	if (connection.status === "error") {
+		return c.json({ error: "Service temporarily unavailable" }, 503);
+	}
+	using songQueue = connection.value;
 	const result = await songQueue.getRequestHistory(limit);
 
 	if (result.status === "error") {
@@ -227,8 +267,14 @@ api.get("/debug/keyboard-raffle/leaderboard", async (c) => {
 		route: "/api/debug/keyboard-raffle/leaderboard",
 		component: "route",
 	});
-	const sortBy = (c.req.query("sortBy") ?? "closest") as "rolls" | "wins" | "closest";
-	const limit = Number(c.req.query("limit") ?? 10);
+	const queryResult = RaffleLeaderboardQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
+	if (!queryResult.success) {
+		routeLogger.warn("Raffle leaderboard query validation failed", {
+			event: "api.debug.raffle_leaderboard.validation_failed",
+		});
+		return c.json({ error: "Invalid query parameters", details: queryResult.error.issues }, 400);
+	}
+	const { sortBy, limit } = queryResult.data;
 	routeLogger.info("Loading raffle leaderboard", {
 		event: "api.debug.raffle_leaderboard.started",
 		sort_by: sortBy,
@@ -302,11 +348,12 @@ api.get("/achievements/leaderboard", async (c) => {
 		route: "/api/achievements/leaderboard",
 		component: "route",
 	});
-	const queryResult = AchievementLeaderboardQuerySchema.safeParse({
-		limit: c.req.query("limit") ?? 10,
-	});
+	const queryResult = AchievementLeaderboardQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
 	if (!queryResult.success) {
-		return c.json({ error: "Invalid Achievement leaderboard limit" }, 400);
+		routeLogger.warn("Achievement leaderboard query validation failed", {
+			event: "api.achievements.leaderboard.validation_failed",
+		});
+		return c.json({ error: "Invalid query parameters", details: queryResult.error.issues }, 400);
 	}
 	const { limit } = queryResult.data;
 	routeLogger.info("Loading achievement leaderboard", {
@@ -420,7 +467,6 @@ api.post("/debug/reconcile-stream-state", async (c) => {
 		broadcaster_name: c.env.TWITCH_BROADCASTER_NAME,
 	});
 	const streamStub = getStub("STREAM_LIFECYCLE_DO");
-	using songQueue = await getSongQueue();
 	const twitchService = new TwitchService(c.env);
 
 	const [streamStateResult, twitchStreamResult] = await Promise.all([
@@ -464,8 +510,15 @@ api.post("/debug/reconcile-stream-state", async (c) => {
 
 	let action: "noop" | "set_online" | "set_offline" = "noop";
 
-	if (twitchIsLive && !before.isLive) {
-		const onlineResult = await streamStub.onStreamOnline();
+	if (twitchStream !== null && !before.isLive) {
+		const startedAtResult = TwitchStreamStartedAtSchema.safeParse(twitchStream.startedAt);
+		if (!startedAtResult.success) {
+			routeLogger.error("Twitch returned an invalid stream start timestamp", {
+				event: "api.reconcile_stream_state.twitch_timestamp_invalid",
+			});
+			return c.json({ error: "Invalid Twitch stream status response" }, 502);
+		}
+		const onlineResult = await streamStub.onStreamOnline(startedAtResult.data);
 		if (onlineResult.status === "error") {
 			routeLogger.error("Failed to set stream online during reconciliation", {
 				event: "api.reconcile_stream_state.set_online.failed",
@@ -495,7 +548,14 @@ api.post("/debug/reconcile-stream-state", async (c) => {
 
 	let queueWarmup: "not_needed" | "ok" | "error" = "not_needed";
 	if (action === "set_online") {
-		const queueWarmResult = await songQueue.getCurrentlyPlaying();
+		const connection = await connectSongQueueForHttp("reconcileQueueWarmup");
+		const queueWarmResult =
+			connection.status === "error"
+				? connection
+				: await (async () => {
+						using songQueue = connection.value;
+						return songQueue.getCurrentlyPlaying();
+					})();
 		if (queueWarmResult.status === "error") {
 			queueWarmup = "error";
 			routeLogger.warn("Queue warmup failed after stream reconciliation", {
@@ -558,12 +618,16 @@ api.get("/debug/status", async (c) => {
 		event: "api.debug.status.started",
 	});
 	const streamStub = getStub("STREAM_LIFECYCLE_DO");
-	using songQueue = await getSongQueue();
 	const twitchService = new TwitchService(c.env);
 
 	const [streamResult, queueResult, twitchResult] = await Promise.all([
 		streamStub.getStreamState(),
-		songQueue.getSongQueue(5),
+		(async () => {
+			const connection = await connectSongQueueForHttp("debugStatus");
+			if (connection.status === "error") return connection;
+			using songQueue = connection.value;
+			return songQueue.getSongQueue(5);
+		})(),
 		twitchService.getStreamInfo(c.env.TWITCH_BROADCASTER_NAME),
 	]);
 

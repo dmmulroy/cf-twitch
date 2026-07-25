@@ -1,8 +1,5 @@
 /**
- * Stats routes for public analytics data
- *
- * All routes use 60s edge cache via Cloudflare Cache API.
- * Errors are NOT cached - only successful responses.
+ * Public analytics routes with canonical, runtime-validated edge caching.
  */
 
 import { Hono } from "hono";
@@ -12,47 +9,83 @@ import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import { withEdgeCache } from "../lib/cache";
 import { getStub } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
-import { logger } from "../lib/logger";
+import { readHttpQueryParameters } from "../lib/http-query-parameters";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import { getSongQueue } from "../lib/song-queue-client";
 
+import type { Logger } from "../lib/logger";
 import type { Env } from "../index";
 
 const stats = new Hono<AppRouteEnv<Env>>();
+const LimitSchema = z.coerce.number().int().min(1).max(100).default(10);
+const LimitQuerySchema = z.object({ limit: LimitSchema }).strict();
+const LeaderboardQuerySchema = z
+	.object({ sortBy: z.enum(["rolls", "wins", "closest"]).default("closest"), limit: LimitSchema })
+	.strict();
+const ViewerIdSchema = z
+	.string()
+	.regex(/^\d{1,20}$/u, "Viewer ID must be 1 to 20 digits")
+	.brand<"ViewerId">();
 
-/**
- * Shared limit query param schema
- */
-const LimitSchema = z.object({
-	limit: z.coerce.number().int().positive().max(100).default(10),
-});
+const ArtistNamesSchema = z.preprocess((input) => {
+	if (typeof input !== "string") return input;
+	try {
+		return JSON.parse(input);
+	} catch {
+		return input;
+	}
+}, z.array(z.string()));
+const TopTracksResponseSchema = z.array(
+	z
+		.object({
+			trackId: z.string().min(1),
+			trackName: z.string().min(1),
+			artists: ArtistNamesSchema,
+			requestCount: z.number().int().nonnegative(),
+		})
+		.strict(),
+);
+const TopRequestersResponseSchema = z.array(
+	z
+		.object({
+			userId: ViewerIdSchema,
+			displayName: z.string().min(1),
+			requestCount: z.number().int().nonnegative(),
+		})
+		.strict(),
+);
+const RaffleLeaderboardEntrySchema = z
+	.object({
+		userId: ViewerIdSchema,
+		displayName: z.string().min(1),
+		totalRolls: z.number().int().nonnegative(),
+		totalWins: z.number().int().nonnegative(),
+		closestDistance: z.number().int().nonnegative().nullable(),
+		closestRoll: z.number().int().positive().nullable(),
+		closestWinningNumber: z.number().int().positive().nullable(),
+		lastRolledAt: z.iso.datetime(),
+	})
+	.strict();
+const RaffleLeaderboardResponseSchema = z.array(RaffleLeaderboardEntrySchema);
 
-/**
- * Leaderboard query params schema
- */
-const LeaderboardQuerySchema = LimitSchema.extend({
-	sortBy: z.enum(["rolls", "wins", "closest"]).default("closest"),
-});
+function makeStatsCacheKey(canonicalPath: string, parameters: Record<string, string>): string {
+	const url = new URL(canonicalPath, "https://stats.internal");
+	for (const [key, value] of Object.entries(parameters).sort(([left], [right]) =>
+		left.localeCompare(right),
+	)) {
+		url.searchParams.set(key, value);
+	}
+	return url.toString();
+}
 
-/**
- * Check if error is a DurableObjectError (infrastructure failure)
- * Uses _tag check for reliability across RPC serialization
- */
-function isDOInfraError(error: unknown): error is DurableObjectError {
+function isDurableObjectError(error: unknown): error is DurableObjectError {
 	return (
 		DurableObjectError.is(error) ||
-		(typeof error === "object" &&
-			error !== null &&
-			"_tag" in error &&
-			error._tag === "DurableObjectError")
+		(typeof error === "object" && error !== null && "_tag" in error && error._tag === "DurableObjectError")
 	);
 }
 
-/**
- * Check if error is UserStatsNotFoundError
- * Uses _tag check for reliability across RPC serialization
- */
-function isUserNotFound(error: unknown): boolean {
+function isUserStatsNotFound(error: unknown): boolean {
 	return (
 		UserStatsNotFoundError.is(error) ||
 		(typeof error === "object" &&
@@ -62,241 +95,150 @@ function isUserNotFound(error: unknown): boolean {
 	);
 }
 
-/**
- * GET /api/stats/top-tracks
- * Returns most requested tracks across all users
- */
+function statsCacheFailureOptions<T>(
+	cacheKey: string,
+	valueSchema: z.ZodType<T>,
+	routeLogger: Logger,
+) {
+	return {
+		cacheKey,
+		valueSchema,
+		onInvalidValue: (issues: readonly z.core.$ZodIssue[]) => {
+			routeLogger.error("Stats response contract validation failed", {
+				event: "stats.response_validation_failed",
+				issue_count: issues.length,
+			});
+			return Response.json({ error: "Invalid service response" }, { status: 502 });
+		},
+		onFetcherFailure: (cause: unknown) => {
+			routeLogger.error("Stats dependency unavailable", {
+				event: "stats.dependency_unavailable",
+				error_tag: cause instanceof Error ? cause.name : "UnknownFailure",
+			});
+			return Response.json({ error: "Service temporarily unavailable" }, { status: 503 });
+		},
+	};
+}
+
 stats.get("/top-tracks", async (c) => {
-	const routeLogger = getRequestLogger(c).child({
-		route: "/api/stats/top-tracks",
-		component: "route",
-	});
-	const query = LimitSchema.safeParse({ limit: c.req.query("limit") });
-	if (!query.success) {
-		routeLogger.warn("Top tracks validation failed", {
-			event: "stats.top_tracks.validation_failed",
-		});
-		return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
-	}
+	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/top-tracks", component: "route" });
+	const query = LimitQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
+	if (!query.success) return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
 
-	routeLogger.info("Loading top tracks", {
-		event: "stats.top_tracks.started",
-		limit: query.data.limit,
-	});
-	const result = await withEdgeCache(
+	const { limit } = query.data;
+	return withEdgeCache(
 		c,
 		async () => {
 			using songQueue = await getSongQueue();
-			return songQueue.getTopTracks(query.data.limit);
+			return songQueue.getTopTracks(limit);
 		},
 		(error) => {
-			if (isDOInfraError(error)) {
-				logger.error("DO infrastructure error", { method: error.method, message: error.message });
-				return c.json({ error: "Service temporarily unavailable" }, 503);
-			}
-			routeLogger.error("Failed to get top tracks", {
-				event: "stats.top_tracks.failed",
-				limit: query.data.limit,
-				error_message: error.message,
-			});
+			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
+			routeLogger.error("Failed to get top tracks", { event: "stats.top_tracks.failed", limit });
 			return c.json({ error: "Failed to fetch top tracks" }, 500);
 		},
+		statsCacheFailureOptions(
+			makeStatsCacheKey("/api/stats/top-tracks", { limit: String(limit) }),
+			TopTracksResponseSchema,
+			routeLogger,
+		),
 	);
-	routeLogger.info("Loaded top tracks", {
-		event: "stats.top_tracks.succeeded",
-		limit: query.data.limit,
-		status_code: result.status,
-	});
-	return result;
 });
 
-/**
- * GET /api/stats/top-tracks/:user
- * Returns most requested tracks by a specific user
- */
 stats.get("/top-tracks/:user", async (c) => {
-	const routeLogger = getRequestLogger(c).child({
-		route: "/api/stats/top-tracks/:user",
-		component: "route",
-	});
-	const userId = c.req.param("user");
-	const query = LimitSchema.safeParse({ limit: c.req.query("limit") });
-	if (!query.success) {
-		return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
+	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/top-tracks/:user", component: "route" });
+	const query = LimitQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
+	const viewerId = ViewerIdSchema.safeParse(c.req.param("user"));
+	if (!query.success || !viewerId.success) {
+		return c.json({ error: "Invalid request parameters" }, 400);
 	}
-	routeLogger.info("Loading top tracks by user", {
-		event: "stats.top_tracks_by_user.started",
-		user_id: userId,
-		limit: query.data.limit,
-	});
 
-	const result = await withEdgeCache(
+	const { limit } = query.data;
+	return withEdgeCache(
 		c,
 		async () => {
 			using songQueue = await getSongQueue();
-			return songQueue.getTopTracksByUser(userId, query.data.limit);
+			return songQueue.getTopTracksByUser(viewerId.data, limit);
 		},
 		(error) => {
-			if (isDOInfraError(error)) {
-				logger.error("DO infrastructure error", { method: error.method, message: error.message });
-				return c.json({ error: "Service temporarily unavailable" }, 503);
-			}
-			routeLogger.error("Failed to get top tracks by user", {
-				event: "stats.top_tracks_by_user.failed",
-				user_id: userId,
-				limit: query.data.limit,
-				error_message: error.message,
-			});
+			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
 			return c.json({ error: "Failed to fetch top tracks" }, 500);
 		},
+		statsCacheFailureOptions(
+			makeStatsCacheKey(`/api/stats/top-tracks/${viewerId.data}`, { limit: String(limit) }),
+			TopTracksResponseSchema,
+			routeLogger,
+		),
 	);
-	routeLogger.info("Loaded top tracks by user", {
-		event: "stats.top_tracks_by_user.succeeded",
-		user_id: userId,
-		limit: query.data.limit,
-		status_code: result.status,
-	});
-	return result;
 });
 
-/**
- * GET /api/stats/top-requesters
- * Returns users with most song requests
- */
 stats.get("/top-requesters", async (c) => {
-	const routeLogger = getRequestLogger(c).child({
-		route: "/api/stats/top-requesters",
-		component: "route",
-	});
-	const query = LimitSchema.safeParse({ limit: c.req.query("limit") });
-	if (!query.success) {
-		return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
-	}
-	routeLogger.info("Loading top requesters", {
-		event: "stats.top_requesters.started",
-		limit: query.data.limit,
-	});
-	const result = await withEdgeCache(
+	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/top-requesters", component: "route" });
+	const query = LimitQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
+	if (!query.success) return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
+
+	const { limit } = query.data;
+	return withEdgeCache(
 		c,
 		async () => {
 			using songQueue = await getSongQueue();
-			return songQueue.getTopRequesters(query.data.limit);
+			return songQueue.getTopRequesters(limit);
 		},
 		(error) => {
-			if (isDOInfraError(error)) {
-				logger.error("DO infrastructure error", { method: error.method, message: error.message });
-				return c.json({ error: "Service temporarily unavailable" }, 503);
-			}
-			routeLogger.error("Failed to get top requesters", {
-				event: "stats.top_requesters.failed",
-				limit: query.data.limit,
-				error_message: error.message,
-			});
+			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
 			return c.json({ error: "Failed to fetch top requesters" }, 500);
 		},
+		statsCacheFailureOptions(
+			makeStatsCacheKey("/api/stats/top-requesters", { limit: String(limit) }),
+			TopRequestersResponseSchema,
+			routeLogger,
+		),
 	);
-	routeLogger.info("Loaded top requesters", {
-		event: "stats.top_requesters.succeeded",
-		limit: query.data.limit,
-		status_code: result.status,
-	});
-	return result;
 });
 
-/**
- * GET /api/stats/raffle/leaderboard
- * Returns keyboard raffle leaderboard sorted by specified criteria
- */
 stats.get("/raffle/leaderboard", async (c) => {
-	const routeLogger = getRequestLogger(c).child({
-		route: "/api/stats/raffle/leaderboard",
-		component: "route",
-	});
-	const query = LeaderboardQuerySchema.safeParse({
-		sortBy: c.req.query("sortBy"),
-		limit: c.req.query("limit"),
-	});
-	if (!query.success) {
-		routeLogger.warn("Raffle leaderboard validation failed", {
-			event: "stats.raffle_leaderboard.validation_failed",
-		});
-		return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
-	}
-	routeLogger.info("Loading raffle leaderboard", {
-		event: "stats.raffle_leaderboard.started",
-		sort_by: query.data.sortBy,
-		limit: query.data.limit,
-	});
-	const result = await withEdgeCache(
+	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/raffle/leaderboard", component: "route" });
+	const query = LeaderboardQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
+	if (!query.success) return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
+
+	return withEdgeCache(
 		c,
 		() => getStub("KEYBOARD_RAFFLE_DO").getLeaderboard(query.data),
 		(error) => {
-			if (isDOInfraError(error)) {
-				logger.error("DO infrastructure error", { method: error.method, message: error.message });
-				return c.json({ error: "Service temporarily unavailable" }, 503);
-			}
-			routeLogger.error("Failed to get raffle leaderboard", {
-				event: "stats.raffle_leaderboard.failed",
-				sort_by: query.data.sortBy,
-				limit: query.data.limit,
-				error_message: error.message,
-			});
+			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
 			return c.json({ error: "Failed to fetch leaderboard" }, 500);
 		},
+		statsCacheFailureOptions(
+			makeStatsCacheKey("/api/stats/raffle/leaderboard", {
+				limit: String(query.data.limit),
+				sortBy: query.data.sortBy,
+			}),
+			RaffleLeaderboardResponseSchema,
+			routeLogger,
+		),
 	);
-	routeLogger.info("Loaded raffle leaderboard", {
-		event: "stats.raffle_leaderboard.succeeded",
-		sort_by: query.data.sortBy,
-		limit: query.data.limit,
-		status_code: result.status,
-	});
-	return result;
 });
 
-/**
- * GET /api/stats/raffle/user/:user
- * Returns raffle stats for a specific user
- */
 stats.get("/raffle/user/:user", async (c) => {
-	const routeLogger = getRequestLogger(c).child({
-		route: "/api/stats/raffle/user/:user",
-		component: "route",
-	});
-	const userId = c.req.param("user");
-	routeLogger.info("Loading raffle user stats", {
-		event: "stats.raffle_user.started",
-		user_id: userId,
-	});
+	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/raffle/user/:user", component: "route" });
+	const viewerId = ViewerIdSchema.safeParse(c.req.param("user"));
+	const query = z.object({}).strict().safeParse(readHttpQueryParameters(c.req.url));
+	if (!viewerId.success || !query.success) return c.json({ error: "Invalid request parameters" }, 400);
 
-	const result = await withEdgeCache(
+	return withEdgeCache(
 		c,
-		() => getStub("KEYBOARD_RAFFLE_DO").getUserStats(userId),
+		() => getStub("KEYBOARD_RAFFLE_DO").getUserStats(viewerId.data),
 		(error) => {
-			if (isUserNotFound(error)) {
-				routeLogger.warn("Raffle user stats not found", {
-					event: "stats.raffle_user.not_found",
-					user_id: userId,
-				});
-				return c.json({ error: "User not found" }, 404);
-			}
-			if (isDOInfraError(error)) {
-				logger.error("DO infrastructure error", { method: error.method, message: error.message });
-				return c.json({ error: "Service temporarily unavailable" }, 503);
-			}
-			routeLogger.error("Failed to get user raffle stats", {
-				event: "stats.raffle_user.failed",
-				user_id: userId,
-				error_message: error.message,
-			});
+			if (isUserStatsNotFound(error)) return c.json({ error: "User not found" }, 404);
+			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
 			return c.json({ error: "Failed to fetch user stats" }, 500);
 		},
+		statsCacheFailureOptions(
+			makeStatsCacheKey(`/api/stats/raffle/user/${viewerId.data}`, {}),
+			RaffleLeaderboardEntrySchema,
+			routeLogger,
+		),
 	);
-	routeLogger.info("Loaded raffle user stats", {
-		event: "stats.raffle_user.succeeded",
-		user_id: userId,
-		status_code: result.status,
-	});
-	return result;
 });
 
 export default stats;
