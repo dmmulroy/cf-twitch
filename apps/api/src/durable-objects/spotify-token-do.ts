@@ -260,7 +260,9 @@ class _SpotifyTokenDO
 			: this.tryCancelRefreshSchedule();
 	}
 
-	private tryPersistRuntimeState(nextState: SpotifyRuntimeState): Result<void, TokenStatePersistenceError> {
+	private tryPersistRuntimeState(
+		nextState: SpotifyRuntimeState,
+	): Result<void, TokenStatePersistenceError> {
 		try {
 			this.persistRuntimeState(nextState);
 			return Result.ok();
@@ -285,7 +287,8 @@ class _SpotifyTokenDO
 		if (
 			this.runtimeState.refreshScheduleId !== null &&
 			this.getSchedule(this.runtimeState.refreshScheduleId) !== undefined
-		) return Result.ok();
+		)
+			return Result.ok();
 		if (!this.isTokenValid(this.runtimeState.token)) {
 			const result = await this.refreshLiveToken();
 			return result.status === "error" ? Result.err(result.error) : Result.ok();
@@ -293,7 +296,9 @@ class _SpotifyTokenDO
 		return this.scheduleProactiveRefresh(this.runtimeState.token);
 	}
 
-	private async scheduleProactiveRefresh(token: SpotifyRuntimeToken): Promise<Result<void, TokenStatePersistenceError>> {
+	private async scheduleProactiveRefresh(
+		token: SpotifyRuntimeToken,
+	): Promise<Result<void, TokenStatePersistenceError>> {
 		if (!this.runtimeState.isStreamLive) return this.tryCancelRefreshSchedule();
 		const refreshAtMs = Date.parse(token.expiresAt) - REFRESH_BUFFER_MS;
 		return refreshAtMs <= Date.now()
@@ -308,18 +313,27 @@ class _SpotifyTokenDO
 			const schedule = await this.schedule(when, "refreshTokenTick");
 			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: schedule.id });
 		} catch (cause) {
-			return Result.err(new TokenStatePersistenceError({ provider: "spotify", operation: "schedule", cause }));
+			return Result.err(
+				new TokenStatePersistenceError({ provider: "spotify", operation: "schedule", cause }),
+			);
 		}
 	}
 
-	private async scheduleRefreshIn(delayMs: number): Promise<Result<void, TokenStatePersistenceError>> {
+	private async scheduleRefreshIn(
+		delayMs: number,
+	): Promise<Result<void, TokenStatePersistenceError>> {
 		const cancelResult = await this.tryCancelRefreshSchedule();
 		if (cancelResult.status === "error") return cancelResult;
 		try {
-			const schedule = await this.schedule(Math.max(1, Math.ceil(delayMs / 1000)), "refreshTokenTick");
+			const schedule = await this.schedule(
+				Math.max(1, Math.ceil(delayMs / 1000)),
+				"refreshTokenTick",
+			);
 			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: schedule.id });
 		} catch (cause) {
-			return Result.err(new TokenStatePersistenceError({ provider: "spotify", operation: "schedule", cause }));
+			return Result.err(
+				new TokenStatePersistenceError({ provider: "spotify", operation: "schedule", cause }),
+			);
 		}
 	}
 
@@ -329,7 +343,13 @@ class _SpotifyTokenDO
 			await this.cancelSchedule(this.runtimeState.refreshScheduleId);
 			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: null });
 		} catch (cause) {
-			return Result.err(new TokenStatePersistenceError({ provider: "spotify", operation: "cancel-schedule", cause }));
+			return Result.err(
+				new TokenStatePersistenceError({
+					provider: "spotify",
+					operation: "cancel-schedule",
+					cause,
+				}),
+			);
 		}
 	}
 
@@ -363,12 +383,16 @@ class _SpotifyTokenDO
 		}
 
 		const retryCount = this.runtimeState.refreshRetryCount;
-		const isShortRetry = TokenRefreshNetworkError.is(result.error) && retryCount < MAX_REFRESH_RETRIES;
+		const isShortRetry =
+			TokenRefreshNetworkError.is(result.error) && retryCount < MAX_REFRESH_RETRIES;
 		const nextRetryCount = isShortRetry ? retryCount + 1 : 0;
 		const delayMs = isShortRetry
 			? REFRESH_RETRY_BASE_DELAY_MS * Math.pow(2, retryCount)
 			: REFRESH_FALLBACK_DELAY_MS;
-		const persistResult = this.tryPersistRuntimeState({ ...this.runtimeState, refreshRetryCount: nextRetryCount });
+		const persistResult = this.tryPersistRuntimeState({
+			...this.runtimeState,
+			refreshRetryCount: nextRetryCount,
+		});
 		if (persistResult.status === "error") return persistResult;
 		const scheduleResult = await this.scheduleRefreshIn(delayMs);
 		if (scheduleResult.status === "error") return scheduleResult;
@@ -387,44 +411,67 @@ class _SpotifyTokenDO
 		if (!("clientId" in tokenConfig)) return Result.err(tokenConfig);
 
 		const responseResult = await Result.tryPromise({
-			try: () => fetch("https://accounts.spotify.com/api/token", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/x-www-form-urlencoded",
-					Authorization: `Basic ${btoa(`${tokenConfig.clientId}:${revealRedactedValue(tokenConfig.clientSecret)}`)}`,
-				},
-				body: new URLSearchParams({
-					grant_type: "refresh_token",
-					refresh_token: revealRedactedValue(token.refreshToken),
+			try: () =>
+				fetch("https://accounts.spotify.com/api/token", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/x-www-form-urlencoded",
+						Authorization: `Basic ${btoa(`${tokenConfig.clientId}:${revealRedactedValue(tokenConfig.clientSecret)}`)}`,
+					},
+					body: new URLSearchParams({
+						grant_type: "refresh_token",
+						refresh_token: revealRedactedValue(token.refreshToken),
+					}),
 				}),
-			}),
-			catch: (cause) => new TokenRefreshNetworkError({ status: 0, provider: "spotify", message: `Spotify token refresh network request failed: ${String(cause)}` }),
+			catch: (cause) =>
+				new TokenRefreshNetworkError({
+					status: 0,
+					provider: "spotify",
+					message: `Spotify token refresh network request failed: ${String(cause)}`,
+				}),
 		});
 		if (responseResult.status === "error") return responseResult;
 
 		const response = responseResult.value;
 		if (!response.ok) {
-			const bodyResult = await Result.tryPromise({ try: () => response.json(), catch: () => undefined });
-			const oauthError = bodyResult.status === "ok" ? SpotifyOAuthErrorResponseSchema.safeParse(bodyResult.value) : undefined;
-			if ((oauthError?.success && oauthError.data.error === "invalid_grant") || (response.status >= 400 && response.status < 500 && response.status !== 429)) {
+			const bodyResult = await Result.tryPromise({
+				try: () => response.json(),
+				catch: () => undefined,
+			});
+			const oauthError =
+				bodyResult.status === "ok"
+					? SpotifyOAuthErrorResponseSchema.safeParse(bodyResult.value)
+					: undefined;
+			if (
+				(oauthError?.success && oauthError.data.error === "invalid_grant") ||
+				(response.status >= 400 && response.status < 500 && response.status !== 429)
+			) {
 				return Result.err(new TokenAuthorizationRevokedError({ provider: "spotify" }));
 			}
-			return Result.err(new TokenRefreshNetworkError({ status: response.status, provider: "spotify" }));
+			return Result.err(
+				new TokenRefreshNetworkError({ status: response.status, provider: "spotify" }),
+			);
 		}
 
 		const jsonResult = await Result.tryPromise({
 			try: () => response.json(),
-			catch: (cause) => new TokenRefreshParseError({ provider: "spotify", parseError: String(cause) }),
+			catch: (cause) =>
+				new TokenRefreshParseError({ provider: "spotify", parseError: String(cause) }),
 		});
 		if (jsonResult.status === "error") return jsonResult;
 		const parseResult = SpotifyTokenResponseSchema.safeParse(jsonResult.value);
-		if (!parseResult.success) return Result.err(new TokenRefreshParseError({ provider: "spotify", parseError: parseResult.error.message }));
+		if (!parseResult.success)
+			return Result.err(
+				new TokenRefreshParseError({ provider: "spotify", parseError: parseResult.error.message }),
+			);
 		const setResult = await this.setTokens(parseResult.data);
 		return setResult.status === "error" ? setResult : Result.ok(parseResult.data.access_token);
 	}
 }
 
-function parseSpotifyPersistedState(input: unknown): Result<SpotifyPersistedState, TokenStatePersistenceError> {
+function parseSpotifyPersistedState(
+	input: unknown,
+): Result<SpotifyPersistedState, TokenStatePersistenceError> {
 	const current = SpotifyPersistedStateV1Schema.safeParse(input);
 	if (current.success) return Result.ok(current.data);
 	const legacy = SpotifyLegacyPersistedStateSchema.safeParse(input);
@@ -441,11 +488,14 @@ function parseSpotifyPersistedState(input: unknown): Result<SpotifyPersistedStat
 function toSpotifyRuntimeState(state: SpotifyPersistedState): SpotifyRuntimeState {
 	return {
 		...state,
-		token: state.token === null ? null : {
-			...state.token,
-			accessToken: redactValue(state.token.accessToken),
-			refreshToken: redactValue(state.token.refreshToken),
-		},
+		token:
+			state.token === null
+				? null
+				: {
+						...state.token,
+						accessToken: redactValue(state.token.accessToken),
+						refreshToken: redactValue(state.token.refreshToken),
+					},
 	};
 }
 
@@ -453,11 +503,14 @@ function toSpotifyPersistedState(state: SpotifyRuntimeState): SpotifyPersistedSt
 	return {
 		version: 1,
 		...state,
-		token: state.token === null ? null : {
-			...state.token,
-			accessToken: revealRedactedValue(state.token.accessToken),
-			refreshToken: revealRedactedValue(state.token.refreshToken),
-		},
+		token:
+			state.token === null
+				? null
+				: {
+						...state.token,
+						accessToken: revealRedactedValue(state.token.accessToken),
+						refreshToken: revealRedactedValue(state.token.refreshToken),
+					},
 	};
 }
 

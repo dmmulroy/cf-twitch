@@ -67,7 +67,10 @@ export async function withEdgeCache<T, E extends { message: string }>(
 			}
 			c.executionCtx.waitUntil(
 				cache.delete(cacheKey).then(
-					() => cacheLogger.info("Evicted invalid edge cache entry", { event: "cache.evict_succeeded" }),
+					() =>
+						cacheLogger.info("Evicted invalid edge cache entry", {
+							event: "cache.evict_succeeded",
+						}),
 					(cause) =>
 						cacheLogger.warn("Failed to evict invalid edge cache entry", {
 							event: "cache.evict_failed",

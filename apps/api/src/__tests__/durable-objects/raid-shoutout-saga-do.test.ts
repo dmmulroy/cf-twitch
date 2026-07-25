@@ -232,12 +232,10 @@ describe("RaidShoutoutSagaDO", () => {
 			viewers: 42,
 		};
 		mockTwitchChatMessage(fetchMock);
-		for (let attempt = 0; attempt < 4; attempt += 1) {
-			fetchMock
-				.get("https://api.twitch.tv")
-				.intercept({ path: twitchShoutoutPath(raiderUserId), method: "POST" })
-				.reply(400, "Invalid shoutout");
-		}
+		fetchMock
+			.get("https://api.twitch.tv")
+			.intercept({ path: twitchShoutoutPath(raiderUserId), method: "POST" })
+			.reply(400, "Invalid shoutout");
 
 		const result = await stub.start(params);
 		expect(result.status).toBe("error");

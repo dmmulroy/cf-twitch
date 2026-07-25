@@ -9,7 +9,7 @@ import { Hono } from "hono";
 
 import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
-import { RedactedValue } from "../lib/redacted-value";
+import { RedactedValue } from "../lib/redacted";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import { SpotifyService } from "../services/spotify-service";
 import { TwitchService } from "../services/twitch-service";
@@ -177,12 +177,7 @@ oauth.get("/spotify/callback", async (c) => {
 	const state = c.req.query("state");
 	const origin = getOrigin(c);
 	const redirectUri = `${origin}/oauth/spotify/callback`;
-	const stateStatus = await consumeOAuthAuthorizationState(
-		c.env,
-		"spotify",
-		redirectUri,
-		state,
-	);
+	const stateStatus = await consumeOAuthAuthorizationState(c.env, "spotify", redirectUri, state);
 	if (stateStatus === "unavailable") {
 		return c.json({ error: "OAuth state validation unavailable" }, 503);
 	}
@@ -318,12 +313,7 @@ oauth.get("/twitch/callback", async (c) => {
 	const state = c.req.query("state");
 	const origin = getOrigin(c);
 	const redirectUri = `${origin}/oauth/twitch/callback`;
-	const stateStatus = await consumeOAuthAuthorizationState(
-		c.env,
-		"twitch",
-		redirectUri,
-		state,
-	);
+	const stateStatus = await consumeOAuthAuthorizationState(c.env, "twitch", redirectUri, state);
 	if (stateStatus === "unavailable") {
 		return c.json({ error: "OAuth state validation unavailable" }, 503);
 	}
@@ -395,7 +385,10 @@ oauth.get("/twitch/callback", async (c) => {
 			event: "oauth.twitch.callback.persistence_failed",
 			error_tag: persistenceResult.error._tag,
 		});
-		return c.json({ error: "Twitch tokens could not be stored", code: persistenceResult.error._tag }, 503);
+		return c.json(
+			{ error: "Twitch tokens could not be stored", code: persistenceResult.error._tag },
+			503,
+		);
 	}
 
 	routeLogger.info("Twitch tokens stored", {

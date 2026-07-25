@@ -42,7 +42,10 @@ export const rolls = sqliteTable(
 		check("rolls_display_name_nonempty", sql`length(${table.displayName}) > 0`),
 		check("rolls_roll_range", sql`${table.roll} between 1 and 10000`),
 		check("rolls_winning_number_range", sql`${table.winningNumber} between 1 and 10000`),
-		check("rolls_distance_invariant", sql`${table.distance} = abs(${table.roll} - ${table.winningNumber})`),
+		check(
+			"rolls_distance_invariant",
+			sql`${table.distance} = abs(${table.roll} - ${table.winningNumber})`,
+		),
 		check("rolls_winner_invariant", sql`${table.isWinner} = (${table.distance} = 0)`),
 	],
 );

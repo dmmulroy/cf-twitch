@@ -1,35 +1,41 @@
-declare const redactedBrand: unique symbol;
+/** Credential wrapper whose string and JSON representations never reveal the wrapped secret. */
+export class RedactedValue<T> {
+	readonly #value: T;
 
-/** Opaque wrapper that prevents credentials from appearing in JSON, string coercion, or object snapshots. */
-export interface Redacted<T> {
-	/** Stable redacted representation safe for diagnostics. */
-	toString(): "[REDACTED]";
-	/** Stable redacted JSON representation safe for diagnostics and snapshots. */
-	toJSON(): "[REDACTED]";
-	readonly [redactedBrand]: T;
+	private constructor(value: T) {
+		this.#value = value;
+	}
+
+	/** Wrap a credential at its input boundary. */
+	static fromSensitiveValue<T>(value: T): RedactedValue<T> {
+		return new RedactedValue(value);
+	}
+
+	/** Reveal a credential only to the adapter performing its final provider I/O. */
+	unsafeUnwrapForFinalIo(): T {
+		return this.#value;
+	}
+
+	/** Produce a stable redacted representation safe for diagnostics. */
+	toString(): "[REDACTED]" {
+		return "[REDACTED]";
+	}
+
+	/** Prevent credential disclosure during accidental JSON serialization. */
+	toJSON(): "[REDACTED]" {
+		return "[REDACTED]";
+	}
 }
 
-const redactedValues = new WeakMap<object, unknown>();
+/** Sensitive value retained in a redacted wrapper until final provider I/O. */
+export type Redacted<T> = RedactedValue<T>;
 
 /** Wrap a sensitive value at its input boundary. */
 export function redactValue<T>(value: T): Redacted<T> {
-	const wrapper = Object.freeze({
-		toString: () => "[REDACTED]" as const,
-		toJSON: () => "[REDACTED]" as const,
-	});
-	redactedValues.set(wrapper, value);
-	// SAFETY: The unexported brand prevents callers from constructing Redacted<T>;
-	// this factory records the corresponding T in redactedValues before branding.
-	return wrapper as Redacted<T>;
+	return RedactedValue.fromSensitiveValue(value);
 }
 
 /** Reveal a sensitive value only in the final I/O adapter that requires it. */
 export function revealRedactedValue<T>(redacted: Redacted<T>): T {
-	if (!redactedValues.has(redacted)) {
-		throw new Error("Redacted value was not created by redactValue");
-	}
-
-	// SAFETY: Membership in redactedValues proves this wrapper was created by
-	// redactValue<T>, which stores exactly the corresponding T value.
-	return redactedValues.get(redacted) as T;
+	return redacted.unsafeUnwrapForFinalIo();
 }

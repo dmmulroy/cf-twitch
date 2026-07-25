@@ -55,10 +55,11 @@ class _RaidShoutoutSagaDO extends SagaHost<RaidShoutoutParams, SagaStepExecution
 				resultCodec: noResultCodec,
 				options: { timeout: 10000, maxRetries: 2, ambiguousEffect: true },
 			},
-			async () => {
+			async (signal) => {
 				const result = await twitch.sendChatMessage(
 					`Thanks for the raid @${params.raider.login}! ` +
 						`Go check them out: https://twitch.tv/${params.raider.login}`,
+					{ signal },
 				);
 
 				if (result.status === "error") throw result.error;
@@ -73,8 +74,8 @@ class _RaidShoutoutSagaDO extends SagaHost<RaidShoutoutParams, SagaStepExecution
 				resultCodec: noResultCodec,
 				options: { timeout: 10000, maxRetries: 2, ambiguousEffect: true },
 			},
-			async () => {
-				const result = await twitch.createShoutout(params.raider.userId);
+			async (signal) => {
+				const result = await twitch.createShoutout(params.raider.userId, { signal });
 
 				if (result.status === "error") throw result.error;
 				return { result: undefined };

@@ -201,9 +201,11 @@ describe("SpotifyTokenDO", () => {
 			});
 
 			expect(result.tokenResult.status).toBe("error");
-			expect(result.schedules).toEqual(expect.arrayContaining([
-				expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
-			]));
+			expect(result.schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
+				]),
+			);
 		});
 
 		it("schedules a 60 second retry after a retryable refresh failure", async () => {
@@ -302,9 +304,11 @@ describe("SpotifyTokenDO", () => {
 			});
 
 			expect(outcome.onlineResult.status).toBe("error");
-			expect(outcome.schedules).toEqual(expect.arrayContaining([
-				expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
-			]));
+			expect(outcome.schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
+				]),
+			);
 		});
 
 		it("should disable proactive refresh when stream goes offline", async () => {

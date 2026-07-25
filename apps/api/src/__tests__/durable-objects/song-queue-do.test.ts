@@ -8,7 +8,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
 	pendingRequests,
@@ -89,6 +89,14 @@ describe("SongQueueDO", () => {
 		tokenStub = env.SPOTIFY_TOKEN_DO.get(tokenId);
 		await tokenStub.setName("spotify-token");
 		await tokenStub.getValidToken().catch(() => undefined);
+	});
+
+	afterEach(async () => {
+		await runInDurableObject(stub, async (instance: SongQueueDO) => {
+			for (const schedule of instance.getSchedules()) {
+				await instance.cancelSchedule(schedule.id);
+			}
+		});
 	});
 
 	describe("persistRequest", () => {

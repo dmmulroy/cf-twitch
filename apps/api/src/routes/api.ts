@@ -348,7 +348,9 @@ api.get("/achievements/leaderboard", async (c) => {
 		route: "/api/achievements/leaderboard",
 		component: "route",
 	});
-	const queryResult = AchievementLeaderboardQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
+	const queryResult = AchievementLeaderboardQuerySchema.safeParse(
+		readHttpQueryParameters(c.req.url),
+	);
 	if (!queryResult.success) {
 		routeLogger.warn("Achievement leaderboard query validation failed", {
 			event: "api.achievements.leaderboard.validation_failed",

@@ -87,7 +87,9 @@ describe("OAuth routes", () => {
 
 		const tokenStub = env.SPOTIFY_TOKEN_DO.getByName("spotify-token");
 		const tokenResult = await tokenStub.getValidToken();
-		expect(tokenResult).toEqual(expect.objectContaining({ status: "ok", value: "spotify-callback-access-token" }));
+		expect(tokenResult).toEqual(
+			expect.objectContaining({ status: "ok", value: "spotify-callback-access-token" }),
+		);
 
 		const replayResponse = await exports.default.fetch(callbackUrl);
 		expect(replayResponse.status).toBe(400);
@@ -120,7 +122,9 @@ describe("OAuth routes", () => {
 		);
 		expect(response.status).toBe(200);
 		const tokenResult = await env.TWITCH_TOKEN_DO.getByName("twitch-token").getValidToken();
-		expect(tokenResult).toEqual(expect.objectContaining({ status: "ok", value: "twitch-callback-access-token" }));
+		expect(tokenResult).toEqual(
+			expect.objectContaining({ status: "ok", value: "twitch-callback-access-token" }),
+		);
 	});
 
 	it("rejects malformed successful provider token responses before persistence", async () => {

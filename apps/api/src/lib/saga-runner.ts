@@ -415,7 +415,10 @@ export class SagaRunner<P> {
 				if (attempt >= 5) {
 					const exhausted = await this.updateStepFailed(compensation.stepName, errorMessage);
 					if (exhausted.status === "error") return Result.err(exhausted.error);
-					const terminal = await this.updateSagaStatus("COMPENSATION_FAILED", compensationError.message);
+					const terminal = await this.updateSagaStatus(
+						"COMPENSATION_FAILED",
+						compensationError.message,
+					);
 					return terminal.status === "error"
 						? Result.err(terminal.error)
 						: Result.err([compensationError]);
@@ -615,10 +618,7 @@ export class SagaRunner<P> {
 				this.db.query.sagaSteps.findFirst({
 					where: and(
 						eq(sagaSteps.sagaId, this.sagaId),
-						or(
-							eq(sagaSteps.state, "PENDING"),
-							eq(sagaSteps.state, "COMPENSATION_PENDING"),
-						),
+						or(eq(sagaSteps.state, "PENDING"), eq(sagaSteps.state, "COMPENSATION_PENDING")),
 						isNotNull(sagaSteps.nextRetryAt),
 					),
 					orderBy: [asc(sagaSteps.nextRetryAt)],
@@ -927,9 +927,7 @@ export class SagaRunner<P> {
 		});
 	}
 
-	private async updateStepCompensated(
-		stepName: string,
-	): Promise<Result<void, SagaRunnerDbError>> {
+	private async updateStepCompensated(stepName: string): Promise<Result<void, SagaRunnerDbError>> {
 		return Result.tryPromise({
 			try: async () => {
 				await this.db

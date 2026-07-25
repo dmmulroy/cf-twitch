@@ -229,9 +229,11 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		}
 		const { isNewRecord } = recordRollResult.value;
 
-		const fulfillResult = await runner.executeStep(FulfillRedemptionStep, async () => {
+		const fulfillResult = await runner.executeStep(FulfillRedemptionStep, async (signal) => {
 			const twitch = new TwitchService(this.env);
-			const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "FULFILLED");
+			const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "FULFILLED", {
+				signal,
+			});
 			if (result.status === "error") throw result.error;
 
 			logger.info("Fulfilled redemption", {
@@ -278,12 +280,12 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 			return this.handleStepError(publishResult.error, params, runner);
 		}
 
-		const chatResult = await runner.executeStep(SendChatMessageStep, async () => {
+		const chatResult = await runner.executeStep(SendChatMessageStep, async (signal) => {
 			const twitch = new TwitchService(this.env);
 			const message = isWinner
 				? `@${params.user_name} YOU WON THE KEYBOARD! 🎉 Your roll: ${userRoll} | Winning number: ${winningNumber}`
 				: `@${params.user_name} lost 😭 Winning number was ${winningNumber} and they rolled ${userRoll}. Distance: ${distance}`;
-			const result = await twitch.sendChatMessage(message);
+			const result = await twitch.sendChatMessage(message, { signal });
 			if (result.status === "error") {
 				logger.warn("Failed to send chat message", {
 					sagaId,
@@ -388,11 +390,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 			"refund-redemption",
 			async () => {
 				const twitch = new TwitchService(this.env);
-				const result = await twitch.updateRedemptionStatus(
-					params.reward.id,
-					params.id,
-					"CANCELED",
-				);
+				const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "CANCELED");
 				if (result.status === "error") throw result.error;
 				logger.info("Refunded Keyboard Raffle redemption", {
 					sagaId: this.ctx.id.toString(),

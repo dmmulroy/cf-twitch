@@ -13,8 +13,8 @@ import { readHttpQueryParameters } from "../lib/http-query-parameters";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import { getSongQueue } from "../lib/song-queue-client";
 
-import type { Logger } from "../lib/logger";
 import type { Env } from "../index";
+import type { Logger } from "../lib/logger";
 
 const stats = new Hono<AppRouteEnv<Env>>();
 const LimitSchema = z.coerce.number().int().min(1).max(100).default(10);
@@ -81,7 +81,10 @@ function makeStatsCacheKey(canonicalPath: string, parameters: Record<string, str
 function isDurableObjectError(error: unknown): error is DurableObjectError {
 	return (
 		DurableObjectError.is(error) ||
-		(typeof error === "object" && error !== null && "_tag" in error && error._tag === "DurableObjectError")
+		(typeof error === "object" &&
+			error !== null &&
+			"_tag" in error &&
+			error._tag === "DurableObjectError")
 	);
 }
 
@@ -121,9 +124,13 @@ function statsCacheFailureOptions<T>(
 }
 
 stats.get("/top-tracks", async (c) => {
-	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/top-tracks", component: "route" });
+	const routeLogger = getRequestLogger(c).child({
+		route: "/api/stats/top-tracks",
+		component: "route",
+	});
 	const query = LimitQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
-	if (!query.success) return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
+	if (!query.success)
+		return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
 
 	const { limit } = query.data;
 	return withEdgeCache(
@@ -133,7 +140,8 @@ stats.get("/top-tracks", async (c) => {
 			return songQueue.getTopTracks(limit);
 		},
 		(error) => {
-			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
+			if (isDurableObjectError(error))
+				return c.json({ error: "Service temporarily unavailable" }, 503);
 			routeLogger.error("Failed to get top tracks", { event: "stats.top_tracks.failed", limit });
 			return c.json({ error: "Failed to fetch top tracks" }, 500);
 		},
@@ -146,7 +154,10 @@ stats.get("/top-tracks", async (c) => {
 });
 
 stats.get("/top-tracks/:user", async (c) => {
-	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/top-tracks/:user", component: "route" });
+	const routeLogger = getRequestLogger(c).child({
+		route: "/api/stats/top-tracks/:user",
+		component: "route",
+	});
 	const query = LimitQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
 	const viewerId = ViewerIdSchema.safeParse(c.req.param("user"));
 	if (!query.success || !viewerId.success) {
@@ -161,7 +172,8 @@ stats.get("/top-tracks/:user", async (c) => {
 			return songQueue.getTopTracksByUser(viewerId.data, limit);
 		},
 		(error) => {
-			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
+			if (isDurableObjectError(error))
+				return c.json({ error: "Service temporarily unavailable" }, 503);
 			return c.json({ error: "Failed to fetch top tracks" }, 500);
 		},
 		statsCacheFailureOptions(
@@ -173,9 +185,13 @@ stats.get("/top-tracks/:user", async (c) => {
 });
 
 stats.get("/top-requesters", async (c) => {
-	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/top-requesters", component: "route" });
+	const routeLogger = getRequestLogger(c).child({
+		route: "/api/stats/top-requesters",
+		component: "route",
+	});
 	const query = LimitQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
-	if (!query.success) return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
+	if (!query.success)
+		return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
 
 	const { limit } = query.data;
 	return withEdgeCache(
@@ -185,7 +201,8 @@ stats.get("/top-requesters", async (c) => {
 			return songQueue.getTopRequesters(limit);
 		},
 		(error) => {
-			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
+			if (isDurableObjectError(error))
+				return c.json({ error: "Service temporarily unavailable" }, 503);
 			return c.json({ error: "Failed to fetch top requesters" }, 500);
 		},
 		statsCacheFailureOptions(
@@ -197,15 +214,20 @@ stats.get("/top-requesters", async (c) => {
 });
 
 stats.get("/raffle/leaderboard", async (c) => {
-	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/raffle/leaderboard", component: "route" });
+	const routeLogger = getRequestLogger(c).child({
+		route: "/api/stats/raffle/leaderboard",
+		component: "route",
+	});
 	const query = LeaderboardQuerySchema.safeParse(readHttpQueryParameters(c.req.url));
-	if (!query.success) return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
+	if (!query.success)
+		return c.json({ error: "Invalid query parameters", details: query.error.issues }, 400);
 
 	return withEdgeCache(
 		c,
 		() => getStub("KEYBOARD_RAFFLE_DO").getLeaderboard(query.data),
 		(error) => {
-			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
+			if (isDurableObjectError(error))
+				return c.json({ error: "Service temporarily unavailable" }, 503);
 			return c.json({ error: "Failed to fetch leaderboard" }, 500);
 		},
 		statsCacheFailureOptions(
@@ -220,17 +242,22 @@ stats.get("/raffle/leaderboard", async (c) => {
 });
 
 stats.get("/raffle/user/:user", async (c) => {
-	const routeLogger = getRequestLogger(c).child({ route: "/api/stats/raffle/user/:user", component: "route" });
+	const routeLogger = getRequestLogger(c).child({
+		route: "/api/stats/raffle/user/:user",
+		component: "route",
+	});
 	const viewerId = ViewerIdSchema.safeParse(c.req.param("user"));
 	const query = z.object({}).strict().safeParse(readHttpQueryParameters(c.req.url));
-	if (!viewerId.success || !query.success) return c.json({ error: "Invalid request parameters" }, 400);
+	if (!viewerId.success || !query.success)
+		return c.json({ error: "Invalid request parameters" }, 400);
 
 	return withEdgeCache(
 		c,
 		() => getStub("KEYBOARD_RAFFLE_DO").getUserStats(viewerId.data),
 		(error) => {
 			if (isUserStatsNotFound(error)) return c.json({ error: "User not found" }, 404);
-			if (isDurableObjectError(error)) return c.json({ error: "Service temporarily unavailable" }, 503);
+			if (isDurableObjectError(error))
+				return c.json({ error: "Service temporarily unavailable" }, 503);
 			return c.json({ error: "Failed to fetch user stats" }, 500);
 		},
 		statsCacheFailureOptions(

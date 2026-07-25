@@ -4,7 +4,10 @@
  */
 export async function deriveSagaEventId(sagaId: string): Promise<string> {
 	const digest = new Uint8Array(
-		await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`cf-twitch:saga-event:${sagaId}`)),
+		await crypto.subtle.digest(
+			"SHA-256",
+			new TextEncoder().encode(`cf-twitch:saga-event:${sagaId}`),
+		),
 	);
 	const bytes = digest.slice(0, 16);
 	bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;

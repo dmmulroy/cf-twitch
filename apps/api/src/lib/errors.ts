@@ -620,7 +620,10 @@ export class InvalidCommandNameError extends TaggedError("InvalidCommandNameErro
 	message: string;
 }>() {
 	constructor(args: { commandName: string; operation: string }) {
-		super({ ...args, message: `Command name invalid during ${args.operation}: ${args.commandName}` });
+		super({
+			...args,
+			message: `Command name invalid during ${args.operation}: ${args.commandName}`,
+		});
 	}
 }
 
@@ -817,12 +820,7 @@ export interface StreamLifecycleHandler<E = never> {
 // =============================================================================
 
 /** The persisted saga field whose serialized value failed at the boundary. */
-export type SagaPersistedField =
-	| "params"
-	| "run-row"
-	| "step-row"
-	| "step-result"
-	| "step-undo";
+export type SagaPersistedField = "params" | "run-row" | "step-row" | "step-result" | "step-undo";
 
 /** Expected failure returned when saga input cannot be parsed into canonical parameters. */
 export class SagaInputParseError extends TaggedError("SagaInputParseError")<{
@@ -925,7 +923,11 @@ export class SagaEffectOutcomeUnknown extends TaggedError("SagaEffectOutcomeUnkn
 	readonly causeTag: string;
 	readonly message: string;
 }>() {
-	constructor(args: { readonly stepName: string; readonly sagaId: string; readonly causeTag: string }) {
+	constructor(args: {
+		readonly stepName: string;
+		readonly sagaId: string;
+		readonly causeTag: string;
+	}) {
 		super({
 			...args,
 			message: `Saga effect outcome is unknown for step "${args.stepName}"`,
@@ -1028,7 +1030,5 @@ export function getRetryDelayMs(error: unknown, defaultMs = 1000): number {
 
 /** Reports transport failures whose provider-side commit outcome cannot be known safely. */
 export function isAmbiguousExternalEffectError(error: unknown): boolean {
-	return (
-		(SpotifyNetworkError.is(error) || TwitchNetworkError.is(error)) && error.status === 0
-	);
+	return (SpotifyNetworkError.is(error) || TwitchNetworkError.is(error)) && error.status === 0;
 }

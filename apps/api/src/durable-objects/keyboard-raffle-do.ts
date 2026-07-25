@@ -8,9 +8,9 @@
 import { Agent, type AgentContext } from "agents";
 import { Result, TaggedError } from "better-result";
 import { desc, eq, sql } from "drizzle-orm";
-import { z } from "zod";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
+import { z } from "zod";
 
 import migrations from "../../drizzle/keyboard-raffle-do/migrations";
 import { rpc, withRpcSerialization } from "../lib/durable-objects";
@@ -52,7 +52,10 @@ export class KeyboardRaffleInputParseError extends TaggedError("KeyboardRaffleIn
 	message: string;
 }>() {
 	constructor(args: { operation: string; issues: string }) {
-		super({ ...args, message: `Keyboard Raffle input invalid during ${args.operation}: ${args.issues}` });
+		super({
+			...args,
+			message: `Keyboard Raffle input invalid during ${args.operation}: ${args.issues}`,
+		});
 	}
 }
 
@@ -73,7 +76,10 @@ export class KeyboardRaffleDataParseError extends TaggedError("KeyboardRaffleDat
 	message: string;
 }>() {
 	constructor(args: { operation: string; issues: string }) {
-		super({ ...args, message: `Keyboard Raffle persisted data invalid during ${args.operation}: ${args.issues}` });
+		super({
+			...args,
+			message: `Keyboard Raffle persisted data invalid during ${args.operation}: ${args.issues}`,
+		});
 	}
 }
 
@@ -210,10 +216,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 					return { roll: recorded.data, isNewRecord };
 				}),
 			catch: (cause) => {
-				if (
-					KeyboardRaffleDataParseError.is(cause) ||
-					RollIdempotencyConflictError.is(cause)
-				) {
+				if (KeyboardRaffleDataParseError.is(cause) || RollIdempotencyConflictError.is(cause)) {
 					return cause;
 				}
 				return new KeyboardRaffleDbError({ operation: "recordRoll", cause });

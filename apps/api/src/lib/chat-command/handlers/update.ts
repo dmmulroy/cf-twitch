@@ -1,8 +1,8 @@
 import { Result } from "better-result";
 
-import type { Permission } from "../../permissions";
 import { chatTextResponse } from "../types";
 
+import type { Permission } from "../../permissions";
 import type { CommandCatalog, ComputedCommandContext, ComputedCommandHandler } from "../types";
 
 function getInsufficientWritePermissionMessage(
@@ -51,10 +51,15 @@ export class UpdateCommandHandler implements ComputedCommandHandler {
 			return Result.ok(chatTextResponse(`Usage: !update ${targetCommand} <value>`));
 		}
 
-		const result = await this.catalog.updateCommandValue(targetCommand, newValue, {
-			displayName: context.viewer.displayName,
-			permission: context.viewer.permission,
-		});
+		const result = await this.catalog.updateCommandValue(
+			targetCommand,
+			newValue,
+			{
+				displayName: context.viewer.displayName,
+				permission: context.viewer.permission,
+			},
+			context.operationId,
+		);
 		if (result.status === "error") {
 			switch (result.error._tag) {
 				case "CommandNotUpdateableError":
@@ -62,10 +67,7 @@ export class UpdateCommandHandler implements ComputedCommandHandler {
 				case "CommandUpdatePermissionDeniedError":
 					return Result.ok(
 						chatTextResponse(
-							getInsufficientWritePermissionMessage(
-								result.error.requiredPermission,
-								targetCommand,
-							),
+							getInsufficientWritePermissionMessage(result.error.requiredPermission, targetCommand),
 						),
 					);
 				default:

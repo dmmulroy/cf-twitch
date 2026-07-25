@@ -276,10 +276,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 		const saga = await runner.getSaga();
 		if (saga.status === "error") return Result.err(saga.error);
 
-		if (
-			!saga.value ||
-			(saga.value.status !== "RUNNING" && saga.value.status !== "COMPENSATING")
-		) {
+		if (!saga.value || (saga.value.status !== "RUNNING" && saga.value.status !== "COMPENSATING")) {
 			return this.clearRetrySchedule();
 		}
 

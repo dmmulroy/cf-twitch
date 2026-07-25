@@ -31,26 +31,32 @@ admin.use("*", async (c, next) => {
 	const adminSecret = c.env.ADMIN_SECRET;
 
 	if (!adminSecret) {
-		logger.error("Admin: ADMIN_SECRET not configured");
+		logger.error("Admin API authentication misconfigured", {
+			event: "admin.auth.misconfigured",
+		});
 		return c.json({ error: "Admin API not configured" }, 503);
 	}
 
 	const authHeader = c.req.header("Authorization");
 
 	if (!authHeader) {
+		logger.warn("Admin API authentication header missing", { event: "admin.auth.missing" });
 		return c.json({ error: "Missing Authorization header" }, 401);
 	}
 
 	const [scheme, token] = authHeader.split(" ");
 
 	if (scheme !== "Bearer" || !token) {
+		logger.warn("Admin API authentication header malformed", { event: "admin.auth.malformed" });
 		return c.json({ error: "Invalid Authorization header format. Expected: Bearer <token>" }, 401);
 	}
 
 	if (!constantTimeEquals(token, adminSecret)) {
+		logger.warn("Admin API authentication denied", { event: "admin.auth.denied" });
 		return c.json({ error: "Invalid token" }, 403);
 	}
 
+	logger.info("Admin API authentication authorized", { event: "admin.auth.authorized" });
 	await next();
 });
 
@@ -195,6 +201,9 @@ admin.delete("/dlq/:id", async (c) => {
  */
 admin.post("/achievements/reset-one-time", async (c) => {
 	const userDisplayName = c.req.query("user");
+	if (userDisplayName !== undefined && userDisplayName.trim().length === 0) {
+		return c.json({ error: "Viewer display name must not be empty" }, 400);
+	}
 
 	const stub = getStub("ACHIEVEMENTS_DO");
 	const result = await stub.resetOneTimeAchievements(userDisplayName);

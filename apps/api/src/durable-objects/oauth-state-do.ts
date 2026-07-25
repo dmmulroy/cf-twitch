@@ -34,7 +34,9 @@ type OAuthAuthorizationAttempt = z.infer<typeof OAuthAuthorizationAttemptSchema>
 /** Durable one-time store that atomically validates and consumes an OAuth state value. */
 export class OAuthStateDO extends DurableObject {
 	/** Persists one expiring provider authorization attempt before redirecting the operator. */
-	async createOAuthAuthorizationAttempt(input: unknown): Promise<{ readonly status: "ok" | "invalid" }> {
+	async createOAuthAuthorizationAttempt(
+		input: unknown,
+	): Promise<{ readonly status: "ok" | "invalid" }> {
 		const parsed = CreateOAuthAuthorizationAttemptSchema.safeParse(input);
 		if (!parsed.success || parsed.data.expiresAtMs <= parsed.data.createdAtMs) {
 			return { status: "invalid" };
@@ -60,12 +62,14 @@ export class OAuthStateDO extends DurableObject {
 
 			const attempt = parsedStored.data;
 			if (attempt.consumedAtMs !== null) return { status: "consumed" as const };
-			if (parsedInput.data.consumedAtMs > attempt.expiresAtMs) return { status: "expired" as const };
+			if (parsedInput.data.consumedAtMs > attempt.expiresAtMs)
+				return { status: "expired" as const };
 			if (
 				attempt.state !== parsedInput.data.state ||
 				attempt.provider !== parsedInput.data.provider ||
 				attempt.redirectUri !== parsedInput.data.redirectUri
-			) return { status: "mismatch" as const };
+			)
+				return { status: "mismatch" as const };
 
 			await transaction.put("authorization-attempt", {
 				...attempt,

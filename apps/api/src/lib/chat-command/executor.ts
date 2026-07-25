@@ -2,19 +2,20 @@ import { Result } from "better-result";
 
 import { parseCommandWithArg } from "../commands";
 import { hasPermission } from "../permissions";
+import { ChatCommandRenderError, type ChatCommandError } from "./errors";
 import { applyOutputTemplate, renderStoredValueTemplate } from "./render";
 import { chatTextResponse } from "./types";
 
 import type { Command } from "../../durable-objects/commands-do";
 import type { Clock } from "../clock";
 import type { Logger } from "../logging";
-import { ChatCommandRenderError, type ChatCommandError } from "./errors";
 import type {
 	ChatCommandExecution,
 	ChatCommandExecutor,
 	ChatCommandInput,
 	ChatCommandMetrics,
 	ChatCommandResponse,
+	ChatCommandSendCheckpoint,
 	ChatSender,
 	CommandCatalog,
 	ComputedCommandHandlers,
@@ -49,6 +50,7 @@ export class ChatCommandEngine implements ChatCommandExecutor {
 		private readonly handlers: ComputedCommandHandlers,
 		private readonly clock: Clock,
 		private readonly logger: Logger,
+		private readonly sendCheckpoint?: ChatCommandSendCheckpoint,
 	) {}
 
 	async execute(input: ChatCommandInput): Promise<Result<ChatCommandExecution, ChatCommandError>> {
@@ -97,8 +99,17 @@ export class ChatCommandEngine implements ChatCommandExecutor {
 				this.writeMetric(input, command.name, "error", startedAt, error.message);
 				return Result.err(error);
 			}
+			await this.sendCheckpoint?.beforeSend({
+				messageId: input.messageId,
+				commandName: command.name,
+			});
 			const sendResult = await this.sender.send(renderResult.value.message);
 			if (sendResult.status === "error") {
+				await this.sendCheckpoint?.afterSendFailure({
+					messageId: input.messageId,
+					commandName: command.name,
+					error: sendResult.error,
+				});
 				this.logger.warn("Failed to send chat command response", {
 					event: "chat_command.response.send_failed",
 					message_id: input.messageId,
@@ -109,6 +120,10 @@ export class ChatCommandEngine implements ChatCommandExecutor {
 				this.writeMetric(input, command.name, "error", startedAt, sendResult.error.message);
 				return Result.err(sendResult.error);
 			}
+			await this.sendCheckpoint?.afterSend({
+				messageId: input.messageId,
+				commandName: command.name,
+			});
 		}
 
 		this.logger.info("Chat command completed", {
@@ -139,6 +154,7 @@ export class ChatCommandEngine implements ChatCommandExecutor {
 			}
 
 			return handler.handle({
+				operationId: input.messageId,
 				arg,
 				command,
 				viewer: input.viewer,

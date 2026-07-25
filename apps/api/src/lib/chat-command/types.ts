@@ -69,6 +69,7 @@ export interface CommandCatalog {
 		name: string,
 		value: string,
 		actor: { readonly displayName: string; readonly permission: Permission },
+		operationId: string,
 	): Promise<Result<void, ChatCommandCatalogError>>;
 	getEnabledCommandsByPermission(
 		permission: Permission,
@@ -82,7 +83,7 @@ export interface CommandCatalog {
  * @returns A Result containing the updated counter value.
  */
 export interface CommandCounterStore {
-	incrementCounter(name: string): Promise<Result<number, ChatCommandError>>;
+	incrementCounter(name: string, operationId: string): Promise<Result<number, ChatCommandError>>;
 }
 
 /**
@@ -93,6 +94,20 @@ export interface CommandCounterStore {
  */
 export interface ChatSender {
 	send(message: string): Promise<Result<void, ChatCommandError>>;
+}
+
+/** Durable checkpoint around a Twitch chat send whose provider API has no idempotency key. */
+export interface ChatCommandSendCheckpoint {
+	/** Persist that sending is about to begin before provider I/O starts. */
+	beforeSend(input: { readonly messageId: string; readonly commandName: string }): Promise<void>;
+	/** Clear the in-flight checkpoint after Twitch confirms that no message was sent. */
+	afterSendFailure(input: {
+		readonly messageId: string;
+		readonly commandName: string;
+		readonly error: ChatCommandError;
+	}): Promise<void>;
+	/** Persist confirmed delivery after Twitch reports that the message was sent. */
+	afterSend(input: { readonly messageId: string; readonly commandName: string }): Promise<void>;
 }
 
 /**
@@ -168,6 +183,8 @@ export function chatNoResponse(): ChatCommandResponse {
  * @returns Handler context for one command invocation.
  */
 export interface ComputedCommandContext {
+	/** Stable EventSub message id used to deduplicate command mutations. */
+	operationId: string;
 	arg: string | null;
 	command: Command;
 	viewer: {

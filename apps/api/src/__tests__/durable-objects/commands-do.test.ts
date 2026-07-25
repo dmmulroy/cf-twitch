@@ -159,7 +159,10 @@ describe("CommandsDO", () => {
 			responseType: "static",
 			permission: "everyone",
 		});
-		expect(duplicate).toMatchObject({ status: "error", error: { _tag: "CommandAlreadyExistsError" } });
+		expect(duplicate).toMatchObject({
+			status: "error",
+			error: { _tag: "CommandAlreadyExistsError" },
+		});
 
 		const contradictory = await stub.createCommand({
 			name: "bad-computed",
@@ -170,10 +173,16 @@ describe("CommandsDO", () => {
 			handlerKey: "stats",
 			initialValue: "must not be discarded",
 		});
-		expect(contradictory).toMatchObject({ status: "error", error: { _tag: "CommandInputParseError" } });
+		expect(contradictory).toMatchObject({
+			status: "error",
+			error: { _tag: "CommandInputParseError" },
+		});
 
 		const emptyPatch = await stub.updateCommand("keyboard", {});
-		expect(emptyPatch).toMatchObject({ status: "error", error: { _tag: "CommandInputParseError" } });
+		expect(emptyPatch).toMatchObject({
+			status: "error",
+			error: { _tag: "CommandInputParseError" },
+		});
 
 		const incompleteTransition = await stub.updateCommand("keyboard", {
 			responseType: "computed",
@@ -270,5 +279,46 @@ describe("CommandsDO", () => {
 			expect(command?.counter).toBe(5);
 			expect(snapshotResult.value.revision).toBeGreaterThan(0);
 		}
+	});
+
+	it("deduplicates Chat Command mutations by EventSub message id", async () => {
+		const stub = await createCommandsStub(`commands-${crypto.randomUUID()}`);
+		const counterOperationId = `chat-counter-${crypto.randomUUID()}`;
+		const firstCounter = await stub.incrementCommandCounter("skillissue", 1, counterOperationId);
+		const replayedCounter = await stub.incrementCommandCounter("skillissue", 1, counterOperationId);
+		expect(firstCounter).toMatchObject({ status: "ok", value: 1 });
+		expect(replayedCounter).toMatchObject({ status: "ok", value: 1 });
+
+		const actor = { displayName: "ModeratorViewer", permission: "moderator" as const };
+		const updateOperationId = `chat-update-${crypto.randomUUID()}`;
+		const firstUpdate = await stub.updateCommandValue(
+			"today",
+			"Using TypeScript",
+			actor,
+			updateOperationId,
+		);
+		const replayedUpdate = await stub.updateCommandValue(
+			"today",
+			"Using TypeScript",
+			actor,
+			updateOperationId,
+		);
+		expect(firstUpdate.status).toBe("ok");
+		expect(replayedUpdate.status).toBe("ok");
+		expect(await stub.getCommandValue("today")).toMatchObject({
+			status: "ok",
+			value: "Using TypeScript",
+		});
+
+		const conflictingReplay = await stub.updateCommandValue(
+			"today",
+			"different value",
+			actor,
+			updateOperationId,
+		);
+		expect(conflictingReplay).toMatchObject({
+			status: "error",
+			error: { _tag: "CommandInputParseError" },
+		});
 	});
 });

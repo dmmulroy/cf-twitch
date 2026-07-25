@@ -243,7 +243,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 					albumCoverUrl: trackInfo.albumCoverUrl,
 					requesterUserId: params.user_id,
 					requesterDisplayName: params.user_name,
-					requestedAt: new Date().toISOString(),
+					requestedAt: params.redeemed_at,
 				});
 				if (result.status === "error") throw result.error;
 
@@ -263,9 +263,9 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 
 		const addToQueueResult = await runner.executeStepWithRollback(
 			AddToSpotifyQueueStep,
-			async () => {
+			async (signal) => {
 				const spotify = new SpotifyService(this.env);
-				const result = await spotify.addToQueue(spotifyTrackUri(trackId));
+				const result = await spotify.addToQueue(spotifyTrackUri(trackId), { signal });
 				if (result.status === "error") throw result.error;
 
 				logger.info("Added track to Spotify queue", { sagaId, trackId });
@@ -287,9 +287,11 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 			return this.handleStepError(addToQueueResult.error, params, runner);
 		}
 
-		const fulfillResult = await runner.executeStep(FulfillRedemptionStep, async () => {
+		const fulfillResult = await runner.executeStep(FulfillRedemptionStep, async (signal) => {
 			const twitch = new TwitchService(this.env);
-			const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "FULFILLED");
+			const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "FULFILLED", {
+				signal,
+			});
 			if (result.status === "error") throw result.error;
 
 			logger.info("Fulfilled redemption", {
@@ -306,11 +308,11 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		const pointOfNoReturn = await runner.markPointOfNoReturn();
 		if (pointOfNoReturn.status === "error") return Result.err(pointOfNoReturn.error);
 
-		const chatResult = await runner.executeStep(SendChatConfirmationStep, async () => {
+		const chatResult = await runner.executeStep(SendChatConfirmationStep, async (signal) => {
 			const twitch = new TwitchService(this.env);
 			const artistNames = trackInfo.artists.join(", ");
 			const message = `@${params.user_name} added "${trackInfo.name}" by ${artistNames} to the queue!`;
-			const result = await twitch.sendChatMessage(message);
+			const result = await twitch.sendChatMessage(message, { signal });
 			if (result.status === "error") {
 				logger.warn("Failed to send chat confirmation", {
 					sagaId,
@@ -426,11 +428,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 			"refund-redemption",
 			async () => {
 				const twitch = new TwitchService(this.env);
-				const result = await twitch.updateRedemptionStatus(
-					params.reward.id,
-					params.id,
-					"CANCELED",
-				);
+				const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "CANCELED");
 				if (result.status === "error") throw result.error;
 				logger.info("Refunded Song Request redemption", {
 					sagaId: this.ctx.id.toString(),

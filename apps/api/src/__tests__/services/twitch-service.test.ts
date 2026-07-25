@@ -20,9 +20,9 @@ function twitchService(): TwitchService {
 
 describe("TwitchService", () => {
 	it("rejects blank provider configuration before outbound I/O", () => {
-		expect(
-			() => new TwitchService({ ...env, TWITCH_CLIENT_SECRET: "" }),
-		).toThrow("Twitch provider configuration is invalid");
+		expect(() => new TwitchService({ ...env, TWITCH_CLIENT_SECRET: "" })).toThrow(
+			"Twitch provider configuration is invalid",
+		);
 		expect(fetchMock.getRequests()).toHaveLength(0);
 	});
 
@@ -84,7 +84,10 @@ describe("TwitchService", () => {
 		expect(result).toEqual(
 			expect.objectContaining({
 				status: "error",
-				error: expect.objectContaining({ _tag: "TwitchChatDroppedError", dropCode: "automod_held" }),
+				error: expect.objectContaining({
+					_tag: "TwitchChatDroppedError",
+					dropCode: "automod_held",
+				}),
 			}),
 		);
 	});
@@ -103,7 +106,9 @@ describe("TwitchService", () => {
 				error: expect.objectContaining({ _tag: "TwitchChatSendError", status: 422 }),
 			}),
 		);
-		expect(fetchMock.getRequests().filter((request) => request.url.includes("/helix/chat/messages"))).toHaveLength(1);
+		expect(
+			fetchMock.getRequests().filter((request) => request.url.includes("/helix/chat/messages")),
+		).toHaveLength(1);
 	});
 
 	it("returns validated Retry-After timing without retrying inside the adapter", async () => {
@@ -120,7 +125,9 @@ describe("TwitchService", () => {
 				error: expect.objectContaining({ _tag: "TwitchRateLimitError", retryAfterMs: 12_000 }),
 			}),
 		);
-		expect(fetchMock.getRequests().filter((request) => request.url.includes("/helix/chat/messages"))).toHaveLength(1);
+		expect(
+			fetchMock.getRequests().filter((request) => request.url.includes("/helix/chat/messages")),
+		).toHaveLength(1);
 	});
 
 	it("rejects chat messages above Twitch's protocol limit before outbound I/O", async () => {

@@ -1,9 +1,9 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
 
 import { fetchMock } from "./__tests__/helpers/fetch-mock";
 
-const adminAuthorization = { Authorization: "Bearer test-admin-secret" };
+const adminAuthorization = { Authorization: `Bearer ${env.ADMIN_SECRET}` };
 
 describe("Worker HTTP entrypoint", () => {
 	it("returns health and server-owned correlation headers", async () => {
@@ -31,7 +31,7 @@ describe("Worker HTTP entrypoint", () => {
 
 		const body = await response.text();
 		expect(body.toLowerCase()).toContain("<!doctype html>");
-		expect(body).toContain('const REQUEST_TIMEOUT_MS = 4000');
+		expect(body).toContain("const REQUEST_TIMEOUT_MS = 4000");
 		expect(body).toContain("if (pollInFlight) return");
 		expect(body).toContain("parseNowPlayingResponse");
 		expect(body).toContain("parseQueueResponse");
@@ -113,7 +113,10 @@ describe("Worker HTTP entrypoint", () => {
 		fetchMock
 			.get("https://id.twitch.tv")
 			.intercept({ path: "/oauth2/token", method: "POST" })
-			.reply(200, JSON.stringify({ access_token: "app-token" }));
+			.reply(
+				200,
+				JSON.stringify({ access_token: "app-token", token_type: "bearer", expires_in: 3600 }),
+			);
 		fetchMock
 			.get("https://api.twitch.tv")
 			.intercept({ path: "/helix/streams?user_login=dillon" })
@@ -178,7 +181,9 @@ describe("Worker HTTP entrypoint", () => {
 
 		it("canonicalizes an omitted stats limit to the explicit default cache entry", async () => {
 			const omitted = await exports.default.fetch("http://localhost/api/stats/top-tracks");
-			const explicit = await exports.default.fetch("http://localhost/api/stats/top-tracks?limit=10");
+			const explicit = await exports.default.fetch(
+				"http://localhost/api/stats/top-tracks?limit=10",
+			);
 			expect(omitted.status).toBe(200);
 			expect(explicit.status).toBe(200);
 			expect(await omitted.json()).toEqual(await explicit.json());

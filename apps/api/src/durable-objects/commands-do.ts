@@ -110,12 +110,26 @@ const CommandCounterStateSchema = z.object({
 	updatedAt: IsoTimestampSchema,
 });
 
+const CommandMutationOperationIdSchema = z.string().min(1).max(200);
+const CommandMutationReceiptSchema = z.discriminatedUnion("kind", [
+	z.strictObject({ kind: z.literal("update"), fingerprint: z.string().min(1) }),
+	z.strictObject({
+		kind: z.literal("counter"),
+		fingerprint: z.string().min(1),
+		resultingCount: z.number().int().nonnegative(),
+	}),
+]);
+type CommandMutationReceipt = z.infer<typeof CommandMutationReceiptSchema>;
+
 /** Versioned serialized state owned by the Commands Agent persistence boundary. */
 export const CommandsAgentStateSchema = z.strictObject({
 	revision: z.number().int().nonnegative(),
 	commandsByName: z.record(CommandNameSchema, CommandDefinitionSchema),
 	valuesByName: z.record(CommandNameSchema, CommandValueStateSchema),
 	countersByName: z.record(CommandNameSchema, CommandCounterStateSchema),
+	mutationReceiptsByOperationId: z
+		.record(CommandMutationOperationIdSchema, CommandMutationReceiptSchema)
+		.default({}),
 	appliedMigrations: z.array(z.string().min(1).max(200)).default([]),
 });
 
@@ -596,6 +610,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		commandsByName: {},
 		valuesByName: {},
 		countersByName: {},
+		mutationReceiptsByOperationId: {},
 		appliedMigrations: [],
 	};
 
@@ -667,38 +682,27 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 			const parseResult = CommandDefinitionSchema.safeParse(rawCommand);
 			if (!parseResult.success) {
 				return Result.err(
-					this.validationError(
-						commandName,
-						`${operation}: ${parseResult.error.message}`,
-					),
+					this.validationError(commandName, `${operation}: ${parseResult.error.message}`),
 				);
 			}
 
 			const command = parseResult.data;
 			if (command.name !== commandName) {
-				return Result.err(
-					this.validationError(commandName, `${operation}: stored key mismatch`),
-				);
+				return Result.err(this.validationError(commandName, `${operation}: stored key mismatch`));
 			}
 
 			for (const alias of command.aliases) {
 				if (alias === command.name) {
-					return Result.err(
-						new CommandAliasConflictError({ alias, owner: command.name }),
-					);
+					return Result.err(new CommandAliasConflictError({ alias, owner: command.name }));
 				}
 
 				const existingOwner = aliasOwners.get(alias);
 				if (existingOwner !== undefined) {
-					return Result.err(
-						new CommandAliasConflictError({ alias, owner: existingOwner }),
-					);
+					return Result.err(new CommandAliasConflictError({ alias, owner: existingOwner }));
 				}
 
 				if (nextState.commandsByName[alias] !== undefined) {
-					return Result.err(
-						new CommandAliasConflictError({ alias, owner: alias }),
-					);
+					return Result.err(new CommandAliasConflictError({ alias, owner: alias }));
 				}
 
 				aliasOwners.set(alias, command.name);
@@ -823,8 +827,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 					(command) => command.enabled && PermissionLevels[command.permission] <= level,
 				);
 			},
-			catch: (cause) =>
-				new CommandsDbError({ operation: "getEnabledCommandsByPermission", cause }),
+			catch: (cause) => new CommandsDbError({ operation: "getEnabledCommandsByPermission", cause }),
 		});
 	}
 
@@ -853,6 +856,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		name: string,
 		value: string,
 		actor: unknown,
+		operationId?: unknown,
 	): Promise<
 		Result<
 			void,
@@ -886,6 +890,37 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 				);
 			}
 
+			const operationIdResult =
+				operationId === undefined ? null : CommandMutationOperationIdSchema.safeParse(operationId);
+			if (operationIdResult !== null && !operationIdResult.success) {
+				return Result.err(
+					new CommandInputParseError({
+						operation: "updateCommandValue",
+						issues: operationIdResult.error.message,
+					}),
+				);
+			}
+			const mutationOperationId = operationIdResult?.data;
+			const mutationFingerprint = JSON.stringify({
+				kind: "update",
+				commandName,
+				value: valueResult.data,
+				actor: actorResult.data,
+			});
+			if (mutationOperationId !== undefined) {
+				const existing = this.state.mutationReceiptsByOperationId[mutationOperationId];
+				if (existing !== undefined) {
+					return existing.kind === "update" && existing.fingerprint === mutationFingerprint
+						? Result.ok()
+						: Result.err(
+								new CommandInputParseError({
+									operation: "updateCommandValue",
+									issues: "Chat command mutation operation id was reused with different input",
+								}),
+							);
+				}
+			}
+
 			const command = this.resolveCommand(commandName);
 			if (!command) return Result.err(new CommandNotFoundError({ commandName }));
 			if (command.responseType !== "dynamic") {
@@ -914,6 +949,13 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 						updatedBy: actorResult.data.displayName,
 					},
 				},
+				mutationReceiptsByOperationId:
+					mutationOperationId === undefined
+						? this.state.mutationReceiptsByOperationId
+						: this.appendMutationReceipt(mutationOperationId, {
+								kind: "update",
+								fingerprint: mutationFingerprint,
+							}),
 			};
 			yield* this.persistState(nextState, "updateCommandValue");
 
@@ -948,6 +990,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	async incrementCommandCounter(
 		name: string,
 		increment = 1,
+		operationId?: unknown,
 	): Promise<
 		Result<
 			number,
@@ -970,6 +1013,36 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 				);
 			}
 
+			const operationIdResult =
+				operationId === undefined ? null : CommandMutationOperationIdSchema.safeParse(operationId);
+			if (operationIdResult !== null && !operationIdResult.success) {
+				return Result.err(
+					new CommandInputParseError({
+						operation: "incrementCommandCounter",
+						issues: operationIdResult.error.message,
+					}),
+				);
+			}
+			const mutationOperationId = operationIdResult?.data;
+			const mutationFingerprint = JSON.stringify({
+				kind: "counter",
+				commandName,
+				increment: incrementResult.data,
+			});
+			if (mutationOperationId !== undefined) {
+				const existing = this.state.mutationReceiptsByOperationId[mutationOperationId];
+				if (existing !== undefined) {
+					return existing.kind === "counter" && existing.fingerprint === mutationFingerprint
+						? Result.ok(existing.resultingCount)
+						: Result.err(
+								new CommandInputParseError({
+									operation: "incrementCommandCounter",
+									issues: "Chat command mutation operation id was reused with different input",
+								}),
+							);
+				}
+			}
+
 			const command = this.resolveCommand(commandName);
 			if (!command) {
 				return Result.err(new CommandNotFoundError({ commandName }));
@@ -989,6 +1062,14 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 						updatedAt: now,
 					},
 				},
+				mutationReceiptsByOperationId:
+					mutationOperationId === undefined
+						? this.state.mutationReceiptsByOperationId
+						: this.appendMutationReceipt(mutationOperationId, {
+								kind: "counter",
+								fingerprint: mutationFingerprint,
+								resultingCount: nextCount,
+							}),
 			};
 			yield* this.persistState(nextState, "incrementCommandCounter");
 
@@ -1034,10 +1115,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	): Promise<
 		Result<
 			Command,
-			| CommandInputParseError
-			| CommandAlreadyExistsError
-			| CommandDefinitionError
-			| CommandsDbError
+			CommandInputParseError | CommandAlreadyExistsError | CommandDefinitionError | CommandsDbError
 		>
 	> {
 		return Result.gen(function* (this: _CommandsDO) {
@@ -1293,6 +1371,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 			commandsByName: {},
 			valuesByName: {},
 			countersByName: {},
+			mutationReceiptsByOperationId: {},
 			appliedMigrations: [...DefaultCommandMigrationIds],
 		};
 
@@ -1349,6 +1428,17 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		);
 	}
 
+	private appendMutationReceipt(
+		operationId: string,
+		receipt: CommandMutationReceipt,
+	): CommandsAgentState["mutationReceiptsByOperationId"] {
+		const entries = Object.entries({
+			...this.state.mutationReceiptsByOperationId,
+			[operationId]: receipt,
+		});
+		return Object.fromEntries(entries.slice(-5_000));
+	}
+
 	private parseCommandName(
 		name: string,
 		operation: string,
@@ -1366,7 +1456,10 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		const parseResult = CreateCommandInputSchema.safeParse(input);
 		if (!parseResult.success) {
 			return Result.err(
-				new CommandInputParseError({ operation: "createCommand", issues: parseResult.error.message }),
+				new CommandInputParseError({
+					operation: "createCommand",
+					issues: parseResult.error.message,
+				}),
 			);
 		}
 		return Result.ok(parseResult.data);
@@ -1378,7 +1471,10 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		const parseResult = UpdateCommandInputSchema.safeParse(patch);
 		if (!parseResult.success) {
 			return Result.err(
-				new CommandInputParseError({ operation: "updateCommand", issues: parseResult.error.message }),
+				new CommandInputParseError({
+					operation: "updateCommand",
+					issues: parseResult.error.message,
+				}),
 			);
 		}
 		return Result.ok(parseResult.data);

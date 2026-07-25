@@ -8,7 +8,7 @@ import { AnalyticsEngineChatCommandMetrics } from "./metrics";
 import { TwitchChatSender } from "./sender";
 
 import type { Env } from "../../index";
-import type { ChatCommandExecutor } from "./types";
+import type { ChatCommandExecutor, ChatCommandSendCheckpoint } from "./types";
 
 /**
  * Construct the production chat command executor for the worker environment.
@@ -16,7 +16,10 @@ import type { ChatCommandExecutor } from "./types";
  * @param env - Worker environment containing service bindings and analytics dataset.
  * @returns A configured chat command executor.
  */
-export function makeChatCommandExecutor(env: Env): ChatCommandExecutor {
+export function makeChatCommandExecutor(
+	env: Env,
+	sendCheckpoint?: ChatCommandSendCheckpoint,
+): ChatCommandExecutor {
 	const catalog = new CommandsDOCommandCatalog();
 	const clock = new SystemClock();
 	return new ChatCommandEngine(
@@ -26,6 +29,7 @@ export function makeChatCommandExecutor(env: Env): ChatCommandExecutor {
 		makeComputedCommandHandlers({ catalog, clock }),
 		clock,
 		logger.child({ module: "chat-command" }),
+		sendCheckpoint,
 	);
 }
 
@@ -71,6 +75,7 @@ export type {
 	ChatCommandMetrics,
 	ChatCommandMetric,
 	ChatCommandResponse,
+	ChatCommandSendCheckpoint,
 	ChatSender,
 	CommandCatalog,
 	ComputedCommandContext,

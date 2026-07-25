@@ -1,11 +1,8 @@
 import { env } from "cloudflare:workers";
-import { z } from "zod";
 import { describe, expect, it } from "vite-plus/test";
+import { z } from "zod";
 
-import {
-	getStubFromNamespace,
-	parseDurableObjectRpcResult,
-} from "../../lib/durable-objects";
+import { getStubFromNamespace, parseDurableObjectRpcResult } from "../../lib/durable-objects";
 import { VALID_TOKEN_RESPONSE } from "../fixtures/spotify";
 
 describe("parseDurableObjectRpcResult", () => {

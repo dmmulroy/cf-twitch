@@ -5,11 +5,13 @@ import { fetchMock } from "../helpers/fetch-mock";
 
 const adminHeaders = { Authorization: `Bearer ${env.ADMIN_SECRET}` };
 
-function mockAppToken(body: unknown = {
-	access_token: "test-app-token",
-	token_type: "bearer",
-	expires_in: 3600,
-}): void {
+function mockAppToken(
+	body: unknown = {
+		access_token: "test-app-token",
+		token_type: "bearer",
+		expires_in: 3600,
+	},
+): void {
 	fetchMock
 		.get("https://id.twitch.tv")
 		.intercept({ path: "/oauth2/token", method: "POST" })
@@ -46,9 +48,10 @@ function mockEventSubPage(data: unknown[], cursor?: string): void {
 	fetchMock
 		.get("https://api.twitch.tv")
 		.intercept({
-			path: cursor === undefined
-				? "/helix/eventsub/subscriptions"
-				: `/helix/eventsub/subscriptions?after=${cursor}`,
+			path:
+				cursor === undefined
+					? "/helix/eventsub/subscriptions"
+					: `/helix/eventsub/subscriptions?after=${cursor}`,
 		})
 		.reply(
 			200,

@@ -8,7 +8,7 @@
 import { Hono } from "hono";
 
 import { constantTimeEquals } from "../lib/crypto";
-import { RedactedValue } from "../lib/redacted-value";
+import { RedactedValue } from "../lib/redacted";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import {
 	TwitchService,
@@ -50,10 +50,8 @@ function hasMatchingSubscription(
 	return existing.some((sub) => {
 		if (sub.type !== config.type) return false;
 		if (sub.version !== config.version) return false;
-		if (
-			sub.status !== "enabled" &&
-			sub.status !== "webhook_callback_verification_pending"
-		) return false;
+		if (sub.status !== "enabled" && sub.status !== "webhook_callback_verification_pending")
+			return false;
 		if (sub.transport.callback !== callbackUrl) return false;
 
 		return Object.entries(config.condition).every(([key, value]) => sub.condition[key] === value);

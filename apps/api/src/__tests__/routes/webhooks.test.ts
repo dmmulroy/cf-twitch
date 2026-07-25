@@ -330,6 +330,55 @@ describe("Twitch webhooks", () => {
 		expect(redemptionResponse.status).toBe(200);
 	});
 
+	it("preserves Chat Command argument casing and checkpoints the provider send", async () => {
+		await ensureTwitchTokenStub();
+		const messageId = `chat-update-receipt-${crypto.randomUUID()}`;
+		const chatMessageId = `chat-update-${crypto.randomUUID()}`;
+		const timestamp = new Date().toISOString();
+		const body = JSON.stringify({
+			subscription: eventSubSubscription("channel.chat.message"),
+			event: {
+				broadcaster_user_id: env.TWITCH_BROADCASTER_ID,
+				broadcaster_user_login: "dillon",
+				broadcaster_user_name: "dillon",
+				chatter_user_id: "moderator-id",
+				chatter_user_login: "moderator",
+				chatter_user_name: "ModeratorViewer",
+				message_id: chatMessageId,
+				message: { text: "!update today Using TypeScript", fragments: [] },
+				badges: [{ set_id: "moderator", id: "1", info: "" }],
+			},
+		});
+		mockTwitchChatMessage(fetchMock);
+		const response = await postSignedEventSub({
+			messageId,
+			timestamp,
+			subscriptionType: "channel.chat.message",
+			body,
+		});
+		expect(response.status).toBe(200);
+
+		const commandsStub = env.COMMANDS_DO.get(env.COMMANDS_DO.idFromName("commands"));
+		await commandsStub.setName("commands");
+		expect(await commandsStub.getCommandValue("today")).toMatchObject({
+			status: "ok",
+			value: "Using TypeScript",
+		});
+		const receiptStub = env.EVENTSUB_WEBHOOK_DO.get(env.EVENTSUB_WEBHOOK_DO.idFromName(messageId));
+		expect(await receiptStub.getReceiptStatus()).toMatchObject({
+			status: "ok",
+			value: { status: "completed", chatCommandDelivery: "sent" },
+		});
+
+		const duplicate = await postSignedEventSub({
+			messageId,
+			timestamp,
+			subscriptionType: "channel.chat.message",
+			body,
+		});
+		expect(duplicate.status).toBe(200);
+	});
+
 	it("durably accepts a completely parsed revocation", async () => {
 		const body = JSON.stringify({
 			subscription: eventSubSubscription("channel.raid", { status: "authorization_revoked" }),

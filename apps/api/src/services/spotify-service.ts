@@ -22,7 +22,7 @@ import {
 	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
-import { RedactedValue } from "../lib/redacted-value";
+import { RedactedValue } from "../lib/redacted";
 
 import type { Env } from "../index";
 import type { SpotifyTrackId, SpotifyTrackUri } from "../lib/spotify-track-id";
@@ -370,6 +370,7 @@ export class SpotifyService {
 	 */
 	async addToQueue(
 		trackUri: SpotifyTrackUri,
+		options: { readonly signal?: AbortSignal } = {},
 	): Promise<
 		Result<
 			void,
@@ -394,6 +395,7 @@ export class SpotifyService {
 					headers: {
 						Authorization: `Bearer ${token}`,
 					},
+					signal: options.signal,
 				}),
 			catch: (cause) =>
 				new SpotifyNetworkError({ status: 0, context: `addToQueue: ${String(cause)}` }),

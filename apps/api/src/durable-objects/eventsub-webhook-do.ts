@@ -27,6 +27,11 @@ const AcceptedEventSubReceiptSchema = z.object({
 	body: z.unknown(),
 });
 
+const ChatCommandDeliverySchema = z.object({
+	status: z.enum(["sending", "sent", "uncertain"]),
+	commandName: z.string().min(1),
+});
+
 const PersistedEventSubReceiptSchema = z.object({
 	headers: EventSubHeadersSchema,
 	body: z.unknown(),
@@ -35,10 +40,18 @@ const PersistedEventSubReceiptSchema = z.object({
 	acceptedAt: z.string(),
 	completedAt: z.string().nullable(),
 	lastError: z.string().nullable(),
+	chatCommandDelivery: ChatCommandDeliverySchema.optional(),
 });
 
 type AcceptedEventSubReceipt = z.infer<typeof AcceptedEventSubReceiptSchema>;
 type PersistedEventSubReceipt = z.infer<typeof PersistedEventSubReceiptSchema>;
+
+function isAmbiguousChatSendFailure(error: unknown): boolean {
+	if (typeof error !== "object" || error === null || !("cause" in error)) return false;
+	const cause = error.cause;
+	if (typeof cause !== "object" || cause === null || !("_tag" in cause)) return false;
+	return cause._tag === "TwitchNetworkError" || cause._tag === "TwitchParseError";
+}
 
 /** Expected error when a webhook message id is reused for different signed content. */
 export class EventSubReceiptConflictError extends TaggedError("EventSubReceiptConflictError")<{
@@ -74,6 +87,7 @@ export interface EventSubReceiptStatus {
 	readonly status: "pending" | "completed" | "dead_letter";
 	readonly attempts: number;
 	readonly lastError: string | null;
+	readonly chatCommandDelivery?: "sending" | "sent" | "uncertain";
 }
 
 class EventSubProcessingError extends TaggedError("EventSubProcessingError")<{
@@ -140,13 +154,15 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 		Result<EventSubReceiptStatus | null, EventSubReceiptCorruptError>
 	> {
 		const receipt = await this.readReceipt();
-		return receipt.status === "error" || receipt.value === null
-			? receipt
-			: Result.ok({
-					status: receipt.value.status,
-					attempts: receipt.value.attempts,
-					lastError: receipt.value.lastError,
-				});
+		if (receipt.status === "error") return receipt;
+		if (receipt.value === null) return Result.ok(null);
+		const delivery = receipt.value.chatCommandDelivery;
+		return Result.ok({
+			status: receipt.value.status,
+			attempts: receipt.value.attempts,
+			lastError: receipt.value.lastError,
+			...(delivery === undefined ? {} : { chatCommandDelivery: delivery.status }),
+		});
 	}
 
 	/** Runtime alarm callback that resumes a previously accepted EventSub receipt. */
@@ -199,8 +215,14 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 				await this.recordProcessingFailure(receipt, processing.error.message);
 				return;
 			}
+			const latestResult = await this.readReceipt();
+			if (latestResult.status === "error" || latestResult.value === null) {
+				throw latestResult.status === "error"
+					? latestResult.error
+					: new Error("EventSub receipt disappeared before completion");
+			}
 			await this.ctx.storage.put(EVENTSUB_RECEIPT_STORAGE_KEY, {
-				...receipt,
+				...latestResult.value,
 				status: "completed",
 				completedAt: new Date().toISOString(),
 				lastError: null,
@@ -218,10 +240,13 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 		receipt: PersistedEventSubReceipt,
 		errorMessage: string,
 	): Promise<void> {
-		const attempts = receipt.attempts + 1;
+		const latestResult = await this.readReceipt();
+		const latest =
+			latestResult.status === "ok" && latestResult.value !== null ? latestResult.value : receipt;
+		const attempts = latest.attempts + 1;
 		const status = attempts >= MAX_EVENTSUB_PROCESSING_ATTEMPTS ? "dead_letter" : "pending";
 		await this.ctx.storage.put(EVENTSUB_RECEIPT_STORAGE_KEY, {
-			...receipt,
+			...latest,
 			status,
 			attempts,
 			lastError: errorMessage,
@@ -300,10 +325,36 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 					: Result.err(new EventSubProcessingError("channel.raid", result.error.message));
 			}
 			case "ChatMessageNotification": {
-				const executor = makeChatCommandExecutor(this.env);
+				const delivery = receipt.chatCommandDelivery;
+				if (delivery?.status === "sending") {
+					await this.writeChatCommandDelivery(receipt, "uncertain", delivery.commandName);
+					logger.warn("Chat command send outcome is uncertain after interruption", {
+						event: "chat_command.response.send_uncertain",
+						message_id: messageId,
+						command: delivery.commandName,
+					});
+					return Result.ok();
+				}
+				if (delivery?.status === "sent" || delivery?.status === "uncertain") {
+					return Result.ok();
+				}
+
+				const executor = makeChatCommandExecutor(this.env, {
+					beforeSend: async ({ commandName }) => {
+						await this.writeChatCommandDelivery(receipt, "sending", commandName);
+					},
+					afterSendFailure: async ({ error }) => {
+						if (!isAmbiguousChatSendFailure(error)) {
+							await this.clearChatCommandDelivery(receipt);
+						}
+					},
+					afterSend: async ({ commandName }) => {
+						await this.writeChatCommandDelivery(receipt, "sent", commandName);
+					},
+				});
 				const result = await executor.execute({
 					messageId: message.event.message_id,
-					text: message.event.message.text.trim().toLowerCase(),
+					text: message.event.message.text.trim(),
 					receivedAt,
 					viewer: {
 						userId: message.event.chatter_user_id,
@@ -316,6 +367,28 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 					: Result.err(new EventSubProcessingError("channel.chat.message", result.error.message));
 			}
 		}
+	}
+
+	private async writeChatCommandDelivery(
+		receipt: PersistedEventSubReceipt,
+		status: "sending" | "sent" | "uncertain",
+		commandName: string,
+	): Promise<void> {
+		const latestResult = await this.readReceipt();
+		const latest =
+			latestResult.status === "ok" && latestResult.value !== null ? latestResult.value : receipt;
+		await this.ctx.storage.put(EVENTSUB_RECEIPT_STORAGE_KEY, {
+			...latest,
+			chatCommandDelivery: { status, commandName },
+		} satisfies PersistedEventSubReceipt);
+	}
+
+	private async clearChatCommandDelivery(receipt: PersistedEventSubReceipt): Promise<void> {
+		const latestResult = await this.readReceipt();
+		const latest =
+			latestResult.status === "ok" && latestResult.value !== null ? latestResult.value : receipt;
+		const { chatCommandDelivery: _removed, ...withoutDelivery } = latest;
+		await this.ctx.storage.put(EVENTSUB_RECEIPT_STORAGE_KEY, withoutDelivery);
 	}
 
 	private async dispatchRewardRedemption(

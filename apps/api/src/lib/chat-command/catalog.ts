@@ -25,8 +25,9 @@ export class CommandsDOCommandCatalog implements CommandCatalog {
 		name: string,
 		value: string,
 		actor: { readonly displayName: string; readonly permission: Permission },
+		operationId: string,
 	) {
-		return getStub("COMMANDS_DO").updateCommandValue(name, value, actor);
+		return getStub("COMMANDS_DO").updateCommandValue(name, value, actor, operationId);
 	}
 
 	async getEnabledCommandsByPermission(permission: Permission) {
@@ -41,7 +42,7 @@ export class CommandsDOCommandCatalog implements CommandCatalog {
  * @returns A Result containing the updated counter value.
  */
 export class CommandsDOCommandCounterStore implements CommandCounterStore {
-	async incrementCounter(name: string) {
-		return getStub("COMMANDS_DO").incrementCommandCounter(name);
+	async incrementCounter(name: string, operationId: string) {
+		return getStub("COMMANDS_DO").incrementCommandCounter(name, 1, operationId);
 	}
 }

@@ -26,7 +26,7 @@ import {
 	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
-import { RedactedValue } from "../lib/redacted-value";
+import { RedactedValue } from "../lib/redacted";
 
 import type { Env } from "../index";
 
@@ -74,18 +74,20 @@ const TwitchAppTokenResponseSchema = z.object({
 
 const TwitchChatMessageSchema = z.string().min(1).max(500);
 const TwitchChatResponseSchema = z.object({
-	data: z.array(
-		z.object({
-			message_id: NonEmptyProviderStringSchema,
-			is_sent: z.boolean(),
-			drop_reason: z
-				.object({
-					code: NonEmptyProviderStringSchema,
-					message: z.string(),
-				})
-				.nullable(),
-		}),
-	).min(1),
+	data: z
+		.array(
+			z.object({
+				message_id: NonEmptyProviderStringSchema,
+				is_sent: z.boolean(),
+				drop_reason: z
+					.object({
+						code: NonEmptyProviderStringSchema,
+						message: z.string(),
+					})
+					.nullable(),
+			}),
+		)
+		.min(1),
 });
 
 const TwitchRedemptionUpdateResponseSchema = z.object({
@@ -677,7 +679,7 @@ export class TwitchService {
 	 * Send a chat message to the broadcaster's channel
 	 * Uses Result.tryPromise with automatic retry and rate limit handling
 	 */
-	async sendChatMessage(message: string) {
+	async sendChatMessage(message: string, options: { readonly signal?: AbortSignal } = {}) {
 		const parsedMessage = TwitchChatMessageSchema.safeParse(message);
 		if (!parsedMessage.success) {
 			return Result.err(
@@ -697,6 +699,7 @@ export class TwitchService {
 				try: async () => {
 					const response = await fetch("https://api.twitch.tv/helix/chat/messages", {
 						method: "POST",
+						signal: options.signal,
 						headers: this.userTokenHeaders(accessToken, {
 							"Content-Type": "application/json",
 						}),
@@ -760,8 +763,12 @@ export class TwitchService {
 						TwitchParseError.is(error) ||
 						TwitchRateLimitError.is(error) ||
 						TwitchNetworkError.is(error)
-					) return error;
-					return new TwitchNetworkError({ status: 0, context: `sendChatMessage: ${String(error)}` });
+					)
+						return error;
+					return new TwitchNetworkError({
+						status: 0,
+						context: `sendChatMessage: ${String(error)}`,
+					});
 				},
 			},
 			{
@@ -769,7 +776,8 @@ export class TwitchService {
 					times: 3,
 					delayMs: 1000,
 					backoff: "exponential",
-					shouldRetry: isRetryableTwitchTechnicalError,
+					shouldRetry: (error) =>
+						options.signal?.aborted !== true && isRetryableTwitchTechnicalError(error),
 				},
 			},
 		);
@@ -779,7 +787,7 @@ export class TwitchService {
 	 * Create a native Twitch shoutout from the broadcaster chat context.
 	 * Uses Result.tryPromise with automatic retry and rate limit handling.
 	 */
-	async createShoutout(toBroadcasterId: string) {
+	async createShoutout(toBroadcasterId: string, options: { readonly signal?: AbortSignal } = {}) {
 		const tokenResult = await this.getToken();
 		if (tokenResult.status === "error") {
 			return Result.err(tokenResult.error);
@@ -797,6 +805,7 @@ export class TwitchService {
 					const response = await fetch(url, {
 						method: "POST",
 						headers: this.userTokenHeaders(accessToken),
+						signal: options.signal,
 					});
 
 					if (response.status === 204) return;
@@ -840,7 +849,8 @@ export class TwitchService {
 					times: 3,
 					delayMs: 1000,
 					backoff: "exponential",
-					shouldRetry: isRetryableTwitchTechnicalError,
+					shouldRetry: (error) =>
+						options.signal?.aborted !== true && isRetryableTwitchTechnicalError(error),
 				},
 			},
 		);
@@ -850,6 +860,7 @@ export class TwitchService {
 		rewardId: string,
 		redemptionId: string,
 		status: "FULFILLED" | "CANCELED",
+		options: { readonly signal?: AbortSignal } = {},
 	) {
 		const tokenResult = await this.getToken();
 		if (tokenResult.status === "error") {
@@ -864,6 +875,7 @@ export class TwitchService {
 						`https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions?broadcaster_id=${this.env.TWITCH_BROADCASTER_ID}&reward_id=${rewardId}&id=${redemptionId}`,
 						{
 							method: "PATCH",
+							signal: options.signal,
 							headers: this.userTokenHeaders(accessToken, {
 								"Content-Type": "application/json",
 							}),
@@ -932,7 +944,8 @@ export class TwitchService {
 					times: 3,
 					delayMs: 1000,
 					backoff: "exponential",
-					shouldRetry: isRetryableTwitchTechnicalError,
+					shouldRetry: (error) =>
+						options.signal?.aborted !== true && isRetryableTwitchTechnicalError(error),
 				},
 			},
 		);

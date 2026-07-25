@@ -201,9 +201,11 @@ describe("TwitchTokenDO", () => {
 			});
 
 			expect(result.tokenResult.status).toBe("error");
-			expect(result.schedules).toEqual(expect.arrayContaining([
-				expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
-			]));
+			expect(result.schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
+				]),
+			);
 		});
 
 		it("schedules a 60 second retry after a retryable refresh failure", async () => {
@@ -293,9 +295,11 @@ describe("TwitchTokenDO", () => {
 			});
 
 			expect(outcome.onlineResult.status).toBe("error");
-			expect(outcome.schedules).toEqual(expect.arrayContaining([
-				expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
-			]));
+			expect(outcome.schedules).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
+				]),
+			);
 		});
 
 		it("should disable proactive refresh when stream goes offline", async () => {
@@ -352,11 +356,13 @@ describe("TwitchTokenDO", () => {
 				await instance.setTokens({ ...VALID_TOKEN_RESPONSE, expires_in: 1 });
 				const result = await instance.onStreamOnline();
 				expect(result.status).toBe("error");
-				if (result.status === "error") expect(result.error._tag).toBe("TokenAuthorizationRevokedError");
+				if (result.status === "error")
+					expect(result.error._tag).toBe("TokenAuthorizationRevokedError");
 				expect(await instance.getSchedules()).toHaveLength(0);
 				const laterResult = await instance.getValidToken();
 				expect(laterResult.status).toBe("error");
-				if (laterResult.status === "error") expect(laterResult.error._tag).toBe("TokenAuthorizationRevokedError");
+				if (laterResult.status === "error")
+					expect(laterResult.error._tag).toBe("TokenAuthorizationRevokedError");
 			});
 		});
 

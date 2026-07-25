@@ -20,6 +20,6 @@ export class CryptoRaffleRandom implements RaffleRandom {
 		do {
 			crypto.getRandomValues(randomWord);
 		} while ((randomWord[0] ?? acceptedUpperBound) >= acceptedUpperBound);
-		return minimum + (randomWord[0] ?? 0) % range;
+		return minimum + ((randomWord[0] ?? 0) % range);
 	}
 }

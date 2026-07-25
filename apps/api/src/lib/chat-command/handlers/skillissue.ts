@@ -16,8 +16,8 @@ export class SkillIssueCommandHandler implements ComputedCommandHandler {
 	 *
 	 * @returns A Result containing a chat response with the updated counter value.
 	 */
-	async handle() {
-		const result = await this.counters.incrementCounter("skillissue");
+	async handle(context: Parameters<ComputedCommandHandler["handle"]>[0]) {
+		const result = await this.counters.incrementCounter("skillissue", context.operationId);
 		if (result.status === "error") {
 			return Result.ok(chatTextResponse("Couldn't count that skill issue right now."));
 		}

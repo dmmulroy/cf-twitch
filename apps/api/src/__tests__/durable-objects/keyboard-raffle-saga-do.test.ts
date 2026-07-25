@@ -307,7 +307,7 @@ describe("KeyboardRaffleSagaDO", () => {
 			]);
 		});
 		mockTwitchRedemptionUpdate(fetchMock);
-		for (let message = 0; message < 4; message += 1) mockTwitchChatMessage(fetchMock);
+		for (let message = 0; message < 2; message += 1) mockTwitchChatMessage(fetchMock);
 
 		const result = await stub.start({
 			...params,
@@ -405,7 +405,7 @@ describe("KeyboardRaffleSagaDO", () => {
 			]);
 		});
 		mockTwitchRedemptionUpdate(fetchMock);
-		for (let message = 0; message < 3; message += 1) mockTwitchChatMessage(fetchMock);
+		mockTwitchChatMessage(fetchMock);
 
 		const resumed = await stub.start(params);
 		expect(resumed.status).toBe("ok");
@@ -558,7 +558,6 @@ describe("KeyboardRaffleSagaDO", () => {
 
 		mockTwitchRedemptionUpdate(fetchMock);
 		mockTwitchChatMessage(fetchMock);
-		mockTwitchChatMessage(fetchMock);
 		await stub.retrySagaTick();
 		await waitForAchievementQueuesToDrain(achievements, params.user_name);
 
@@ -693,9 +692,6 @@ describe("KeyboardRaffleSagaDO", () => {
 		});
 
 		mockTwitchRedemptionUpdate(fetchMock);
-		mockTwitchChatMessage(fetchMock);
-		mockTwitchChatMessage(fetchMock);
-		mockTwitchChatMessage(fetchMock);
 		mockTwitchChatMessage(fetchMock);
 
 		await stub.retrySagaTick();

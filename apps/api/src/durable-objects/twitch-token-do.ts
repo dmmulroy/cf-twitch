@@ -260,7 +260,9 @@ class _TwitchTokenDO
 			: this.tryCancelRefreshSchedule();
 	}
 
-	private tryPersistRuntimeState(nextState: TwitchRuntimeState): Result<void, TokenStatePersistenceError> {
+	private tryPersistRuntimeState(
+		nextState: TwitchRuntimeState,
+	): Result<void, TokenStatePersistenceError> {
 		try {
 			this.persistRuntimeState(nextState);
 			return Result.ok();
@@ -285,7 +287,8 @@ class _TwitchTokenDO
 		if (
 			this.runtimeState.refreshScheduleId !== null &&
 			this.getSchedule(this.runtimeState.refreshScheduleId) !== undefined
-		) return Result.ok();
+		)
+			return Result.ok();
 		if (!this.isTokenValid(this.runtimeState.token)) {
 			const result = await this.refreshLiveToken();
 			return result.status === "error" ? Result.err(result.error) : Result.ok();
@@ -293,7 +296,9 @@ class _TwitchTokenDO
 		return this.scheduleProactiveRefresh(this.runtimeState.token);
 	}
 
-	private async scheduleProactiveRefresh(token: TwitchRuntimeToken): Promise<Result<void, TokenStatePersistenceError>> {
+	private async scheduleProactiveRefresh(
+		token: TwitchRuntimeToken,
+	): Promise<Result<void, TokenStatePersistenceError>> {
 		if (!this.runtimeState.isStreamLive) return this.tryCancelRefreshSchedule();
 		const refreshAtMs = Date.parse(token.expiresAt) - REFRESH_BUFFER_MS;
 		return refreshAtMs <= Date.now()
@@ -308,18 +313,27 @@ class _TwitchTokenDO
 			const schedule = await this.schedule(when, "refreshTokenTick");
 			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: schedule.id });
 		} catch (cause) {
-			return Result.err(new TokenStatePersistenceError({ provider: "twitch", operation: "schedule", cause }));
+			return Result.err(
+				new TokenStatePersistenceError({ provider: "twitch", operation: "schedule", cause }),
+			);
 		}
 	}
 
-	private async scheduleRefreshIn(delayMs: number): Promise<Result<void, TokenStatePersistenceError>> {
+	private async scheduleRefreshIn(
+		delayMs: number,
+	): Promise<Result<void, TokenStatePersistenceError>> {
 		const cancelResult = await this.tryCancelRefreshSchedule();
 		if (cancelResult.status === "error") return cancelResult;
 		try {
-			const schedule = await this.schedule(Math.max(1, Math.ceil(delayMs / 1000)), "refreshTokenTick");
+			const schedule = await this.schedule(
+				Math.max(1, Math.ceil(delayMs / 1000)),
+				"refreshTokenTick",
+			);
 			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: schedule.id });
 		} catch (cause) {
-			return Result.err(new TokenStatePersistenceError({ provider: "twitch", operation: "schedule", cause }));
+			return Result.err(
+				new TokenStatePersistenceError({ provider: "twitch", operation: "schedule", cause }),
+			);
 		}
 	}
 
@@ -329,7 +343,9 @@ class _TwitchTokenDO
 			await this.cancelSchedule(this.runtimeState.refreshScheduleId);
 			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: null });
 		} catch (cause) {
-			return Result.err(new TokenStatePersistenceError({ provider: "twitch", operation: "cancel-schedule", cause }));
+			return Result.err(
+				new TokenStatePersistenceError({ provider: "twitch", operation: "cancel-schedule", cause }),
+			);
 		}
 	}
 
@@ -363,12 +379,16 @@ class _TwitchTokenDO
 		}
 
 		const retryCount = this.runtimeState.refreshRetryCount;
-		const isShortRetry = TokenRefreshNetworkError.is(result.error) && retryCount < MAX_REFRESH_RETRIES;
+		const isShortRetry =
+			TokenRefreshNetworkError.is(result.error) && retryCount < MAX_REFRESH_RETRIES;
 		const nextRetryCount = isShortRetry ? retryCount + 1 : 0;
 		const delayMs = isShortRetry
 			? REFRESH_RETRY_BASE_DELAY_MS * Math.pow(2, retryCount)
 			: REFRESH_FALLBACK_DELAY_MS;
-		const persistResult = this.tryPersistRuntimeState({ ...this.runtimeState, refreshRetryCount: nextRetryCount });
+		const persistResult = this.tryPersistRuntimeState({
+			...this.runtimeState,
+			refreshRetryCount: nextRetryCount,
+		});
 		if (persistResult.status === "error") return persistResult;
 		const scheduleResult = await this.scheduleRefreshIn(delayMs);
 		if (scheduleResult.status === "error") return scheduleResult;
@@ -387,47 +407,70 @@ class _TwitchTokenDO
 		if (!("clientId" in tokenConfig)) return Result.err(tokenConfig);
 
 		const responseResult = await Result.tryPromise({
-			try: () => fetch("https://id.twitch.tv/oauth2/token", {
-				method: "POST",
-				headers: { "Content-Type": "application/x-www-form-urlencoded" },
-				body: new URLSearchParams({
-					grant_type: "refresh_token",
-					refresh_token: revealRedactedValue(token.refreshToken),
-					client_id: tokenConfig.clientId,
-					client_secret: revealRedactedValue(tokenConfig.clientSecret),
+			try: () =>
+				fetch("https://id.twitch.tv/oauth2/token", {
+					method: "POST",
+					headers: { "Content-Type": "application/x-www-form-urlencoded" },
+					body: new URLSearchParams({
+						grant_type: "refresh_token",
+						refresh_token: revealRedactedValue(token.refreshToken),
+						client_id: tokenConfig.clientId,
+						client_secret: revealRedactedValue(tokenConfig.clientSecret),
+					}),
 				}),
-			}),
-			catch: (cause) => new TokenRefreshNetworkError({ status: 0, provider: "twitch", message: `Twitch token refresh network request failed: ${String(cause)}` }),
+			catch: (cause) =>
+				new TokenRefreshNetworkError({
+					status: 0,
+					provider: "twitch",
+					message: `Twitch token refresh network request failed: ${String(cause)}`,
+				}),
 		});
 		if (responseResult.status === "error") return responseResult;
 
 		const response = responseResult.value;
 		if (!response.ok) {
-			const bodyResult = await Result.tryPromise({ try: () => response.json(), catch: () => undefined });
-			const oauthError = bodyResult.status === "ok" ? TwitchOAuthErrorResponseSchema.safeParse(bodyResult.value) : undefined;
+			const bodyResult = await Result.tryPromise({
+				try: () => response.json(),
+				catch: () => undefined,
+			});
+			const oauthError =
+				bodyResult.status === "ok"
+					? TwitchOAuthErrorResponseSchema.safeParse(bodyResult.value)
+					: undefined;
 			const hasParsedOAuthError = oauthError?.success === true;
 			if (
-				(hasParsedOAuthError && response.status >= 400 && response.status < 500 && response.status !== 429) ||
+				(hasParsedOAuthError &&
+					response.status >= 400 &&
+					response.status < 500 &&
+					response.status !== 429) ||
 				(response.status >= 400 && response.status < 500 && response.status !== 429)
 			) {
 				return Result.err(new TokenAuthorizationRevokedError({ provider: "twitch" }));
 			}
-			return Result.err(new TokenRefreshNetworkError({ status: response.status, provider: "twitch" }));
+			return Result.err(
+				new TokenRefreshNetworkError({ status: response.status, provider: "twitch" }),
+			);
 		}
 
 		const jsonResult = await Result.tryPromise({
 			try: () => response.json(),
-			catch: (cause) => new TokenRefreshParseError({ provider: "twitch", parseError: String(cause) }),
+			catch: (cause) =>
+				new TokenRefreshParseError({ provider: "twitch", parseError: String(cause) }),
 		});
 		if (jsonResult.status === "error") return jsonResult;
 		const parseResult = TwitchTokenResponseSchema.safeParse(jsonResult.value);
-		if (!parseResult.success) return Result.err(new TokenRefreshParseError({ provider: "twitch", parseError: parseResult.error.message }));
+		if (!parseResult.success)
+			return Result.err(
+				new TokenRefreshParseError({ provider: "twitch", parseError: parseResult.error.message }),
+			);
 		const setResult = await this.setTokens(parseResult.data);
 		return setResult.status === "error" ? setResult : Result.ok(parseResult.data.access_token);
 	}
 }
 
-function parseTwitchPersistedState(input: unknown): Result<TwitchPersistedState, TokenStatePersistenceError> {
+function parseTwitchPersistedState(
+	input: unknown,
+): Result<TwitchPersistedState, TokenStatePersistenceError> {
 	const current = TwitchPersistedStateV1Schema.safeParse(input);
 	if (current.success) return Result.ok(current.data);
 	const legacy = TwitchLegacyPersistedStateSchema.safeParse(input);
@@ -444,11 +487,14 @@ function parseTwitchPersistedState(input: unknown): Result<TwitchPersistedState,
 function toTwitchRuntimeState(state: TwitchPersistedState): TwitchRuntimeState {
 	return {
 		...state,
-		token: state.token === null ? null : {
-			...state.token,
-			accessToken: redactValue(state.token.accessToken),
-			refreshToken: redactValue(state.token.refreshToken),
-		},
+		token:
+			state.token === null
+				? null
+				: {
+						...state.token,
+						accessToken: redactValue(state.token.accessToken),
+						refreshToken: redactValue(state.token.refreshToken),
+					},
 	};
 }
 
@@ -456,11 +502,14 @@ function toTwitchPersistedState(state: TwitchRuntimeState): TwitchPersistedState
 	return {
 		version: 1,
 		...state,
-		token: state.token === null ? null : {
-			...state.token,
-			accessToken: revealRedactedValue(state.token.accessToken),
-			refreshToken: revealRedactedValue(state.token.refreshToken),
-		},
+		token:
+			state.token === null
+				? null
+				: {
+						...state.token,
+						accessToken: revealRedactedValue(state.token.accessToken),
+						refreshToken: revealRedactedValue(state.token.refreshToken),
+					},
 	};
 }
 

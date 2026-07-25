@@ -250,34 +250,4 @@ describe("AchievementsDO", () => {
 			expect(result.error._tag).toBe("InvalidAchievementRecordError");
 		}
 	});
-
-	// getStub()-backed error tagging is not reliable enough in worker-pool tests
-	// to assert the retryable preflight branch here.
-	it.skip("schedules a short retry for unlock announcements when chat auth is temporarily unavailable", async () => {
-		await ensureNamedTwitchTokenStub();
-		const stub = await createAchievementsStub(`achievements-${crypto.randomUUID()}`);
-
-		await stub.processAchievementUnlockEffects({
-			userDisplayName: "TestUser",
-			achievementId: "first_request",
-			achievementName: "First Timer",
-			achievementDescription: "Request your first song",
-			category: "song_request",
-			announcementAttempt: 0,
-		});
-
-		const schedules = await runInDurableObject(stub, (instance: AchievementsDO) =>
-			instance.getSchedules(),
-		);
-
-		expect(schedules).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					type: "delayed",
-					callback: "processAchievementUnlockEffects",
-					delayInSeconds: 3,
-				}),
-			]),
-		);
-	});
 });

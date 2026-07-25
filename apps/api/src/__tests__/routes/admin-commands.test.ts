@@ -9,14 +9,18 @@ const ADMIN_SECRET = "admin-command-test-secret";
 const adminEnv = { ...env, ADMIN_SECRET } satisfies Env;
 
 function adminRequest(path: string, init: RequestInit): Promise<Response> {
-	return admin.request(`http://localhost${path}`, {
-		...init,
-		headers: {
-			Authorization: `Bearer ${ADMIN_SECRET}`,
-			"content-type": "application/json",
-			...init.headers,
+	return admin.request(
+		`http://localhost${path}`,
+		{
+			...init,
+			headers: {
+				Authorization: `Bearer ${ADMIN_SECRET}`,
+				"content-type": "application/json",
+				...init.headers,
+			},
 		},
-	}, adminEnv);
+		adminEnv,
+	);
 }
 
 describe("Admin Chat Command routes", () => {
@@ -57,5 +61,13 @@ describe("Admin Chat Command routes", () => {
 		expect(await incompleteTransition.json()).toMatchObject({
 			code: "CommandInvalidDefinitionError",
 		});
+	});
+
+	it("rejects an empty Viewer selector instead of performing a global Achievement reset", async () => {
+		const response = await adminRequest("/achievements/reset-one-time?user=", {
+			method: "POST",
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "Viewer display name must not be empty" });
 	});
 });

@@ -194,45 +194,118 @@ export type DurableObjectRpcPayloadCodecs = Readonly<
 const KnownRpcErrorSchema = z
 	.object({
 		_tag: z.enum([
-			"AchievementDbError", "AchievementEventValidationError", "AchievementNotFoundError",
-			"ChatCommandExecutionError", "ChatCommandRenderError", "ChatCommandSendError",
-			"CommandNotFoundError", "CommandNotUpdateableError", "CommandsDbError",
-			"DLQItemNotFoundError", "DurableObjectError", "DurableObjectRpcProtocolError",
-			"EventBusDbError", "EventBusHandlerError", "EventBusRoutingError", "EventBusValidationError",
-			"InvalidIsoTimestampError", "InvalidSpotifyUrlError", "KeyboardRaffleDbError",
-			"NoRefreshTokenError", "RewardRoutingConfigError", "RollNotFoundError",
-			"SagaAlreadyExistsError", "SagaCodecParseError", "SagaCompensationError", "SagaInputParseError",
-			"SagaNotFoundError", "SagaPersistedDataError", "SagaRunnerDbError", "SagaScheduleError",
-			"SagaStepError", "SagaStepRetrying", "SongQueueDbError", "SongRequestNotFoundError",
-			"SpotifyNetworkError", "SpotifyNoActiveDeviceError", "SpotifyParseError", "SpotifyRateLimitError",
-			"SpotifyTokenExchangeError", "SpotifyTrackNotFoundError", "SpotifyUnauthorizedError",
-			"StreamOfflineNoTokenError", "TokenAuthorizationRevokedError", "TokenConfigurationError",
-			"TokenInputParseError", "TokenNotConfiguredError", "TokenRefreshNetworkError",
-			"TokenRefreshParseError", "TokenStatePersistenceError", "TokenUnavailableWhileStreamOfflineError",
-			"TwitchChatSendError", "TwitchNetworkError", "TwitchNoSubscriptionReturnedError", "TwitchParseError",
-			"TwitchRateLimitError", "TwitchRedemptionUpdateError", "TwitchShoutoutCreateError",
-			"TwitchSubscriptionCreateError", "TwitchSubscriptionDeleteError", "TwitchTokenExchangeError",
-			"TwitchUnauthorizedError", "UnknownRewardError", "UserStatsNotFoundError",
+			"AchievementDbError",
+			"AchievementEventValidationError",
+			"AchievementNotFoundError",
+			"AchievementQueryValidationError",
+			"InvalidAchievementRecordError",
+			"ChatCommandExecutionError",
+			"ChatCommandRenderError",
+			"ChatCommandSendError",
+			"CommandAliasConflictError",
+			"CommandAlreadyExistsError",
+			"CommandInputParseError",
+			"CommandInvalidDefinitionError",
+			"CommandNotFoundError",
+			"CommandNotUpdateableError",
+			"CommandUpdatePermissionDeniedError",
+			"CommandsDbError",
+			"CommandsStateParseError",
+			"InvalidCommandNameError",
+			"DLQItemNotFoundError",
+			"DurableObjectError",
+			"DurableObjectRpcProtocolError",
+			"EventBusDbError",
+			"EventBusHandlerError",
+			"EventBusRoutingError",
+			"EventBusValidationError",
+			"EventSubReceiptConflictError",
+			"EventSubReceiptCorruptError",
+			"InvalidIsoTimestampError",
+			"InvalidSpotifyUrlError",
+			"KeyboardRaffleDataParseError",
+			"KeyboardRaffleDbError",
+			"KeyboardRaffleInputParseError",
+			"NoRefreshTokenError",
+			"PersistedStreamLifecycleStateError",
+			"RewardRoutingConfigError",
+			"RollIdempotencyConflictError",
+			"RollNotFoundError",
+			"SagaAlreadyExistsError",
+			"SagaCodecParseError",
+			"SagaCompensationError",
+			"SagaEffectOutcomeUnknown",
+			"SagaInputParseError",
+			"SagaNotFoundError",
+			"SagaPersistedDataError",
+			"SagaRunnerDbError",
+			"SagaScheduleError",
+			"SagaStepError",
+			"SagaStepRetrying",
+			"SongQueueCoordinationError",
+			"SongQueueDbError",
+			"SongQueueParseError",
+			"SongRequestNotFoundError",
+			"SpotifyNetworkError",
+			"SpotifyNoActiveDeviceError",
+			"SpotifyParseError",
+			"SpotifyRateLimitError",
+			"SpotifyTokenExchangeError",
+			"SpotifyTrackNotFoundError",
+			"SpotifyUnauthorizedError",
+			"StreamLifecycleEffectsPendingError",
+			"StreamOfflineNoTokenError",
+			"TokenAuthorizationRevokedError",
+			"TokenConfigurationError",
+			"TokenInputParseError",
+			"TokenNotConfiguredError",
+			"TokenRefreshNetworkError",
+			"TokenRefreshParseError",
+			"TokenStatePersistenceError",
+			"TokenUnavailableWhileStreamOfflineError",
+			"TwitchChatDroppedError",
+			"TwitchChatSendError",
+			"TwitchNetworkError",
+			"TwitchNoSubscriptionReturnedError",
+			"TwitchParseError",
+			"TwitchRateLimitError",
+			"TwitchRedemptionUpdateError",
+			"TwitchShoutoutCreateError",
+			"TwitchSubscriptionCreateError",
+			"TwitchSubscriptionDeleteError",
+			"TwitchTokenExchangeError",
+			"TwitchUnauthorizedError",
+			"UnknownRewardError",
+			"UserStatsNotFoundError",
 		]),
 		message: z.string(),
 	})
 	.passthrough();
 
 const RpcResultEnvelopeSchema = z.union([
-	z.object({ status: z.literal("ok"), value: z.unknown() })
+	z
+		.object({ status: z.literal("ok"), value: z.unknown() })
 		.strict()
 		.refine((payload) => Object.hasOwn(payload, "value"), { message: "Missing success value" }),
-	z.object({ status: z.literal("error"), error: z.unknown() })
+	z
+		.object({ status: z.literal("error"), error: z.unknown() })
 		.strict()
 		.refine((payload) => Object.hasOwn(payload, "error"), { message: "Missing error value" }),
 ]);
 
 const TokenRpcErrorSchema = KnownRpcErrorSchema.refine(
-	(error) => [
-		"NoRefreshTokenError", "TokenAuthorizationRevokedError", "TokenConfigurationError",
-		"TokenInputParseError", "TokenNotConfiguredError", "TokenRefreshNetworkError",
-		"TokenRefreshParseError", "TokenStatePersistenceError", "TokenUnavailableWhileStreamOfflineError",
-	].includes(error._tag),
+	(error) =>
+		[
+			"NoRefreshTokenError",
+			"TokenAuthorizationRevokedError",
+			"TokenConfigurationError",
+			"TokenInputParseError",
+			"TokenNotConfiguredError",
+			"TokenRefreshNetworkError",
+			"TokenRefreshParseError",
+			"TokenStatePersistenceError",
+			"TokenUnavailableWhileStreamOfflineError",
+		].includes(error._tag),
 	{ message: "Expected a token lifecycle error tag" },
 );
 
@@ -251,22 +324,26 @@ export function parseDurableObjectRpcResult<T, E>(
 ): Result<T, E | DurableObjectRpcProtocolError> {
 	const envelope = RpcResultEnvelopeSchema.safeParse(value);
 	if (!envelope.success) {
-		return Result.err(new DurableObjectRpcProtocolError({
-			method,
-			payloadPart: "envelope",
-			parseError: envelope.error.message,
-		}));
+		return Result.err(
+			new DurableObjectRpcProtocolError({
+				method,
+				payloadPart: "envelope",
+				parseError: envelope.error.message,
+			}),
+		);
 	}
 
 	if (envelope.data.status === "ok") {
 		if (codec !== undefined) {
 			const parsedSuccess = codec.success.safeParse(envelope.data.value);
 			if (!parsedSuccess.success) {
-				return Result.err(new DurableObjectRpcProtocolError({
-					method,
-					payloadPart: "success",
-					parseError: parsedSuccess.error.message,
-				}));
+				return Result.err(
+					new DurableObjectRpcProtocolError({
+						method,
+						payloadPart: "success",
+						parseError: parsedSuccess.error.message,
+					}),
+				);
 			}
 			return Result.ok(parsedSuccess.data);
 		}
@@ -277,20 +354,24 @@ export function parseDurableObjectRpcResult<T, E>(
 
 	const parsedKnownError = KnownRpcErrorSchema.safeParse(envelope.data.error);
 	if (!parsedKnownError.success) {
-		return Result.err(new DurableObjectRpcProtocolError({
-			method,
-			payloadPart: "error",
-			parseError: parsedKnownError.error.message,
-		}));
+		return Result.err(
+			new DurableObjectRpcProtocolError({
+				method,
+				payloadPart: "error",
+				parseError: parsedKnownError.error.message,
+			}),
+		);
 	}
 	if (codec !== undefined) {
 		const parsedError = codec.error.safeParse(parsedKnownError.data);
 		if (!parsedError.success) {
-			return Result.err(new DurableObjectRpcProtocolError({
-				method,
-				payloadPart: "error",
-				parseError: parsedError.error.message,
-			}));
+			return Result.err(
+				new DurableObjectRpcProtocolError({
+					method,
+					payloadPart: "error",
+					parseError: parsedError.error.message,
+				}),
+			);
 		}
 		return Result.err(parsedError.data);
 	}
@@ -359,9 +440,7 @@ export function getStub<K extends DONamespaceKeys>(
 	id?: string,
 ): DeserializedStub<ExtractDO<K>> {
 	const methodCodecs =
-		key === "SPOTIFY_TOKEN_DO" || key === "TWITCH_TOKEN_DO"
-			? TOKEN_RPC_PAYLOAD_CODECS
-			: undefined;
+		key === "SPOTIFY_TOKEN_DO" || key === "TWITCH_TOKEN_DO" ? TOKEN_RPC_PAYLOAD_CODECS : undefined;
 	return getStubFromNamespace(key, getEnv()[key], id, methodCodecs);
 }
 
@@ -383,12 +462,7 @@ export function getStubFromNamespace<K extends DONamespaceKeys>(
 		(key === "SPOTIFY_TOKEN_DO" || key === "TWITCH_TOKEN_DO"
 			? TOKEN_RPC_PAYLOAD_CODECS
 			: undefined);
-	return wrapStub<ExtractDO<K>>(
-		stub,
-		resolvedId,
-		effectiveCodecs,
-		key !== "EVENTSUB_WEBHOOK_DO",
-	);
+	return wrapStub<ExtractDO<K>>(stub, resolvedId, effectiveCodecs, key !== "EVENTSUB_WEBHOOK_DO");
 }
 
 /**
