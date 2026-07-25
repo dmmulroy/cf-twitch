@@ -1,7 +1,6 @@
 import { Result } from "better-result";
 
 import { parseCommandWithArg } from "../commands";
-import { CommandNotFoundError } from "../errors";
 import { hasPermission } from "../permissions";
 import { applyOutputTemplate, renderStoredValueTemplate } from "./render";
 import { chatTextResponse } from "./types";
@@ -9,7 +8,7 @@ import { chatTextResponse } from "./types";
 import type { Command } from "../../durable-objects/commands-do";
 import type { Clock } from "../clock";
 import type { Logger } from "../logging";
-import type { ChatCommandError } from "./errors";
+import { ChatCommandRenderError, type ChatCommandError } from "./errors";
 import type {
 	ChatCommandExecution,
 	ChatCommandExecutor,
@@ -62,7 +61,7 @@ export class ChatCommandEngine implements ChatCommandExecutor {
 		const commandName = parsed.command;
 		const commandResult = await this.catalog.getCommand(commandName);
 		if (commandResult.status === "error") {
-			if (CommandNotFoundError.is(commandResult.error)) {
+			if (commandResult.error._tag === "CommandNotFoundError") {
 				this.writeMetric(input, commandName, "ignored", startedAt);
 				return Result.ok(ignored("unknown_command", commandName));
 			}
@@ -89,6 +88,15 @@ export class ChatCommandEngine implements ChatCommandExecutor {
 
 		const responseSent = renderResult.value._tag === "ChatCommandTextResponse";
 		if (responseSent) {
+			const outputLength = Array.from(renderResult.value.message).length;
+			if (outputLength > 500) {
+				const error = new ChatCommandRenderError({
+					commandName: command.name,
+					message: `Chat command output exceeds Twitch's 500 character limit: ${command.name}`,
+				});
+				this.writeMetric(input, command.name, "error", startedAt, error.message);
+				return Result.err(error);
+			}
 			const sendResult = await this.sender.send(renderResult.value.message);
 			if (sendResult.status === "error") {
 				this.logger.warn("Failed to send chat command response", {
@@ -144,9 +152,7 @@ export class ChatCommandEngine implements ChatCommandExecutor {
 
 		const value = valueResult.value;
 		if (value === null || value.length === 0) {
-			return Result.ok(
-				chatTextResponse(command.emptyResponse ?? `${command.name} info is not available.`),
-			);
+			return Result.ok(chatTextResponse(command.emptyResponse));
 		}
 
 		return Result.ok(

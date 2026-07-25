@@ -8,10 +8,9 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import { CreateCommandInputSchema, UpdateCommandInputSchema } from "../durable-objects/commands-do";
-import { UserStatsNotFoundError } from "../durable-objects/keyboard-raffle-do";
 import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
-import { CommandNotFoundError, DLQItemNotFoundError } from "../lib/errors";
+import { DLQItemNotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { type AppRouteEnv } from "../lib/request-context";
 import { getSongQueue } from "../lib/song-queue-client";
@@ -305,11 +304,21 @@ admin.post("/commands", async (c) => {
 	const result = await stub.createCommand(parsed.data);
 
 	if (result.status === "error") {
-		logger.error("Admin: Failed to create command", {
-			command: parsed.data.name,
-			error: result.error.message,
-		});
-		return c.json({ error: "Failed to create command" }, 500);
+		switch (result.error._tag) {
+			case "CommandAlreadyExistsError":
+			case "CommandAliasConflictError":
+				return c.json({ error: result.error.message, code: result.error._tag }, 409);
+			case "CommandInputParseError":
+			case "CommandInvalidDefinitionError":
+				return c.json({ error: result.error.message, code: result.error._tag }, 400);
+			case "CommandsDbError":
+				logger.error("Admin: Failed to create command", {
+					command: parsed.data.name,
+					error_tag: result.error._tag,
+					error: result.error.message,
+				});
+				return c.json({ error: "Failed to create command" }, 500);
+		}
 	}
 
 	return c.json(result.value, 201);
@@ -342,10 +351,18 @@ admin.patch("/commands/:name", async (c) => {
 			error: result.error.message,
 		});
 
-		if (CommandNotFoundError.is(result.error)) {
-			return c.json({ error: result.error.message }, 404);
+		switch (result.error._tag) {
+			case "CommandNotFoundError":
+				return c.json({ error: result.error.message, code: result.error._tag }, 404);
+			case "InvalidCommandNameError":
+			case "CommandInputParseError":
+			case "CommandInvalidDefinitionError":
+				return c.json({ error: result.error.message, code: result.error._tag }, 400);
+			case "CommandAliasConflictError":
+				return c.json({ error: result.error.message, code: result.error._tag }, 409);
+			case "CommandsDbError":
+				return c.json({ error: "Failed to update command" }, 500);
 		}
-
 		return c.json({ error: "Failed to update command" }, 500);
 	}
 
@@ -367,10 +384,16 @@ admin.delete("/commands/:name", async (c) => {
 			error: result.error.message,
 		});
 
-		if (CommandNotFoundError.is(result.error)) {
-			return c.json({ error: result.error.message }, 404);
+		switch (result.error._tag) {
+			case "CommandNotFoundError":
+				return c.json({ error: result.error.message, code: result.error._tag }, 404);
+			case "InvalidCommandNameError":
+				return c.json({ error: result.error.message, code: result.error._tag }, 400);
+			case "CommandAliasConflictError":
+			case "CommandInvalidDefinitionError":
+			case "CommandsDbError":
+				return c.json({ error: "Failed to delete command" }, 500);
 		}
-
 		return c.json({ error: "Failed to delete command" }, 500);
 	}
 
@@ -428,7 +451,7 @@ admin.get("/debug/stats/:user", async (c) => {
 		achievementStats = `${unlockedCount}/${definitionsCount}`;
 	}
 
-	const songCount = songResult.status === "ok" ? songResult.value : 0;
+	const songCount = songResult.status === "ok" ? songResult.value : null;
 
 	const formatRaffleStats = (entry: {
 		totalRolls: number;
@@ -447,10 +470,14 @@ admin.get("/debug/stats/:user", async (c) => {
 	};
 
 	const raffleNotFound =
-		raffleResult.status === "error" && UserStatsNotFoundError.is(raffleResult.error);
+		raffleResult.status === "error" && raffleResult.error._tag === "UserStatsNotFoundError";
 
 	const raffleStats =
-		raffleResult.status === "ok" ? formatRaffleStats(raffleResult.value) : "0 rolls";
+		raffleResult.status === "ok"
+			? formatRaffleStats(raffleResult.value)
+			: raffleNotFound
+				? "0 rolls"
+				: "unavailable";
 
 	const noStatsForTargetUser =
 		songResult.status === "ok" &&
@@ -461,7 +488,7 @@ admin.get("/debug/stats/:user", async (c) => {
 
 	const chatMessage = noStatsForTargetUser
 		? `No records found for @${targetUser} yet — no songs, achievements, or raffle stats.`
-		: `@${targetUser} — Songs: ${songCount} | Achievements: ${achievementStats} | Raffles: ${raffleStats}`;
+		: `@${targetUser} — Songs: ${songCount ?? "unavailable"} | Achievements: ${achievementStats} | Raffles: ${raffleStats}`;
 
 	return c.json({
 		targetUser,

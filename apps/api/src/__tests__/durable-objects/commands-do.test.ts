@@ -8,7 +8,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
 
-import { CommandsDO } from "../../durable-objects/commands-do";
+import { CommandsAgentStateSchema, CommandsDO } from "../../durable-objects/commands-do";
 
 async function createCommandsStub(name: string): Promise<DurableObjectStub<CommandsDO>> {
 	const id = env.COMMANDS_DO.idFromName(name);
@@ -111,7 +111,10 @@ describe("CommandsDO", () => {
 			expect(initialValueResult.value).toBe("hello runtime");
 		}
 
-		const updateValueResult = await stub.setCommandValue("runtime-note", "updated runtime", "mod");
+		const updateValueResult = await stub.updateCommandValue("runtime-note", "updated runtime", {
+			displayName: "mod",
+			permission: "moderator",
+		});
 		expect(updateValueResult.status).toBe("ok");
 
 		const updatedValueResult = await stub.getCommandValue("runtime-note");
@@ -144,6 +147,91 @@ describe("CommandsDO", () => {
 
 		const missingProjectResult = await stub.getCommand("project");
 		expect(missingProjectResult.status).toBe("error");
+	});
+
+	it("returns precise create, patch, alias, and definition errors", async () => {
+		const stub = await createCommandsStub(`commands-${crypto.randomUUID()}`);
+
+		const duplicate = await stub.createCommand({
+			name: "keyboard",
+			description: "Duplicate",
+			category: "info",
+			responseType: "static",
+			permission: "everyone",
+		});
+		expect(duplicate).toMatchObject({ status: "error", error: { _tag: "CommandAlreadyExistsError" } });
+
+		const contradictory = await stub.createCommand({
+			name: "bad-computed",
+			description: "Contradictory",
+			category: "stats",
+			responseType: "computed",
+			permission: "everyone",
+			handlerKey: "stats",
+			initialValue: "must not be discarded",
+		});
+		expect(contradictory).toMatchObject({ status: "error", error: { _tag: "CommandInputParseError" } });
+
+		const emptyPatch = await stub.updateCommand("keyboard", {});
+		expect(emptyPatch).toMatchObject({ status: "error", error: { _tag: "CommandInputParseError" } });
+
+		const incompleteTransition = await stub.updateCommand("keyboard", {
+			responseType: "computed",
+		});
+		expect(incompleteTransition).toMatchObject({
+			status: "error",
+			error: { _tag: "CommandInvalidDefinitionError" },
+		});
+
+		const aliasConflict = await stub.updateCommand("socials", { aliases: ["keyboard"] });
+		expect(aliasConflict).toMatchObject({
+			status: "error",
+			error: { _tag: "CommandAliasConflictError" },
+		});
+	});
+
+	it("authorizes dynamic value updates atomically against current command state", async () => {
+		const stub = await createCommandsStub(`commands-${crypto.randomUUID()}`);
+		const denied = await stub.updateCommandValue("today", "unauthorized", {
+			displayName: "VipViewer",
+			permission: "vip",
+		});
+		expect(denied).toMatchObject({
+			status: "error",
+			error: { _tag: "CommandUpdatePermissionDeniedError", requiredPermission: "moderator" },
+		});
+
+		await stub.updateCommand("today", { writePermission: "broadcaster" });
+		const staleModerator = await stub.updateCommandValue("today", "stale authorization", {
+			displayName: "ModeratorViewer",
+			permission: "moderator",
+		});
+		expect(staleModerator).toMatchObject({
+			status: "error",
+			error: { _tag: "CommandUpdatePermissionDeniedError", requiredPermission: "broadcaster" },
+		});
+	});
+
+	it("lists only enabled commands available to the Viewer permission", async () => {
+		const stub = await createCommandsStub(`commands-${crypto.randomUUID()}`);
+		await stub.updateCommand("keyboard", { enabled: false });
+		const result = await stub.getEnabledCommandsByPermission("everyone");
+		expect(result.status).toBe("ok");
+		if (result.status === "ok") {
+			expect(result.value.some((command) => command.name === "keyboard")).toBe(false);
+			expect(result.value.every((command) => command.enabled)).toBe(true);
+		}
+	});
+
+	it("rejects malformed serialized Agent state before it can be served", () => {
+		const malformed = CommandsAgentStateSchema.safeParse({
+			revision: Number.NaN,
+			commandsByName: {},
+			valuesByName: {},
+			countersByName: {},
+			appliedMigrations: [],
+		});
+		expect(malformed.success).toBe(false);
 	});
 
 	it("supports computed commands with persisted counter state", async () => {

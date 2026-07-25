@@ -1,8 +1,8 @@
 import { Result } from "better-result";
 
-import { UserStatsNotFoundError } from "../../../durable-objects/keyboard-raffle-do";
 import { getStub } from "../../durable-objects";
 import { getSongQueue } from "../../song-queue-client";
+import { ChatCommandExecutionError } from "../errors";
 import { chatTextResponse } from "../types";
 
 import type { ComputedCommandContext, ComputedCommandHandler } from "../types";
@@ -52,17 +52,47 @@ export class StatsCommandHandler implements ComputedCommandHandler {
 		}
 
 		const raffleStub = getStub("KEYBOARD_RAFFLE_DO");
-		using songQueue = await getSongQueue();
+		let songQueue: Awaited<ReturnType<typeof getSongQueue>>;
+		try {
+			songQueue = await getSongQueue();
+		} catch (cause) {
+			return Result.err(
+				new ChatCommandExecutionError({
+					commandName: "stats",
+					cause,
+					message: "Viewer stats unavailable: Song Queue connection failed",
+				}),
+			);
+		}
+		using disposableSongQueue = songQueue;
 		const [songResult, raffleResult] = await Promise.all([
 			isSelf
-				? songQueue.getUserRequestCount(context.viewer.userId)
-				: songQueue.getUserRequestCountByDisplayName(targetUser),
+				? disposableSongQueue.getUserRequestCount(context.viewer.userId)
+				: disposableSongQueue.getUserRequestCountByDisplayName(targetUser),
 			isSelf
 				? raffleStub.getUserStats(context.viewer.userId)
 				: raffleStub.getUserStatsByDisplayName(targetUser),
 		]);
 
-		const songCount = songResult.status === "ok" ? songResult.value : 0;
+		if (songResult.status === "error") {
+			return Result.err(
+				new ChatCommandExecutionError({
+					commandName: "stats",
+					cause: songResult.error,
+					message: "Viewer stats unavailable: Song Queue lookup failed",
+				}),
+			);
+		}
+		if (raffleResult.status === "error" && raffleResult.error._tag !== "UserStatsNotFoundError") {
+			return Result.err(
+				new ChatCommandExecutionError({
+					commandName: "stats",
+					cause: raffleResult.error,
+					message: "Viewer stats unavailable: Keyboard Raffle lookup failed",
+				}),
+			);
+		}
+		const songCount = songResult.value;
 		const raffleStats =
 			raffleResult.status === "ok" ? formatRaffleStats(raffleResult.value) : "0 rolls";
 		const noStatsForTargetUser =
@@ -72,7 +102,7 @@ export class StatsCommandHandler implements ComputedCommandHandler {
 			unlockedCount === 0 &&
 			totalAchievementCount !== null &&
 			raffleResult.status === "error" &&
-			UserStatsNotFoundError.is(raffleResult.error);
+			raffleResult.error._tag === "UserStatsNotFoundError";
 
 		if (noStatsForTargetUser) {
 			return Result.ok(

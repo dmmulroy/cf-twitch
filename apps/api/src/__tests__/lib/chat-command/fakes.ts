@@ -65,15 +65,21 @@ export class FakeCommandCatalog implements CommandCatalog {
 		return Result.ok(this.values.get(name) ?? null);
 	}
 
-	async setCommandValue(name: string, value: string, updatedBy: string) {
-		void updatedBy;
+	async updateCommandValue(
+		name: string,
+		value: string,
+		actor: { readonly displayName: string; readonly permission: Permission },
+	) {
+		void actor;
 		this.values.set(name, value);
 		return Result.ok();
 	}
 
-	async getCommandsByPermission(permission: Permission): Promise<Result<Command[], CommandsError>> {
+	async getEnabledCommandsByPermission(
+		permission: Permission,
+	): Promise<Result<Command[], CommandsError>> {
 		void permission;
-		return Result.ok([...this.commands.values()]);
+		return Result.ok([...this.commands.values()].filter((command) => command.enabled));
 	}
 }
 

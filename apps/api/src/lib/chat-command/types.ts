@@ -65,12 +65,12 @@ export interface ChatCommandExecutor {
 export interface CommandCatalog {
 	getCommand(name: string): Promise<Result<Command, ChatCommandCatalogError>>;
 	getCommandValue(name: string): Promise<Result<string | null, ChatCommandCatalogError>>;
-	setCommandValue(
+	updateCommandValue(
 		name: string,
 		value: string,
-		updatedBy: string,
+		actor: { readonly displayName: string; readonly permission: Permission },
 	): Promise<Result<void, ChatCommandCatalogError>>;
-	getCommandsByPermission(
+	getEnabledCommandsByPermission(
 		permission: Permission,
 	): Promise<Result<Command[], ChatCommandCatalogError>>;
 }

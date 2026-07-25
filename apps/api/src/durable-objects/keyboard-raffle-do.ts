@@ -8,6 +8,7 @@
 import { Agent, type AgentContext } from "agents";
 import { Result, TaggedError } from "better-result";
 import { desc, eq, sql } from "drizzle-orm";
+import { z } from "zod";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
@@ -16,7 +17,9 @@ import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/keyboard-raffle-do.schema";
 import {
-	type InsertRoll,
+	LeaderboardEntrySchema,
+	RecordRaffleRollInputSchema,
+	RollSchema,
 	type LeaderboardEntry,
 	type Roll,
 	raffleLeaderboard,
@@ -42,15 +45,35 @@ export class KeyboardRaffleDbError extends TaggedError("KeyboardRaffleDbError")<
 	}
 }
 
-/**
- * Roll not found error (for rollback operations)
- */
-export class RollNotFoundError extends TaggedError("RollNotFoundError")<{
+/** RPC or query input failed Keyboard Raffle boundary parsing. */
+export class KeyboardRaffleInputParseError extends TaggedError("KeyboardRaffleInputParseError")<{
+	operation: string;
+	issues: string;
+	message: string;
+}>() {
+	constructor(args: { operation: string; issues: string }) {
+		super({ ...args, message: `Keyboard Raffle input invalid during ${args.operation}: ${args.issues}` });
+	}
+}
+
+/** A stable Roll id was replayed with different immutable Roll evidence. */
+export class RollIdempotencyConflictError extends TaggedError("RollIdempotencyConflictError")<{
 	rollId: string;
 	message: string;
 }>() {
 	constructor(args: { rollId: string }) {
-		super({ ...args, message: `Roll not found: ${args.rollId}` });
+		super({ ...args, message: `Roll idempotency conflict for ${args.rollId}` });
+	}
+}
+
+/** Serialized Keyboard Raffle data failed runtime parsing after a SQLite read. */
+export class KeyboardRaffleDataParseError extends TaggedError("KeyboardRaffleDataParseError")<{
+	operation: string;
+	issues: string;
+	message: string;
+}>() {
+	constructor(args: { operation: string; issues: string }) {
+		super({ ...args, message: `Keyboard Raffle persisted data invalid during ${args.operation}: ${args.issues}` });
 	}
 }
 
@@ -69,10 +92,13 @@ export class UserStatsNotFoundError extends TaggedError("UserStatsNotFoundError"
 /**
  * Leaderboard query options
  */
-export interface LeaderboardOptions {
-	sortBy: "rolls" | "wins" | "closest";
-	limit?: number;
-}
+export const LeaderboardOptionsSchema = z.strictObject({
+	sortBy: z.enum(["rolls", "wins", "closest"]),
+	limit: z.number().int().positive().max(100).optional(),
+});
+
+/** Parsed bounded query options for the Raffle Leaderboard. */
+export type LeaderboardOptions = z.infer<typeof LeaderboardOptionsSchema>;
 
 /**
  * KeyboardRaffleDO - Agent-based durable object for keyboard raffle management.
@@ -102,60 +128,97 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 */
 	@rpc
 	async recordRoll(
-		rollData: InsertRoll,
-	): Promise<Result<{ roll: Roll; isNewRecord: boolean }, KeyboardRaffleDbError>> {
-		const result = await Result.tryPromise({
-			try: async () => {
-				const isWinner = rollData.distance === 0;
-
-				let previousBestDistance: number | null = null;
-				if (!isWinner) {
-					const [currentBest] = await this.db
-						.select({ closestDistance: raffleLeaderboard.closestDistance })
-						.from(raffleLeaderboard)
-						.where(sql`${raffleLeaderboard.closestDistance} > 0`)
-						.orderBy(sql`${raffleLeaderboard.closestDistance} asc`)
-						.limit(1);
-					previousBestDistance = currentBest?.closestDistance ?? null;
-				}
-
-				const [recordedRoll] = await this.db
-					.insert(rolls)
-					.values({
-						...rollData,
-						isWinner,
-					})
-					.returning();
-
-				if (!recordedRoll) {
-					throw new Error("Insert did not return a row");
-				}
-
-				const isNewRecord =
-					!isWinner && (previousBestDistance === null || rollData.distance < previousBestDistance);
-
-				logger.info("Recorded raffle roll", {
-					rollId: recordedRoll.id,
-					userId: rollData.userId,
-					isWinner,
-					isNewRecord,
-					previousBestDistance,
-					distance: rollData.distance,
-				});
-
-				return { roll: recordedRoll, isNewRecord };
-			},
-			catch: (cause) => new KeyboardRaffleDbError({ operation: "recordRoll", cause }),
-		});
-
-		if (result.status === "error") {
-			logger.error("Failed to record raffle roll", {
-				userId: rollData.userId,
-				error: result.error.message,
-			});
+		rawInput: unknown,
+	): Promise<
+		Result<
+			{ roll: Roll; isNewRecord: boolean },
+			| KeyboardRaffleInputParseError
+			| KeyboardRaffleDataParseError
+			| RollIdempotencyConflictError
+			| KeyboardRaffleDbError
+		>
+	> {
+		const inputResult = RecordRaffleRollInputSchema.safeParse(rawInput);
+		if (!inputResult.success) {
+			return Result.err(
+				new KeyboardRaffleInputParseError({
+					operation: "recordRoll",
+					issues: inputResult.error.message,
+				}),
+			);
 		}
+		const input = inputResult.data;
+		return Result.tryPromise({
+			try: () =>
+				this.db.transaction(async (tx) => {
+					const existingRow = await tx.query.rolls.findFirst({
+						where: eq(rolls.id, input.id),
+					});
+					if (existingRow !== undefined) {
+						const existing = RollSchema.safeParse(existingRow);
+						if (!existing.success) {
+							throw new KeyboardRaffleDataParseError({
+								operation: "recordRollReplay",
+								issues: existing.error.message,
+							});
+						}
+						if (
+							existing.data.userId !== input.userId ||
+							existing.data.displayName !== input.displayName ||
+							existing.data.roll !== input.roll ||
+							existing.data.winningNumber !== input.winningNumber ||
+							existing.data.rolledAt !== input.rolledAt
+						) {
+							throw new RollIdempotencyConflictError({ rollId: input.id });
+						}
+						return { roll: existing.data, isNewRecord: existing.data.isNewRecord };
+					}
 
-		return result;
+					const distance = Math.abs(input.roll - input.winningNumber);
+					const isWinner = distance === 0;
+					let previousBestDistance: number | null = null;
+					if (!isWinner) {
+						const [currentBest] = await tx
+							.select({ closestDistance: raffleLeaderboard.closestDistance })
+							.from(raffleLeaderboard)
+							.where(sql`${raffleLeaderboard.closestDistance} > 0`)
+							.orderBy(sql`${raffleLeaderboard.closestDistance} asc`)
+							.limit(1);
+						previousBestDistance = currentBest?.closestDistance ?? null;
+					}
+					const isNewRecord =
+						!isWinner && (previousBestDistance === null || distance < previousBestDistance);
+					const [recordedRow] = await tx
+						.insert(rolls)
+						.values({ ...input, distance, isWinner, isNewRecord })
+						.returning();
+					const recorded = RollSchema.safeParse(recordedRow);
+					if (!recorded.success) {
+						throw new KeyboardRaffleDataParseError({
+							operation: "recordRoll",
+							issues: recorded.error.message,
+						});
+					}
+					logger.info("Recorded raffle roll", {
+						rollId: recorded.data.id,
+						userId: input.userId,
+						isWinner,
+						isNewRecord,
+						previousBestDistance,
+						distance,
+					});
+					return { roll: recorded.data, isNewRecord };
+				}),
+			catch: (cause) => {
+				if (
+					KeyboardRaffleDataParseError.is(cause) ||
+					RollIdempotencyConflictError.is(cause)
+				) {
+					return cause;
+				}
+				return new KeyboardRaffleDbError({ operation: "recordRoll", cause });
+			},
+		});
 	}
 
 	/**
@@ -166,7 +229,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	@rpc
 	async deleteRollById(
 		rollId: string,
-	): Promise<Result<void, KeyboardRaffleDbError | RollNotFoundError>> {
+	): Promise<Result<void, KeyboardRaffleDbError | KeyboardRaffleDataParseError>> {
 		const result = await Result.tryPromise({
 			try: async () => {
 				const roll = await this.db.query.rolls.findFirst({
@@ -174,21 +237,27 @@ class _KeyboardRaffleDO extends Agent<Env> {
 				});
 
 				if (!roll) {
-					throw new RollNotFoundError({ rollId });
+					logger.info("Raffle Roll deletion replay found no persisted Roll", { rollId });
+					return;
+				}
+				const parsedRoll = RollSchema.safeParse(roll);
+				if (!parsedRoll.success) {
+					throw new KeyboardRaffleDataParseError({
+						operation: "deleteRollById",
+						issues: parsedRoll.error.message,
+					});
 				}
 
 				await this.db.delete(rolls).where(eq(rolls.id, rollId));
 				logger.info("Deleted raffle roll", { rollId });
 			},
 			catch: (cause) => {
-				if (RollNotFoundError.is(cause)) {
-					return cause;
-				}
+				if (KeyboardRaffleDataParseError.is(cause)) return cause;
 				return new KeyboardRaffleDbError({ operation: "deleteRollById", cause });
 			},
 		});
 
-		if (result.status === "error" && !RollNotFoundError.is(result.error)) {
+		if (result.status === "error") {
 			logger.error("Failed to delete raffle roll", { rollId, error: result.error.message });
 		}
 
@@ -200,8 +269,23 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 */
 	@rpc
 	async getLeaderboard(
-		options: LeaderboardOptions,
-	): Promise<Result<LeaderboardEntry[], KeyboardRaffleDbError>> {
+		rawOptions: unknown,
+	): Promise<
+		Result<
+			LeaderboardEntry[],
+			KeyboardRaffleInputParseError | KeyboardRaffleDataParseError | KeyboardRaffleDbError
+		>
+	> {
+		const optionsResult = LeaderboardOptionsSchema.safeParse(rawOptions);
+		if (!optionsResult.success) {
+			return Result.err(
+				new KeyboardRaffleInputParseError({
+					operation: "getLeaderboard",
+					issues: optionsResult.error.message,
+				}),
+			);
+		}
+		const options = optionsResult.data;
 		const result = await Result.tryPromise({
 			try: async () => {
 				const orderByClause = (() => {
@@ -215,13 +299,24 @@ class _KeyboardRaffleDO extends Agent<Env> {
 					}
 				})();
 
-				return this.db
+				const rows = await this.db
 					.select()
 					.from(raffleLeaderboard)
 					.orderBy(orderByClause)
 					.limit(options.limit ?? 10);
+				const parsed = z.array(LeaderboardEntrySchema).safeParse(rows);
+				if (!parsed.success) {
+					throw new KeyboardRaffleDataParseError({
+						operation: "getLeaderboard",
+						issues: parsed.error.message,
+					});
+				}
+				return parsed.data;
 			},
-			catch: (cause) => new KeyboardRaffleDbError({ operation: "getLeaderboard", cause }),
+			catch: (cause) =>
+				KeyboardRaffleDataParseError.is(cause)
+					? cause
+					: new KeyboardRaffleDbError({ operation: "getLeaderboard", cause }),
 		});
 
 		if (result.status === "error") {
@@ -242,7 +337,12 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	@rpc
 	async getUserStats(
 		userId: string,
-	): Promise<Result<LeaderboardEntry, KeyboardRaffleDbError | UserStatsNotFoundError>> {
+	): Promise<
+		Result<
+			LeaderboardEntry,
+			KeyboardRaffleDbError | KeyboardRaffleDataParseError | UserStatsNotFoundError
+		>
+	> {
 		const result = await Result.tryPromise({
 			try: async () => {
 				const [entry] = await this.db
@@ -251,14 +351,18 @@ class _KeyboardRaffleDO extends Agent<Env> {
 					.where(eq(raffleLeaderboard.userId, userId))
 					.limit(1);
 
-				if (!entry) {
-					throw new UserStatsNotFoundError({ userId });
+				if (!entry) throw new UserStatsNotFoundError({ userId });
+				const parsed = LeaderboardEntrySchema.safeParse(entry);
+				if (!parsed.success) {
+					throw new KeyboardRaffleDataParseError({
+						operation: "getUserStats",
+						issues: parsed.error.message,
+					});
 				}
-
-				return entry;
+				return parsed.data;
 			},
 			catch: (cause) => {
-				if (UserStatsNotFoundError.is(cause)) {
+				if (UserStatsNotFoundError.is(cause) || KeyboardRaffleDataParseError.is(cause)) {
 					return cause;
 				}
 				return new KeyboardRaffleDbError({ operation: "getUserStats", cause });
@@ -280,7 +384,12 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	@rpc
 	async getUserStatsByDisplayName(
 		displayName: string,
-	): Promise<Result<LeaderboardEntry, KeyboardRaffleDbError | UserStatsNotFoundError>> {
+	): Promise<
+		Result<
+			LeaderboardEntry,
+			KeyboardRaffleDbError | KeyboardRaffleDataParseError | UserStatsNotFoundError
+		>
+	> {
 		const result = await Result.tryPromise({
 			try: async () => {
 				const [entry] = await this.db
@@ -289,14 +398,18 @@ class _KeyboardRaffleDO extends Agent<Env> {
 					.where(eq(raffleLeaderboard.displayName, displayName))
 					.limit(1);
 
-				if (!entry) {
-					throw new UserStatsNotFoundError({ userId: displayName });
+				if (!entry) throw new UserStatsNotFoundError({ userId: displayName });
+				const parsed = LeaderboardEntrySchema.safeParse(entry);
+				if (!parsed.success) {
+					throw new KeyboardRaffleDataParseError({
+						operation: "getUserStatsByDisplayName",
+						issues: parsed.error.message,
+					});
 				}
-
-				return entry;
+				return parsed.data;
 			},
 			catch: (cause) => {
-				if (UserStatsNotFoundError.is(cause)) {
+				if (UserStatsNotFoundError.is(cause) || KeyboardRaffleDataParseError.is(cause)) {
 					return cause;
 				}
 				return new KeyboardRaffleDbError({ operation: "getUserStatsByDisplayName", cause });
@@ -320,7 +433,10 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 */
 	@rpc
 	async getClosestRecord(): Promise<
-		Result<{ userId: string; displayName: string; distance: number } | null, KeyboardRaffleDbError>
+		Result<
+			{ userId: string; displayName: string; distance: number } | null,
+			KeyboardRaffleDataParseError | KeyboardRaffleDbError
+		>
 	> {
 		return Result.tryPromise({
 			try: async () => {
@@ -331,17 +447,25 @@ class _KeyboardRaffleDO extends Agent<Env> {
 					.orderBy(sql`${raffleLeaderboard.closestDistance} asc`)
 					.limit(1);
 
-				if (!entry || entry.closestDistance === null) {
-					return null;
+				if (!entry) return null;
+				const parsed = LeaderboardEntrySchema.safeParse(entry);
+				if (!parsed.success) {
+					throw new KeyboardRaffleDataParseError({
+						operation: "getClosestRecord",
+						issues: parsed.error.message,
+					});
 				}
-
+				if (parsed.data.closestDistance === null) return null;
 				return {
-					userId: entry.userId,
-					displayName: entry.displayName,
-					distance: entry.closestDistance,
+					userId: parsed.data.userId,
+					displayName: parsed.data.displayName,
+					distance: parsed.data.closestDistance,
 				};
 			},
-			catch: (cause) => new KeyboardRaffleDbError({ operation: "getClosestRecord", cause }),
+			catch: (cause) =>
+				KeyboardRaffleDataParseError.is(cause)
+					? cause
+					: new KeyboardRaffleDbError({ operation: "getClosestRecord", cause }),
 		});
 	}
 }

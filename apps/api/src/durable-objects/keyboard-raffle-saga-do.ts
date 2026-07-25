@@ -1,3 +1,4 @@
+import { type AgentContext } from "agents";
 import { Result } from "better-result";
 import { z } from "zod";
 
@@ -19,7 +20,10 @@ import {
 	type SagaStepExecutionError,
 } from "../lib/saga-runner";
 import { TwitchService } from "../services/twitch-service";
+import { CryptoRaffleRandom, type RaffleRandom } from "./raffle-random";
 import { createRaffleRollEvent } from "./schemas/event-bus-do.schema";
+
+import type { Env } from "../index";
 
 /** Boundary schema for canonical Keyboard Raffle redemption parameters. */
 export const KeyboardRaffleParamsSchema = z.object({
@@ -133,12 +137,15 @@ const KEYBOARD_RAFFLE_SAGA: SagaHostDefinition<KeyboardRaffleParams> = {
 	paramsCodec: KeyboardRaffleParamsCodec,
 };
 
-function generateRandomInt(min: number, max: number): number {
-	return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
 /** Keyboard Raffle orchestration hosted by the shared saga lifecycle. */
 class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffleSagaError> {
+	constructor(
+		ctx: AgentContext,
+		env: Env,
+		private readonly raffleRandom: RaffleRandom = new CryptoRaffleRandom(),
+	) {
+		super(ctx, env);
+	}
 	protected get sagaDefinition(): SagaHostDefinition<KeyboardRaffleParams> {
 		return KEYBOARD_RAFFLE_SAGA;
 	}
@@ -150,7 +157,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		const sagaId = this.ctx.id.toString();
 
 		const winningNumberResult = await runner.executeStep(GenerateWinningNumberStep, async () => {
-			const winningNumber = generateRandomInt(1, 10000);
+			const winningNumber = this.raffleRandom.drawInclusiveInteger(1, 10_000);
 			logger.info("Generated winning number", { sagaId, winningNumber });
 			return { result: winningNumber };
 		});
@@ -160,7 +167,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		const winningNumber = winningNumberResult.value;
 
 		const userRollResult = await runner.executeStep(GenerateUserRollStep, async () => {
-			const roll = generateRandomInt(1, 10000);
+			const roll = this.raffleRandom.drawInclusiveInteger(1, 10_000);
 			logger.info("Generated user roll", { sagaId, userId: params.user_id, roll });
 			return { result: roll };
 		});
@@ -189,9 +196,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 					displayName: params.user_name,
 					roll: userRoll,
 					winningNumber,
-					distance,
-					isWinner,
-					rolledAt: new Date().toISOString(),
+					rolledAt: params.redeemed_at,
 				});
 				if (result.status === "error") throw result.error;
 

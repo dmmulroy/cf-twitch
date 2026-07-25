@@ -8,19 +8,22 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { getStub } from "../../lib/durable-objects";
 
-import type { InsertRoll } from "../../durable-objects/schemas/keyboard-raffle-do.schema";
+import type { RecordRaffleRollInput } from "../../durable-objects/schemas/keyboard-raffle-do.schema";
 
-function createTestRoll(overrides: Partial<InsertRoll> = {}): InsertRoll {
+type TestRollOverrides = Partial<RecordRaffleRollInput> & { readonly distance?: number };
+
+function createTestRoll(overrides: TestRollOverrides = {}): RecordRaffleRollInput {
+	const winningNumber = overrides.winningNumber ?? 777;
+	const roll = overrides.roll ?? winningNumber - (overrides.distance ?? 277);
+	const { distance: _derivedDistance, ...inputOverrides } = overrides;
 	return {
-		id: `roll-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		id: `roll-${Date.now()}-${crypto.randomUUID()}`,
 		userId: "user-123",
 		displayName: "TestUser",
-		roll: 500,
-		winningNumber: 777,
-		distance: 277,
-		isWinner: false,
+		roll,
+		winningNumber,
 		rolledAt: new Date().toISOString(),
-		...overrides,
+		...inputOverrides,
 	};
 }
 
@@ -68,6 +71,51 @@ describe("KeyboardRaffleDO", () => {
 				expect(result.value.roll.isWinner).toBe(true);
 				expect(result.value.isNewRecord).toBe(false);
 			}
+		});
+
+		it("replays the same stable Roll id with its original record result", async () => {
+			const input = createTestRoll({ id: "idempotent-roll", roll: 770, winningNumber: 777 });
+			const first = await stub.recordRoll(input);
+			const replay = await stub.recordRoll(input);
+
+			expect(first.status).toBe("ok");
+			expect(replay.status).toBe("ok");
+			if (first.status === "ok" && replay.status === "ok") {
+				expect(replay.value).toEqual(first.value);
+			}
+			const stats = await stub.getUserStats(input.userId);
+			expect(stats.status === "ok" && stats.value.totalRolls).toBe(1);
+		});
+
+		it("rejects a stable Roll id replayed with different immutable evidence", async () => {
+			const input = createTestRoll({ id: "conflicting-roll" });
+			await stub.recordRoll(input);
+			const conflict = await stub.recordRoll({ ...input, roll: input.roll + 1 });
+			expect(conflict).toMatchObject({
+				status: "error",
+				error: { _tag: "RollIdempotencyConflictError", rollId: input.id },
+			});
+		});
+
+		it("parses Roll RPC input and derives Distance instead of trusting caller fields", async () => {
+			const contradictory = await stub.recordRoll({
+				...createTestRoll({ id: "contradictory-roll", roll: 777, winningNumber: 777 }),
+				distance: 5,
+				isWinner: false,
+			});
+			expect(contradictory).toMatchObject({
+				status: "error",
+				error: { _tag: "KeyboardRaffleInputParseError" },
+			});
+
+			const outOfRange = await stub.recordRoll({
+				...createTestRoll({ id: "out-of-range-roll" }),
+				roll: 10_001,
+			});
+			expect(outOfRange).toMatchObject({
+				status: "error",
+				error: { _tag: "KeyboardRaffleInputParseError" },
+			});
 		});
 
 		it("allows multiple rolls from the same user", async () => {
@@ -124,13 +172,12 @@ describe("KeyboardRaffleDO", () => {
 			expect(result.status).toBe("ok");
 		});
 
-		it("returns a not-found error for a nonexistent roll", async () => {
-			const result = await stub.deleteRollById("nonexistent-roll-id");
+		it("treats deletion replay after the Roll is already absent as idempotent success", async () => {
+			const first = await stub.deleteRollById("nonexistent-roll-id");
+			const replay = await stub.deleteRollById("nonexistent-roll-id");
 
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error.message).toContain("Roll not found: nonexistent-roll-id");
-			}
+			expect(first.status).toBe("ok");
+			expect(replay.status).toBe("ok");
 		});
 
 		it("updates the leaderboard after deletion", async () => {

@@ -577,6 +577,92 @@ export class CommandsDbError extends TaggedError("CommandsDbError")<{
 	}
 }
 
+/** Command input failed boundary parsing. */
+export class CommandInputParseError extends TaggedError("CommandInputParseError")<{
+	operation: string;
+	issues: string;
+	message: string;
+}>() {
+	constructor(args: { operation: string; issues: string }) {
+		super({ ...args, message: `Command input invalid during ${args.operation}: ${args.issues}` });
+	}
+}
+
+/** A command name is outside the command registry naming rules. */
+export class InvalidCommandNameError extends TaggedError("InvalidCommandNameError")<{
+	commandName: string;
+	operation: string;
+	message: string;
+}>() {
+	constructor(args: { commandName: string; operation: string }) {
+		super({ ...args, message: `Command name invalid during ${args.operation}: ${args.commandName}` });
+	}
+}
+
+/** A create request conflicts with an existing command name or alias. */
+export class CommandAlreadyExistsError extends TaggedError("CommandAlreadyExistsError")<{
+	commandName: string;
+	message: string;
+}>() {
+	constructor(args: { commandName: string }) {
+		super({ ...args, message: `Command already exists: ${args.commandName}` });
+	}
+}
+
+/** A command alias is already owned by another command or command name. */
+export class CommandAliasConflictError extends TaggedError("CommandAliasConflictError")<{
+	alias: string;
+	owner: string;
+	message: string;
+}>() {
+	constructor(args: { alias: string; owner: string }) {
+		super({ ...args, message: `Command alias conflict for ${args.alias}: owned by ${args.owner}` });
+	}
+}
+
+/** A parsed command definition violates response-type or reference invariants. */
+export class CommandInvalidDefinitionError extends TaggedError("CommandInvalidDefinitionError")<{
+	commandName: string;
+	reason: string;
+	message: string;
+}>() {
+	constructor(args: { commandName: string; reason: string }) {
+		super({
+			...args,
+			message: `Command definition invalid for ${args.commandName}: ${args.reason}`,
+		});
+	}
+}
+
+/** A Viewer lacks the current permission required to update a Chat Command. */
+export class CommandUpdatePermissionDeniedError extends TaggedError(
+	"CommandUpdatePermissionDeniedError",
+)<{
+	commandName: string;
+	requiredPermission: "everyone" | "vip" | "moderator" | "broadcaster";
+	message: string;
+}>() {
+	constructor(args: {
+		commandName: string;
+		requiredPermission: "everyone" | "vip" | "moderator" | "broadcaster";
+	}) {
+		super({
+			...args,
+			message: `Command update permission denied for ${args.commandName}: requires ${args.requiredPermission}`,
+		});
+	}
+}
+
+/** A serialized Commands Agent state cannot be safely rehydrated. */
+export class CommandsStateParseError extends TaggedError("CommandsStateParseError")<{
+	issues: string;
+	message: string;
+}>() {
+	constructor(args: { issues: string }) {
+		super({ ...args, message: `Commands state rehydration failed: ${args.issues}` });
+	}
+}
+
 export class CommandNotFoundError extends TaggedError("CommandNotFoundError")<{
 	commandName: string;
 	message: string;
@@ -599,8 +685,18 @@ export class CommandNotUpdateableError extends TaggedError("CommandNotUpdateable
 	}
 }
 
-/** Union of all commands-related errors */
-export type CommandsError = CommandsDbError | CommandNotFoundError | CommandNotUpdateableError;
+/** Union of all command registry expected errors. */
+export type CommandsError =
+	| CommandsDbError
+	| CommandsStateParseError
+	| CommandInputParseError
+	| InvalidCommandNameError
+	| CommandAlreadyExistsError
+	| CommandAliasConflictError
+	| CommandInvalidDefinitionError
+	| CommandUpdatePermissionDeniedError
+	| CommandNotFoundError
+	| CommandNotUpdateableError;
 
 // =============================================================================
 // Event Bus Errors

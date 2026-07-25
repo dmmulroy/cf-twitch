@@ -21,12 +21,16 @@ export class CommandsDOCommandCatalog implements CommandCatalog {
 		return getStub("COMMANDS_DO").getCommandValue(name);
 	}
 
-	async setCommandValue(name: string, value: string, updatedBy: string) {
-		return getStub("COMMANDS_DO").setCommandValue(name, value, updatedBy);
+	async updateCommandValue(
+		name: string,
+		value: string,
+		actor: { readonly displayName: string; readonly permission: Permission },
+	) {
+		return getStub("COMMANDS_DO").updateCommandValue(name, value, actor);
 	}
 
-	async getCommandsByPermission(permission: Permission) {
-		return getStub("COMMANDS_DO").getCommandsByPermission(permission);
+	async getEnabledCommandsByPermission(permission: Permission) {
+		return getStub("COMMANDS_DO").getEnabledCommandsByPermission(permission);
 	}
 }
 

@@ -144,6 +144,25 @@ describe("ChatCommandEngine", () => {
 		expect(metrics.written[0]?.status).toBe("success");
 	});
 
+	it("rejects rendered output beyond Twitch's 500 character protocol limit", async () => {
+		const catalog = new FakeCommandCatalog();
+		catalog.commands.set("long", makeCommand({ name: "long", handlerKey: "long" }));
+		const handler = {
+			async handle() {
+				return Result.ok(chatTextResponse("x".repeat(501)));
+			},
+		} satisfies ComputedCommandHandler;
+		const { engine, sender, metrics } = makeEngine({ catalog, handlers: { long: handler } });
+
+		const result = await engine.execute(makeInput("!long"));
+		expect(result).toMatchObject({
+			status: "error",
+			error: { _tag: "ChatCommandRenderError" },
+		});
+		expect(sender.sent).toEqual([]);
+		expect(metrics.written[0]?.status).toBe("error");
+	});
+
 	it("returns ChatCommandSendError when sending the response fails", async () => {
 		const catalog = new FakeCommandCatalog();
 		catalog.commands.set("time", makeCommand({ name: "time", handlerKey: "time" }));

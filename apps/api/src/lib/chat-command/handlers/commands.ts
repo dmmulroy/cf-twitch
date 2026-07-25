@@ -19,7 +19,7 @@ export class CommandsCommandHandler implements ComputedCommandHandler {
 	 * @returns A Result containing a chat response with grouped command names.
 	 */
 	async handle(context: ComputedCommandContext) {
-		const result = await this.catalog.getCommandsByPermission(context.viewer.permission);
+		const result = await this.catalog.getEnabledCommandsByPermission(context.viewer.permission);
 		if (result.status === "error") {
 			return Result.ok(chatTextResponse("Sorry, couldn't retrieve the commands list."));
 		}

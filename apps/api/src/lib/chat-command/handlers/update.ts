@@ -1,7 +1,6 @@
 import { Result } from "better-result";
 
-import { CommandNotUpdateableError } from "../../errors";
-import { hasPermission, type Permission } from "../../permissions";
+import type { Permission } from "../../permissions";
 import { chatTextResponse } from "../types";
 
 import type { CommandCatalog, ComputedCommandContext, ComputedCommandHandler } from "../types";
@@ -52,34 +51,26 @@ export class UpdateCommandHandler implements ComputedCommandHandler {
 			return Result.ok(chatTextResponse(`Usage: !update ${targetCommand} <value>`));
 		}
 
-		const commandResult = await this.catalog.getCommand(targetCommand);
-		if (commandResult.status === "error") {
-			return Result.ok(chatTextResponse("Sorry, couldn't update the command."));
-		}
-
-		const command = commandResult.value;
-		if (command.writePermission === null) {
-			return Result.ok(chatTextResponse(`!${targetCommand} is not updateable.`));
-		}
-
-		if (!hasPermission(context.viewer.permission, command.writePermission)) {
-			return Result.ok(
-				chatTextResponse(
-					getInsufficientWritePermissionMessage(command.writePermission, targetCommand),
-				),
-			);
-		}
-
-		const result = await this.catalog.setCommandValue(
-			targetCommand,
-			newValue,
-			context.viewer.displayName,
-		);
+		const result = await this.catalog.updateCommandValue(targetCommand, newValue, {
+			displayName: context.viewer.displayName,
+			permission: context.viewer.permission,
+		});
 		if (result.status === "error") {
-			if (CommandNotUpdateableError.is(result.error)) {
-				return Result.ok(chatTextResponse(`!${targetCommand} is not updateable.`));
+			switch (result.error._tag) {
+				case "CommandNotUpdateableError":
+					return Result.ok(chatTextResponse(`!${targetCommand} is not updateable.`));
+				case "CommandUpdatePermissionDeniedError":
+					return Result.ok(
+						chatTextResponse(
+							getInsufficientWritePermissionMessage(
+								result.error.requiredPermission,
+								targetCommand,
+							),
+						),
+					);
+				default:
+					return Result.ok(chatTextResponse("Sorry, couldn't update the command."));
 			}
-			return Result.ok(chatTextResponse("Sorry, couldn't update the command."));
 		}
 
 		return Result.ok(chatTextResponse(`Updated !${targetCommand}`));

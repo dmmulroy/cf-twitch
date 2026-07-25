@@ -328,8 +328,6 @@ describe("KeyboardRaffleSagaDO", () => {
 			userId,
 			roll: 770,
 			winningNumber: 777,
-			distance: 7,
-			isWinner: false,
 		});
 
 		const duplicate = await stub.start({
@@ -352,6 +350,80 @@ describe("KeyboardRaffleSagaDO", () => {
 		expect(rows).toHaveLength(1);
 	});
 
+	it("resumes across the Roll commit gap by replaying record-roll idempotently", async () => {
+		await ensureTwitchTokenStub();
+		await ensureEventBusStub();
+		const achievements = await ensureAchievementsSingletonStub();
+		const raffle = await ensureKeyboardRaffleStub();
+		const stub = await createKeyboardRaffleSagaStub(`keyboard-raffle-saga-${crypto.randomUUID()}`);
+		const params = createKeyboardRaffleParams({
+			id: `redemption-${crypto.randomUUID()}`,
+			user_id: `commit-gap-${crypto.randomUUID()}`,
+			user_name: `CommitGapViewer${crypto.randomUUID()}`,
+		});
+		const sagaId = stub.id.toString();
+		const persistedRoll = await raffle.recordRoll({
+			id: sagaId,
+			userId: params.user_id,
+			displayName: params.user_name,
+			roll: 770,
+			winningNumber: 777,
+			rolledAt: params.redeemed_at,
+		});
+		expect(persistedRoll.status).toBe("ok");
+
+		await runInDurableObject(stub, async (instance: KeyboardRaffleSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const now = new Date().toISOString();
+			await db.insert(sagaSchema.sagaRuns).values({
+				id: sagaId,
+				status: "RUNNING",
+				paramsJson: JSON.stringify(params),
+				createdAt: now,
+				updatedAt: now,
+			});
+			await db.insert(sagaSchema.sagaSteps).values([
+				{
+					sagaId,
+					stepName: "generate-winning-number",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(777),
+				},
+				{
+					sagaId,
+					stepName: "generate-user-roll",
+					state: "SUCCEEDED",
+					attempt: 1,
+					resultJson: JSON.stringify(770),
+				},
+				{
+					sagaId,
+					stepName: "record-roll",
+					state: "PENDING",
+					attempt: 1,
+				},
+			]);
+		});
+		mockTwitchRedemptionUpdate(fetchMock);
+		for (let message = 0; message < 3; message += 1) mockTwitchChatMessage(fetchMock);
+
+		const resumed = await stub.start(params);
+		expect(resumed.status).toBe("ok");
+		await waitForAchievementQueuesToDrain(achievements, params.user_name);
+		expect(await stub.getStatus()).toMatchObject({
+			status: "ok",
+			value: { status: "COMPLETED" },
+		});
+		const rollsForSaga = await runInDurableObject(raffle, async (instance: KeyboardRaffleDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: raffleSchema });
+			return db.query.rolls.findMany({
+				where: (row, operators) => operators.eq(row.id, sagaId),
+			});
+		});
+		expect(rollsForSaga).toHaveLength(1);
+	}, 20_000);
+
 	it("never passes malformed recorded-roll undo data to compensation", async () => {
 		await ensureTwitchTokenStub();
 		const raffle = await ensureKeyboardRaffleStub();
@@ -362,8 +434,6 @@ describe("KeyboardRaffleSagaDO", () => {
 			displayName: "ProtectedViewer",
 			roll: 700,
 			winningNumber: 777,
-			distance: 77,
-			isWinner: false,
 			rolledAt: new Date().toISOString(),
 		});
 		expect(protectedRoll.status).toBe("ok");
