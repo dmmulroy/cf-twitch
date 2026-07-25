@@ -19,7 +19,7 @@ import {
 	AchievementDbError,
 	AchievementEventValidationError,
 	DurableObjectError,
-	StreamOfflineNoTokenError,
+	TokenUnavailableWhileStreamOfflineError,
 	TokenRefreshNetworkError,
 	TwitchNetworkError,
 	TwitchRateLimitError,
@@ -1435,7 +1435,7 @@ class _AchievementsDO
 
 	private isRetryableAnnouncementPreflightError(error: unknown): boolean {
 		return (
-			StreamOfflineNoTokenError.is(error) ||
+			TokenUnavailableWhileStreamOfflineError.is(error) ||
 			TokenRefreshNetworkError.is(error) ||
 			TwitchNetworkError.is(error) ||
 			TwitchRateLimitError.is(error) ||

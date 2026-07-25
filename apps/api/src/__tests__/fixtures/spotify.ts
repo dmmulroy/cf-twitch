@@ -21,7 +21,7 @@ export const VALID_TOKEN_RESPONSE: SpotifyTokenResponse = {
  */
 export const EXPIRED_TOKEN_RESPONSE: SpotifyTokenResponse = {
 	...VALID_TOKEN_RESPONSE,
-	expires_in: -3600, // Expired 1 hour ago
+	expires_in: 1, // Inside the five-minute refresh window
 };
 
 /**

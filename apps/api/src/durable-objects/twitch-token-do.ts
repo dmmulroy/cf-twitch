@@ -1,10 +1,4 @@
-/**
- * TwitchTokenDO - Manages OAuth tokens for Twitch API with automatic refresh
- *
- * Agent state owns the current token state and refresh scheduling.
- *
- * All public RPC methods return Result types for type-safe error handling.
- */
+/** Twitch OAuth token lifecycle with durable refresh scheduling. */
 
 import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
@@ -13,321 +7,339 @@ import { z } from "zod";
 import { rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	NoRefreshTokenError,
-	StreamOfflineNoTokenError,
+	TokenAuthorizationRevokedError,
+	TokenConfigurationError,
+	TokenInputParseError,
+	TokenNotConfiguredError,
 	TokenRefreshNetworkError,
 	TokenRefreshParseError,
+	TokenStatePersistenceError,
+	TokenUnavailableWhileStreamOfflineError,
 	type StreamLifecycleHandler,
 	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { redactValue, revealRedactedValue, type Redacted } from "../lib/redacted";
 
 import type { Env } from "../index";
 
-/**
- * Zod schema for Twitch token API responses
- */
+const MAX_TOKEN_EXPIRY_SECONDS = 31_536_000;
+
+/** Parsed Twitch token response accepted by the token Durable Object RPC boundary. */
 export const TwitchTokenResponseSchema = z.object({
-	access_token: z.string(),
-	token_type: z.string(),
-	expires_in: z.number(),
-	refresh_token: z.string().optional(),
+	access_token: z.string().trim().min(1),
+	token_type: z.string().trim().min(1),
+	expires_in: z.number().finite().positive().max(MAX_TOKEN_EXPIRY_SECONDS),
+	refresh_token: z.string().trim().min(1).optional(),
 	scope: z.array(z.string()).optional(),
 });
 
+/** Twitch token response whose credential and expiry invariants have been parsed. */
 export type TwitchTokenResponse = z.infer<typeof TwitchTokenResponseSchema>;
 
-const REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
+const TwitchOAuthErrorResponseSchema = z.union([
+	z.object({ error: z.string(), error_description: z.string().optional() }),
+	z.object({ status: z.number().optional(), message: z.string() }),
+]);
+
+const TwitchTokenConfigSchema = z.object({
+	clientId: z.string().trim().min(1),
+	clientSecret: z.string().trim().min(1),
+});
+
+const TwitchPersistedTokenSchema = z.object({
+	accessToken: z.string().min(1),
+	refreshToken: z.string().min(1),
+	tokenType: z.string().min(1),
+	expiresIn: z.number().finite().positive().max(MAX_TOKEN_EXPIRY_SECONDS),
+	expiresAt: z.string().datetime({ offset: true }),
+});
+
+const TwitchPersistedStateV1Schema = z.object({
+	version: z.literal(1),
+	token: TwitchPersistedTokenSchema.nullable(),
+	isStreamLive: z.boolean(),
+	authorizationStatus: z.enum(["not-configured", "authorized", "reauthorization-required"]),
+	refreshScheduleId: z.string().min(1).nullable(),
+	refreshRetryCount: z.number().int().nonnegative(),
+});
+
+const TwitchLegacyPersistedStateSchema = z.object({
+	token: TwitchPersistedTokenSchema.nullable(),
+	isStreamLive: z.boolean(),
+	refreshScheduleId: z.string().min(1).nullable(),
+	refreshRetryCount: z.number().int().nonnegative(),
+});
+
+type TwitchPersistedState = z.infer<typeof TwitchPersistedStateV1Schema>;
+type TwitchAuthorizationStatus = TwitchPersistedState["authorizationStatus"];
+
+interface TwitchRuntimeToken {
+	readonly accessToken: Redacted<string>;
+	readonly refreshToken: Redacted<string>;
+	readonly tokenType: string;
+	readonly expiresIn: number;
+	readonly expiresAt: string;
+}
+
+interface TwitchRuntimeState {
+	readonly token: TwitchRuntimeToken | null;
+	readonly isStreamLive: boolean;
+	readonly authorizationStatus: TwitchAuthorizationStatus;
+	readonly refreshScheduleId: string | null;
+	readonly refreshRetryCount: number;
+}
+
+interface TwitchTokenConfig {
+	readonly clientId: string;
+	readonly clientSecret: Redacted<string>;
+}
+
+const INITIAL_TWITCH_STATE: TwitchPersistedState = {
+	version: 1,
+	token: null,
+	isStreamLive: false,
+	authorizationStatus: "not-configured",
+	refreshScheduleId: null,
+	refreshRetryCount: 0,
+};
+
+const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const MAX_REFRESH_RETRIES = 3;
-const REFRESH_RETRY_BASE_DELAY_MS = 60_000; // 60 seconds
-const REFRESH_FALLBACK_DELAY_MS = 10 * 60 * 1000; // 10 minutes
-
-interface TwitchTokenState {
-	accessToken: string;
-	refreshToken: string;
-	tokenType: string;
-	expiresIn: number;
-	expiresAt: string;
-}
-
-interface TwitchTokenAgentState {
-	token: TwitchTokenState | null;
-	isStreamLive: boolean;
-	refreshScheduleId: string | null;
-	refreshRetryCount: number;
-}
+const REFRESH_RETRY_BASE_DELAY_MS = 60_000;
+const REFRESH_FALLBACK_DELAY_MS = 10 * 60 * 1000;
 
 class _TwitchTokenDO
-	extends Agent<Env, TwitchTokenAgentState>
+	extends Agent<Env, TwitchPersistedState>
 	implements StreamLifecycleHandler<TokenError>
 {
+	private runtimeState: TwitchRuntimeState = toTwitchRuntimeState(INITIAL_TWITCH_STATE);
 	private refreshPromise: Promise<Result<string, TokenError>> | null = null;
+	private readonly tokenConfig: TwitchTokenConfig | TokenConfigurationError;
 
-	initialState: TwitchTokenAgentState = {
-		token: null,
-		isStreamLive: false,
-		refreshScheduleId: null,
-		refreshRetryCount: 0,
-	};
+	/** Initial versioned persistence representation for a Twitch token lifecycle. */
+	initialState: TwitchPersistedState = INITIAL_TWITCH_STATE;
 
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
+		const configResult = TwitchTokenConfigSchema.safeParse({
+			clientId: env.TWITCH_CLIENT_ID,
+			clientSecret: env.TWITCH_CLIENT_SECRET,
+		});
+		this.tokenConfig = configResult.success
+			? {
+					clientId: configResult.data.clientId,
+					clientSecret: redactValue(configResult.data.clientSecret),
+				}
+			: new TokenConfigurationError({
+					provider: "twitch",
+					parseError: configResult.error.message,
+				});
 	}
 
+	/** Parse or migrate persisted token state before restoring durable refresh work. */
 	async onStart(): Promise<void> {
 		await this.ctx.blockConcurrencyWhile(async () => {
-			await this.restoreOrRecomputeRefreshSchedule();
+			const parsedState = parseTwitchPersistedState(this.state);
+			if (parsedState.status === "error") {
+				logger.error("Twitch token persisted state was reset after parse failure", {
+					event: "twitch.token.state.parse_failed",
+					error_tag: parsedState.error._tag,
+				});
+				this.setState(INITIAL_TWITCH_STATE);
+				this.runtimeState = toTwitchRuntimeState(INITIAL_TWITCH_STATE);
+				return;
+			}
+
+			this.persistRuntimeState(toTwitchRuntimeState(parsedState.value));
+			const restoreResult = await this.restoreOrRecomputeRefreshSchedule();
+			if (restoreResult.status === "error") {
+				logger.error("Twitch token refresh schedule restoration failed", {
+					event: "twitch.token.schedule.restore_failed",
+					error_tag: restoreResult.error._tag,
+				});
+			}
 		});
 	}
 
-	// =========================================================================
-	// StreamLifecycleHandler implementation
-	// =========================================================================
-
-	/**
-	 * Called when stream goes online. Refresh token if needed, schedule proactive refresh.
-	 */
+	/** Mark the Stream Session online and durably retry transient token refresh failures. */
 	@rpc
 	async onStreamOnline(): Promise<Result<void, TokenError>> {
-		logger.info("TwitchTokenDO: stream online");
-		this.updateState({ isStreamLive: true });
+		const persistResult = this.tryPersistRuntimeState({ ...this.runtimeState, isStreamLive: true });
+		if (persistResult.status === "error") return persistResult;
 
-		if (this.state.token && !this.isTokenValid(this.state.token)) {
-			const refreshResult = await this.refreshTokenWithCoalescing();
-			if (refreshResult.status === "error") {
-				logger.error("Failed to refresh token on stream online", {
-					error: refreshResult.error.message,
-				});
-				return Result.err(refreshResult.error);
-			}
-		} else {
-			await this.restoreOrRecomputeRefreshSchedule();
+		if (this.runtimeState.token !== null && !this.isTokenValid(this.runtimeState.token)) {
+			const refreshResult = await this.refreshLiveToken();
+			return refreshResult.status === "error" ? Result.err(refreshResult.error) : Result.ok();
 		}
 
-		return Result.ok();
+		return this.restoreOrRecomputeRefreshSchedule();
 	}
 
-	/**
-	 * Called when stream goes offline. Cancel proactive refresh schedule.
-	 */
+	/** Mark the Stream Session offline and cancel proactive refresh work. */
 	@rpc
 	async onStreamOffline(): Promise<Result<void, TokenError>> {
-		logger.info("TwitchTokenDO: stream offline");
-
-		return Result.tryPromise({
-			try: async () => {
-				this.updateState({ isStreamLive: false, refreshRetryCount: 0 });
-				await this.cancelRefreshSchedule();
-			},
-			catch: (cause) =>
-				new TokenRefreshNetworkError({
-					status: 0,
-					provider: "twitch",
-					message: `Failed to update stream offline state: ${String(cause)}`,
-				}),
+		const persistResult = this.tryPersistRuntimeState({
+			...this.runtimeState,
+			isStreamLive: false,
+			refreshRetryCount: 0,
 		});
+		if (persistResult.status === "error") return persistResult;
+		return this.tryCancelRefreshSchedule();
 	}
 
-	// =========================================================================
-	// Scheduled refresh callback
-	// =========================================================================
-
-	/**
-	 * Scheduled callback - proactively refresh token before expiry.
-	 * Uses Agent scheduling with exponential backoff for retryable failures.
-	 */
+	/** Execute one durable Twitch refresh callback. */
 	async refreshTokenTick(): Promise<void> {
-		if (this.state.refreshScheduleId !== null) {
-			this.updateState({ refreshScheduleId: null });
-		}
-
-		if (!this.state.isStreamLive || this.state.token === null) {
-			this.updateState({ refreshRetryCount: 0 });
-			return;
-		}
-
-		logger.info("Proactive Twitch token refresh triggered by schedule");
-
-		const result = await this.refreshTokenWithCoalescing();
-		if (result.status === "ok") {
-			this.updateState({ refreshRetryCount: 0 });
-			return;
-		}
-
-		const error = result.error;
-		if (!TokenRefreshNetworkError.is(error)) {
-			logger.error("Proactive token refresh failed with non-retryable error", {
-				error: error.message,
-				tag: error._tag,
+		if (this.runtimeState.refreshScheduleId !== null) {
+			const persistResult = this.tryPersistRuntimeState({
+				...this.runtimeState,
+				refreshScheduleId: null,
 			});
-			this.updateState({ refreshRetryCount: 0 });
-			await this.scheduleRefreshIn(REFRESH_FALLBACK_DELAY_MS);
+			if (persistResult.status === "error") return;
+		}
+		if (!this.runtimeState.isStreamLive || this.runtimeState.token === null) {
+			this.tryPersistRuntimeState({ ...this.runtimeState, refreshRetryCount: 0 });
 			return;
 		}
-
-		const retryCount = this.state.refreshRetryCount;
-		if (retryCount < MAX_REFRESH_RETRIES) {
-			const nextRetryCount = retryCount + 1;
-			const delayMs = REFRESH_RETRY_BASE_DELAY_MS * Math.pow(2, retryCount);
-
-			this.updateState({ refreshRetryCount: nextRetryCount });
-			await this.scheduleRefreshIn(delayMs);
-
-			logger.warn("Proactive token refresh failed, scheduling retry", {
-				error: error.message,
-				retryCount: nextRetryCount,
-				delayMs,
-			});
-			return;
-		}
-
-		logger.error("Proactive token refresh failed after max retries", {
-			error: error.message,
-			maxRetries: MAX_REFRESH_RETRIES,
-		});
-
-		this.updateState({ refreshRetryCount: 0 });
-		await this.scheduleRefreshIn(REFRESH_FALLBACK_DELAY_MS);
+		await this.refreshLiveToken();
 	}
 
-	// =========================================================================
-	// Public RPC methods
-	// =========================================================================
-
-	/**
-	 * Get a valid access token, refreshing if necessary.
-	 */
+	/** Return a valid Twitch access token or a truthful lifecycle error. */
 	@rpc
 	async getValidToken(): Promise<Result<string, TokenError>> {
-		if (this.state.token && this.isTokenValid(this.state.token)) {
-			return Result.ok(this.state.token.accessToken);
+		if (this.runtimeState.authorizationStatus === "reauthorization-required") {
+			return Result.err(new TokenAuthorizationRevokedError({ provider: "twitch" }));
 		}
-
-		if (this.state.token === null) {
-			return Result.err(new StreamOfflineNoTokenError());
+		if (this.runtimeState.token === null) {
+			return Result.err(new TokenNotConfiguredError({ provider: "twitch" }));
 		}
-
-		if (!this.state.isStreamLive) {
-			return Result.err(new StreamOfflineNoTokenError());
+		if (this.isTokenValid(this.runtimeState.token)) {
+			return Result.ok(revealRedactedValue(this.runtimeState.token.accessToken));
 		}
-
-		return this.refreshTokenWithCoalescing();
+		if (!this.runtimeState.isStreamLive) {
+			return Result.err(new TokenUnavailableWhileStreamOfflineError({ provider: "twitch" }));
+		}
+		return this.refreshLiveToken();
 	}
 
-	/**
-	 * Store new tokens (called during OAuth flow or after refresh).
-	 */
+	/** Parse and durably accept Twitch OAuth tokens at the public RPC boundary. */
 	@rpc
-	async setTokens(tokens: TwitchTokenResponse): Promise<Result<void, never>> {
-		const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
-		const nextToken: TwitchTokenState = {
-			accessToken: tokens.access_token,
-			refreshToken: tokens.refresh_token ?? this.state.token?.refreshToken ?? "",
-			tokenType: tokens.token_type,
-			expiresIn: tokens.expires_in,
-			expiresAt,
+	async setTokens(tokens: TwitchTokenResponse): Promise<Result<void, TokenError>> {
+		const parseResult = TwitchTokenResponseSchema.safeParse(tokens);
+		if (!parseResult.success) {
+			return Result.err(
+				new TokenInputParseError({ provider: "twitch", parseError: parseResult.error.message }),
+			);
+		}
+
+		const refreshToken =
+			parseResult.data.refresh_token ??
+			(this.runtimeState.token === null
+				? undefined
+				: revealRedactedValue(this.runtimeState.token.refreshToken));
+		if (refreshToken === undefined) return Result.err(new NoRefreshTokenError());
+
+		const nextToken: TwitchRuntimeToken = {
+			accessToken: redactValue(parseResult.data.access_token),
+			refreshToken: redactValue(refreshToken),
+			tokenType: parseResult.data.token_type,
+			expiresIn: parseResult.data.expires_in,
+			expiresAt: new Date(Date.now() + parseResult.data.expires_in * 1000).toISOString(),
 		};
-
-		this.updateState({ token: nextToken, refreshRetryCount: 0 });
-
-		logger.info("Twitch tokens updated", { expiresAt });
-
-		if (this.state.isStreamLive) {
-			await this.scheduleProactiveRefresh(nextToken);
-		} else {
-			await this.cancelRefreshSchedule();
-		}
-
-		return Result.ok();
-	}
-
-	// =========================================================================
-	// Private helpers
-	// =========================================================================
-
-	private updateState(partial: Partial<TwitchTokenAgentState>): TwitchTokenAgentState {
-		const nextState = { ...this.state, ...partial };
-		this.setState(nextState);
-		return nextState;
-	}
-
-	private async restoreOrRecomputeRefreshSchedule(): Promise<void> {
-		if (!this.state.isStreamLive || this.state.token === null) {
-			await this.cancelRefreshSchedule();
-			if (this.state.refreshRetryCount !== 0) {
-				this.updateState({ refreshRetryCount: 0 });
-			}
-			return;
-		}
-
-		if (
-			this.state.refreshScheduleId !== null &&
-			this.getSchedule(this.state.refreshScheduleId) !== undefined
-		) {
-			return;
-		}
-
-		if (!this.isTokenValid(this.state.token)) {
-			await this.refreshTokenTick();
-			return;
-		}
-
-		await this.scheduleProactiveRefresh(this.state.token);
-	}
-
-	private async scheduleProactiveRefresh(token: TwitchTokenState): Promise<void> {
-		if (!this.state.isStreamLive) {
-			await this.cancelRefreshSchedule();
-			return;
-		}
-
-		const expiresAtMs = new Date(token.expiresAt).getTime();
-		const refreshAtMs = expiresAtMs - REFRESH_BUFFER_MS;
-
-		if (refreshAtMs <= Date.now()) {
-			await this.scheduleRefreshIn(1000);
-			logger.debug("Token in refresh window, scheduling immediate refresh");
-			return;
-		}
-
-		await this.scheduleRefreshAt(new Date(refreshAtMs));
-		logger.debug("Scheduled proactive refresh", {
-			refreshAt: new Date(refreshAtMs).toISOString(),
+		const persistResult = this.tryPersistRuntimeState({
+			...this.runtimeState,
+			token: nextToken,
+			authorizationStatus: "authorized",
+			refreshRetryCount: 0,
 		});
+		if (persistResult.status === "error") return persistResult;
+
+		logger.info("Twitch tokens updated", { expiresAt: nextToken.expiresAt });
+		return this.runtimeState.isStreamLive
+			? this.scheduleProactiveRefresh(nextToken)
+			: this.tryCancelRefreshSchedule();
 	}
 
-	private async scheduleRefreshAt(when: Date): Promise<void> {
-		await this.cancelRefreshSchedule();
-		const schedule = await this.schedule(when, "refreshTokenTick");
-		this.updateState({ refreshScheduleId: schedule.id });
-	}
-
-	private async scheduleRefreshIn(delayMs: number): Promise<void> {
-		await this.cancelRefreshSchedule();
-		const delayInSeconds = Math.max(1, Math.ceil(delayMs / 1000));
-		const schedule = await this.schedule(delayInSeconds, "refreshTokenTick");
-		this.updateState({ refreshScheduleId: schedule.id });
-	}
-
-	private async cancelRefreshSchedule(): Promise<void> {
-		if (this.state.refreshScheduleId === null) {
-			return;
+	private tryPersistRuntimeState(nextState: TwitchRuntimeState): Result<void, TokenStatePersistenceError> {
+		try {
+			this.persistRuntimeState(nextState);
+			return Result.ok();
+		} catch (cause) {
+			return Result.err(
+				new TokenStatePersistenceError({ provider: "twitch", operation: "persist", cause }),
+			);
 		}
-
-		await this.cancelSchedule(this.state.refreshScheduleId);
-		this.updateState({ refreshScheduleId: null });
 	}
 
-	private isTokenValid(token: TwitchTokenState): boolean {
-		return Date.now() < new Date(token.expiresAt).getTime() - REFRESH_BUFFER_MS;
+	private persistRuntimeState(nextState: TwitchRuntimeState): void {
+		this.setState(toTwitchPersistedState(nextState));
+		this.runtimeState = nextState;
 	}
 
-	private async refreshTokenWithCoalescing(): Promise<Result<string, TokenError>> {
-		if (this.refreshPromise) {
-			return this.refreshPromise;
+	private async restoreOrRecomputeRefreshSchedule(): Promise<Result<void, TokenError>> {
+		if (!this.runtimeState.isStreamLive || this.runtimeState.token === null) {
+			const cancelResult = await this.tryCancelRefreshSchedule();
+			if (cancelResult.status === "error") return cancelResult;
+			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshRetryCount: 0 });
 		}
+		if (
+			this.runtimeState.refreshScheduleId !== null &&
+			this.getSchedule(this.runtimeState.refreshScheduleId) !== undefined
+		) return Result.ok();
+		if (!this.isTokenValid(this.runtimeState.token)) {
+			const result = await this.refreshLiveToken();
+			return result.status === "error" ? Result.err(result.error) : Result.ok();
+		}
+		return this.scheduleProactiveRefresh(this.runtimeState.token);
+	}
 
-		this.refreshPromise = this.refreshToken();
+	private async scheduleProactiveRefresh(token: TwitchRuntimeToken): Promise<Result<void, TokenStatePersistenceError>> {
+		if (!this.runtimeState.isStreamLive) return this.tryCancelRefreshSchedule();
+		const refreshAtMs = Date.parse(token.expiresAt) - REFRESH_BUFFER_MS;
+		return refreshAtMs <= Date.now()
+			? this.scheduleRefreshIn(1000)
+			: this.scheduleRefreshAt(new Date(refreshAtMs));
+	}
 
+	private async scheduleRefreshAt(when: Date): Promise<Result<void, TokenStatePersistenceError>> {
+		const cancelResult = await this.tryCancelRefreshSchedule();
+		if (cancelResult.status === "error") return cancelResult;
+		try {
+			const schedule = await this.schedule(when, "refreshTokenTick");
+			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: schedule.id });
+		} catch (cause) {
+			return Result.err(new TokenStatePersistenceError({ provider: "twitch", operation: "schedule", cause }));
+		}
+	}
+
+	private async scheduleRefreshIn(delayMs: number): Promise<Result<void, TokenStatePersistenceError>> {
+		const cancelResult = await this.tryCancelRefreshSchedule();
+		if (cancelResult.status === "error") return cancelResult;
+		try {
+			const schedule = await this.schedule(Math.max(1, Math.ceil(delayMs / 1000)), "refreshTokenTick");
+			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: schedule.id });
+		} catch (cause) {
+			return Result.err(new TokenStatePersistenceError({ provider: "twitch", operation: "schedule", cause }));
+		}
+	}
+
+	private async tryCancelRefreshSchedule(): Promise<Result<void, TokenStatePersistenceError>> {
+		if (this.runtimeState.refreshScheduleId === null) return Result.ok();
+		try {
+			await this.cancelSchedule(this.runtimeState.refreshScheduleId);
+			return this.tryPersistRuntimeState({ ...this.runtimeState, refreshScheduleId: null });
+		} catch (cause) {
+			return Result.err(new TokenStatePersistenceError({ provider: "twitch", operation: "cancel-schedule", cause }));
+		}
+	}
+
+	private isTokenValid(token: TwitchRuntimeToken): boolean {
+		return Date.now() < Date.parse(token.expiresAt) - REFRESH_BUFFER_MS;
+	}
+
+	private async refreshLiveToken(): Promise<Result<string, TokenError>> {
+		if (this.refreshPromise !== null) return this.refreshPromise;
+		this.refreshPromise = this.refreshTokenAndApplyRetryPolicy();
 		try {
 			return await this.refreshPromise;
 		} finally {
@@ -335,85 +347,122 @@ class _TwitchTokenDO
 		}
 	}
 
-	/**
-	 * Refresh the access token using the refresh token.
-	 */
-	private async refreshToken(): Promise<Result<string, TokenError>> {
-		if (this.state.token === null || this.state.token.refreshToken.length === 0) {
-			return Result.err(new NoRefreshTokenError());
-		}
+	private async refreshTokenAndApplyRetryPolicy(): Promise<Result<string, TokenError>> {
+		const result = await this.refreshToken();
+		if (result.status === "ok") return result;
 
-		logger.info("Refreshing Twitch access token");
-
-		const refreshToken = this.state.token.refreshToken;
-		const fetchResult = await Result.tryPromise({
-			try: () =>
-				fetch("https://id.twitch.tv/oauth2/token", {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/x-www-form-urlencoded",
-					},
-					body: new URLSearchParams({
-						grant_type: "refresh_token",
-						refresh_token: refreshToken,
-						client_id: this.env.TWITCH_CLIENT_ID,
-						client_secret: this.env.TWITCH_CLIENT_SECRET,
-					}),
-				}),
-			catch: (cause) =>
-				new TokenRefreshNetworkError({
-					status: 0,
-					provider: "twitch",
-					message: `Network error: ${String(cause)}`,
-				}),
-		});
-
-		if (fetchResult.status === "error") {
-			logger.error("Network error refreshing Twitch token", { error: fetchResult.error.message });
-			return Result.err(fetchResult.error);
-		}
-
-		const response = fetchResult.value;
-		if (!response.ok) {
-			const errorText = await response.text();
-			logger.error("Failed to refresh Twitch token", {
-				status: response.status,
-				error: errorText,
+		if (TokenAuthorizationRevokedError.is(result.error) || NoRefreshTokenError.is(result.error)) {
+			const persistResult = this.tryPersistRuntimeState({
+				...this.runtimeState,
+				authorizationStatus: "reauthorization-required",
+				refreshRetryCount: 0,
 			});
-			return Result.err(
-				new TokenRefreshNetworkError({ status: response.status, provider: "twitch" }),
-			);
+			if (persistResult.status === "error") return persistResult;
+			const cancelResult = await this.tryCancelRefreshSchedule();
+			return cancelResult.status === "error" ? cancelResult : result;
+		}
+
+		const retryCount = this.runtimeState.refreshRetryCount;
+		const isShortRetry = TokenRefreshNetworkError.is(result.error) && retryCount < MAX_REFRESH_RETRIES;
+		const nextRetryCount = isShortRetry ? retryCount + 1 : 0;
+		const delayMs = isShortRetry
+			? REFRESH_RETRY_BASE_DELAY_MS * Math.pow(2, retryCount)
+			: REFRESH_FALLBACK_DELAY_MS;
+		const persistResult = this.tryPersistRuntimeState({ ...this.runtimeState, refreshRetryCount: nextRetryCount });
+		if (persistResult.status === "error") return persistResult;
+		const scheduleResult = await this.scheduleRefreshIn(delayMs);
+		if (scheduleResult.status === "error") return scheduleResult;
+		logger.warn("Twitch token refresh failed and durable retry was scheduled", {
+			error_tag: result.error._tag,
+			retry_count: nextRetryCount,
+			delay_ms: delayMs,
+		});
+		return result;
+	}
+
+	private async refreshToken(): Promise<Result<string, TokenError>> {
+		const token = this.runtimeState.token;
+		if (token === null) return Result.err(new NoRefreshTokenError());
+		const tokenConfig = this.tokenConfig;
+		if (!("clientId" in tokenConfig)) return Result.err(tokenConfig);
+
+		const responseResult = await Result.tryPromise({
+			try: () => fetch("https://id.twitch.tv/oauth2/token", {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({
+					grant_type: "refresh_token",
+					refresh_token: revealRedactedValue(token.refreshToken),
+					client_id: tokenConfig.clientId,
+					client_secret: revealRedactedValue(tokenConfig.clientSecret),
+				}),
+			}),
+			catch: (cause) => new TokenRefreshNetworkError({ status: 0, provider: "twitch", message: `Twitch token refresh network request failed: ${String(cause)}` }),
+		});
+		if (responseResult.status === "error") return responseResult;
+
+		const response = responseResult.value;
+		if (!response.ok) {
+			const bodyResult = await Result.tryPromise({ try: () => response.json(), catch: () => undefined });
+			const oauthError = bodyResult.status === "ok" ? TwitchOAuthErrorResponseSchema.safeParse(bodyResult.value) : undefined;
+			const hasParsedOAuthError = oauthError?.success === true;
+			if (
+				(hasParsedOAuthError && response.status >= 400 && response.status < 500 && response.status !== 429) ||
+				(response.status >= 400 && response.status < 500 && response.status !== 429)
+			) {
+				return Result.err(new TokenAuthorizationRevokedError({ provider: "twitch" }));
+			}
+			return Result.err(new TokenRefreshNetworkError({ status: response.status, provider: "twitch" }));
 		}
 
 		const jsonResult = await Result.tryPromise({
 			try: () => response.json(),
-			catch: (cause) =>
-				new TokenRefreshParseError({ provider: "twitch", parseError: String(cause) }),
+			catch: (cause) => new TokenRefreshParseError({ provider: "twitch", parseError: String(cause) }),
 		});
-
-		if (jsonResult.status === "error") {
-			logger.error("Failed to parse Twitch token refresh JSON", {
-				error: jsonResult.error.message,
-			});
-			return Result.err(jsonResult.error);
-		}
-
+		if (jsonResult.status === "error") return jsonResult;
 		const parseResult = TwitchTokenResponseSchema.safeParse(jsonResult.value);
-		if (!parseResult.success) {
-			logger.error("Invalid token response from Twitch", {
-				error: parseResult.error.message,
-			});
-			return Result.err(
-				new TokenRefreshParseError({
-					provider: "twitch",
-					parseError: parseResult.error.message,
-				}),
-			);
-		}
-
-		await this.setTokens(parseResult.data);
-		return Result.ok(parseResult.data.access_token);
+		if (!parseResult.success) return Result.err(new TokenRefreshParseError({ provider: "twitch", parseError: parseResult.error.message }));
+		const setResult = await this.setTokens(parseResult.data);
+		return setResult.status === "error" ? setResult : Result.ok(parseResult.data.access_token);
 	}
 }
 
+function parseTwitchPersistedState(input: unknown): Result<TwitchPersistedState, TokenStatePersistenceError> {
+	const current = TwitchPersistedStateV1Schema.safeParse(input);
+	if (current.success) return Result.ok(current.data);
+	const legacy = TwitchLegacyPersistedStateSchema.safeParse(input);
+	if (legacy.success) {
+		return Result.ok({
+			version: 1,
+			...legacy.data,
+			authorizationStatus: legacy.data.token === null ? "not-configured" : "authorized",
+		});
+	}
+	return Result.err(new TokenStatePersistenceError({ provider: "twitch", operation: "parse" }));
+}
+
+function toTwitchRuntimeState(state: TwitchPersistedState): TwitchRuntimeState {
+	return {
+		...state,
+		token: state.token === null ? null : {
+			...state.token,
+			accessToken: redactValue(state.token.accessToken),
+			refreshToken: redactValue(state.token.refreshToken),
+		},
+	};
+}
+
+function toTwitchPersistedState(state: TwitchRuntimeState): TwitchPersistedState {
+	return {
+		version: 1,
+		...state,
+		token: state.token === null ? null : {
+			...state.token,
+			accessToken: revealRedactedValue(state.token.accessToken),
+			refreshToken: revealRedactedValue(state.token.refreshToken),
+		},
+	};
+}
+
+/** Cloudflare Durable Object export for the Twitch token lifecycle. */
 export const TwitchTokenDO = withRpcSerialization(_TwitchTokenDO);

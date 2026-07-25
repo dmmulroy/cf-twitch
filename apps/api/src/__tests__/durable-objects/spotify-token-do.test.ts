@@ -37,6 +37,24 @@ describe("SpotifyTokenDO", () => {
 			expect(result.status).toBe("ok");
 		});
 
+		it("rejects malformed token RPC payloads before persistence", async () => {
+			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
+				instance.setTokens({ ...VALID_TOKEN_RESPONSE, expires_in: 0 }),
+			);
+
+			expect(result.status).toBe("error");
+			if (result.status === "error") expect(result.error._tag).toBe("TokenInputParseError");
+		});
+
+		it("requires a refresh credential during initial OAuth setup", async () => {
+			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
+				instance.setTokens({ ...VALID_TOKEN_RESPONSE, refresh_token: undefined }),
+			);
+
+			expect(result.status).toBe("error");
+			if (result.status === "error") expect(result.error._tag).toBe("NoRefreshTokenError");
+		});
+
 		it("should preserve existing refresh_token if not provided in new response", async () => {
 			// First set tokens with refresh_token
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
@@ -60,14 +78,14 @@ describe("SpotifyTokenDO", () => {
 	});
 
 	describe("getValidToken", () => {
-		it("should return StreamOfflineNoTokenError when no token and stream offline", async () => {
+		it("should return TokenNotConfiguredError when no token and stream offline", async () => {
 			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
 				instance.getValidToken(),
 			);
 
 			expect(result.status).toBe("error");
 			if (result.status === "error") {
-				expect(result.error._tag).toBe("StreamOfflineNoTokenError");
+				expect(result.error._tag).toBe("TokenNotConfiguredError");
 			}
 		});
 
@@ -109,7 +127,7 @@ describe("SpotifyTokenDO", () => {
 				// Set expired token
 				await instance.setTokens({
 					...VALID_TOKEN_RESPONSE,
-					expires_in: -3600, // Expired 1 hour ago
+					expires_in: 1, // Inside the five-minute refresh window
 				});
 				await instance.onStreamOnline();
 			});
@@ -127,7 +145,7 @@ describe("SpotifyTokenDO", () => {
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
 				await instance.setTokens({
 					...VALID_TOKEN_RESPONSE,
-					expires_in: -3600, // Expired
+					expires_in: 1, // Inside the five-minute refresh window
 				});
 				await instance.onStreamOnline();
 
@@ -169,6 +187,23 @@ describe("SpotifyTokenDO", () => {
 			if (result.status === "ok") {
 				expect(result.value).toBe("scheduled-refresh-token");
 			}
+		});
+
+		it("schedules a durable retry after a foreground refresh failure", async () => {
+			mockSpotifyTokenRefreshError(fetchMock, 503, "Service unavailable");
+
+			const result = await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.setTokens(VALID_TOKEN_RESPONSE);
+				await instance.onStreamOnline();
+				await instance.setTokens({ ...VALID_TOKEN_RESPONSE, expires_in: 1 });
+				const tokenResult = await instance.getValidToken();
+				return { tokenResult, schedules: await instance.getSchedules() };
+			});
+
+			expect(result.tokenResult.status).toBe("error");
+			expect(result.schedules).toEqual(expect.arrayContaining([
+				expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
+			]));
 		});
 
 		it("schedules a 60 second retry after a retryable refresh failure", async () => {
@@ -231,7 +266,7 @@ describe("SpotifyTokenDO", () => {
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
 				await instance.setTokens({
 					...VALID_TOKEN_RESPONSE,
-					expires_in: -3600, // Expired
+					expires_in: 1, // Inside the five-minute refresh window
 				});
 			});
 
@@ -241,7 +276,7 @@ describe("SpotifyTokenDO", () => {
 			);
 			expect(offlineResult.status).toBe("error");
 			if (offlineResult.status === "error") {
-				expect(offlineResult.error._tag).toBe("StreamOfflineNoTokenError");
+				expect(offlineResult.error._tag).toBe("TokenUnavailableWhileStreamOfflineError");
 			}
 
 			// Mock refresh endpoint BEFORE going online (onStreamOnline triggers refresh)
@@ -256,6 +291,20 @@ describe("SpotifyTokenDO", () => {
 				instance.getValidToken(),
 			);
 			expect(onlineResult.status).toBe("ok"); // Refreshed token
+		});
+
+		it("schedules a durable retry when the online transition refresh fails", async () => {
+			mockSpotifyTokenRefreshError(fetchMock, 503, "Service unavailable");
+			const outcome = await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				await instance.setTokens({ ...VALID_TOKEN_RESPONSE, expires_in: 1 });
+				const onlineResult = await instance.onStreamOnline();
+				return { onlineResult, schedules: await instance.getSchedules() };
+			});
+
+			expect(outcome.onlineResult.status).toBe("error");
+			expect(outcome.schedules).toEqual(expect.arrayContaining([
+				expect.objectContaining({ callback: "refreshTokenTick", delayInSeconds: 60 }),
+			]));
 		});
 
 		it("should disable proactive refresh when stream goes offline", async () => {
@@ -285,19 +334,19 @@ describe("SpotifyTokenDO", () => {
 	});
 
 	describe("token refresh error handling", () => {
-		it("should return TokenRefreshNetworkError on 401", async () => {
+		it("should require reauthorization on terminal 401", async () => {
 			mockSpotifyTokenRefreshError(fetchMock, 401, "Unauthorized");
 
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
 				await instance.setTokens({
 					...VALID_TOKEN_RESPONSE,
-					expires_in: -3600, // Expired
+					expires_in: 1, // Inside the five-minute refresh window
 				});
 				// onStreamOnline triggers refresh - check its result directly
 				const result = await instance.onStreamOnline();
 				expect(result.status).toBe("error");
 				if (result.status === "error") {
-					expect(result.error._tag).toBe("TokenRefreshNetworkError");
+					expect(result.error._tag).toBe("TokenAuthorizationRevokedError");
 				}
 			});
 		});
@@ -315,7 +364,7 @@ describe("SpotifyTokenDO", () => {
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
 				await instance.setTokens({
 					...VALID_TOKEN_RESPONSE,
-					expires_in: -3600,
+					expires_in: 1,
 				});
 
 				const result = await instance.onStreamOnline();
@@ -325,6 +374,12 @@ describe("SpotifyTokenDO", () => {
 						_tag: "TokenAuthorizationRevokedError",
 						provider: "spotify",
 					});
+				}
+				expect(await instance.getSchedules()).toHaveLength(0);
+				const laterResult = await instance.getValidToken();
+				expect(laterResult.status).toBe("error");
+				if (laterResult.status === "error") {
+					expect(laterResult.error._tag).toBe("TokenAuthorizationRevokedError");
 				}
 			});
 		});
@@ -338,7 +393,7 @@ describe("SpotifyTokenDO", () => {
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
 				await instance.setTokens({
 					...VALID_TOKEN_RESPONSE,
-					expires_in: -3600, // Expired
+					expires_in: 1, // Inside the five-minute refresh window
 				});
 				// onStreamOnline triggers refresh - check its result directly
 				const result = await instance.onStreamOnline();
@@ -360,7 +415,7 @@ describe("SpotifyTokenDO", () => {
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
 				await instance.setTokens({
 					...VALID_TOKEN_RESPONSE,
-					expires_in: -3600, // Expired
+					expires_in: 1, // Inside the five-minute refresh window
 				});
 				// onStreamOnline triggers refresh - check its result directly
 				const result = await instance.onStreamOnline();
@@ -371,7 +426,7 @@ describe("SpotifyTokenDO", () => {
 			});
 		});
 
-		it("should return StreamOfflineNoTokenError when no token cache exists", async () => {
+		it("should return TokenNotConfiguredError when no token cache exists", async () => {
 			// No tokens set, stream offline - getValidToken should error
 			const result = await runInDurableObject(stub, (instance: SpotifyTokenDO) =>
 				instance.getValidToken(),
@@ -379,12 +434,43 @@ describe("SpotifyTokenDO", () => {
 
 			expect(result.status).toBe("error");
 			if (result.status === "error") {
-				expect(result.error._tag).toBe("StreamOfflineNoTokenError");
+				expect(result.error._tag).toBe("TokenNotConfiguredError");
 			}
 		});
 	});
 
 	describe("persistence", () => {
+		it("migrates legacy persisted state before token retrieval", async () => {
+			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				instance.setState({
+					token: {
+						accessToken: "legacy-access",
+						refreshToken: "legacy-refresh",
+						tokenType: "Bearer",
+						expiresIn: 3600,
+						expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+					},
+					isStreamLive: false,
+					refreshScheduleId: null,
+					refreshRetryCount: 0,
+				});
+				await instance.onStart();
+				const result = await instance.getValidToken();
+				expect(result.status).toBe("ok");
+				if (result.status === "ok") expect(result.value).toBe("legacy-access");
+			});
+		});
+
+		it("safely resets malformed persisted state", async () => {
+			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {
+				instance.setState({ token: { accessToken: "leaked-partial" } });
+				await instance.onStart();
+				const result = await instance.getValidToken();
+				expect(result.status).toBe("error");
+				if (result.status === "error") expect(result.error._tag).toBe("TokenNotConfiguredError");
+			});
+		});
+
 		it("should persist tokens across DO instances", async () => {
 			// Set tokens in one instance
 			await runInDurableObject(stub, async (instance: SpotifyTokenDO) => {

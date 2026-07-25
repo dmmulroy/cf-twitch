@@ -605,20 +605,6 @@ describe("SongRequestSagaDO", () => {
 	it("refunds without blaming the viewer when Spotify authorization was revoked", async () => {
 		const spotifyTokenStub = await ensureSpotifyTokenStub();
 		await ensureTwitchTokenStub();
-		await runInDurableObject(spotifyTokenStub, async (instance: SpotifyTokenDO) => {
-			await instance.setTokens({
-				...VALID_SPOTIFY_TOKEN_RESPONSE,
-				expires_in: -3600,
-			});
-			instance.setState({ ...instance.state, isStreamLive: true });
-		});
-
-		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
-		const params = createSongRequestParams({
-			id: `redemption-${crypto.randomUUID()}`,
-			user_input: "https://open.spotify.com/track/6gPd6brcBXlbGdy1obe234?si=302a66660b5d4070",
-		});
-
 		mockSpotifyTokenRefreshError(
 			fetchMock,
 			400,
@@ -627,6 +613,20 @@ describe("SongRequestSagaDO", () => {
 				error_description: "Refresh token revoked",
 			}),
 		);
+		await runInDurableObject(spotifyTokenStub, async (instance: SpotifyTokenDO) => {
+			await instance.setTokens({
+				...VALID_SPOTIFY_TOKEN_RESPONSE,
+				expires_in: 1,
+			});
+			await instance.onStreamOnline();
+		});
+
+		const stub = await createSongRequestSagaStub(`song-request-saga-${crypto.randomUUID()}`);
+		const params = createSongRequestParams({
+			id: `redemption-${crypto.randomUUID()}`,
+			user_input: "https://open.spotify.com/track/6gPd6brcBXlbGdy1obe234?si=302a66660b5d4070",
+		});
+
 		mockTwitchRedemptionUpdate(fetchMock);
 		mockTwitchChatMessage(fetchMock);
 

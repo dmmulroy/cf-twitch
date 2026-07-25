@@ -36,8 +36,9 @@
 
 import { Result } from "better-result";
 import { env as globalEnv } from "cloudflare:workers";
+import { z } from "zod";
 
-import { DurableObjectError } from "./errors";
+import { DurableObjectError, DurableObjectRpcProtocolError } from "./errors";
 import { logger, normalizeError, startTimer } from "./logger";
 import { serializeRpcError } from "./rpc-result";
 
@@ -174,8 +175,129 @@ type Serializable<T> = T extends undefined | null | boolean | number | bigint | 
  */
 export type WithDOError<R> =
 	R extends Result<infer T, infer E>
-		? Result<T, E | DurableObjectError>
-		: Result<Serializable<R>, DurableObjectError>;
+		? Result<T, E | DurableObjectError | DurableObjectRpcProtocolError>
+		: Result<Serializable<R>, DurableObjectError | DurableObjectRpcProtocolError>;
+
+/** Runtime schemas for one Durable Object RPC method's success and expected error payloads. */
+export interface DurableObjectRpcPayloadCodec<T = unknown, E = unknown> {
+	/** Parses the serialized success value before it re-enters typed application code. */
+	readonly success: z.ZodType<T>;
+	/** Parses the serialized expected error before tag-based caller classification. */
+	readonly error: z.ZodType<E>;
+}
+
+/** Method-name keyed RPC payload codecs applied by an explicit Durable Object stub adapter. */
+export type DurableObjectRpcPayloadCodecs = Readonly<
+	Record<string, DurableObjectRpcPayloadCodec<unknown, unknown>>
+>;
+
+const KnownRpcErrorSchema = z
+	.object({
+		_tag: z.enum([
+			"AchievementDbError", "AchievementEventValidationError", "AchievementNotFoundError",
+			"ChatCommandExecutionError", "ChatCommandRenderError", "ChatCommandSendError",
+			"CommandNotFoundError", "CommandNotUpdateableError", "CommandsDbError",
+			"DLQItemNotFoundError", "DurableObjectError", "DurableObjectRpcProtocolError",
+			"EventBusDbError", "EventBusHandlerError", "EventBusRoutingError", "EventBusValidationError",
+			"InvalidIsoTimestampError", "InvalidSpotifyUrlError", "KeyboardRaffleDbError",
+			"NoRefreshTokenError", "RewardRoutingConfigError", "RollNotFoundError",
+			"SagaAlreadyExistsError", "SagaCodecParseError", "SagaCompensationError", "SagaInputParseError",
+			"SagaNotFoundError", "SagaPersistedDataError", "SagaRunnerDbError", "SagaScheduleError",
+			"SagaStepError", "SagaStepRetrying", "SongQueueDbError", "SongRequestNotFoundError",
+			"SpotifyNetworkError", "SpotifyNoActiveDeviceError", "SpotifyParseError", "SpotifyRateLimitError",
+			"SpotifyTokenExchangeError", "SpotifyTrackNotFoundError", "SpotifyUnauthorizedError",
+			"StreamOfflineNoTokenError", "TokenAuthorizationRevokedError", "TokenConfigurationError",
+			"TokenInputParseError", "TokenNotConfiguredError", "TokenRefreshNetworkError",
+			"TokenRefreshParseError", "TokenStatePersistenceError", "TokenUnavailableWhileStreamOfflineError",
+			"TwitchChatSendError", "TwitchNetworkError", "TwitchNoSubscriptionReturnedError", "TwitchParseError",
+			"TwitchRateLimitError", "TwitchRedemptionUpdateError", "TwitchShoutoutCreateError",
+			"TwitchSubscriptionCreateError", "TwitchSubscriptionDeleteError", "TwitchTokenExchangeError",
+			"TwitchUnauthorizedError", "UnknownRewardError", "UserStatsNotFoundError",
+		]),
+		message: z.string(),
+	})
+	.passthrough();
+
+const RpcResultEnvelopeSchema = z.union([
+	z.object({ status: z.literal("ok"), value: z.unknown() })
+		.strict()
+		.refine((payload) => Object.hasOwn(payload, "value"), { message: "Missing success value" }),
+	z.object({ status: z.literal("error"), error: z.unknown() })
+		.strict()
+		.refine((payload) => Object.hasOwn(payload, "error"), { message: "Missing error value" }),
+]);
+
+const TokenRpcErrorSchema = KnownRpcErrorSchema.refine(
+	(error) => [
+		"NoRefreshTokenError", "TokenAuthorizationRevokedError", "TokenConfigurationError",
+		"TokenInputParseError", "TokenNotConfiguredError", "TokenRefreshNetworkError",
+		"TokenRefreshParseError", "TokenStatePersistenceError", "TokenUnavailableWhileStreamOfflineError",
+	].includes(error._tag),
+	{ message: "Expected a token lifecycle error tag" },
+);
+
+const TOKEN_RPC_PAYLOAD_CODECS: DurableObjectRpcPayloadCodecs = {
+	onStreamOnline: { success: z.undefined(), error: TokenRpcErrorSchema },
+	onStreamOffline: { success: z.undefined(), error: TokenRpcErrorSchema },
+	getValidToken: { success: z.string().min(1), error: TokenRpcErrorSchema },
+	setTokens: { success: z.undefined(), error: TokenRpcErrorSchema },
+};
+
+/** Parse an RPC envelope and its method payload before returning it to typed callers. */
+export function parseDurableObjectRpcResult<T, E>(
+	value: unknown,
+	method: string,
+	codec?: DurableObjectRpcPayloadCodec<T, E>,
+): Result<T, E | DurableObjectRpcProtocolError> {
+	const envelope = RpcResultEnvelopeSchema.safeParse(value);
+	if (!envelope.success) {
+		return Result.err(new DurableObjectRpcProtocolError({
+			method,
+			payloadPart: "envelope",
+			parseError: envelope.error.message,
+		}));
+	}
+
+	if (envelope.data.status === "ok") {
+		if (codec !== undefined) {
+			const parsedSuccess = codec.success.safeParse(envelope.data.value);
+			if (!parsedSuccess.success) {
+				return Result.err(new DurableObjectRpcProtocolError({
+					method,
+					payloadPart: "success",
+					parseError: parsedSuccess.error.message,
+				}));
+			}
+			return Result.ok(parsedSuccess.data);
+		}
+		// SAFETY: Callers without a method codec retain the legacy typed-stub contract;
+		// the strict envelope still prevents malformed transport projections.
+		return Result.ok(envelope.data.value as T);
+	}
+
+	const parsedKnownError = KnownRpcErrorSchema.safeParse(envelope.data.error);
+	if (!parsedKnownError.success) {
+		return Result.err(new DurableObjectRpcProtocolError({
+			method,
+			payloadPart: "error",
+			parseError: parsedKnownError.error.message,
+		}));
+	}
+	if (codec !== undefined) {
+		const parsedError = codec.error.safeParse(parsedKnownError.data);
+		if (!parsedError.success) {
+			return Result.err(new DurableObjectRpcProtocolError({
+				method,
+				payloadPart: "error",
+				parseError: parsedError.error.message,
+			}));
+		}
+		return Result.err(parsedError.data);
+	}
+	// SAFETY: The known-error schema establishes the globally registered tagged-error
+	// transport contract; method-specific callers should supply a codec for a narrower E.
+	return Result.err(parsedKnownError.data as E);
+}
 
 /**
  * Extract public RPC methods from a DO class (excludes lifecycle methods and symbols)
@@ -235,25 +357,32 @@ export function getStub<K extends DONamespaceKeys>(
 	key: K,
 	id?: string,
 ): DeserializedStub<ExtractDO<K>> {
-	const env = getEnv();
-	const namespace = env[key];
+	const methodCodecs =
+		key === "SPOTIFY_TOKEN_DO" || key === "TWITCH_TOKEN_DO"
+			? TOKEN_RPC_PAYLOAD_CODECS
+			: undefined;
+	return getStubFromNamespace(key, getEnv()[key], id, methodCodecs);
+}
+
+/** Build a typed stub from an explicitly injected Durable Object namespace binding. */
+export function getStubFromNamespace<K extends DONamespaceKeys>(
+	key: K,
+	namespace: Env[K],
+	id?: string,
+	methodCodecs?: DurableObjectRpcPayloadCodecs,
+): DeserializedStub<ExtractDO<K>> {
 	const resolvedId = id ?? SINGLETON_IDS[key];
+	if (!resolvedId) throw new Error(`Durable Object singleton ID missing for "${key}"`);
 
-	if (!resolvedId) {
-		throw new Error(`No singleton ID mapped for "${key}". Pass an explicit ID.`);
-	}
-
-	// Bind methods to preserve `this` context on namespace methods.
-	// Extracting methods from DO namespace bindings causes "Illegal invocation" errors
-	// because workerd uses `this instanceof DurableObjectNamespace` checks internally.
-	// See: https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors
 	const idFromName = namespace.idFromName.bind(namespace);
 	const get = namespace.get.bind(namespace);
-
-	const doId = idFromName(resolvedId);
-	const stub = get(doId);
-
-	return wrapStub<ExtractDO<K>>(stub, resolvedId);
+	const stub = get(idFromName(resolvedId));
+	const effectiveCodecs =
+		methodCodecs ??
+		(key === "SPOTIFY_TOKEN_DO" || key === "TWITCH_TOKEN_DO"
+			? TOKEN_RPC_PAYLOAD_CODECS
+			: undefined);
+	return wrapStub<ExtractDO<K>>(stub, resolvedId, effectiveCodecs);
 }
 
 /**
@@ -266,7 +395,11 @@ export function getStub<K extends DONamespaceKeys>(
  * special property access behavior where Reflect.get returns a different
  * (broken) function than direct property access.
  */
-function wrapStub<DO>(stub: DurableObjectStub, stubName?: string): DeserializedStub<DO> {
+function wrapStub<DO>(
+	stub: DurableObjectStub,
+	stubName?: string,
+	methodCodecs?: DurableObjectRpcPayloadCodecs,
+): DeserializedStub<DO> {
 	const stubLogger = logger.child({
 		component: "durable_object",
 		do_name: stubName,
@@ -383,16 +516,21 @@ function wrapStub<DO>(stub: DurableObjectStub, stubName?: string): DeserializedS
 
 					// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-call -- dynamic call
 					const result = await (original as (...a: unknown[]) => unknown)(...args);
-					const deserialized = Result.deserialize(result);
-					if (deserialized !== null) {
+					const envelope = RpcResultEnvelopeSchema.safeParse(result);
+					if (envelope.success || methodCodecs?.[rpcMethod] !== undefined) {
+						const parsedResult = parseDurableObjectRpcResult(
+							result,
+							rpcMethod,
+							methodCodecs?.[rpcMethod],
+						);
 						stubLogger.info("Durable Object RPC succeeded", {
 							event: "do.rpc.succeeded",
 							rpc_method: rpcMethod,
 							duration_ms: timer(),
-							result_status: deserialized.status,
-							...(deserialized.status === "error" ? normalizeError(deserialized.error) : {}),
+							result_status: parsedResult.status,
+							...(parsedResult.status === "error" ? normalizeError(parsedResult.error) : {}),
 						});
-						return deserialized;
+						return parsedResult;
 					}
 
 					stubLogger.info("Durable Object RPC succeeded", {

@@ -19,11 +19,81 @@ export class NoRefreshTokenError extends TaggedError("NoRefreshTokenError")<{
 	}
 }
 
+/** Expected failure when OAuth setup has not supplied provider credentials. */
+export class TokenNotConfiguredError extends TaggedError("TokenNotConfiguredError")<{
+	provider: "spotify" | "twitch";
+	message: string;
+}>() {
+	constructor(args: { provider: "spotify" | "twitch" }) {
+		super({
+			...args,
+			message: `Token not configured for ${args.provider}; OAuth authorization is required`,
+		});
+	}
+}
+
+/** Expected failure when an expired token cannot be refreshed while the stream is offline. */
+export class TokenUnavailableWhileStreamOfflineError extends TaggedError(
+	"TokenUnavailableWhileStreamOfflineError",
+)<{
+	provider: "spotify" | "twitch";
+	message: string;
+}>() {
+	constructor(args: { provider: "spotify" | "twitch" }) {
+		super({
+			...args,
+			message: `Token unavailable while stream is offline for ${args.provider}`,
+		});
+	}
+}
+
+/** @deprecated Use the truthful token configuration or offline-unavailable errors. */
 export class StreamOfflineNoTokenError extends TaggedError("StreamOfflineNoTokenError")<{
 	message: string;
 }>() {
 	constructor() {
-		super({ message: "No token available and stream is offline" });
+		super({ message: "Legacy token unavailable while stream is offline" });
+	}
+}
+
+/** Expected failure when a token RPC payload does not satisfy provider invariants. */
+export class TokenInputParseError extends TaggedError("TokenInputParseError")<{
+	provider: "spotify" | "twitch";
+	parseError: string;
+	message: string;
+}>() {
+	constructor(args: { provider: "spotify" | "twitch"; parseError: string }) {
+		super({ ...args, message: `Invalid ${args.provider} token RPC payload` });
+	}
+}
+
+/** Expected failure while parsing or persisting Durable Object token lifecycle state. */
+export class TokenStatePersistenceError extends TaggedError("TokenStatePersistenceError")<{
+	provider: "spotify" | "twitch";
+	operation: "parse" | "persist" | "schedule" | "cancel-schedule";
+	message: string;
+	cause?: unknown;
+}>() {
+	constructor(args: {
+		provider: "spotify" | "twitch";
+		operation: "parse" | "persist" | "schedule" | "cancel-schedule";
+		cause?: unknown;
+	}) {
+		super({
+			...args,
+			message: `Token state persistence failed for ${args.provider} during ${args.operation}`,
+		});
+	}
+}
+
+/** Expected failure when required provider token configuration is absent or malformed. */
+export class TokenConfigurationError extends TaggedError("TokenConfigurationError")<{
+	provider: "spotify" | "twitch";
+	parseError: string;
+	message: string;
+}>() {
+	constructor(args: { provider: "spotify" | "twitch"; parseError: string }) {
+		super({ ...args, message: `Token refresh configuration invalid for ${args.provider}` });
 	}
 }
 
@@ -70,8 +140,13 @@ export class TokenAuthorizationRevokedError extends TaggedError("TokenAuthorizat
 /** Union of all token-related errors */
 export type TokenError =
 	| NoRefreshTokenError
+	| TokenNotConfiguredError
+	| TokenUnavailableWhileStreamOfflineError
 	| StreamOfflineNoTokenError
 	| TokenAuthorizationRevokedError
+	| TokenConfigurationError
+	| TokenInputParseError
+	| TokenStatePersistenceError
 	| TokenRefreshNetworkError
 	| TokenRefreshParseError;
 
@@ -324,6 +399,25 @@ export type TwitchApiError =
 // =============================================================================
 // Durable Object Errors
 // =============================================================================
+
+/** Expected RPC protocol failure when a Durable Object returns an invalid method payload. */
+export class DurableObjectRpcProtocolError extends TaggedError("DurableObjectRpcProtocolError")<{
+	method: string;
+	payloadPart: "envelope" | "success" | "error";
+	parseError: string;
+	message: string;
+}>() {
+	constructor(args: {
+		method: string;
+		payloadPart: "envelope" | "success" | "error";
+		parseError: string;
+	}) {
+		super({
+			...args,
+			message: `Durable Object RPC protocol invalid for ${args.method} ${args.payloadPart} payload`,
+		});
+	}
+}
 
 export class DurableObjectError extends TaggedError("DurableObjectError")<{
 	method: string;
