@@ -2,12 +2,14 @@
  * OAuth routes for initial token setup
  *
  * Handles authorization redirects and callbacks for Spotify and Twitch.
- * Protected by OAUTH_SETUP_SECRET - must be provided via header or query param.
+ * Protected by OAUTH_SETUP_SECRET, which must be provided only via the setup header.
  */
 
 import { Hono } from "hono";
 
+import { constantTimeEquals } from "../lib/crypto";
 import { getStub } from "../lib/durable-objects";
+import { RedactedValue } from "../lib/redacted-value";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import { SpotifyService } from "../services/spotify-service";
 import { TwitchService } from "../services/twitch-service";
@@ -16,6 +18,7 @@ import type { Env } from "../index";
 
 const SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize";
 const TWITCH_AUTH_URL = "https://id.twitch.tv/oauth2/authorize";
+const OAUTH_STATE_LIFETIME_MS = 10 * 60 * 1_000;
 
 /**
  * Spotify OAuth scopes required for the application
@@ -40,12 +43,11 @@ const TWITCH_SCOPES = [
 const oauth = new Hono<AppRouteEnv<Env>>();
 
 /**
- * Middleware to verify setup secret on authorize endpoints.
- * Accepts secret via X-Setup-Secret header or setup_secret query param.
+ * Middleware to verify the header-only setup secret on authorize endpoints.
  */
 oauth.use("/*/authorize", async (c, next) => {
 	const routeLogger = getRequestLogger(c).child({ route: c.req.path, component: "route" });
-	const secret = c.req.header("x-setup-secret") ?? c.req.query("setup_secret");
+	const secret = c.req.header("x-setup-secret");
 
 	if (!c.env.OAUTH_SETUP_SECRET) {
 		routeLogger.error("OAuth setup secret misconfigured", {
@@ -56,7 +58,7 @@ oauth.use("/*/authorize", async (c, next) => {
 		return c.json({ error: "OAuth setup not configured" }, 500);
 	}
 
-	if (!secret || secret !== c.env.OAUTH_SETUP_SECRET) {
+	if (!secret || !constantTimeEquals(secret, c.env.OAUTH_SETUP_SECRET)) {
 		routeLogger.warn("OAuth setup secret denied", {
 			event: "oauth.setup_secret.denied",
 			has_secret: Boolean(secret),
@@ -84,23 +86,73 @@ function getOrigin(c: {
 	return `${proto}://${url.host}`;
 }
 
+type OAuthProvider = "spotify" | "twitch";
+
+async function createOAuthAuthorizationState(
+	env: Env,
+	provider: OAuthProvider,
+	redirectUri: string,
+): Promise<{ readonly status: "ok"; readonly state: string } | { readonly status: "error" }> {
+	const state = crypto.randomUUID();
+	const createdAtMs = Date.now();
+	try {
+		const stub = env.OAUTH_STATE_DO.getByName(state);
+		const result = await stub.createOAuthAuthorizationAttempt({
+			state,
+			provider,
+			redirectUri,
+			createdAtMs,
+			expiresAtMs: createdAtMs + OAUTH_STATE_LIFETIME_MS,
+		});
+		return result.status === "ok" ? { status: "ok", state } : { status: "error" };
+	} catch {
+		return { status: "error" };
+	}
+}
+
+async function consumeOAuthAuthorizationState(
+	env: Env,
+	provider: OAuthProvider,
+	redirectUri: string,
+	state: string | undefined,
+): Promise<"ok" | "invalid" | "expired" | "consumed" | "mismatch" | "unavailable"> {
+	if (state === undefined) return "invalid";
+	try {
+		const stub = env.OAUTH_STATE_DO.getByName(state);
+		const result = await stub.consumeOAuthAuthorizationAttempt({
+			state,
+			provider,
+			redirectUri,
+			consumedAtMs: Date.now(),
+		});
+		return result.status;
+	} catch {
+		return "unavailable";
+	}
+}
+
 /**
  * GET /oauth/spotify/authorize
  * Redirects to Spotify authorization page
  */
-oauth.get("/spotify/authorize", (c) => {
+oauth.get("/spotify/authorize", async (c) => {
 	const routeLogger = getRequestLogger(c).child({
 		route: "/oauth/spotify/authorize",
 		component: "route",
 	});
 	const origin = getOrigin(c);
 	const redirectUri = `${origin}/oauth/spotify/callback`;
+	const stateResult = await createOAuthAuthorizationState(c.env, "spotify", redirectUri);
+	if (stateResult.status === "error") {
+		return c.json({ error: "Unable to start Spotify authorization" }, 503);
+	}
 
 	const authUrl = new URL(SPOTIFY_AUTH_URL);
 	authUrl.searchParams.set("client_id", c.env.SPOTIFY_CLIENT_ID);
 	authUrl.searchParams.set("response_type", "code");
 	authUrl.searchParams.set("redirect_uri", redirectUri);
 	authUrl.searchParams.set("scope", SPOTIFY_SCOPES);
+	authUrl.searchParams.set("state", stateResult.state);
 
 	routeLogger.info("Redirecting to Spotify authorization", {
 		event: "oauth.spotify.authorize.redirecting",
@@ -122,8 +174,21 @@ oauth.get("/spotify/callback", async (c) => {
 	});
 	const code = c.req.query("code");
 	const error = c.req.query("error");
+	const state = c.req.query("state");
 	const origin = getOrigin(c);
 	const redirectUri = `${origin}/oauth/spotify/callback`;
+	const stateStatus = await consumeOAuthAuthorizationState(
+		c.env,
+		"spotify",
+		redirectUri,
+		state,
+	);
+	if (stateStatus === "unavailable") {
+		return c.json({ error: "OAuth state validation unavailable" }, 503);
+	}
+	if (stateStatus !== "ok") {
+		return c.json({ error: "Invalid or expired OAuth state", code: stateStatus }, 400);
+	}
 
 	routeLogger.info("Spotify callback received", {
 		event: "oauth.spotify.callback.received",
@@ -160,7 +225,10 @@ oauth.get("/spotify/callback", async (c) => {
 	});
 
 	const spotifyService = new SpotifyService(c.env);
-	const tokensResult = await spotifyService.exchangeToken(code, redirectUri);
+	const tokensResult = await spotifyService.exchangeToken(
+		RedactedValue.fromSensitiveValue(code),
+		redirectUri,
+	);
 
 	if (tokensResult.status === "error") {
 		routeLogger.error("Spotify token exchange failed", {
@@ -173,7 +241,17 @@ oauth.get("/spotify/callback", async (c) => {
 
 	const tokens = tokensResult.value;
 	const stub = getStub("SPOTIFY_TOKEN_DO");
-	await stub.setTokens(tokens);
+	const persistenceResult = await stub.setTokens(tokens);
+	if (persistenceResult.status === "error") {
+		routeLogger.error("Spotify token persistence failed", {
+			event: "oauth.spotify.callback.persistence_failed",
+			error_tag: persistenceResult.error._tag,
+		});
+		return c.json(
+			{ error: "Spotify tokens could not be stored", code: persistenceResult.error._tag },
+			503,
+		);
+	}
 
 	routeLogger.info("Spotify tokens stored", {
 		event: "oauth.spotify.callback.tokens_stored",
@@ -197,19 +275,24 @@ oauth.get("/spotify/callback", async (c) => {
  * GET /oauth/twitch/authorize
  * Redirects to Twitch authorization page
  */
-oauth.get("/twitch/authorize", (c) => {
+oauth.get("/twitch/authorize", async (c) => {
 	const routeLogger = getRequestLogger(c).child({
 		route: "/oauth/twitch/authorize",
 		component: "route",
 	});
 	const origin = getOrigin(c);
 	const redirectUri = `${origin}/oauth/twitch/callback`;
+	const stateResult = await createOAuthAuthorizationState(c.env, "twitch", redirectUri);
+	if (stateResult.status === "error") {
+		return c.json({ error: "Unable to start Twitch authorization" }, 503);
+	}
 
 	const authUrl = new URL(TWITCH_AUTH_URL);
 	authUrl.searchParams.set("client_id", c.env.TWITCH_CLIENT_ID);
 	authUrl.searchParams.set("response_type", "code");
 	authUrl.searchParams.set("redirect_uri", redirectUri);
 	authUrl.searchParams.set("scope", TWITCH_SCOPES);
+	authUrl.searchParams.set("state", stateResult.state);
 
 	routeLogger.info("Redirecting to Twitch authorization", {
 		event: "oauth.twitch.authorize.redirecting",
@@ -232,8 +315,21 @@ oauth.get("/twitch/callback", async (c) => {
 	const code = c.req.query("code");
 	const error = c.req.query("error");
 	const errorDescription = c.req.query("error_description");
+	const state = c.req.query("state");
 	const origin = getOrigin(c);
 	const redirectUri = `${origin}/oauth/twitch/callback`;
+	const stateStatus = await consumeOAuthAuthorizationState(
+		c.env,
+		"twitch",
+		redirectUri,
+		state,
+	);
+	if (stateStatus === "unavailable") {
+		return c.json({ error: "OAuth state validation unavailable" }, 503);
+	}
+	if (stateStatus !== "ok") {
+		return c.json({ error: "Invalid or expired OAuth state", code: stateStatus }, 400);
+	}
 
 	routeLogger.info("Twitch callback received", {
 		event: "oauth.twitch.callback.received",
@@ -277,7 +373,10 @@ oauth.get("/twitch/callback", async (c) => {
 	});
 
 	const twitchService = new TwitchService(c.env);
-	const tokensResult = await twitchService.exchangeToken(code, redirectUri);
+	const tokensResult = await twitchService.exchangeToken(
+		RedactedValue.fromSensitiveValue(code),
+		redirectUri,
+	);
 
 	if (tokensResult.status === "error") {
 		routeLogger.error("Twitch token exchange failed", {
@@ -290,7 +389,14 @@ oauth.get("/twitch/callback", async (c) => {
 
 	const tokens = tokensResult.value;
 	const stub = getStub("TWITCH_TOKEN_DO");
-	await stub.setTokens(tokens);
+	const persistenceResult = await stub.setTokens(tokens);
+	if (persistenceResult.status === "error") {
+		routeLogger.error("Twitch token persistence failed", {
+			event: "oauth.twitch.callback.persistence_failed",
+			error_tag: persistenceResult.error._tag,
+		});
+		return c.json({ error: "Twitch tokens could not be stored", code: persistenceResult.error._tag }, 503);
+	}
 
 	routeLogger.info("Twitch tokens stored", {
 		event: "oauth.twitch.callback.tokens_stored",

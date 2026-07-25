@@ -103,7 +103,7 @@ export function mockTwitchRedemptionUpdate(mock: FetchMock): void {
 	mock
 		.get("https://api.twitch.tv")
 		.intercept({ path: /\/helix\/channel_points\/custom_rewards\/redemptions/, method: "PATCH" })
-		.reply(200, JSON.stringify({ data: [{}] }), {
+		.reply(200, JSON.stringify({ data: [{ id: "test-redemption-id" }] }), {
 			headers: { "content-type": "application/json" },
 		});
 }
@@ -115,7 +115,11 @@ export function mockTwitchChatMessage(mock: FetchMock): void {
 	mock
 		.get("https://api.twitch.tv")
 		.intercept({ path: "/helix/chat/messages", method: "POST" })
-		.reply(200, JSON.stringify({ data: [{}] }), {
-			headers: { "content-type": "application/json" },
-		});
+		.reply(
+			200,
+			JSON.stringify({
+				data: [{ message_id: "test-chat-message-id", is_sent: true, drop_reason: null }],
+			}),
+			{ headers: { "content-type": "application/json" } },
+		);
 }

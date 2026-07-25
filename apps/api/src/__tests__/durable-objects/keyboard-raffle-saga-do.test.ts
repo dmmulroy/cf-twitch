@@ -94,7 +94,8 @@ async function ensureKeyboardRaffleStub(): Promise<DurableObjectStub<KeyboardRaf
 }
 
 function mockTwitchRedemptionFailure(status: number): void {
-	for (let attempt = 0; attempt < 4; attempt += 1) {
+	const attemptCount = status >= 500 ? 4 : 1;
+	for (let attempt = 0; attempt < attemptCount; attempt += 1) {
 		fetchMock
 			.get("https://api.twitch.tv")
 			.intercept({

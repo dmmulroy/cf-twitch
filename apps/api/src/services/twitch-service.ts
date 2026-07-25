@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import { getStub } from "../lib/durable-objects";
 import {
+	TwitchChatDroppedError,
 	TwitchChatSendError,
 	TwitchNetworkError,
 	TwitchNoSubscriptionReturnedError,
@@ -25,16 +26,70 @@ import {
 	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { RedactedValue } from "../lib/redacted-value";
 
 import type { Env } from "../index";
 
+const DEFAULT_TWITCH_RETRY_AFTER_MS = 1_000;
+const MAXIMUM_TWITCH_RETRY_AFTER_MS = 15 * 60 * 1_000;
+
+function parseTwitchRetryAfterMs(response: Response): number {
+	const rawSeconds = response.headers.get("Retry-After");
+	if (rawSeconds === null) return DEFAULT_TWITCH_RETRY_AFTER_MS;
+	const seconds = Number(rawSeconds);
+	if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_TWITCH_RETRY_AFTER_MS;
+	return Math.min(Math.ceil(seconds * 1_000), MAXIMUM_TWITCH_RETRY_AFTER_MS);
+}
+
+function isRetryableTwitchTechnicalError(error: unknown): boolean {
+	const parsed = z
+		.object({ _tag: z.literal("TwitchNetworkError"), status: z.number() })
+		.safeParse(error);
+	return parsed.success && (parsed.data.status === 0 || parsed.data.status >= 500);
+}
+
+const TwitchServiceConfigSchema = z.object({
+	TWITCH_CLIENT_ID: z.string().trim().min(1),
+	TWITCH_CLIENT_SECRET: z.string().min(1),
+	TWITCH_BROADCASTER_ID: z.string().trim().min(1),
+});
+
 // Zod schema for Twitch OAuth token response
+const NonEmptyProviderStringSchema = z.string().trim().min(1);
+const PositiveExpirySecondsSchema = z.number().int().positive().finite();
+
 const TwitchTokenResponseSchema = z.object({
-	access_token: z.string(),
-	refresh_token: z.string(),
-	token_type: z.string(),
-	expires_in: z.number(),
-	scope: z.array(z.string()),
+	access_token: NonEmptyProviderStringSchema,
+	refresh_token: NonEmptyProviderStringSchema,
+	token_type: NonEmptyProviderStringSchema,
+	expires_in: PositiveExpirySecondsSchema,
+	scope: z.array(NonEmptyProviderStringSchema),
+});
+
+const TwitchAppTokenResponseSchema = z.object({
+	access_token: NonEmptyProviderStringSchema,
+	token_type: NonEmptyProviderStringSchema,
+	expires_in: PositiveExpirySecondsSchema,
+});
+
+const TwitchChatMessageSchema = z.string().min(1).max(500);
+const TwitchChatResponseSchema = z.object({
+	data: z.array(
+		z.object({
+			message_id: NonEmptyProviderStringSchema,
+			is_sent: z.boolean(),
+			drop_reason: z
+				.object({
+					code: NonEmptyProviderStringSchema,
+					message: z.string(),
+				})
+				.nullable(),
+		}),
+	).min(1),
+});
+
+const TwitchRedemptionUpdateResponseSchema = z.object({
+	data: z.array(z.object({ id: NonEmptyProviderStringSchema.optional() })).min(1),
 });
 
 export type TwitchTokenResponse = z.infer<typeof TwitchTokenResponseSchema>;
@@ -69,14 +124,33 @@ export interface StreamInfo {
 	title: string;
 }
 
+const EventSubSubscriptionStatusSchema = z.enum([
+	"enabled",
+	"webhook_callback_verification_pending",
+	"webhook_callback_verification_failed",
+	"notification_failures_exceeded",
+	"authorization_revoked",
+	"moderator_removed",
+	"user_removed",
+	"version_removed",
+	"beta_maintenance",
+	"websocket_disconnected",
+	"websocket_failed_ping_pong",
+	"websocket_received_inbound_traffic",
+	"websocket_connection_unused",
+	"websocket_internal_error",
+	"websocket_network_timeout",
+	"websocket_network_error",
+]);
+
 // Zod schema for EventSub subscription response
 const EventSubSubscriptionResponseSchema = z.object({
 	data: z.array(
 		z.object({
 			id: z.string(),
-			status: z.string(),
-			type: z.string(),
-			version: z.string(),
+			status: EventSubSubscriptionStatusSchema,
+			type: NonEmptyProviderStringSchema,
+			version: NonEmptyProviderStringSchema,
 			cost: z.number(),
 			condition: z.record(z.string(), z.unknown()),
 			transport: z.object({
@@ -89,6 +163,7 @@ const EventSubSubscriptionResponseSchema = z.object({
 	total: z.number(),
 	total_cost: z.number(),
 	max_total_cost: z.number(),
+	pagination: z.object({ cursor: NonEmptyProviderStringSchema.optional() }).default({}),
 });
 
 export type EventSubSubscriptionType =
@@ -98,9 +173,13 @@ export type EventSubSubscriptionType =
 	| "channel.chat.message"
 	| "channel.raid";
 
+/** Parsed Twitch EventSub lifecycle status, including callback verification pending. */
+export type EventSubSubscriptionStatus = z.infer<typeof EventSubSubscriptionStatusSchema>;
+
+/** Provider subscription evidence returned after complete EventSub pagination. */
 export interface EventSubSubscription {
 	id: string;
-	status: string;
+	status: EventSubSubscriptionStatus;
 	type: string;
 	version: string;
 	condition: Record<string, unknown>;
@@ -117,13 +196,30 @@ export type TwitchError = TwitchApiError | TokenError;
  * TwitchService - Twitch API operations
  */
 export class TwitchService {
-	constructor(public env: Env) {}
+	private readonly env: Pick<Env, "TWITCH_CLIENT_ID" | "TWITCH_BROADCASTER_ID">;
+	private readonly twitchClientSecret: RedactedValue<string>;
+
+	constructor(
+		env: Pick<Env, "TWITCH_CLIENT_ID" | "TWITCH_CLIENT_SECRET" | "TWITCH_BROADCASTER_ID">,
+	) {
+		const parsedConfig = TwitchServiceConfigSchema.safeParse(env);
+		if (!parsedConfig.success) {
+			throw new Error("Twitch provider configuration is invalid");
+		}
+		this.env = {
+			TWITCH_CLIENT_ID: parsedConfig.data.TWITCH_CLIENT_ID,
+			TWITCH_BROADCASTER_ID: parsedConfig.data.TWITCH_BROADCASTER_ID,
+		};
+		this.twitchClientSecret = RedactedValue.fromSensitiveValue(
+			parsedConfig.data.TWITCH_CLIENT_SECRET,
+		);
+	}
 
 	/**
 	 * Exchange OAuth authorization code for access/refresh tokens
 	 */
 	async exchangeToken(
-		code: string,
+		code: RedactedValue<string>,
 		redirectUri: string,
 	): Promise<Result<TwitchTokenResponse, TwitchTokenExchangeError | TwitchParseError>> {
 		logger.info("Exchanging Twitch authorization code for tokens", {
@@ -140,9 +236,9 @@ export class TwitchService {
 					},
 					body: new URLSearchParams({
 						client_id: this.env.TWITCH_CLIENT_ID,
-						client_secret: this.env.TWITCH_CLIENT_SECRET,
+						client_secret: this.twitchClientSecret.unsafeUnwrapForFinalIo(),
 						grant_type: "authorization_code",
-						code,
+						code: code.unsafeUnwrapForFinalIo(),
 						redirect_uri: redirectUri,
 					}),
 				}),
@@ -326,7 +422,7 @@ export class TwitchService {
 		version: string,
 		condition: Record<string, string>,
 		callbackUrl: string,
-		secret: string,
+		secret: RedactedValue<string>,
 	) {
 		// EventSub webhooks require app access token, not user token
 		const tokenResult = await this.getAppToken();
@@ -351,7 +447,7 @@ export class TwitchService {
 						transport: {
 							method: "webhook",
 							callback: callbackUrl,
-							secret,
+							secret: secret.unsafeUnwrapForFinalIo(),
 						},
 					}),
 				}),
@@ -439,79 +535,88 @@ export class TwitchService {
 	 * Get all EventSub subscriptions
 	 * Uses app access token as required by Twitch API
 	 */
-	async listEventSubSubscriptions() {
+	async listEventSubSubscriptions(): Promise<
+		Result<EventSubSubscription[], TwitchNetworkError | TwitchParseError>
+	> {
 		const tokenResult = await this.getAppToken();
 		if (tokenResult.status === "error") {
 			return Result.err(tokenResult.error);
 		}
 		const accessToken = tokenResult.value;
+		const subscriptions: EventSubSubscription[] = [];
+		let cursor: string | undefined;
+		const maximumPageCount = 100;
 
-		const fetchResult = await Result.tryPromise({
-			try: () =>
-				fetch("https://api.twitch.tv/helix/eventsub/subscriptions", {
-					headers: {
-						"Client-ID": this.env.TWITCH_CLIENT_ID,
-						Authorization: `Bearer ${accessToken}`,
-					},
-				}),
-			catch: (cause) =>
-				new TwitchNetworkError({
-					status: 0,
-					context: `listEventSubSubscriptions: ${String(cause)}`,
-				}),
-		});
+		for (let page = 1; page <= maximumPageCount; page++) {
+			const url = new URL("https://api.twitch.tv/helix/eventsub/subscriptions");
+			if (cursor !== undefined) url.searchParams.set("after", cursor);
 
-		if (fetchResult.status === "error") {
-			logger.error("Twitch listEventSubSubscriptions network error", {
-				error: fetchResult.error.message,
+			const fetchResult = await Result.tryPromise({
+				try: () =>
+					fetch(url, {
+						headers: {
+							"Client-ID": this.env.TWITCH_CLIENT_ID,
+							Authorization: `Bearer ${accessToken}`,
+						},
+					}),
+				catch: (cause) =>
+					new TwitchNetworkError({
+						status: 0,
+						context: `listEventSubSubscriptions page ${page}: ${String(cause)}`,
+					}),
 			});
-			return Result.err(fetchResult.error);
-		}
+			if (fetchResult.status === "error") return Result.err(fetchResult.error);
 
-		const response = fetchResult.value;
+			const response = fetchResult.value;
+			if (!response.ok) {
+				return Result.err(
+					new TwitchNetworkError({
+						status: response.status,
+						context: `listEventSubSubscriptions page ${page}`,
+					}),
+				);
+			}
 
-		if (!response.ok) {
-			logger.error("Failed to list EventSub subscriptions", {
-				status: response.status,
+			const jsonResult = await Result.tryPromise({
+				try: () => response.json(),
+				catch: (cause) =>
+					new TwitchParseError({
+						context: `EventSub list page ${page}`,
+						parseError: String(cause),
+					}),
 			});
-			return Result.err(
-				new TwitchNetworkError({
-					status: response.status,
-					context: "listEventSubSubscriptions",
-				}),
+			if (jsonResult.status === "error") return Result.err(jsonResult.error);
+
+			const parsed = EventSubSubscriptionResponseSchema.safeParse(jsonResult.value);
+			if (!parsed.success) {
+				return Result.err(
+					new TwitchParseError({
+						context: `EventSub list page ${page}`,
+						parseError: parsed.error.message,
+					}),
+				);
+			}
+
+			subscriptions.push(
+				...parsed.data.data.map((sub) => ({
+					id: sub.id,
+					status: sub.status,
+					type: sub.type,
+					version: sub.version,
+					condition: sub.condition,
+					transport: sub.transport,
+				})),
 			);
+
+			cursor = parsed.data.pagination.cursor;
+			if (cursor === undefined) return Result.ok(subscriptions);
 		}
 
-		const jsonResult = await Result.tryPromise({
-			try: () => response.json(),
-			catch: (cause) =>
-				new TwitchParseError({ context: "EventSub list", parseError: String(cause) }),
-		});
-
-		if (jsonResult.status === "error") {
-			return Result.err(jsonResult.error);
-		}
-
-		const parsed = EventSubSubscriptionResponseSchema.safeParse(jsonResult.value);
-
-		if (!parsed.success) {
-			logger.error("Failed to parse EventSub subscriptions list", {
-				error: parsed.error.message,
-			});
-			return Result.err(
-				new TwitchParseError({ context: "EventSub list", parseError: parsed.error.message }),
-			);
-		}
-
-		return Result.ok(
-			parsed.data.data.map((sub) => ({
-				id: sub.id,
-				status: sub.status,
-				type: sub.type,
-				version: sub.version,
-				condition: sub.condition,
-				transport: sub.transport,
-			})),
+		return Result.err(
+			new TwitchParseError({
+				context: "EventSub list pagination",
+				parseError: `Exceeded defensive page limit of ${maximumPageCount}`,
+			}),
 		);
 	}
 
@@ -526,9 +631,11 @@ export class TwitchService {
 		}
 		const accessToken = tokenResult.value;
 
+		const url = new URL("https://api.twitch.tv/helix/eventsub/subscriptions");
+		url.searchParams.set("id", subscriptionId);
 		const fetchResult = await Result.tryPromise({
 			try: () =>
-				fetch(`https://api.twitch.tv/helix/eventsub/subscriptions?id=${subscriptionId}`, {
+				fetch(url, {
 					method: "DELETE",
 					headers: {
 						"Client-ID": this.env.TWITCH_CLIENT_ID,
@@ -571,10 +678,18 @@ export class TwitchService {
 	 * Uses Result.tryPromise with automatic retry and rate limit handling
 	 */
 	async sendChatMessage(message: string) {
-		const tokenResult = await this.getToken();
-		if (tokenResult.status === "error") {
-			return Result.err(tokenResult.error);
+		const parsedMessage = TwitchChatMessageSchema.safeParse(message);
+		if (!parsedMessage.success) {
+			return Result.err(
+				new TwitchChatSendError({
+					status: 0,
+					message: "Twitch chat message violates the 1 to 500 character limit",
+				}),
+			);
 		}
+
+		const tokenResult = await this.getToken();
+		if (tokenResult.status === "error") return Result.err(tokenResult.error);
 		const accessToken = tokenResult.value;
 
 		return Result.tryPromise(
@@ -588,54 +703,75 @@ export class TwitchService {
 						body: JSON.stringify({
 							broadcaster_id: this.env.TWITCH_BROADCASTER_ID,
 							sender_id: this.env.TWITCH_BROADCASTER_ID,
-							message,
+							message: parsedMessage.data,
 						}),
 					});
 
-					if (response.ok) {
-						logger.info("Chat message sent successfully", { message });
-						return;
-					}
-
-					// Handle 429 rate limit - throw with retry info
 					if (response.status === 429) {
-						const retryAfter = response.headers.get("Retry-After");
-						const retryAfterMs = retryAfter ? Number.parseInt(retryAfter, 10) * 1000 : 1000;
-						throw new TwitchRateLimitError({ retryAfterMs });
+						throw new TwitchRateLimitError({ retryAfterMs: parseTwitchRetryAfterMs(response) });
+					}
+					if (!response.ok) {
+						if (response.status >= 400 && response.status < 500) {
+							logger.error("Twitch chat send rejected", {
+								event: "twitch.chat.send.rejected",
+								status: response.status,
+								message_length: parsedMessage.data.length,
+							});
+							throw new TwitchChatSendError({ status: response.status });
+						}
+						throw new TwitchNetworkError({ status: response.status, context: "sendChatMessage" });
 					}
 
-					// 4xx errors (except 429) are not retryable
-					if (response.status >= 400 && response.status < 500) {
-						const errorBody = await response.text();
-						logger.error("Chat message send failed", {
-							status: response.status,
-							body: errorBody,
-							message,
+					const responseJson = await response.json().catch((cause: unknown) => {
+						throw new TwitchParseError({
+							context: "chat message delivery JSON",
+							parseError: String(cause),
 						});
-						throw new TwitchChatSendError({
-							status: response.status,
-							message: `Client error (${response.status}): ${errorBody}`,
+					});
+					const parsedResponse = TwitchChatResponseSchema.safeParse(responseJson);
+					if (!parsedResponse.success) {
+						throw new TwitchParseError({
+							context: "chat message delivery",
+							parseError: parsedResponse.error.message,
+						});
+					}
+					const delivery = parsedResponse.data.data[0];
+					if (delivery === undefined) {
+						throw new TwitchParseError({
+							context: "chat message delivery",
+							parseError: "Response did not contain delivery evidence",
+						});
+					}
+					if (!delivery.is_sent) {
+						throw new TwitchChatDroppedError({
+							dropCode: delivery.drop_reason?.code ?? "unknown",
 						});
 					}
 
-					// 5xx errors are retryable
-					throw new TwitchNetworkError({ status: response.status, context: "sendChatMessage" });
+					logger.info("Twitch chat message delivered", {
+						event: "twitch.chat.send.delivered",
+						message_length: parsedMessage.data.length,
+					});
 				},
 				catch: (error) => {
 					if (
+						TwitchChatDroppedError.is(error) ||
 						TwitchChatSendError.is(error) ||
+						TwitchParseError.is(error) ||
 						TwitchRateLimitError.is(error) ||
 						TwitchNetworkError.is(error)
-					) {
-						return error;
-					}
-					return new TwitchNetworkError({
-						status: 0,
-						context: `sendChatMessage: ${String(error)}`,
-					});
+					) return error;
+					return new TwitchNetworkError({ status: 0, context: `sendChatMessage: ${String(error)}` });
 				},
 			},
-			{ retry: { times: 3, delayMs: 1000, backoff: "exponential" } },
+			{
+				retry: {
+					times: 3,
+					delayMs: 1000,
+					backoff: "exponential",
+					shouldRetry: isRetryableTwitchTechnicalError,
+				},
+			},
 		);
 	}
 
@@ -666,10 +802,7 @@ export class TwitchService {
 					if (response.status === 204) return;
 
 					if (response.status === 429) {
-						const retryAfter = response.headers.get("Retry-After");
-						throw new TwitchRateLimitError({
-							retryAfterMs: retryAfter ? Number.parseInt(retryAfter, 10) * 1000 : 120_000,
-						});
+						throw new TwitchRateLimitError({ retryAfterMs: parseTwitchRetryAfterMs(response) });
 					}
 
 					const errorBody = await response.text();
@@ -702,7 +835,14 @@ export class TwitchService {
 					});
 				},
 			},
-			{ retry: { times: 3, delayMs: 1000, backoff: "exponential" } },
+			{
+				retry: {
+					times: 3,
+					delayMs: 1000,
+					backoff: "exponential",
+					shouldRetry: isRetryableTwitchTechnicalError,
+				},
+			},
 		);
 	}
 
@@ -732,6 +872,19 @@ export class TwitchService {
 					);
 
 					if (response.ok) {
+						const responseJson = await response.json().catch((cause: unknown) => {
+							throw new TwitchParseError({
+								context: "redemption status update JSON",
+								parseError: String(cause),
+							});
+						});
+						const parsedResponse = TwitchRedemptionUpdateResponseSchema.safeParse(responseJson);
+						if (!parsedResponse.success) {
+							throw new TwitchParseError({
+								context: "redemption status update",
+								parseError: parsedResponse.error.message,
+							});
+						}
 						logger.info("Redemption status updated successfully", {
 							rewardId,
 							redemptionId,
@@ -740,11 +893,8 @@ export class TwitchService {
 						return;
 					}
 
-					// Handle 429 rate limit
 					if (response.status === 429) {
-						const retryAfter = response.headers.get("Retry-After");
-						const retryAfterMs = retryAfter ? Number.parseInt(retryAfter, 10) * 1000 : 1000;
-						throw new TwitchRateLimitError({ retryAfterMs });
+						throw new TwitchRateLimitError({ retryAfterMs: parseTwitchRetryAfterMs(response) });
 					}
 
 					// 4xx errors (except 429) are not retryable
@@ -765,6 +915,7 @@ export class TwitchService {
 				catch: (error) => {
 					if (
 						TwitchRedemptionUpdateError.is(error) ||
+						TwitchParseError.is(error) ||
 						TwitchRateLimitError.is(error) ||
 						TwitchNetworkError.is(error)
 					) {
@@ -776,7 +927,14 @@ export class TwitchService {
 					});
 				},
 			},
-			{ retry: { times: 3, delayMs: 1000, backoff: "exponential" } },
+			{
+				retry: {
+					times: 3,
+					delayMs: 1000,
+					backoff: "exponential",
+					shouldRetry: isRetryableTwitchTechnicalError,
+				},
+			},
 		);
 	}
 
@@ -812,7 +970,7 @@ export class TwitchService {
 					headers: { "Content-Type": "application/x-www-form-urlencoded" },
 					body: new URLSearchParams({
 						client_id: this.env.TWITCH_CLIENT_ID,
-						client_secret: this.env.TWITCH_CLIENT_SECRET,
+						client_secret: this.twitchClientSecret.unsafeUnwrapForFinalIo(),
 						grant_type: "client_credentials",
 					}),
 				}),
@@ -832,15 +990,22 @@ export class TwitchService {
 		}
 
 		const jsonResult = await Result.tryPromise({
-			try: () => response.json() as Promise<{ access_token: string }>,
+			try: () => response.json(),
 			catch: (cause) =>
-				new TwitchParseError({ context: "client credentials", parseError: String(cause) }),
+				new TwitchParseError({ context: "client credentials JSON", parseError: String(cause) }),
 		});
+		if (jsonResult.status === "error") return Result.err(jsonResult.error);
 
-		if (jsonResult.status === "error") {
-			return Result.err(jsonResult.error);
+		const parsed = TwitchAppTokenResponseSchema.safeParse(jsonResult.value);
+		if (!parsed.success) {
+			return Result.err(
+				new TwitchParseError({
+					context: "client credentials",
+					parseError: parsed.error.message,
+				}),
+			);
 		}
 
-		return Result.ok(jsonResult.value.access_token);
+		return Result.ok(parsed.data.access_token);
 	}
 }

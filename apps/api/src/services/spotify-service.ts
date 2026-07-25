@@ -22,16 +22,22 @@ import {
 	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { RedactedValue } from "../lib/redacted-value";
 
 import type { Env } from "../index";
 import type { SpotifyTrackId, SpotifyTrackUri } from "../lib/spotify-track-id";
 
+const SpotifyServiceConfigSchema = z.object({
+	SPOTIFY_CLIENT_ID: z.string().trim().min(1),
+	SPOTIFY_CLIENT_SECRET: z.string().min(1),
+});
+
 // Zod schema for Spotify OAuth token response
 const SpotifyTokenResponseSchema = z.object({
-	access_token: z.string(),
-	token_type: z.string(),
-	expires_in: z.number(),
-	refresh_token: z.string().optional(),
+	access_token: z.string().trim().min(1),
+	token_type: z.string().trim().min(1),
+	expires_in: z.number().int().positive().finite(),
+	refresh_token: z.string().trim().min(1),
 	scope: z.string().optional(),
 });
 
@@ -137,13 +143,25 @@ export type SpotifyError = SpotifyApiError | TokenError;
  * SpotifyService - Spotify API operations
  */
 export class SpotifyService {
-	constructor(public env: Env) {}
+	private readonly spotifyClientId: string;
+	private readonly spotifyClientSecret: RedactedValue<string>;
+
+	constructor(env: Pick<Env, "SPOTIFY_CLIENT_ID" | "SPOTIFY_CLIENT_SECRET">) {
+		const parsedConfig = SpotifyServiceConfigSchema.safeParse(env);
+		if (!parsedConfig.success) {
+			throw new Error("Spotify provider configuration is invalid");
+		}
+		this.spotifyClientId = parsedConfig.data.SPOTIFY_CLIENT_ID;
+		this.spotifyClientSecret = RedactedValue.fromSensitiveValue(
+			parsedConfig.data.SPOTIFY_CLIENT_SECRET,
+		);
+	}
 
 	/**
 	 * Exchange OAuth authorization code for access/refresh tokens
 	 */
 	async exchangeToken(
-		code: string,
+		code: RedactedValue<string>,
 		redirectUri: string,
 	): Promise<Result<SpotifyTokenResponse, SpotifyTokenExchangeError | SpotifyParseError>> {
 		logger.info("Exchanging Spotify authorization code for tokens", {
@@ -157,11 +175,11 @@ export class SpotifyService {
 					method: "POST",
 					headers: {
 						"Content-Type": "application/x-www-form-urlencoded",
-						Authorization: `Basic ${btoa(`${this.env.SPOTIFY_CLIENT_ID}:${this.env.SPOTIFY_CLIENT_SECRET}`)}`,
+						Authorization: `Basic ${btoa(`${this.spotifyClientId}:${this.spotifyClientSecret.unsafeUnwrapForFinalIo()}`)}`,
 					},
 					body: new URLSearchParams({
 						grant_type: "authorization_code",
-						code,
+						code: code.unsafeUnwrapForFinalIo(),
 						redirect_uri: redirectUri,
 					}),
 				}),
@@ -746,7 +764,7 @@ export class SpotifyService {
 							body: JSON.stringify({
 								client_data: {
 									client_version: "1.2.52.442",
-									client_id: this.env.SPOTIFY_CLIENT_ID,
+									client_id: this.spotifyClientId,
 									js_sdk_data: {
 										device_brand: "unknown",
 										device_model: "desktop",

@@ -57,6 +57,10 @@
 				"name": "RAID_SHOUTOUT_SAGA_DO",
 				"class_name": "RaidShoutoutSagaDO",
 			},
+			{
+				"name": "OAUTH_STATE_DO",
+				"class_name": "OAuthStateDO",
+			},
 		],
 	},
 	"migrations": [
@@ -91,6 +95,10 @@
 			"tag": "v6",
 			"new_sqlite_classes": ["RaidShoutoutSagaDO"],
 		},
+		{
+			"tag": "v7",
+			"new_sqlite_classes": ["OAuthStateDO"],
+		},
 	],
 	"vars": {
 		"SONG_REQUEST_REWARD_ID": "test-song-reward",
@@ -103,5 +111,8 @@
 		"TWITCH_CLIENT_SECRET": "test-twitch-secret",
 		"TWITCH_EVENTSUB_SECRET": "test-eventsub-secret",
 		"TWITCH_BROADCASTER_NAME": "dillon",
+		"TWITCH_BROADCASTER_ID": "12345",
+		"OAUTH_SETUP_SECRET": "test-oauth-setup-secret",
+		"ADMIN_SECRET": "test-admin-secret",
 	},
 }

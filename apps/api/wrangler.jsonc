@@ -68,6 +68,10 @@
 				"name": "RAID_SHOUTOUT_SAGA_DO",
 				"class_name": "RaidShoutoutSagaDO",
 			},
+			{
+				"name": "OAUTH_STATE_DO",
+				"class_name": "OAuthStateDO",
+			},
 		],
 	},
 	"migrations": [
@@ -109,6 +113,10 @@
 		{
 			"tag": "v8",
 			"new_sqlite_classes": ["RaidShoutoutSagaDO"],
+		},
+		{
+			"tag": "v9",
+			"new_sqlite_classes": ["OAuthStateDO"],
 		},
 	],
 	"analytics_engine_datasets": [

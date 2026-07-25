@@ -7,6 +7,8 @@
 
 import { Hono } from "hono";
 
+import { constantTimeEquals } from "../lib/crypto";
+import { RedactedValue } from "../lib/redacted-value";
 import { type AppRouteEnv, getRequestLogger } from "../lib/request-context";
 import {
 	TwitchService,
@@ -17,6 +19,22 @@ import {
 import type { Env } from "../index";
 
 const eventsub = new Hono<AppRouteEnv<Env>>();
+
+eventsub.use("*", async (c, next) => {
+	const adminSecret = c.env.ADMIN_SECRET;
+	if (!adminSecret) return c.json({ error: "EventSub management is not configured" }, 503);
+
+	const authorization = c.req.header("Authorization");
+	if (authorization === undefined) return c.json({ error: "Missing Authorization header" }, 401);
+
+	const [scheme, token, extra] = authorization.split(" ");
+	if (scheme !== "Bearer" || token === undefined || token.length === 0 || extra !== undefined) {
+		return c.json({ error: "Invalid Authorization header format" }, 401);
+	}
+	if (!constantTimeEquals(token, adminSecret)) return c.json({ error: "Invalid token" }, 403);
+
+	await next();
+});
 
 interface SubscriptionConfig {
 	type: EventSubSubscriptionType;
@@ -32,7 +50,10 @@ function hasMatchingSubscription(
 	return existing.some((sub) => {
 		if (sub.type !== config.type) return false;
 		if (sub.version !== config.version) return false;
-		if (sub.status !== "enabled") return false;
+		if (
+			sub.status !== "enabled" &&
+			sub.status !== "webhook_callback_verification_pending"
+		) return false;
 		if (sub.transport.callback !== callbackUrl) return false;
 
 		return Object.entries(config.condition).every(([key, value]) => sub.condition[key] === value);
@@ -149,7 +170,7 @@ eventsub.post("/setup", async (c) => {
 			config.version,
 			config.condition,
 			callbackUrl,
-			TWITCH_EVENTSUB_SECRET,
+			RedactedValue.fromSensitiveValue(TWITCH_EVENTSUB_SECRET),
 		);
 
 		if (result.status === "ok") {

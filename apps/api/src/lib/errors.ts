@@ -337,7 +337,20 @@ export class TwitchChatSendError extends TaggedError("TwitchChatSendError")<{
 	constructor(args: { status: number; message?: string }) {
 		super({
 			status: args.status,
-			message: args.message ?? `Failed to send Twitch chat message: ${args.status}`,
+			message: args.message ?? `Twitch chat send failed with status ${args.status}`,
+		});
+	}
+}
+
+/** Expected provider outcome when Twitch accepts a chat request but drops the message. */
+export class TwitchChatDroppedError extends TaggedError("TwitchChatDroppedError")<{
+	dropCode: string;
+	message: string;
+}>() {
+	constructor(args: { dropCode: string }) {
+		super({
+			...args,
+			message: `Twitch chat message was dropped with reason ${args.dropCode}`,
 		});
 	}
 }
@@ -392,6 +405,7 @@ export type TwitchApiError =
 	| TwitchSubscriptionCreateError
 	| TwitchSubscriptionDeleteError
 	| TwitchChatSendError
+	| TwitchChatDroppedError
 	| TwitchShoutoutCreateError
 	| TwitchRedemptionUpdateError
 	| TwitchTokenExchangeError;
