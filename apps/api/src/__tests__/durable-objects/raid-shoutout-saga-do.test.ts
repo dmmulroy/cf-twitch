@@ -217,6 +217,48 @@ describe("RaidShoutoutSagaDO", () => {
 		expect(schedulesAfterCompletion).toEqual([]);
 	}, 20_000);
 
+	it("makes exhausted Raid work terminal and ignores duplicate starts", async () => {
+		await ensureTwitchTokenStub();
+		const raiderUserId = `terminal-raider-${crypto.randomUUID()}`;
+		const stub = await createRaidShoutoutSagaStub(`raid-shoutout-${crypto.randomUUID()}`);
+		const params = {
+			messageId: `message-${crypto.randomUUID()}`,
+			receivedAt: "2026-05-25T00:00:00.000Z",
+			raider: {
+				userId: raiderUserId,
+				login: "terminalraider",
+				displayName: "TerminalRaider",
+			},
+			viewers: 42,
+		};
+		mockTwitchChatMessage(fetchMock);
+		for (let attempt = 0; attempt < 4; attempt += 1) {
+			fetchMock
+				.get("https://api.twitch.tv")
+				.intercept({ path: twitchShoutoutPath(raiderUserId), method: "POST" })
+				.reply(400, "Invalid shoutout");
+		}
+
+		const result = await stub.start(params);
+		expect(result.status).toBe("error");
+		expect(await stub.getStatus()).toMatchObject({ status: "ok", value: { status: "FAILED" } });
+		const persisted = await runInDurableObject(stub, async (instance: RaidShoutoutSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			return {
+				steps: await db.query.sagaSteps.findMany(),
+				schedules: instance.getSchedules(),
+			};
+		});
+		expect(persisted.schedules).toEqual([]);
+		expect(persisted.steps).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ stepName: "create-native-shoutout", state: "FAILED" }),
+			]),
+		);
+
+		expect(await stub.start(params)).toEqual({ status: "ok", value: undefined });
+	}, 20_000);
+
 	it("replaces stale retry coordination from SQLite and retains a matching schedule", async () => {
 		const stub = await createRaidShoutoutSagaStub(`raid-shoutout-${crypto.randomUUID()}`);
 		const dueAt = new Date(Date.now() + 60_000).toISOString();
@@ -285,6 +327,34 @@ describe("RaidShoutoutSagaDO", () => {
 		expect(restored.schedulesAfterSecondStart[0]?.id).toBe(restored.replacement?.id);
 	});
 
+	it("creates autonomous recovery work for a compensation phase interrupted before step persistence", async () => {
+		const stub = await createRaidShoutoutSagaStub(`raid-shoutout-${crypto.randomUUID()}`);
+		const recovery = await runInDurableObject(stub, async (instance: RaidShoutoutSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const now = new Date().toISOString();
+			await db.insert(sagaSchema.sagaRuns).values({
+				id: instance.ctx.id.toString(),
+				status: "COMPENSATING",
+				paramsJson: JSON.stringify({
+					messageId: "compensation-message",
+					receivedAt: now,
+					raider: { userId: "raider", login: "raider", displayName: "Raider" },
+					viewers: 1,
+				}),
+				createdAt: now,
+				updatedAt: now,
+			});
+			await instance.onStart();
+			const schedules = instance.getSchedules();
+			for (const schedule of schedules) await instance.cancelSchedule(schedule.id);
+			return schedules;
+		});
+
+		expect(recovery).toEqual([
+			expect.objectContaining({ type: "scheduled", callback: "retrySagaTick" }),
+		]);
+	});
+
 	it("contains retry schedule inspection failures during startup restoration", async () => {
 		const stub = await createRaidShoutoutSagaStub(`raid-shoutout-${crypto.randomUUID()}`);
 		const dueAt = new Date(Date.now() + 60_000).toISOString();
@@ -330,7 +400,15 @@ describe("RaidShoutoutSagaDO", () => {
 		});
 	});
 
-	it.each([undefined, "COMPLETED", "FAILED", "COMPENSATING", "RUNNING"] as const)(
+	it.each([
+		undefined,
+		"COMPLETED",
+		"FAILED",
+		"COMPENSATION_FAILED",
+		"OUTCOME_UNKNOWN",
+		"POST_COMMIT_FAILED",
+		"RUNNING",
+	] as const)(
 		"clears stale retry coordination for saga status %s without business effects",
 		async (status) => {
 			const stub = await createRaidShoutoutSagaStub(`raid-shoutout-${crypto.randomUUID()}`);
@@ -359,6 +437,34 @@ describe("RaidShoutoutSagaDO", () => {
 			});
 		},
 	);
+
+	it("rejects malformed persisted lifecycle rows through the public status interface", async () => {
+		const stub = await createRaidShoutoutSagaStub(`raid-shoutout-${crypto.randomUUID()}`);
+		await runInDurableObject(stub, async (instance: RaidShoutoutSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const sagaId = instance.ctx.id.toString();
+			const now = new Date().toISOString();
+			await db.insert(sagaSchema.sagaRuns).values({
+				id: sagaId,
+				status: "RUNNING",
+				paramsJson: "{}",
+				createdAt: now,
+				updatedAt: now,
+			});
+			instance.ctx.storage.sql.exec("PRAGMA ignore_check_constraints = ON");
+			instance.ctx.storage.sql.exec("UPDATE saga_runs SET status = 'BROKEN'");
+		});
+
+		const status = await stub.getStatus();
+		expect(status.status).toBe("error");
+		if (status.status === "error") {
+			expect(status.error).toMatchObject({
+				_tag: "SagaPersistedDataError",
+				field: "run-row",
+				codecName: "saga-run-row",
+			});
+		}
+	});
 
 	it("scheduled callbacks safely skip missing and non-running sagas", async () => {
 		const missingStub = await createRaidShoutoutSagaStub(`raid-shoutout-${crypto.randomUUID()}`);

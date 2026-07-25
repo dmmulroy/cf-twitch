@@ -21,9 +21,7 @@ import { TEST_PENDING_REQUEST, createSongRequestParams } from "../fixtures/song-
 import {
 	VALID_TOKEN_RESPONSE as VALID_SPOTIFY_TOKEN_RESPONSE,
 	mockSpotifyAddToQueue,
-	mockSpotifyCurrentlyPlaying,
 	mockSpotifyGetTrack,
-	mockSpotifyQueue,
 	mockSpotifyTokenRefreshError,
 } from "../fixtures/spotify";
 import {
@@ -177,7 +175,7 @@ describe("SongRequestSagaDO", () => {
 		const achievementsStub = await ensureAchievementsSingletonStub();
 		await ensureEventBusStub();
 		mockSpotifyGetTrack(fetchMock, trackId);
-		mockSpotifyQueue(fetchMock);
+		mockSpotifyAddToQueue(fetchMock);
 		mockTwitchRedemptionUpdate(fetchMock);
 		mockTwitchChatMessage(fetchMock);
 		mockTwitchChatMessage(fetchMock);
@@ -274,8 +272,6 @@ describe("SongRequestSagaDO", () => {
 				},
 			]);
 		});
-		mockTwitchRedemptionUpdate(fetchMock);
-		mockTwitchChatMessage(fetchMock);
 
 		const result = await stub.start(params);
 
@@ -345,8 +341,6 @@ describe("SongRequestSagaDO", () => {
 				},
 			]);
 		});
-		mockTwitchRedemptionUpdate(fetchMock);
-		mockTwitchChatMessage(fetchMock);
 
 		const result = await stub.start(params);
 
@@ -553,7 +547,7 @@ describe("SongRequestSagaDO", () => {
 		});
 	});
 
-	it("compensates the Pending Request and refunds a permanent pre-fulfillment failure", async () => {
+	it("keeps failed Spotify Queue compensation durable without claiming a refund", async () => {
 		await ensureSpotifyTokenStub();
 		await ensureTwitchTokenStub();
 		const songQueueStub = await ensureSongQueueStub();
@@ -562,23 +556,14 @@ describe("SongRequestSagaDO", () => {
 		const trackId = "4iV5W9uYEdYUVa79Axb7Rh";
 
 		mockSpotifyGetTrack(fetchMock, trackId);
-		fetchMock
-			.get("https://api.spotify.com")
-			.intercept({ path: "/v1/me/player/queue" })
-			.reply(200, JSON.stringify({ currently_playing: null, queue: [] }), {
-				headers: { "content-type": "application/json" },
-			});
 		mockSpotifyAddToQueue(fetchMock);
 		mockTwitchRedemptionFailure(400);
-		mockSpotifyCurrentlyPlaying(fetchMock, false);
-		mockTwitchRedemptionUpdate(fetchMock);
-		mockTwitchChatMessage(fetchMock);
 
 		const result = await stub.start(params);
 
 		expect(result.status).toBe("error");
 		const status = await stub.getStatus();
-		expect(status).toMatchObject({ status: "ok", value: { status: "FAILED" } });
+		expect(status).toMatchObject({ status: "ok", value: { status: "COMPENSATING" } });
 		const pendingRequest = await runInDurableObject(
 			songQueueStub,
 			async (instance: SongQueueDO) => {
@@ -588,7 +573,7 @@ describe("SongRequestSagaDO", () => {
 				});
 			},
 		);
-		expect(pendingRequest).toBeUndefined();
+		expect(pendingRequest).toBeDefined();
 
 		const compensatedSteps = await runInDurableObject(stub, async (instance: SongRequestSagaDO) => {
 			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
@@ -596,10 +581,16 @@ describe("SongRequestSagaDO", () => {
 		});
 		expect(compensatedSteps).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ stepName: "persist-request", state: "COMPENSATED" }),
-				expect.objectContaining({ stepName: "add-to-spotify-queue", state: "COMPENSATED" }),
+				expect.objectContaining({ stepName: "persist-request", state: "SUCCEEDED" }),
+				expect.objectContaining({
+					stepName: "add-to-spotify-queue",
+					state: "COMPENSATION_PENDING",
+					nextRetryAt: expect.any(String),
+				}),
 			]),
 		);
+		expect(compensatedSteps.some((step) => step.stepName === "refund-redemption")).toBe(false);
+		await cancelSongRequestSagaSchedules(stub);
 		await cancelSongQueueSchedules(songQueueStub);
 	}, 20_000);
 

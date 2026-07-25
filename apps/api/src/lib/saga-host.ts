@@ -139,7 +139,9 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 
 	/** Returns the shared caller-facing status projection for this saga. */
 	@rpc
-	async getStatus(): Promise<Result<SagaHostStatus | null, SagaRunnerDbError>> {
+	async getStatus(): Promise<
+		Result<SagaHostStatus | null, SagaRunnerDbError | SagaPersistedDataError>
+	> {
 		const saga = await this.getRunner().getSaga();
 		if (saga.status === "error") return Result.err(saga.error);
 		if (!saga.value) return Result.ok(null);
@@ -223,7 +225,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 			return this.clearRetrySchedule();
 		}
 
-		if (saga.value.status !== "RUNNING") {
+		if (saga.value.status !== "RUNNING" && saga.value.status !== "COMPENSATING") {
 			logger.info("Saga resume skipped because the run is not running", {
 				event: "saga_host.resume.skipped",
 				saga_id: this.sagaId,
@@ -235,32 +237,58 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 			return this.clearRetrySchedule();
 		}
 
+		const pendingRetry = await runner.getNextRetryStep();
+		if (pendingRetry.status === "error") return Result.err(pendingRetry.error);
+		if (
+			trigger === "start" &&
+			pendingRetry.value?.nextRetryAt !== null &&
+			pendingRetry.value?.nextRetryAt !== undefined &&
+			pendingRetry.value.nextRetryAt > new Date().toISOString()
+		) {
+			const restored = await this.scheduleRetryAt(pendingRetry.value.nextRetryAt);
+			return restored.status === "error" ? Result.err(restored.error) : Result.ok();
+		}
+
 		const params = await runner.getParams();
 		if (params.status === "error") {
 			if (SagaNotFoundError.is(params.error)) return this.clearRetrySchedule();
 			return Result.err(params.error);
 		}
 
+		runner.prepareExecution({ retryCallback: trigger === "scheduled-callback" });
 		const execution = await this.runSaga(params.value, runner);
-		if (execution.status === "error") return Result.err(execution.error);
+		if (execution.status === "error") {
+			if (SagaRunnerDbError.is(execution.error)) {
+				const lifecycleRetry = await this.scheduleRetryAt(
+					new Date(Date.now() + 1000).toISOString(),
+				);
+				if (lifecycleRetry.status === "error") return Result.err(lifecycleRetry.error);
+			}
+			return Result.err(execution.error);
+		}
 		return this.clearRetrySchedule();
 	}
 
 	private async restoreRetrySchedule(): Promise<
-		Result<void, SagaRunnerDbError | SagaScheduleError>
+		Result<void, SagaRunnerDbError | SagaPersistedDataError | SagaScheduleError>
 	> {
 		const runner = this.getRunner();
 		const saga = await runner.getSaga();
 		if (saga.status === "error") return Result.err(saga.error);
 
-		if (!saga.value || saga.value.status !== "RUNNING") {
+		if (
+			!saga.value ||
+			(saga.value.status !== "RUNNING" && saga.value.status !== "COMPENSATING")
+		) {
 			return this.clearRetrySchedule();
 		}
 
 		const pending = await runner.getNextRetryStep();
 		if (pending.status === "error") return Result.err(pending.error);
 		if (!pending.value?.nextRetryAt) {
-			return this.clearRetrySchedule();
+			return saga.value.status === "COMPENSATING"
+				? this.scheduleRetryAt(new Date(Date.now() + 1000).toISOString())
+				: this.clearRetrySchedule();
 		}
 
 		const coordinated = Result.try({

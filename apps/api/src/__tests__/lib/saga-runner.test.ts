@@ -355,4 +355,163 @@ describe("SagaRunner typed persistence", () => {
 			});
 		});
 	});
+
+	it("does not bypass a future retry or reopen an exhausted failed step", async () => {
+		const stub = await createMigratedSagaStub();
+		await runInDurableObject(stub, async (instance: RaidShoutoutSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const sagaId = instance.ctx.id.toString();
+			const runner = new SagaRunner<TestParams>({
+				sagaId,
+				db,
+				paramsCodec: testParamsCodec,
+				retryScheduler: { scheduleRetry: async () => Result.ok() },
+			});
+			await runner.initSaga({ request: "guard retries" });
+			await db.insert(sagaSchema.sagaSteps).values({
+				sagaId,
+				stepName: "guarded",
+				state: "PENDING",
+				attempt: 1,
+				nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
+			});
+			let executions = 0;
+			const pending = await runner.executeStep(
+				{ name: "guarded", resultCodec: noResultCodec, options: { maxRetries: 2 } },
+				async () => {
+					executions += 1;
+					return { result: undefined };
+				},
+			);
+			expect(pending.status).toBe("error");
+			expect(executions).toBe(0);
+
+			await db
+				.update(sagaSchema.sagaSteps)
+				.set({ state: "FAILED", nextRetryAt: null, lastError: "attempt budget exhausted" });
+			const exhausted = await runner.executeStep(
+				{ name: "guarded", resultCodec: noResultCodec, options: { maxRetries: 2 } },
+				async () => {
+					executions += 1;
+					return { result: undefined };
+				},
+			);
+			expect(exhausted.status).toBe("error");
+			expect(executions).toBe(0);
+		});
+	});
+
+	it("does not repeat an interrupted mutation with an ambiguous provider outcome", async () => {
+		const stub = await createMigratedSagaStub();
+		await runInDurableObject(stub, async (instance: RaidShoutoutSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const sagaId = instance.ctx.id.toString();
+			const runner = new SagaRunner<TestParams>({
+				sagaId,
+				db,
+				paramsCodec: testParamsCodec,
+				retryScheduler: { scheduleRetry: async () => Result.ok() },
+			});
+			await runner.initSaga({ request: "ambiguous mutation" });
+			await db.insert(sagaSchema.sagaSteps).values({
+				sagaId,
+				stepName: "send-chat",
+				state: "PENDING",
+				attempt: 1,
+			});
+			let executions = 0;
+			const result = await runner.executeStep(
+				{
+					name: "send-chat",
+					resultCodec: noResultCodec,
+					options: { ambiguousEffect: true },
+				},
+				async () => {
+					executions += 1;
+					return { result: undefined };
+				},
+			);
+			expect(result.status).toBe("error");
+			if (result.status === "error") {
+				expect(result.error).toMatchObject({
+					_tag: "SagaEffectOutcomeUnknown",
+					causeTag: "InterruptedEffect",
+				});
+			}
+			expect(executions).toBe(0);
+			expect(await db.query.sagaSteps.findFirst()).toMatchObject({ state: "FAILED" });
+		});
+	});
+
+	it("waits for late handler settlement before recording a timeout outcome", async () => {
+		const stub = await createMigratedSagaStub();
+		await runInDurableObject(stub, async (instance: RaidShoutoutSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const runner = new SagaRunner<TestParams>({
+				sagaId: instance.ctx.id.toString(),
+				db,
+				paramsCodec: testParamsCodec,
+				retryScheduler: { scheduleRetry: async () => Result.ok() },
+			});
+			await runner.initSaga({ request: "late success" });
+			let settled = false;
+			const result = await runner.executeStep(
+				{ name: "late-mutation", resultCodec: stringCodec, options: { timeout: 5 } },
+				async (signal) => {
+					await new Promise((resolve) => setTimeout(resolve, 15));
+					expect(signal.aborted).toBe(true);
+					settled = true;
+					return { result: "committed" };
+				},
+			);
+			expect(settled).toBe(true);
+			expect(result).toEqual({ status: "ok", value: "committed" });
+			expect(await db.query.sagaSteps.findFirst()).toMatchObject({ state: "SUCCEEDED" });
+		});
+	});
+
+	it("persists failed compensation and resumes it from reconstructed undo evidence", async () => {
+		const stub = await createMigratedSagaStub();
+		await runInDurableObject(stub, async (instance: RaidShoutoutSagaDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: sagaSchema });
+			const sagaId = instance.ctx.id.toString();
+			const createRunner = () =>
+				new SagaRunner<TestParams>({
+					sagaId,
+					db,
+					paramsCodec: testParamsCodec,
+					retryScheduler: { scheduleRetry: async () => Result.ok() },
+				});
+			const first = createRunner();
+			await first.initSaga({ request: "resume compensation" });
+			await first.executeStepWithRollback(
+				{ name: "reserve", resultCodec: stringCodec, undoCodec: stringCodec },
+				async () => ({ result: "reserved", undoPayload: "reservation-id" }),
+				async () => {
+					throw new Error("temporary compensation outage");
+				},
+			);
+			const failed = await first.compensateAll();
+			expect(failed.status).toBe("error");
+			expect(await db.query.sagaRuns.findFirst()).toMatchObject({ status: "COMPENSATING" });
+			expect(await db.query.sagaSteps.findFirst()).toMatchObject({
+				state: "COMPENSATION_PENDING",
+				nextRetryAt: expect.any(String),
+			});
+
+			const resumed = createRunner();
+			resumed.prepareExecution({ retryCallback: true });
+			let compensated = "";
+			await resumed.executeStepWithRollback(
+				{ name: "reserve", resultCodec: stringCodec, undoCodec: stringCodec },
+				async () => ({ result: "must-not-run", undoPayload: "must-not-run" }),
+				async (undo) => {
+					compensated = undo;
+				},
+			);
+			expect(await resumed.compensateAll()).toEqual({ status: "ok", value: undefined });
+			expect(compensated).toBe("reservation-id");
+			expect(await db.query.sagaSteps.findFirst()).toMatchObject({ state: "COMPENSATED" });
+		});
+	});
 });

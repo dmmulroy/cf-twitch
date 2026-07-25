@@ -12,6 +12,7 @@ import {
 	SagaStepRetrying,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { deriveSagaEventId } from "../lib/saga-event-id";
 import { SagaHost, type SagaHostDefinition, type SagaHostStatus } from "../lib/saga-host";
 import {
 	SagaRunner,
@@ -42,7 +43,7 @@ export const KeyboardRaffleParamsSchema = z.object({
 		cost: z.number(),
 		prompt: z.string(),
 	}),
-	redeemed_at: z.string(),
+	redeemed_at: z.iso.datetime(),
 });
 
 /** Canonical Keyboard Raffle parameters persisted without webhook routing metadata. */
@@ -123,7 +124,7 @@ const FulfillRedemptionStep: SagaStepDefinition<void> = {
 const PublishEventStep: SagaStepDefinition<void> = {
 	name: "publish-event",
 	resultCodec: noResultCodec,
-	options: { timeout: 10000, maxRetries: 2 },
+	options: { timeout: 10000, maxRetries: 5, retryAllErrors: true },
 };
 
 const SendChatMessageStep: SagaStepDefinition<void> = {
@@ -217,14 +218,10 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 			async (rollId) => {
 				const raffle = getStub("KEYBOARD_RAFFLE_DO");
 				const result = await raffle.deleteRollById(rollId);
-				if (result.status === "error") {
-					logger.error("Failed to rollback raffle roll", {
-						rollId,
-						error: result.error.message,
-					});
-				} else {
-					logger.info("Rolled back raffle roll", { rollId });
+				if (result.status === "error" && result.error._tag !== "RollNotFoundError") {
+					throw result.error;
 				}
+				logger.info("Rolled back raffle Roll", { rollId });
 			},
 		);
 		if (recordRollResult.status === "error") {
@@ -254,40 +251,31 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 
 		const publishResult = await runner.executeStep(PublishEventStep, async () => {
 			const eventBus = getStub("EVENT_BUS_DO");
-			const event = createRaffleRollEvent({
-				id: crypto.randomUUID(),
-				userId: params.user_id,
-				userDisplayName: params.user_name,
-				sagaId,
-				roll: userRoll,
-				winningNumber,
-				distance,
-				isWinner,
-				isNewRecord,
-			});
-			const result = await eventBus.publish(event);
-			if (result.status === "error") {
-				logger.warn("Failed to publish raffle_roll event", {
-					sagaId,
-					error: result.error.message,
-				});
-			} else {
-				logger.info("Published raffle_roll event", {
-					sagaId,
-					eventId: event.id,
+			const event = {
+				...createRaffleRollEvent({
+					id: await deriveSagaEventId(sagaId),
 					userId: params.user_id,
-				});
-			}
+					userDisplayName: params.user_name,
+					sagaId,
+					roll: userRoll,
+					winningNumber,
+					distance,
+					isWinner,
+					isNewRecord,
+				}),
+				timestamp: params.redeemed_at,
+			};
+			const result = await eventBus.publish(event);
+			if (result.status === "error") throw result.error;
+			logger.info("Published raffle_roll event", {
+				sagaId,
+				eventId: event.id,
+				userId: params.user_id,
+			});
 			return { result: undefined };
 		});
 		if (publishResult.status === "error") {
-			if (SagaPersistedDataError.is(publishResult.error)) {
-				return this.handleStepError(publishResult.error, params, runner);
-			}
-			logger.warn("Fire-and-forget EventBus publication step did not complete", {
-				sagaId,
-				error: publishResult.error.message,
-			});
+			return this.handleStepError(publishResult.error, params, runner);
 		}
 
 		const chatResult = await runner.executeStep(SendChatMessageStep, async () => {
@@ -342,6 +330,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		runner: SagaRunner<KeyboardRaffleParams>,
 	): Promise<Result<void, SagaStepExecutionError>> {
 		const sagaId = this.ctx.id.toString();
+		if (SagaPersistedDataError.is(error)) return Result.err(error);
 		if (SagaStepRetrying.is(error)) {
 			logger.info("Step scheduled for retry", {
 				sagaId,
@@ -368,36 +357,50 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		const pointOfNoReturn = await runner.isPointOfNoReturnReached();
 		if (pointOfNoReturn.status === "error") return Result.err(pointOfNoReturn.error);
 
+		if (pointOfNoReturn.value) {
+			const terminal = await runner.markPostCommitFailed(error.message);
+			return terminal.status === "error" ? Result.err(terminal.error) : Result.err(error);
+		}
+
 		if (!pointOfNoReturn.value) {
 			const compensation = await runner.compensateAll();
 			if (compensation.status === "error") {
-				logger.error("One or more Keyboard Raffle compensations failed", {
-					sagaId,
-					failedSteps: compensation.error.map((failure) => failure.stepName),
-				});
+				if (SagaStepRetrying.is(compensation.error) || SagaScheduleError.is(compensation.error)) {
+					return Result.err(compensation.error);
+				}
+				logger.error("Keyboard Raffle compensation retry exhausted", { sagaId });
+				return Result.err(error);
 			}
-			await this.refundRedemption(params);
+
+			const refund = await this.refundRedemption(params, runner);
+			if (refund.status === "error") return refund;
 		}
 
 		const failed = await runner.fail(error.message);
 		return failed.status === "error" ? Result.err(failed.error) : Result.err(error);
 	}
 
-	private async refundRedemption(params: KeyboardRaffleParams): Promise<void> {
-		const twitch = new TwitchService(this.env);
-		const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "CANCELED");
-		if (result.status === "error") {
-			logger.error("Failed to refund redemption", {
-				sagaId: this.ctx.id.toString(),
-				redemptionId: params.id,
-				error: result.error.message,
-			});
-		} else {
-			logger.info("Refunded redemption", {
-				sagaId: this.ctx.id.toString(),
-				redemptionId: params.id,
-			});
-		}
+	private async refundRedemption(
+		params: KeyboardRaffleParams,
+		runner: SagaRunner<KeyboardRaffleParams>,
+	): Promise<Result<void, SagaStepExecutionError>> {
+		return runner.executeCompensationStep(
+			"refund-redemption",
+			async () => {
+				const twitch = new TwitchService(this.env);
+				const result = await twitch.updateRedemptionStatus(
+					params.reward.id,
+					params.id,
+					"CANCELED",
+				);
+				if (result.status === "error") throw result.error;
+				logger.info("Refunded Keyboard Raffle redemption", {
+					sagaId: this.ctx.id.toString(),
+					redemptionId: params.id,
+				});
+			},
+			{ timeout: 30000, maxRetries: 5 },
+		);
 	}
 }
 

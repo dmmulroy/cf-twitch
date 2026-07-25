@@ -792,7 +792,12 @@ export interface StreamLifecycleHandler<E = never> {
 // =============================================================================
 
 /** The persisted saga field whose serialized value failed at the boundary. */
-export type SagaPersistedField = "params" | "step-result" | "step-undo";
+export type SagaPersistedField =
+	| "params"
+	| "run-row"
+	| "step-row"
+	| "step-result"
+	| "step-undo";
 
 /** Expected failure returned when saga input cannot be parsed into canonical parameters. */
 export class SagaInputParseError extends TaggedError("SagaInputParseError")<{
@@ -888,6 +893,21 @@ export class SagaStepError extends TaggedError("SagaStepError")<{
 	}
 }
 
+/** Indicates an outbound saga effect may have committed but cannot be reconciled safely. */
+export class SagaEffectOutcomeUnknown extends TaggedError("SagaEffectOutcomeUnknown")<{
+	readonly stepName: string;
+	readonly sagaId: string;
+	readonly causeTag: string;
+	readonly message: string;
+}>() {
+	constructor(args: { readonly stepName: string; readonly sagaId: string; readonly causeTag: string }) {
+		super({
+			...args,
+			message: `Saga effect outcome is unknown for step "${args.stepName}"`,
+		});
+	}
+}
+
 export class SagaStepRetrying extends TaggedError("SagaStepRetrying")<{
 	stepName: string;
 	sagaId: string;
@@ -948,6 +968,7 @@ export type SagaError =
 	| SagaPersistedDataError
 	| SagaScheduleError
 	| SagaStepError
+	| SagaEffectOutcomeUnknown
 	| SagaStepRetrying
 	| SagaCompensationError
 	| SagaNotFoundError
@@ -975,7 +996,14 @@ export function isRetryableError(error: unknown): boolean {
  */
 export function getRetryDelayMs(error: unknown, defaultMs = 1000): number {
 	if (SpotifyRateLimitError.is(error) || TwitchRateLimitError.is(error)) {
-		return error.retryAfterMs;
+		return Math.min(30 * 60 * 1000, Math.max(1000, error.retryAfterMs));
 	}
 	return defaultMs;
+}
+
+/** Reports transport failures whose provider-side commit outcome cannot be known safely. */
+export function isAmbiguousExternalEffectError(error: unknown): boolean {
+	return (
+		(SpotifyNetworkError.is(error) || TwitchNetworkError.is(error)) && error.status === 0
+	);
 }

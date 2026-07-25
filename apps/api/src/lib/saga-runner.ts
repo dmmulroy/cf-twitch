@@ -1,10 +1,13 @@
 import { Result, TaggedError } from "better-result";
-import { and, asc, eq, isNotNull, lte } from "drizzle-orm";
+import { and, asc, eq, isNotNull, or } from "drizzle-orm";
+import { z } from "zod";
 
 import {
 	type SagaRun,
 	type SagaStep,
 	type SagaStepState,
+	SagaRunRowSchema,
+	SagaStepRowSchema,
 	sagaRuns,
 	sagaSteps,
 } from "../durable-objects/schemas/saga.schema";
@@ -13,11 +16,14 @@ import { type SagaCodec } from "./codecs";
 import {
 	SagaAlreadyExistsError,
 	SagaCompensationError,
+	SagaEffectOutcomeUnknown,
 	SagaNotFoundError,
 	SagaPersistedDataError,
 	SagaScheduleError,
 	SagaStepError,
 	SagaStepRetrying,
+	getRetryDelayMs,
+	isAmbiguousExternalEffectError,
 	isRetryableError,
 } from "./errors";
 import { logger } from "./logger";
@@ -30,6 +36,10 @@ import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 export interface StepOptions {
 	readonly timeout?: number;
 	readonly maxRetries?: number;
+	/** Marks transport failures as outcome-unknown instead of blindly repeating a mutation. */
+	readonly ambiguousEffect?: boolean;
+	/** Retries typed failures for idempotent steps whose adapter has no shared retry classification. */
+	readonly retryAllErrors?: boolean;
 }
 
 /** A codec-aware definition for a non-rollbackable saga step. */
@@ -58,10 +68,12 @@ export interface SagaRollbackStepSuccess<T, Undo> extends SagaStepSuccess<T> {
 }
 
 /** Handler for a non-rollbackable saga step. */
-export type SagaStepHandler<T> = () => Promise<SagaStepSuccess<T>>;
+export type SagaStepHandler<T> = (signal: AbortSignal) => Promise<SagaStepSuccess<T>>;
 
 /** Handler for a rollbackable saga step. */
-export type SagaRollbackStepHandler<T, Undo> = () => Promise<SagaRollbackStepSuccess<T, Undo>>;
+export type SagaRollbackStepHandler<T, Undo> = (
+	signal: AbortSignal,
+) => Promise<SagaRollbackStepSuccess<T, Undo>>;
 
 /** Compensation handler receiving a parsed canonical undo value. */
 export type SagaCompensationHandler<Undo> = (undoPayload: Undo) => Promise<void>;
@@ -75,7 +87,11 @@ export interface SagaRetryScheduler {
 export type SagaRunnerError = SagaRunnerDbError | SagaPersistedDataError | SagaScheduleError;
 
 /** Expected failures returned while executing a typed saga step. */
-export type SagaStepExecutionError = SagaStepError | SagaStepRetrying | SagaRunnerError;
+export type SagaStepExecutionError =
+	| SagaStepError
+	| SagaStepRetrying
+	| SagaEffectOutcomeUnknown
+	| SagaRunnerError;
 
 type SagaSchema = { sagaRuns: typeof sagaRuns; sagaSteps: typeof sagaSteps };
 
@@ -106,6 +122,8 @@ type PersistedValueContext = {
 const DEFAULT_STEP_OPTIONS: Required<StepOptions> = {
 	timeout: 30000,
 	maxRetries: 3,
+	ambiguousEffect: false,
+	retryAllErrors: false,
 };
 
 function errorTag(error: unknown): string {
@@ -131,6 +149,7 @@ export interface SagaRunnerArgs<P> {
  */
 export class SagaRunner<P> {
 	private readonly compensations: RegisteredCompensation[] = [];
+	private retryCallbackExecution = false;
 	private readonly db: DrizzleSqliteDODatabase<SagaSchema>;
 	private readonly stepStartTimes = new Map<string, number>();
 	private readonly sagaId: string;
@@ -146,6 +165,12 @@ export class SagaRunner<P> {
 		this.retryScheduler = args.retryScheduler;
 		this.analytics = args.analytics;
 		this.sagaType = args.sagaType;
+	}
+
+	/** Clears process-local handlers before one orchestration replay reconstructs them. */
+	prepareExecution(options: { readonly retryCallback: boolean }): void {
+		this.compensations.length = 0;
+		this.retryCallbackExecution = options.retryCallback;
 	}
 
 	/** Encodes and inserts the canonical parameters for a new saga. */
@@ -289,7 +314,9 @@ export class SagaRunner<P> {
 	}
 
 	/** Marks this saga's point of no return. */
-	async markPointOfNoReturn(): Promise<Result<void, SagaNotFoundError | SagaRunnerDbError>> {
+	async markPointOfNoReturn(): Promise<
+		Result<void, SagaNotFoundError | SagaRunnerDbError | SagaPersistedDataError>
+	> {
 		const sagaResult = await this.getSaga();
 		if (sagaResult.status === "error") return Result.err(sagaResult.error);
 		if (!sagaResult.value) {
@@ -313,7 +340,9 @@ export class SagaRunner<P> {
 	}
 
 	/** Reports whether irreversible saga work has succeeded. */
-	async isPointOfNoReturnReached(): Promise<Result<boolean, SagaRunnerDbError>> {
+	async isPointOfNoReturnReached(): Promise<
+		Result<boolean, SagaRunnerDbError | SagaPersistedDataError>
+	> {
 		const sagaResult = await this.getSaga();
 		if (sagaResult.status === "error") return Result.err(sagaResult.error);
 		if (sagaResult.value?.fulfilledAt !== null && sagaResult.value?.fulfilledAt !== undefined) {
@@ -325,51 +354,181 @@ export class SagaRunner<P> {
 		return Result.ok(fulfillStep.value?.state === "SUCCEEDED");
 	}
 
-	/** Runs registered compensations in reverse order. */
-	async compensateAll(): Promise<Result<void, SagaCompensationError[]>> {
-		const errors: SagaCompensationError[] = [];
-		await this.db
-			.update(sagaRuns)
-			.set({ status: "COMPENSATING", updatedAt: new Date().toISOString() })
-			.where(eq(sagaRuns.id, this.sagaId));
+	/** Runs durable, resumable compensations in reverse order. */
+	async compensateAll(): Promise<
+		Result<
+			void,
+			| SagaCompensationError[]
+			| SagaStepRetrying
+			| SagaScheduleError
+			| SagaRunnerDbError
+			| SagaPersistedDataError
+		>
+	> {
+		const phaseUpdate = await this.updateSagaStatus("COMPENSATING", null);
+		if (phaseUpdate.status === "error") return Result.err(phaseUpdate.error);
 		this.emit("compensating");
 
 		for (const compensation of [...this.compensations].reverse()) {
+			const persisted = await this.getStep(compensation.stepName);
+			if (persisted.status === "error") return Result.err(persisted.error);
+			if (persisted.value?.state === "COMPENSATED") continue;
+
+			if (
+				!this.retryCallbackExecution &&
+				persisted.value?.state === "COMPENSATION_PENDING" &&
+				persisted.value.nextRetryAt !== null &&
+				persisted.value.nextRetryAt > new Date().toISOString()
+			) {
+				const scheduled = await this.retryScheduler.scheduleRetry(
+					Math.max(0, new Date(persisted.value.nextRetryAt).getTime() - Date.now()),
+				);
+				if (scheduled.status === "error") return Result.err(scheduled.error);
+				return Result.err(
+					new SagaStepRetrying({
+						stepName: compensation.stepName,
+						sagaId: this.sagaId,
+						attempt: persisted.value.attempt,
+						nextRetryAt: persisted.value.nextRetryAt,
+					}),
+				);
+			}
+
 			try {
 				await compensation.run();
-				await this.db
-					.update(sagaSteps)
-					.set({ state: "COMPENSATED" })
-					.where(
-						and(eq(sagaSteps.sagaId, this.sagaId), eq(sagaSteps.stepName, compensation.stepName)),
-					);
+				const completed = await this.updateStepCompensated(compensation.stepName);
+				if (completed.status === "error") return Result.err(completed.error);
 				this.emit("step_compensated", { stepName: compensation.stepName });
-				logger.info("Compensated step", {
-					sagaId: this.sagaId,
-					stepName: compensation.stepName,
-				});
 			} catch (error) {
 				const errorMessage = error instanceof Error ? error.message : String(error);
+				const attempt = (persisted.value?.attempt ?? 0) + 1;
 				const compensationError = new SagaCompensationError({
 					stepName: compensation.stepName,
 					sagaId: this.sagaId,
 					error: errorMessage,
 				});
-				errors.push(compensationError);
 				this.emit("step_compensation_failed", {
 					stepName: compensation.stepName,
 					error: errorMessage,
 				});
-				logger.error("Compensation failed", {
-					sagaId: this.sagaId,
-					stepName: compensation.stepName,
-					error: compensationError.message,
-				});
+
+				if (attempt >= 5) {
+					const exhausted = await this.updateStepFailed(compensation.stepName, errorMessage);
+					if (exhausted.status === "error") return Result.err(exhausted.error);
+					const terminal = await this.updateSagaStatus("COMPENSATION_FAILED", compensationError.message);
+					return terminal.status === "error"
+						? Result.err(terminal.error)
+						: Result.err([compensationError]);
+				}
+
+				const delay = Math.min(30000, 1000 * 2 ** attempt);
+				const nextRetryAt = new Date(Date.now() + delay).toISOString();
+				const pending = await this.updateStepCompensationRetry(
+					compensation.stepName,
+					attempt,
+					nextRetryAt,
+					errorMessage,
+				);
+				if (pending.status === "error") return Result.err(pending.error);
+				const scheduled = await this.retryScheduler.scheduleRetry(delay);
+				if (scheduled.status === "error") return Result.err(scheduled.error);
+				return Result.err(
+					new SagaStepRetrying({
+						stepName: compensation.stepName,
+						sagaId: this.sagaId,
+						attempt,
+						nextRetryAt,
+					}),
+				);
 			}
 		}
 
 		this.compensations.length = 0;
-		return errors.length > 0 ? Result.err(errors) : Result.ok();
+		return Result.ok();
+	}
+
+	/** Executes durable compensation work such as a Channel Point Redemption refund. */
+	async executeCompensationStep(
+		stepName: string,
+		handler: (signal: AbortSignal) => Promise<void>,
+		options: StepOptions = {},
+	): Promise<Result<void, SagaStepExecutionError>> {
+		const policy = { ...DEFAULT_STEP_OPTIONS, ...options };
+		const existing = await this.getStep(stepName);
+		if (existing.status === "error") return Result.err(existing.error);
+		if (existing.value?.state === "COMPENSATED") return Result.ok();
+		if (existing.value?.state === "FAILED") {
+			return Result.err(
+				new SagaStepError({
+					stepName,
+					sagaId: this.sagaId,
+					causeTag: "CompensationRetryExhausted",
+					error: existing.value.lastError ?? "Compensation retry exhausted",
+				}),
+			);
+		}
+		if (
+			!this.retryCallbackExecution &&
+			existing.value?.nextRetryAt !== null &&
+			existing.value?.nextRetryAt !== undefined &&
+			existing.value.nextRetryAt > new Date().toISOString()
+		) {
+			const scheduled = await this.retryScheduler.scheduleRetry(
+				Math.max(0, new Date(existing.value.nextRetryAt).getTime() - Date.now()),
+			);
+			if (scheduled.status === "error") return Result.err(scheduled.error);
+			return Result.err(
+				new SagaStepRetrying({
+					stepName,
+					sagaId: this.sagaId,
+					attempt: existing.value.attempt,
+					nextRetryAt: existing.value.nextRetryAt,
+				}),
+			);
+		}
+
+		const attempt = (existing.value?.attempt ?? 0) + 1;
+		const pending = await this.upsertStep(stepName, "COMPENSATION_PENDING", attempt);
+		if (pending.status === "error") return Result.err(pending.error);
+		const result = await this.executeWithTimeout(handler, policy.timeout);
+		if (result.status === "ok") {
+			const compensated = await this.updateStepCompensated(stepName);
+			return compensated.status === "error" ? Result.err(compensated.error) : Result.ok();
+		}
+
+		if (attempt < policy.maxRetries) {
+			const exponentialDelay = Math.min(30000, 1000 * 2 ** attempt);
+			const delay = getRetryDelayMs(result.error, exponentialDelay);
+			const nextRetryAt = new Date(Date.now() + delay).toISOString();
+			const retry = await this.updateStepCompensationRetry(
+				stepName,
+				attempt,
+				nextRetryAt,
+				String(result.error),
+			);
+			if (retry.status === "error") return Result.err(retry.error);
+			const scheduled = await this.retryScheduler.scheduleRetry(delay);
+			if (scheduled.status === "error") return Result.err(scheduled.error);
+			return Result.err(
+				new SagaStepRetrying({ stepName, sagaId: this.sagaId, attempt, nextRetryAt }),
+			);
+		}
+
+		const exhausted = await this.updateStepFailed(stepName, String(result.error));
+		if (exhausted.status === "error") return Result.err(exhausted.error);
+		const compensationFailed = await this.updateSagaStatus(
+			"COMPENSATION_FAILED",
+			`Compensation retry exhausted for ${stepName}`,
+		);
+		if (compensationFailed.status === "error") return Result.err(compensationFailed.error);
+		return Result.err(
+			new SagaStepError({
+				stepName,
+				sagaId: this.sagaId,
+				causeTag: errorTag(result.error),
+				error: String(result.error),
+			}),
+		);
 	}
 
 	/** Marks this saga complete. */
@@ -386,6 +545,16 @@ export class SagaRunner<P> {
 			},
 			catch: (cause) => new SagaRunnerDbError({ operation: "complete", cause }),
 		});
+	}
+
+	/** Marks an unreconciled external mutation without claiming failure or compensation. */
+	async markOutcomeUnknown(error: string): Promise<Result<void, SagaRunnerDbError>> {
+		return this.updateSagaStatus("OUTCOME_UNKNOWN", error);
+	}
+
+	/** Marks required post-fulfillment work exhausted without overstating completion. */
+	async markPostCommitFailed(error: string): Promise<Result<void, SagaRunnerDbError>> {
+		return this.updateSagaStatus("POST_COMMIT_FAILED", error);
 	}
 
 	/** Marks this saga failed with a safe caller-provided summary. */
@@ -405,60 +574,64 @@ export class SagaRunner<P> {
 	}
 
 	/** Loads the current saga run row. */
-	async getSaga(): Promise<Result<SagaRun | undefined, SagaRunnerDbError>> {
-		return Result.tryPromise({
+	async getSaga(): Promise<
+		Result<SagaRun | undefined, SagaRunnerDbError | SagaPersistedDataError>
+	> {
+		const loaded = await Result.tryPromise({
 			try: () =>
 				this.db.query.sagaRuns.findFirst({
 					where: eq(sagaRuns.id, this.sagaId),
 				}),
 			catch: (cause) => new SagaRunnerDbError({ operation: "getSaga", cause }),
 		});
+		if (loaded.status === "error" || loaded.value === undefined) return loaded;
+		const parsed = SagaRunRowSchema.safeParse(loaded.value);
+		return parsed.success
+			? Result.ok(parsed.data)
+			: Result.err(
+					new SagaPersistedDataError({
+						sagaId: this.sagaId,
+						field: "run-row",
+						codecName: "saga-run-row",
+						parseError: z.prettifyError(parsed.error),
+					}),
+				);
 	}
 
 	/** Reports whether this saga exists in the running state. */
-	async isRunning(): Promise<Result<boolean, SagaRunnerDbError>> {
+	async isRunning(): Promise<Result<boolean, SagaRunnerDbError | SagaPersistedDataError>> {
 		const sagaResult = await this.getSaga();
 		return sagaResult.status === "error"
 			? Result.err(sagaResult.error)
 			: Result.ok(sagaResult.value?.status === "RUNNING");
 	}
 
-	/** Loads the earliest retry step currently due. */
-	async getPendingRetryStep(): Promise<Result<SagaStep | undefined, SagaRunnerDbError>> {
-		const now = new Date().toISOString();
-		return Result.tryPromise({
-			try: () =>
-				this.db.query.sagaSteps.findFirst({
-					where: and(
-						eq(sagaSteps.sagaId, this.sagaId),
-						eq(sagaSteps.state, "PENDING"),
-						lte(sagaSteps.nextRetryAt, now),
-					),
-					orderBy: [asc(sagaSteps.nextRetryAt)],
-				}),
-			catch: (cause) => new SagaRunnerDbError({ operation: "getPendingRetryStep", cause }),
-		});
-	}
-
 	/** Loads the earliest pending retry step, including future due times. */
-	async getNextRetryStep(): Promise<Result<SagaStep | undefined, SagaRunnerDbError>> {
-		return Result.tryPromise({
+	async getNextRetryStep(): Promise<
+		Result<SagaStep | undefined, SagaRunnerDbError | SagaPersistedDataError>
+	> {
+		const loaded = await Result.tryPromise({
 			try: () =>
 				this.db.query.sagaSteps.findFirst({
 					where: and(
 						eq(sagaSteps.sagaId, this.sagaId),
-						eq(sagaSteps.state, "PENDING"),
+						or(
+							eq(sagaSteps.state, "PENDING"),
+							eq(sagaSteps.state, "COMPENSATION_PENDING"),
+						),
 						isNotNull(sagaSteps.nextRetryAt),
 					),
 					orderBy: [asc(sagaSteps.nextRetryAt)],
 				}),
 			catch: (cause) => new SagaRunnerDbError({ operation: "getNextRetryStep", cause }),
 		});
+		if (loaded.status === "error" || loaded.value === undefined) return loaded;
+		return this.getStep(loaded.value.stepName);
 	}
 
 	private async runStep<T, Success extends SagaStepSuccess<T>>(
 		step: SagaStepDefinition<T>,
-		handler: () => Promise<Success>,
+		handler: (signal: AbortSignal) => Promise<Success>,
 		onReplay: (result: T, existing: SagaStep) => Result<T, SagaPersistedDataError>,
 		onFresh: (success: Success) => Promise<Result<T, SagaPersistedDataError | SagaRunnerDbError>>,
 	): Promise<Result<T, SagaStepExecutionError>> {
@@ -467,7 +640,11 @@ export class SagaRunner<P> {
 		if (existingResult.status === "error") return Result.err(existingResult.error);
 		const existing = existingResult.value;
 
-		if (existing?.state === "SUCCEEDED") {
+		if (
+			existing?.state === "SUCCEEDED" ||
+			existing?.state === "COMPENSATION_PENDING" ||
+			existing?.state === "COMPENSATED"
+		) {
 			logger.debug("Replaying cached step result", { sagaId: this.sagaId, stepName: step.name });
 			if (existing.resultJson === null) {
 				return Result.err(
@@ -484,9 +661,61 @@ export class SagaRunner<P> {
 				field: "step-result",
 				stepName: step.name,
 			});
-			return decoded.status === "error"
-				? Result.err(decoded.error)
+			if (decoded.status === "error") return Result.err(decoded.error);
+			return existing.state === "COMPENSATED"
+				? Result.ok(decoded.value)
 				: onReplay(decoded.value, existing);
+		}
+
+		if (
+			options.ambiguousEffect &&
+			existing?.state === "PENDING" &&
+			existing.nextRetryAt === null &&
+			existing.attempt > 0
+		) {
+			const failedResult = await this.updateStepFailed(
+				step.name,
+				"Ambiguous effect was interrupted before local success evidence was persisted",
+			);
+			if (failedResult.status === "error") return Result.err(failedResult.error);
+			return Result.err(
+				new SagaEffectOutcomeUnknown({
+					stepName: step.name,
+					sagaId: this.sagaId,
+					causeTag: "InterruptedEffect",
+				}),
+			);
+		}
+
+		if (existing?.state === "FAILED") {
+			return Result.err(
+				new SagaStepError({
+					stepName: step.name,
+					sagaId: this.sagaId,
+					causeTag: "RetryExhausted",
+					error: existing.lastError ?? "Persisted saga step failed",
+				}),
+			);
+		}
+
+		if (
+			!this.retryCallbackExecution &&
+			existing?.state === "PENDING" &&
+			existing.nextRetryAt !== null &&
+			existing.nextRetryAt > new Date().toISOString()
+		) {
+			const scheduled = await this.retryScheduler.scheduleRetry(
+				Math.max(0, new Date(existing.nextRetryAt).getTime() - Date.now()),
+			);
+			if (scheduled.status === "error") return Result.err(scheduled.error);
+			return Result.err(
+				new SagaStepRetrying({
+					stepName: step.name,
+					sagaId: this.sagaId,
+					attempt: existing.attempt,
+					nextRetryAt: existing.nextRetryAt,
+				}),
+			);
 		}
 
 		const attempt = (existing?.attempt ?? 0) + 1;
@@ -501,8 +730,21 @@ export class SagaRunner<P> {
 
 		if (executionResult.status === "error") {
 			const error = executionResult.error;
-			if (isRetryableError(error) && attempt < options.maxRetries) {
-				const delay = Math.min(30000, 1000 * Math.pow(2, attempt));
+			if (options.ambiguousEffect && isAmbiguousExternalEffectError(error)) {
+				const failedResult = await this.updateStepFailed(step.name, String(error));
+				if (failedResult.status === "error") return Result.err(failedResult.error);
+				return Result.err(
+					new SagaEffectOutcomeUnknown({
+						stepName: step.name,
+						sagaId: this.sagaId,
+						causeTag: errorTag(error),
+					}),
+				);
+			}
+
+			if ((options.retryAllErrors || isRetryableError(error)) && attempt < options.maxRetries) {
+				const exponentialDelay = Math.min(30000, 1000 * 2 ** attempt);
+				const delay = getRetryDelayMs(error, exponentialDelay);
 				const nextRetryAt = new Date(Date.now() + delay).toISOString();
 				const retryEvidence = await this.updateStepRetry(
 					step.name,
@@ -620,14 +862,27 @@ export class SagaRunner<P> {
 
 	private async getStep(
 		stepName: string,
-	): Promise<Result<SagaStep | undefined, SagaRunnerDbError>> {
-		return Result.tryPromise({
+	): Promise<Result<SagaStep | undefined, SagaRunnerDbError | SagaPersistedDataError>> {
+		const loaded = await Result.tryPromise({
 			try: () =>
 				this.db.query.sagaSteps.findFirst({
 					where: and(eq(sagaSteps.sagaId, this.sagaId), eq(sagaSteps.stepName, stepName)),
 				}),
 			catch: (cause) => new SagaRunnerDbError({ operation: `getStep(${stepName})`, cause }),
 		});
+		if (loaded.status === "error" || loaded.value === undefined) return loaded;
+		const parsed = SagaStepRowSchema.safeParse(loaded.value);
+		return parsed.success
+			? Result.ok(parsed.data)
+			: Result.err(
+					new SagaPersistedDataError({
+						sagaId: this.sagaId,
+						field: "step-row",
+						stepName,
+						codecName: "saga-step-row",
+						parseError: z.prettifyError(parsed.error),
+					}),
+				);
 	}
 
 	private async upsertStep(
@@ -672,6 +927,54 @@ export class SagaRunner<P> {
 		});
 	}
 
+	private async updateStepCompensated(
+		stepName: string,
+	): Promise<Result<void, SagaRunnerDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				await this.db
+					.update(sagaSteps)
+					.set({ state: "COMPENSATED", lastError: null, nextRetryAt: null })
+					.where(and(eq(sagaSteps.sagaId, this.sagaId), eq(sagaSteps.stepName, stepName)));
+			},
+			catch: (cause) =>
+				new SagaRunnerDbError({ operation: `updateStepCompensated(${stepName})`, cause }),
+		});
+	}
+
+	private async updateStepCompensationRetry(
+		stepName: string,
+		attempt: number,
+		nextRetryAt: string,
+		error: string,
+	): Promise<Result<void, SagaRunnerDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				await this.db
+					.update(sagaSteps)
+					.set({ state: "COMPENSATION_PENDING", attempt, nextRetryAt, lastError: error })
+					.where(and(eq(sagaSteps.sagaId, this.sagaId), eq(sagaSteps.stepName, stepName)));
+			},
+			catch: (cause) =>
+				new SagaRunnerDbError({ operation: `updateStepCompensationRetry(${stepName})`, cause }),
+		});
+	}
+
+	private async updateSagaStatus(
+		status: SagaRun["status"],
+		error: string | null,
+	): Promise<Result<void, SagaRunnerDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				await this.db
+					.update(sagaRuns)
+					.set({ status, error, updatedAt: new Date().toISOString() })
+					.where(eq(sagaRuns.id, this.sagaId));
+			},
+			catch: (cause) => new SagaRunnerDbError({ operation: `updateSagaStatus(${status})`, cause }),
+		});
+	}
+
 	private async updateStepFailed(
 		stepName: string,
 		error: string,
@@ -706,18 +1009,26 @@ export class SagaRunner<P> {
 	}
 
 	private async executeWithTimeout<T>(
-		handler: () => Promise<T>,
+		handler: (signal: AbortSignal) => Promise<T>,
 		timeoutMs: number,
 	): Promise<Result<T, Error>> {
-		return Result.tryPromise({
-			try: () =>
-				Promise.race([
-					handler(),
-					new Promise<T>((_resolve, reject) =>
-						setTimeout(() => reject(new Error(`Step timed out after ${timeoutMs}ms`)), timeoutMs),
-					),
-				]),
-			catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-		});
+		const controller = new AbortController();
+		let timedOut = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			controller.abort(`Saga step exceeded ${timeoutMs}ms`);
+		}, timeoutMs);
+
+		try {
+			// Await settlement after abort so a timed-out mutation cannot commit behind a terminal transition.
+			return Result.ok(await handler(controller.signal));
+		} catch (error) {
+			if (timedOut) {
+				return Result.err(new Error(`Saga step timed out after ${timeoutMs}ms`));
+			}
+			return Result.err(error instanceof Error ? error : new Error(String(error)));
+		} finally {
+			clearTimeout(timeout);
+		}
 	}
 }

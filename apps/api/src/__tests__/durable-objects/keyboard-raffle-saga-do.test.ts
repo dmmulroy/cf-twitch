@@ -244,7 +244,6 @@ describe("KeyboardRaffleSagaDO", () => {
 							],
 				);
 			});
-			mockTwitchRedemptionUpdate(fetchMock);
 
 			const result = await stub.start(params);
 
@@ -476,7 +475,6 @@ describe("KeyboardRaffleSagaDO", () => {
 				},
 			]);
 		});
-		mockTwitchRedemptionUpdate(fetchMock);
 
 		const result = await stub.start(params);
 

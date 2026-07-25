@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { noResultCodec, zodSagaCodec } from "../lib/codecs";
 import { withRpcSerialization } from "../lib/durable-objects";
+import { SagaEffectOutcomeUnknown, SagaStepRetrying } from "../lib/errors";
 import { SagaHost, type SagaHostDefinition } from "../lib/saga-host";
 import { SagaRunner, type SagaStepExecutionError } from "../lib/saga-runner";
 import { TwitchService } from "../services/twitch-service";
@@ -10,7 +11,7 @@ import { TwitchService } from "../services/twitch-service";
 /** Boundary schema for raid shoutout saga parameters. */
 export const RaidShoutoutParamsSchema = z.object({
 	messageId: z.string(),
-	receivedAt: z.string(),
+	receivedAt: z.iso.datetime(),
 	raider: z.object({
 		userId: z.string(),
 		login: z.string(),
@@ -52,7 +53,7 @@ class _RaidShoutoutSagaDO extends SagaHost<RaidShoutoutParams, SagaStepExecution
 			{
 				name: "send-chat-thanks",
 				resultCodec: noResultCodec,
-				options: { timeout: 10000, maxRetries: 2 },
+				options: { timeout: 10000, maxRetries: 2, ambiguousEffect: true },
 			},
 			async () => {
 				const result = await twitch.sendChatMessage(
@@ -64,13 +65,13 @@ class _RaidShoutoutSagaDO extends SagaHost<RaidShoutoutParams, SagaStepExecution
 				return { result: undefined };
 			},
 		);
-		if (chatResult.status === "error") return Result.err(chatResult.error);
+		if (chatResult.status === "error") return this.finishRaidStepError(chatResult.error, runner);
 
 		const shoutoutResult = await runner.executeStep(
 			{
 				name: "create-native-shoutout",
 				resultCodec: noResultCodec,
-				options: { timeout: 10000, maxRetries: 2 },
+				options: { timeout: 10000, maxRetries: 2, ambiguousEffect: true },
 			},
 			async () => {
 				const result = await twitch.createShoutout(params.raider.userId);
@@ -79,9 +80,22 @@ class _RaidShoutoutSagaDO extends SagaHost<RaidShoutoutParams, SagaStepExecution
 				return { result: undefined };
 			},
 		);
-		if (shoutoutResult.status === "error") return Result.err(shoutoutResult.error);
+		if (shoutoutResult.status === "error") {
+			return this.finishRaidStepError(shoutoutResult.error, runner);
+		}
 
 		return runner.complete();
+	}
+
+	private async finishRaidStepError(
+		error: SagaStepExecutionError,
+		runner: SagaRunner<RaidShoutoutParams>,
+	): Promise<Result<void, SagaStepExecutionError>> {
+		if (SagaStepRetrying.is(error)) return Result.err(error);
+		const terminal = SagaEffectOutcomeUnknown.is(error)
+			? await runner.markOutcomeUnknown(error.message)
+			: await runner.fail(error.message);
+		return terminal.status === "error" ? Result.err(terminal.error) : Result.err(error);
 	}
 }
 
