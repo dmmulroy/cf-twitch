@@ -7,7 +7,7 @@
  */
 
 import { Agent, type AgentContext } from "agents";
-import { Result } from "better-result";
+import { Result, TaggedError } from "better-result";
 import { RpcTarget } from "cloudflare:workers";
 import {
 	and,
@@ -22,11 +22,11 @@ import {
 	isNull,
 	lt,
 	lte,
+	max,
 	notInArray,
 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
-import { z } from "zod";
 
 import migrations from "../../drizzle/song-queue-do/migrations";
 import { rpc, withRpcSerialization } from "../lib/durable-objects";
@@ -36,9 +36,26 @@ import { toRpcResult, type RpcResult } from "../lib/rpc-result";
 import { SpotifyService, type SpotifyTrack, type TrackInfo } from "../services/spotify-service";
 import * as schema from "./schemas/song-queue-do.schema";
 import {
-	type InsertPendingRequest,
+	ArtistNamesJsonSchema,
+	PendingRequestInputSchema,
+	PendingRequestRecordSchema,
+	RequestHistoryQuerySchema,
+	RequestHistoryRecordSchema,
+	SongQueueDisplayTextSchema,
+	SongQueueDomainIdSchema,
+	SongQueueInstantSchema,
+	SongQueueLimitSchema,
+	SpotifyQueueSnapshotRecordSchema,
+	type CurrentlyPlayingResult,
 	type PendingRequest,
-	type RequestHistory,
+	type PendingRequestInput,
+	type QueueResult,
+	type QueuedTrack,
+	type RequestHistoryItem,
+	type RequestHistoryResult,
+	type SpotifyQueueSnapshotRecord,
+	type TopRequester,
+	type TopTrack,
 	type TrackSource,
 	pendingRequests,
 	requestHistory,
@@ -47,6 +64,7 @@ import {
 
 import type { Env } from "../index";
 
+/** Stable Agent name used to acquire the singleton Song Queue Durable Object. */
 export const SONG_QUEUE_DO_NAME = "song-queue";
 
 const MAX_STALENESS_MS = 15_000;
@@ -54,74 +72,66 @@ const REFRESH_AFTER_MUTATION_DELAY_SECONDS = 1;
 const CLEANUP_INTERVAL_SECONDS = 5 * 60;
 const MAX_REFRESH_BACKOFF_SECONDS = 5 * 60;
 
-/**
- * Track info with requester attribution
- */
-export interface QueuedTrack extends TrackInfo {
-	requesterUserId: string;
-	requesterDisplayName: string;
-	requestedAt: string;
+/** Expected failure when Song Queue RPC input or persisted records cannot be parsed. */
+export class SongQueueParseError extends TaggedError("SongQueueParseError")<{
+	readonly boundary: "rpc-input" | "persistence";
+	readonly operation: string;
+	readonly parseError: string;
+	readonly message: string;
+}>() {
+	constructor(args: {
+		boundary: "rpc-input" | "persistence";
+		operation: string;
+		parseError: string;
+	}) {
+		super({ ...args, message: `Invalid Song Queue data during ${args.operation}` });
+	}
 }
 
-/**
- * Currently playing track (position 0)
- */
-export interface CurrentlyPlayingResult {
-	track: QueuedTrack | null;
-	position: number; // Always 0
+/** Expected failure while coordinating durable Song Queue refresh and cleanup schedules. */
+export class SongQueueCoordinationError extends TaggedError("SongQueueCoordinationError")<{
+	readonly operation: string;
+	readonly message: string;
+	readonly cause?: unknown;
+}>() {
+	constructor(args: { operation: string; cause?: unknown }) {
+		super({ ...args, message: `Song Queue coordination failed during ${args.operation}` });
+	}
 }
 
-/**
- * Queue items (position > 0)
- */
-export interface QueueResult {
-	tracks: QueuedTrack[];
-	totalCount: number;
-}
+/** Complete expected-error contract for Song Queue operations. */
+export type SongQueueError = SongQueueDbError | SongQueueParseError | SongQueueCoordinationError;
 
-/**
- * Request history with pagination
- */
-export interface RequestHistoryResult {
-	requests: RequestHistory[];
-	totalCount: number;
-}
+/** Public Spotify Track occurrence with explicit Viewer or autoplay source. */
+export type { QueuedTrack } from "./schemas/song-queue-do.schema";
+/** Parsed Now Playing response contract. */
+export type { CurrentlyPlayingResult } from "./schemas/song-queue-do.schema";
+/** Parsed Spotify Queue response contract. */
+export type { QueueResult } from "./schemas/song-queue-do.schema";
+/** Parsed Request History response contract. */
+export type { RequestHistoryResult } from "./schemas/song-queue-do.schema";
+/** Spotify Track aggregation grouped by stable Track ID. */
+export type { TopTrack } from "./schemas/song-queue-do.schema";
+/** Viewer aggregation grouped by stable Viewer ID. */
+export type { TopRequester } from "./schemas/song-queue-do.schema";
 
-/**
- * Top track aggregation
- */
-export interface TopTrack {
-	trackId: string;
-	trackName: string;
-	artists: string;
-	requestCount: number;
-}
-
-/**
- * Top requester aggregation
- */
-export interface TopRequester {
-	userId: string;
-	displayName: string;
-	requestCount: number;
-}
-
+/** Cohesive Song Queue application capability exposed over Durable Object RPC. */
 export interface SongQueue {
-	persistRequest(request: InsertPendingRequest): Promise<Result<void, SongQueueDbError>>;
-	deleteRequest(eventId: string): Promise<Result<void, SongQueueDbError>>;
-	getSongQueue(limit: number): Promise<Result<QueueResult, SongQueueDbError>>;
-	getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueDbError>>;
+	persistRequest(request: PendingRequestInput): Promise<Result<void, SongQueueError>>;
+	deleteRequest(eventId: string): Promise<Result<void, SongQueueError>>;
+	getSongQueue(limit: number): Promise<Result<QueueResult, SongQueueError>>;
+	getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueError>>;
 	getRequestHistory(
 		limit: number,
 		offset: number,
 		since?: string,
 		until?: string,
-	): Promise<Result<RequestHistoryResult, SongQueueDbError>>;
-	getUserRequestCount(userId: string): Promise<Result<number, SongQueueDbError>>;
-	getUserRequestCountByDisplayName(displayName: string): Promise<Result<number, SongQueueDbError>>;
-	getTopTracks(limit: number): Promise<Result<TopTrack[], SongQueueDbError>>;
-	getTopTracksByUser(userId: string, limit: number): Promise<Result<TopTrack[], SongQueueDbError>>;
-	getTopRequesters(limit: number): Promise<Result<TopRequester[], SongQueueDbError>>;
+	): Promise<Result<RequestHistoryResult, SongQueueError>>;
+	getUserRequestCount(userId: string): Promise<Result<number, SongQueueError>>;
+	getUserRequestCountByDisplayName(displayName: string): Promise<Result<number, SongQueueError>>;
+	getTopTracks(limit: number): Promise<Result<TopTrack[], SongQueueError>>;
+	getTopTracksByUser(userId: string, limit: number): Promise<Result<TopTrack[], SongQueueError>>;
+	getTopRequesters(limit: number): Promise<Result<TopRequester[], SongQueueError>>;
 }
 
 interface SongQueueAgentState {
@@ -133,28 +143,100 @@ interface SongQueueAgentState {
 	consecutiveSyncFailures: number;
 }
 
-const ArtistNamesSchema = z.array(z.string());
-
-function parseArtistsJson(artistsJson: string): string[] {
-	return ArtistNamesSchema.parse(JSON.parse(artistsJson));
+function parseRpcInput<T>(
+	schemaParser: {
+		safeParse(
+			value: unknown,
+		): { success: true; data: T } | { success: false; error: { message: string } };
+	},
+	value: unknown,
+	operation: string,
+): Result<T, SongQueueParseError> {
+	const parsed = schemaParser.safeParse(value);
+	return parsed.success
+		? Result.ok(parsed.data)
+		: Result.err(
+				new SongQueueParseError({
+					boundary: "rpc-input",
+					operation,
+					parseError: parsed.error.message,
+				}),
+			);
 }
 
-function toQueuedTrack(snapshot: schema.SpotifyQueueSnapshotItem, artists: string[]): QueuedTrack {
-	return {
+function parseArtistsJson(
+	artistsJson: string,
+	operation: string,
+): Result<string[], SongQueueParseError> {
+	const parsed = ArtistNamesJsonSchema.safeParse(artistsJson);
+	return parsed.success
+		? Result.ok(parsed.data)
+		: Result.err(
+				new SongQueueParseError({
+					boundary: "persistence",
+					operation,
+					parseError: parsed.error.message,
+				}),
+			);
+}
+
+function toQueuedTrack(snapshot: SpotifyQueueSnapshotRecord, artists: string[]): QueuedTrack {
+	const track = {
 		id: snapshot.trackId,
 		name: snapshot.trackName,
 		artists,
 		album: snapshot.album,
 		albumCoverUrl: snapshot.albumCoverUrl,
-		requesterUserId: snapshot.requesterUserId ?? "unknown",
-		requesterDisplayName: snapshot.requesterDisplayName ?? "Unknown",
-		requestedAt: snapshot.requestedAt ?? snapshot.syncedAt,
 	};
+	if (snapshot.source === "user") {
+		return {
+			...track,
+			source: "user",
+			eventId: snapshot.eventId,
+			requesterUserId: snapshot.requesterUserId,
+			requesterDisplayName: snapshot.requesterDisplayName,
+			requestedAt: snapshot.requestedAt,
+		};
+	}
+	return { ...track, source: "autoplay" };
+}
+
+function parseSnapshotRecord(
+	record: unknown,
+	operation: string,
+): Result<SpotifyQueueSnapshotRecord, SongQueueParseError> {
+	const parsed = SpotifyQueueSnapshotRecordSchema.safeParse(record);
+	if (!parsed.success)
+		return Result.err(
+			new SongQueueParseError({
+				boundary: "persistence",
+				operation,
+				parseError: parsed.error.message,
+			}),
+		);
+	return Result.ok(parsed.data);
+}
+
+function parseHistoryRecord(
+	record: unknown,
+	operation: string,
+): Result<RequestHistoryItem, SongQueueParseError> {
+	const parsed = RequestHistoryRecordSchema.safeParse(record);
+	if (!parsed.success)
+		return Result.err(
+			new SongQueueParseError({
+				boundary: "persistence",
+				operation,
+				parseError: parsed.error.message,
+			}),
+		);
+	const artists = parseArtistsJson(parsed.data.artists, operation);
+	if (artists.status === "error") return artists;
+	return Result.ok({ ...parsed.data, artists: artists.value });
 }
 
 function toTrackInfo(track: SpotifyTrack): TrackInfo {
 	const albumCover = [...track.album.images].sort((a, b) => a.height - b.height)[0];
-
 	return {
 		id: track.id,
 		name: track.name,
@@ -162,6 +244,107 @@ function toTrackInfo(track: SpotifyTrack): TrackInfo {
 		album: track.album.name,
 		albumCoverUrl: albumCover?.url ?? null,
 	};
+}
+
+type AttributedSpotifyOccurrence = {
+	readonly position: number;
+	readonly trackId: string;
+	readonly trackName: string;
+	readonly artists: string;
+	readonly album: string;
+	readonly albumCoverUrl: string | null;
+	readonly source: TrackSource;
+	readonly eventId: string | null;
+	readonly requesterUserId: string | null;
+	readonly requesterDisplayName: string | null;
+	readonly requestedAt: string | null;
+};
+
+function attributeSpotifyOccurrences(
+	previousSnapshots: SpotifyQueueSnapshotRecord[],
+	allPending: PendingRequest[],
+	currentTrack: TrackInfo | null,
+	upcomingTracks: TrackInfo[],
+): AttributedSpotifyOccurrence[] {
+	const previousCurrent = previousSnapshots.find((snapshot) => snapshot.position === 0);
+	const previousUpcoming = previousSnapshots
+		.filter((snapshot) => snapshot.position > 0)
+		.sort((left, right) => left.position - right.position);
+	const previousUserOccurrencesByTrack = new Map<string, SpotifyQueueSnapshotRecord[]>();
+	for (const snapshot of previousUpcoming) {
+		if (snapshot.source !== "user" || snapshot.eventId === null) continue;
+		const occurrences = previousUserOccurrencesByTrack.get(snapshot.trackId) ?? [];
+		occurrences.push(snapshot);
+		previousUserOccurrencesByTrack.set(snapshot.trackId, occurrences);
+	}
+
+	let promotedEventId: string | undefined;
+	let currentRequest: PendingRequest | undefined;
+	if (currentTrack !== null) {
+		const previousTrackOccurrences = previousUpcoming.filter(
+			(snapshot) => snapshot.trackId === currentTrack.id,
+		).length;
+		const upcomingTrackOccurrences = upcomingTracks.filter(
+			(track) => track.id === currentTrack.id,
+		).length;
+		const promotable = previousUserOccurrencesByTrack.get(currentTrack.id)?.[0];
+		if (promotable?.eventId && upcomingTrackOccurrences < previousTrackOccurrences) {
+			promotedEventId = promotable.eventId;
+			currentRequest = allPending.find((request) => request.eventId === promotedEventId);
+		} else if (
+			previousCurrent?.source === "user" &&
+			previousCurrent.trackId === currentTrack.id &&
+			previousCurrent.eventId !== null
+		) {
+			currentRequest = allPending.find((request) => request.eventId === previousCurrent.eventId);
+		}
+	}
+
+	const assignedEventIds = new Set<string>();
+	if (currentRequest) assignedEventIds.add(currentRequest.eventId);
+	const reusableByTrack = new Map<string, PendingRequest[]>();
+	for (const [trackId, snapshots] of previousUserOccurrencesByTrack) {
+		const requests = snapshots
+			.filter((snapshot) => snapshot.eventId !== promotedEventId)
+			.map((snapshot) => allPending.find((request) => request.eventId === snapshot.eventId))
+			.filter((request): request is PendingRequest => request !== undefined);
+		reusableByTrack.set(trackId, requests);
+	}
+	const unassignedByTrack = new Map<string, PendingRequest[]>();
+	for (const request of allPending) {
+		if (assignedEventIds.has(request.eventId)) continue;
+		if (previousSnapshots.some((snapshot) => snapshot.eventId === request.eventId)) continue;
+		const requests = unassignedByTrack.get(request.trackId) ?? [];
+		requests.push(request);
+		unassignedByTrack.set(request.trackId, requests);
+	}
+
+	const makeOccurrence = (
+		track: TrackInfo,
+		position: number,
+		request: PendingRequest | undefined,
+	): AttributedSpotifyOccurrence => ({
+		position,
+		trackId: track.id,
+		trackName: track.name,
+		artists: JSON.stringify(track.artists),
+		album: track.album,
+		albumCoverUrl: track.albumCoverUrl,
+		source: request ? "user" : "autoplay",
+		eventId: request?.eventId ?? null,
+		requesterUserId: request?.requesterUserId ?? null,
+		requesterDisplayName: request?.requesterDisplayName ?? null,
+		requestedAt: request?.requestedAt ?? null,
+	});
+	const attributed: AttributedSpotifyOccurrence[] = [];
+	if (currentTrack !== null) attributed.push(makeOccurrence(currentTrack, 0, currentRequest));
+	for (const [index, track] of upcomingTracks.entries()) {
+		const reusable = reusableByTrack.get(track.id)?.shift();
+		const newlyAssigned = reusable ?? unassignedByTrack.get(track.id)?.shift();
+		if (newlyAssigned) assignedEventIds.add(newlyAssigned.eventId);
+		attributed.push(makeOccurrence(track, index + 1, newlyAssigned));
+	}
+	return attributed;
 }
 
 type RpcHandleFromResultMethods<T> = {
@@ -181,19 +364,19 @@ class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
 		super();
 	}
 
-	persistRequest(request: InsertPendingRequest): Promise<RpcResult<void, SongQueueDbError>> {
+	persistRequest(request: PendingRequestInput): Promise<RpcResult<void, SongQueueError>> {
 		return this.queue.persistRequest(request).then(toRpcResult);
 	}
 
-	deleteRequest(eventId: string): Promise<RpcResult<void, SongQueueDbError>> {
+	deleteRequest(eventId: string): Promise<RpcResult<void, SongQueueError>> {
 		return this.queue.deleteRequest(eventId).then(toRpcResult);
 	}
 
-	getSongQueue(limit: number): Promise<RpcResult<QueueResult, SongQueueDbError>> {
+	getSongQueue(limit: number): Promise<RpcResult<QueueResult, SongQueueError>> {
 		return this.queue.getSongQueue(limit).then(toRpcResult);
 	}
 
-	getCurrentlyPlaying(): Promise<RpcResult<CurrentlyPlayingResult, SongQueueDbError>> {
+	getCurrentlyPlaying(): Promise<RpcResult<CurrentlyPlayingResult, SongQueueError>> {
 		return this.queue.getCurrentlyPlaying().then(toRpcResult);
 	}
 
@@ -202,32 +385,32 @@ class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
 		offset: number,
 		since?: string,
 		until?: string,
-	): Promise<RpcResult<RequestHistoryResult, SongQueueDbError>> {
+	): Promise<RpcResult<RequestHistoryResult, SongQueueError>> {
 		return this.queue.getRequestHistory(limit, offset, since, until).then(toRpcResult);
 	}
 
-	getUserRequestCount(userId: string): Promise<RpcResult<number, SongQueueDbError>> {
+	getUserRequestCount(userId: string): Promise<RpcResult<number, SongQueueError>> {
 		return this.queue.getUserRequestCount(userId).then(toRpcResult);
 	}
 
 	getUserRequestCountByDisplayName(
 		displayName: string,
-	): Promise<RpcResult<number, SongQueueDbError>> {
+	): Promise<RpcResult<number, SongQueueError>> {
 		return this.queue.getUserRequestCountByDisplayName(displayName).then(toRpcResult);
 	}
 
-	getTopTracks(limit: number): Promise<RpcResult<TopTrack[], SongQueueDbError>> {
+	getTopTracks(limit: number): Promise<RpcResult<TopTrack[], SongQueueError>> {
 		return this.queue.getTopTracks(limit).then(toRpcResult);
 	}
 
 	getTopTracksByUser(
 		userId: string,
 		limit: number,
-	): Promise<RpcResult<TopTrack[], SongQueueDbError>> {
+	): Promise<RpcResult<TopTrack[], SongQueueError>> {
 		return this.queue.getTopTracksByUser(userId, limit).then(toRpcResult);
 	}
 
-	getTopRequesters(limit: number): Promise<RpcResult<TopRequester[], SongQueueDbError>> {
+	getTopRequesters(limit: number): Promise<RpcResult<TopRequester[], SongQueueError>> {
 		return this.queue.getTopRequesters(limit).then(toRpcResult);
 	}
 }
@@ -237,7 +420,7 @@ class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
  */
 class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
-	private syncLock: Promise<Result<void, SongQueueDbError>> | null = null;
+	private syncLock: Promise<Result<void, SongQueueError>> | null = null;
 
 	initialState: SongQueueAgentState = {
 		lastSyncAt: null,
@@ -272,11 +455,22 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * Invalidates cache and schedules a near-term refresh.
 	 */
 	@rpc
-	async persistRequest(request: InsertPendingRequest): Promise<Result<void, SongQueueDbError>> {
+	async persistRequest(request: PendingRequestInput): Promise<Result<void, SongQueueError>> {
+		const parsed = PendingRequestInputSchema.safeParse(request);
+		if (!parsed.success) {
+			return Result.err(
+				new SongQueueParseError({
+					boundary: "rpc-input",
+					operation: "persistRequest",
+					parseError: parsed.error.message,
+				}),
+			);
+		}
+
 		const result = await Result.tryPromise({
-			try: () => this.db.insert(pendingRequests).values(request).onConflictDoNothing(),
+			try: () => this.db.insert(pendingRequests).values(parsed.data).onConflictDoNothing(),
 			catch: (cause) =>
-				new SongQueueDbError({ operation: `persistRequest(${request.eventId})`, cause }),
+				new SongQueueDbError({ operation: `persistRequest(${parsed.data.eventId})`, cause }),
 		});
 
 		if (result.status === "error") {
@@ -284,31 +478,29 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		}
 
 		logger.info("Persisted song request", {
-			eventId: request.eventId,
-			trackId: request.trackId,
-			trackName: request.trackName,
+			eventId: parsed.data.eventId,
+			trackId: parsed.data.trackId,
 		});
 
 		this.updateState({ lastSyncAt: null });
-		await this.scheduleRefreshIn(REFRESH_AFTER_MUTATION_DELAY_SECONDS).catch((error: unknown) => {
-			logger.error("Failed to schedule song queue refresh after persistRequest", {
-				error: error instanceof Error ? error.message : String(error),
-			});
+		const scheduleResult = await Result.tryPromise({
+			try: async () => {
+				await this.scheduleRefreshIn(REFRESH_AFTER_MUTATION_DELAY_SECONDS);
+				await this.ensureCleanupSchedule();
+			},
+			catch: (cause) =>
+				new SongQueueCoordinationError({ operation: "persistRequest.scheduleDurableWork", cause }),
 		});
-		await this.ensureCleanupSchedule().catch((error: unknown) => {
-			logger.error("Failed to schedule song queue cleanup after persistRequest", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-		});
-
-		return Result.ok();
+		return scheduleResult.status === "error" ? Result.err(scheduleResult.error) : Result.ok();
 	}
 
 	/**
 	 * Delete a request (for rollback)
 	 */
 	@rpc
-	async deleteRequest(eventId: string): Promise<Result<void, SongQueueDbError>> {
+	async deleteRequest(eventId: string): Promise<Result<void, SongQueueError>> {
+		const parsedEventId = parseRpcInput(SongQueueDomainIdSchema, eventId, "deleteRequest");
+		if (parsedEventId.status === "error") return parsedEventId;
 		return Result.tryPromise({
 			try: async () => {
 				await this.db.delete(pendingRequests).where(eq(pendingRequests.eventId, eventId));
@@ -323,7 +515,9 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * Delete a history entry (for rollback)
 	 */
 	@rpc
-	async deleteHistory(eventId: string): Promise<Result<void, SongQueueDbError>> {
+	async deleteHistory(eventId: string): Promise<Result<void, SongQueueError>> {
+		const parsedEventId = parseRpcInput(SongQueueDomainIdSchema, eventId, "deleteHistory");
+		if (parsedEventId.status === "error") return parsedEventId;
 		return Result.tryPromise({
 			try: async () => {
 				await this.db.delete(requestHistory).where(eq(requestHistory.eventId, eventId));
@@ -333,35 +527,36 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		});
 	}
 
-	/**
-	 * Write request to history (after fulfilled)
-	 * Note: DO output gates guarantee atomicity for all writes in a single RPC call
-	 */
+	/** Move a Pending Request to Request History atomically and idempotently. */
 	@rpc
 	async writeHistory(
 		eventId: string,
 		fulfilledAt: string,
-	): Promise<Result<void, SongQueueDbError | SongRequestNotFoundError>> {
-		return Result.gen(async function* (this: _SongQueueDO) {
-			const request = yield* Result.await(
-				Result.tryPromise({
-					try: () =>
-						this.db.query.pendingRequests.findFirst({
-							where: eq(pendingRequests.eventId, eventId),
-						}),
-					catch: (cause) =>
-						new SongQueueDbError({ operation: `writeHistory.findRequest(${eventId})`, cause }),
+	): Promise<Result<void, SongQueueError | SongRequestNotFoundError>> {
+		const parsedEventId = parseRpcInput(SongQueueDomainIdSchema, eventId, "writeHistory");
+		if (parsedEventId.status === "error") return parsedEventId;
+		const parsedInstant = SongQueueInstantSchema.safeParse(fulfilledAt);
+		if (!parsedInstant.success)
+			return Result.err(
+				new SongQueueParseError({
+					boundary: "rpc-input",
+					operation: "writeHistory",
+					parseError: parsedInstant.error.message,
 				}),
 			);
-
-			if (!request) {
-				return Result.err(new SongRequestNotFoundError({ eventId }));
-			}
-
-			yield* Result.await(
-				Result.tryPromise({
-					try: async () => {
-						await this.db.insert(requestHistory).values({
+		const result = await Result.tryPromise({
+			try: async () =>
+				this.db.transaction((tx) => {
+					const existing = tx.query.requestHistory
+						.findFirst({ where: eq(requestHistory.eventId, eventId) })
+						.sync();
+					if (existing) return;
+					const request = tx.query.pendingRequests
+						.findFirst({ where: eq(pendingRequests.eventId, eventId) })
+						.sync();
+					if (!request) throw new SongRequestNotFoundError({ eventId });
+					tx.insert(requestHistory)
+						.values({
 							eventId: request.eventId,
 							trackId: request.trackId,
 							trackName: request.trackName,
@@ -371,19 +566,24 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 							requesterUserId: request.requesterUserId,
 							requesterDisplayName: request.requesterDisplayName,
 							requestedAt: request.requestedAt,
-							fulfilledAt,
-						});
-						await this.db.delete(pendingRequests).where(eq(pendingRequests.eventId, eventId));
-						await this.restoreOrRecomputeSchedules();
-					},
-					catch: (cause) =>
-						new SongQueueDbError({ operation: `writeHistory.persist(${eventId})`, cause }),
+							fulfilledAt: parsedInstant.data,
+						})
+						.onConflictDoNothing()
+						.run();
+					tx.delete(pendingRequests).where(eq(pendingRequests.eventId, eventId)).run();
 				}),
-			);
-
-			logger.info("Wrote request to history", { eventId, fulfilledAt });
-			return Result.ok();
-		}, this);
+			catch: (cause) =>
+				cause instanceof SongRequestNotFoundError
+					? cause
+					: new SongQueueDbError({ operation: `writeHistory(${eventId})`, cause }),
+		});
+		if (result.status === "error") return result;
+		const scheduleResult = await Result.tryPromise({
+			try: () => this.restoreOrRecomputeSchedules(),
+			catch: (cause) =>
+				new SongQueueCoordinationError({ operation: "writeHistory.restoreSchedules", cause }),
+		});
+		return scheduleResult.status === "error" ? Result.err(scheduleResult.error) : Result.ok();
 	}
 
 	/**
@@ -391,27 +591,23 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * Uses denormalized attribution from snapshot (no join needed)
 	 */
 	@rpc
-	async getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueDbError>> {
+	async getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueError>> {
 		await this.ensureFresh();
-
-		return Result.tryPromise({
-			try: async () => {
-				const snapshot = await this.db.query.spotifyQueueSnapshot.findFirst({
+		const readResult = await Result.tryPromise({
+			try: () =>
+				this.db.query.spotifyQueueSnapshot.findFirst({
 					where: eq(spotifyQueueSnapshot.position, 0),
-				});
-
-				if (!snapshot) {
-					return { track: null, position: 0 };
-				}
-
-				return {
-					track: toQueuedTrack(snapshot, parseArtistsJson(snapshot.artists)),
-					position: 0,
-				};
-			},
+				}),
 			catch: (cause) =>
 				new SongQueueDbError({ operation: "getCurrentlyPlaying.findSnapshot", cause }),
 		});
+		if (readResult.status === "error") return readResult;
+		if (!readResult.value) return Result.ok({ track: null, position: 0 });
+		const snapshot = parseSnapshotRecord(readResult.value, "getCurrentlyPlaying.parseSnapshot");
+		if (snapshot.status === "error") return snapshot;
+		const artists = parseArtistsJson(snapshot.value.artists, "getCurrentlyPlaying.parseArtists");
+		if (artists.status === "error") return artists;
+		return Result.ok({ track: toQueuedTrack(snapshot.value, artists.value), position: 0 });
 	}
 
 	/**
@@ -420,40 +616,42 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * Priority: user-requested (FIFO by requestedAt) → autoplay (Spotify order)
 	 */
 	@rpc
-	async getSongQueue(limit = 50): Promise<Result<QueueResult, SongQueueDbError>> {
+	async getSongQueue(limit = 50): Promise<Result<QueueResult, SongQueueError>> {
+		const parsedLimit = SongQueueLimitSchema.safeParse(limit);
+		if (!parsedLimit.success)
+			return Result.err(
+				new SongQueueParseError({
+					boundary: "rpc-input",
+					operation: "getSongQueue",
+					parseError: parsedLimit.error.message,
+				}),
+			);
 		await this.ensureFresh();
-
-		return Result.tryPromise({
-			try: async () => {
-				const snapshots = await this.db
+		const readResult = await Result.tryPromise({
+			try: () =>
+				this.db
 					.select()
 					.from(spotifyQueueSnapshot)
 					.where(gt(spotifyQueueSnapshot.position, 0))
-					.orderBy(desc(spotifyQueueSnapshot.source), asc(spotifyQueueSnapshot.position));
-
-				const userTracks: QueuedTrack[] = [];
-				const autoplayTracks: QueuedTrack[] = [];
-
-				for (const snapshot of snapshots) {
-					const track = toQueuedTrack(snapshot, parseArtistsJson(snapshot.artists));
-					if (snapshot.source === "user") {
-						userTracks.push(track);
-						continue;
-					}
-
-					autoplayTracks.push(track);
-				}
-
-				userTracks.sort((left, right) => {
-					return new Date(left.requestedAt).getTime() - new Date(right.requestedAt).getTime();
-				});
-
-				return {
-					tracks: [...userTracks, ...autoplayTracks].slice(0, limit),
-					totalCount: snapshots.length,
-				};
-			},
-			catch: (cause) => new SongQueueDbError({ operation: "getSongQueue", cause }),
+					.orderBy(asc(spotifyQueueSnapshot.position)),
+			catch: (cause) => new SongQueueDbError({ operation: "getSongQueue.findSnapshots", cause }),
+		});
+		if (readResult.status === "error") return readResult;
+		const userTracks: Extract<QueuedTrack, { source: "user" }>[] = [];
+		const autoplayTracks: Extract<QueuedTrack, { source: "autoplay" }>[] = [];
+		for (const record of readResult.value) {
+			const snapshot = parseSnapshotRecord(record, "getSongQueue.parseSnapshot");
+			if (snapshot.status === "error") return snapshot;
+			const artists = parseArtistsJson(snapshot.value.artists, "getSongQueue.parseArtists");
+			if (artists.status === "error") return artists;
+			const track = toQueuedTrack(snapshot.value, artists.value);
+			if (track.source === "user") userTracks.push(track);
+			else autoplayTracks.push(track);
+		}
+		userTracks.sort((left, right) => left.requestedAt.localeCompare(right.requestedAt));
+		return Result.ok({
+			tracks: [...userTracks, ...autoplayTracks].slice(0, parsedLimit.data),
+			totalCount: readResult.value.length,
 		});
 	}
 
@@ -466,48 +664,53 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		offset = 0,
 		since?: string,
 		until?: string,
-	): Promise<Result<RequestHistoryResult, SongQueueDbError>> {
+	): Promise<Result<RequestHistoryResult, SongQueueError>> {
+		const parsedQuery = RequestHistoryQuerySchema.safeParse({ limit, offset, since, until });
+		if (!parsedQuery.success)
+			return Result.err(
+				new SongQueueParseError({
+					boundary: "rpc-input",
+					operation: "getRequestHistory",
+					parseError: parsedQuery.error.message,
+				}),
+			);
 		const conditions = [];
-		if (since) {
-			conditions.push(gte(requestHistory.fulfilledAt, since));
-		}
-		if (until) {
-			conditions.push(lte(requestHistory.fulfilledAt, until));
-		}
+		if (parsedQuery.data.since !== undefined)
+			conditions.push(gte(requestHistory.fulfilledAt, parsedQuery.data.since));
+		if (parsedQuery.data.until !== undefined)
+			conditions.push(lte(requestHistory.fulfilledAt, parsedQuery.data.until));
 		const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-
-		return Result.gen(async function* (this: _SongQueueDO) {
-			const requests = yield* Result.await(
-				Result.tryPromise({
-					try: () =>
-						this.db
-							.select()
-							.from(requestHistory)
-							.where(whereClause)
-							.orderBy(desc(requestHistory.fulfilledAt))
-							.limit(limit)
-							.offset(offset),
-					catch: (cause) => new SongQueueDbError({ operation: "getRequestHistory.find", cause }),
-				}),
-			);
-
-			const countRows = yield* Result.await(
-				Result.tryPromise({
-					try: () => this.db.select({ count: count() }).from(requestHistory).where(whereClause),
-					catch: (cause) => new SongQueueDbError({ operation: "getRequestHistory.count", cause }),
-				}),
-			);
-
-			const totalCount = countRows[0]?.count ?? 0;
-			return Result.ok({ requests, totalCount });
-		}, this);
+		const readResult = await Result.tryPromise({
+			try: async () =>
+				Promise.all([
+					this.db
+						.select()
+						.from(requestHistory)
+						.where(whereClause)
+						.orderBy(desc(requestHistory.fulfilledAt))
+						.limit(parsedQuery.data.limit)
+						.offset(parsedQuery.data.offset),
+					this.db.select({ count: count() }).from(requestHistory).where(whereClause),
+				]),
+			catch: (cause) => new SongQueueDbError({ operation: "getRequestHistory", cause }),
+		});
+		if (readResult.status === "error") return readResult;
+		const requests: RequestHistoryItem[] = [];
+		for (const record of readResult.value[0]) {
+			const parsed = parseHistoryRecord(record, "getRequestHistory.parseRecord");
+			if (parsed.status === "error") return parsed;
+			requests.push(parsed.value);
+		}
+		return Result.ok({ requests, totalCount: readResult.value[1][0]?.count ?? 0 });
 	}
 
 	/**
 	 * Get count of fulfilled requests since a given timestamp
 	 */
 	@rpc
-	async getSessionRequestCount(since: string): Promise<Result<number, SongQueueDbError>> {
+	async getSessionRequestCount(since: string): Promise<Result<number, SongQueueError>> {
+		const parsedSince = parseRpcInput(SongQueueInstantSchema, since, "getSessionRequestCount");
+		if (parsedSince.status === "error") return parsedSince;
 		return Result.tryPromise({
 			try: async () => {
 				const countRows = await this.db
@@ -525,7 +728,9 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * Get total count of fulfilled requests by a specific user
 	 */
 	@rpc
-	async getUserRequestCount(userId: string): Promise<Result<number, SongQueueDbError>> {
+	async getUserRequestCount(userId: string): Promise<Result<number, SongQueueError>> {
+		const parsedUserId = parseRpcInput(SongQueueDomainIdSchema, userId, "getUserRequestCount");
+		if (parsedUserId.status === "error") return parsedUserId;
 		return Result.tryPromise({
 			try: async () => {
 				const countRows = await this.db
@@ -546,13 +751,19 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	@rpc
 	async getUserRequestCountByDisplayName(
 		displayName: string,
-	): Promise<Result<number, SongQueueDbError>> {
+	): Promise<Result<number, SongQueueError>> {
+		const parsedDisplayName = parseRpcInput(
+			SongQueueDisplayTextSchema,
+			displayName,
+			"getUserRequestCountByDisplayName",
+		);
+		if (parsedDisplayName.status === "error") return parsedDisplayName;
 		return Result.tryPromise({
 			try: async () => {
 				const countRows = await this.db
 					.select({ count: count() })
 					.from(requestHistory)
-					.where(eq(requestHistory.requesterDisplayName, displayName));
+					.where(eq(requestHistory.requesterDisplayName, parsedDisplayName.value));
 
 				return countRows[0]?.count ?? 0;
 			},
@@ -568,27 +779,8 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * Get top tracks by request count
 	 */
 	@rpc
-	async getTopTracks(limit = 10): Promise<Result<TopTrack[], SongQueueDbError>> {
-		const result = await Result.tryPromise({
-			try: () =>
-				this.db
-					.select({
-						trackId: requestHistory.trackId,
-						trackName: requestHistory.trackName,
-						artists: requestHistory.artists,
-						requestCount: count(),
-					})
-					.from(requestHistory)
-					.groupBy(requestHistory.trackId, requestHistory.trackName, requestHistory.artists)
-					.orderBy(desc(count()))
-					.limit(limit),
-			catch: (cause) => new SongQueueDbError({ operation: "getTopTracks", cause }),
-		});
-
-		if (result.status === "error") {
-			logger.error("Failed to get top tracks", { error: result.error.message });
-		}
-		return result;
+	async getTopTracks(limit = 10): Promise<Result<TopTrack[], SongQueueError>> {
+		return this.getTopTracksForViewer(undefined, limit);
 	}
 
 	/**
@@ -598,54 +790,100 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	async getTopTracksByUser(
 		userId: string,
 		limit = 10,
-	): Promise<Result<TopTrack[], SongQueueDbError>> {
+	): Promise<Result<TopTrack[], SongQueueError>> {
+		const parsedUserId = parseRpcInput(SongQueueDomainIdSchema, userId, "getTopTracksByUser");
+		if (parsedUserId.status === "error") return parsedUserId;
+		return this.getTopTracksForViewer(parsedUserId.value, limit);
+	}
+
+	private async getTopTracksForViewer(
+		userId: string | undefined,
+		limit: number,
+	): Promise<Result<TopTrack[], SongQueueError>> {
+		const parsedLimit = SongQueueLimitSchema.safeParse(limit);
+		if (!parsedLimit.success)
+			return Result.err(
+				new SongQueueParseError({
+					boundary: "rpc-input",
+					operation: "getTopTracks",
+					parseError: parsedLimit.error.message,
+				}),
+			);
 		const result = await Result.tryPromise({
+			// SQLite's single MAX aggregate selects bare metadata columns from that latest row.
 			try: () =>
 				this.db
 					.select({
 						trackId: requestHistory.trackId,
 						trackName: requestHistory.trackName,
 						artists: requestHistory.artists,
+						latestFulfilledAt: max(requestHistory.fulfilledAt),
 						requestCount: count(),
 					})
 					.from(requestHistory)
-					.where(eq(requestHistory.requesterUserId, userId))
-					.groupBy(requestHistory.trackId, requestHistory.trackName, requestHistory.artists)
-					.orderBy(desc(count()))
-					.limit(limit),
-			catch: (cause) => new SongQueueDbError({ operation: `getTopTracksByUser(${userId})`, cause }),
+					.where(userId === undefined ? undefined : eq(requestHistory.requesterUserId, userId))
+					.groupBy(requestHistory.trackId)
+					.orderBy(desc(count()), asc(requestHistory.trackId))
+					.limit(parsedLimit.data),
+			catch: (cause) =>
+				new SongQueueDbError({
+					operation: userId === undefined ? "getTopTracks" : "getTopTracksByUser",
+					cause,
+				}),
 		});
-
-		if (result.status === "error") {
-			logger.error("Failed to get top tracks by user", { error: result.error.message, userId });
+		if (result.status === "error") return result;
+		const tracks: TopTrack[] = [];
+		for (const row of result.value) {
+			const artists = parseArtistsJson(row.artists, "getTopTracks.parseArtists");
+			if (artists.status === "error") return artists;
+			tracks.push({
+				trackId: row.trackId,
+				trackName: row.trackName,
+				artists: artists.value,
+				requestCount: row.requestCount,
+			});
 		}
-		return result;
+		return Result.ok(tracks);
 	}
 
 	/**
 	 * Get top requesters by request count
 	 */
 	@rpc
-	async getTopRequesters(limit = 10): Promise<Result<TopRequester[], SongQueueDbError>> {
+	async getTopRequesters(limit = 10): Promise<Result<TopRequester[], SongQueueError>> {
+		const parsedLimit = SongQueueLimitSchema.safeParse(limit);
+		if (!parsedLimit.success)
+			return Result.err(
+				new SongQueueParseError({
+					boundary: "rpc-input",
+					operation: "getTopRequesters",
+					parseError: parsedLimit.error.message,
+				}),
+			);
 		const result = await Result.tryPromise({
+			// SQLite's single MAX aggregate selects the display name from the latest Viewer row.
 			try: () =>
 				this.db
 					.select({
 						userId: requestHistory.requesterUserId,
 						displayName: requestHistory.requesterDisplayName,
+						latestFulfilledAt: max(requestHistory.fulfilledAt),
 						requestCount: count(),
 					})
 					.from(requestHistory)
-					.groupBy(requestHistory.requesterUserId, requestHistory.requesterDisplayName)
-					.orderBy(desc(count()))
-					.limit(limit),
+					.groupBy(requestHistory.requesterUserId)
+					.orderBy(desc(count()), asc(requestHistory.requesterUserId))
+					.limit(parsedLimit.data),
 			catch: (cause) => new SongQueueDbError({ operation: "getTopRequesters", cause }),
 		});
-
-		if (result.status === "error") {
-			logger.error("Failed to get top requesters", { error: result.error.message });
-		}
-		return result;
+		if (result.status === "error") return result;
+		return Result.ok(
+			result.value.map((row) => ({
+				userId: row.userId,
+				displayName: row.displayName,
+				requestCount: row.requestCount,
+			})),
+		);
 	}
 
 	/**
@@ -657,8 +895,26 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		userId: string,
 		trackId: string,
 		windowMinutes = 30,
-	): Promise<Result<boolean, SongQueueDbError>> {
-		const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+	): Promise<Result<boolean, SongQueueError>> {
+		const parsedUserId = parseRpcInput(
+			SongQueueDomainIdSchema,
+			userId,
+			"checkDuplicateRequest.userId",
+		);
+		if (parsedUserId.status === "error") return parsedUserId;
+		const parsedTrackId = parseRpcInput(
+			SongQueueDomainIdSchema,
+			trackId,
+			"checkDuplicateRequest.trackId",
+		);
+		if (parsedTrackId.status === "error") return parsedTrackId;
+		const parsedWindow = parseRpcInput(
+			SongQueueLimitSchema,
+			windowMinutes,
+			"checkDuplicateRequest.windowMinutes",
+		);
+		if (parsedWindow.status === "error") return parsedWindow;
+		const windowStart = new Date(Date.now() - parsedWindow.value * 60 * 1000).toISOString();
 
 		return Result.gen(async function* (this: _SongQueueDO) {
 			const pendingMatch = yield* Result.await(
@@ -740,12 +996,21 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 			});
 		}
 
-		await this.restoreOrRecomputeSchedules();
+		const scheduleResult = await Result.tryPromise({
+			try: () => this.restoreOrRecomputeSchedules(),
+			catch: (cause) =>
+				new SongQueueCoordinationError({
+					operation: "cleanupStalePendingTick.restoreSchedules",
+					cause,
+				}),
+		});
+		if (scheduleResult.status === "error")
+			logger.error("Scheduled Song Queue cleanup schedule repair failed", {
+				error: scheduleResult.error,
+			});
 	}
 
-	/**
-	 * Ensure snapshot is fresh with stale fallback on sync failure.
-	 */
+	/** Ensure snapshot is fresh while preserving stale fallback on typed sync failures. */
 	private async ensureFresh(): Promise<Result<void, never>> {
 		const lastSyncAt = this.state.lastSyncAt;
 		if (lastSyncAt !== null && Date.now() - new Date(lastSyncAt).getTime() < MAX_STALENESS_MS) {
@@ -753,26 +1018,27 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		}
 
 		if (this.syncLock) {
-			await this.syncLock;
+			await this.syncLock.catch((cause: unknown) =>
+				logger.error("Song Queue sync lock rejected, using stale data", { cause }),
+			);
 			return Result.ok();
 		}
 
 		this.syncLock = this.runSyncCycle();
-
-		const result = await this.syncLock;
-		this.syncLock = null;
-
-		if (result.status === "error") {
-			logger.error("Sync failed, using stale data", {
-				error: result.error,
-				cause: result.error.cause,
-			});
+		try {
+			const result = await this.syncLock;
+			if (result.status === "error")
+				logger.error("Sync failed, using stale data", {
+					error: result.error,
+					cause: "cause" in result.error ? result.error.cause : undefined,
+				});
+		} finally {
+			this.syncLock = null;
 		}
-
 		return Result.ok();
 	}
 
-	private async runSyncCycle(): Promise<Result<void, SongQueueDbError>> {
+	private async runSyncCycle(): Promise<Result<void, SongQueueError>> {
 		const syncedAt = new Date().toISOString();
 		const result = await this.syncFromSpotify(syncedAt);
 
@@ -787,8 +1053,12 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 			});
 		}
 
-		await this.restoreOrRecomputeSchedules();
-		return result;
+		const scheduleResult = await Result.tryPromise({
+			try: () => this.restoreOrRecomputeSchedules(),
+			catch: (cause) =>
+				new SongQueueCoordinationError({ operation: "runSyncCycle.restoreSchedules", cause }),
+		});
+		return scheduleResult.status === "error" ? Result.err(scheduleResult.error) : result;
 	}
 
 	/**
@@ -796,335 +1066,135 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * Queue API success is required before mutating the durable snapshot so stale
 	 * fallback semantics are preserved when Spotify is unavailable.
 	 */
-	private async syncFromSpotify(syncedAt: string): Promise<Result<void, SongQueueDbError>> {
+	private async syncFromSpotify(syncedAt: string): Promise<Result<void, SongQueueError>> {
 		const spotifyService = new SpotifyService(this.env);
-
-		const previousPos0Result = await Result.tryPromise({
-			try: () =>
-				this.db.query.spotifyQueueSnapshot.findFirst({
-					where: eq(spotifyQueueSnapshot.position, 0),
-				}),
-			catch: (cause) => new SongQueueDbError({ operation: "syncFromSpotify.getPrevious", cause }),
-		});
-
-		const previousSnapshot =
-			previousPos0Result.status === "ok" ? previousPos0Result.value : undefined;
-
-		const allPendingResult = await Result.tryPromise({
-			try: () => this.db.select().from(pendingRequests).orderBy(asc(pendingRequests.requestedAt)),
-			catch: (cause) => new SongQueueDbError({ operation: "syncFromSpotify.getAllPending", cause }),
-		});
-
-		if (allPendingResult.status === "error") {
-			return allPendingResult;
-		}
-
-		const pendingByTrackId = new Map<string, PendingRequest[]>();
-		for (const request of allPendingResult.value) {
-			const pool = pendingByTrackId.get(request.trackId);
-			if (pool) {
-				pool.push(request);
-			} else {
-				pendingByTrackId.set(request.trackId, [request]);
-			}
-		}
-
 		const [currentlyPlayingResult, queueResult] = await Promise.all([
 			spotifyService.getCurrentlyPlaying(),
 			spotifyService.getQueue(),
 		]);
-
 		if (queueResult.status === "error") {
 			return Result.err(
-				new SongQueueDbError({
-					operation: "syncFromSpotify.fetchQueue",
-					cause: queueResult.error,
-				}),
+				new SongQueueDbError({ operation: "syncFromSpotify.fetchQueue", cause: queueResult.error }),
 			);
 		}
-
-		type AttributedItem = {
-			position: number;
-			trackId: string;
-			trackName: string;
-			artists: string;
-			album: string;
-			albumCoverUrl: string | null;
-			source: TrackSource;
-			eventId: string | null;
-			requesterUserId: string | null;
-			requesterDisplayName: string | null;
-			requestedAt: string | null;
-		};
-
-		const attributedItems: AttributedItem[] = [];
-		const matchedEventIds: string[] = [];
-
-		const popPending = (trackId: string): PendingRequest | undefined => {
-			const pool = pendingByTrackId.get(trackId);
-			if (pool && pool.length > 0) {
-				return pool.shift();
-			}
-			return undefined;
-		};
-
 		const queueCurrentTrack = queueResult.value.currently_playing
 			? toTrackInfo(queueResult.value.currently_playing)
 			: null;
 		const currentTrack =
 			currentlyPlayingResult.status === "ok" ? currentlyPlayingResult.value : queueCurrentTrack;
+		const upcomingTracks = queueResult.value.queue.map(toTrackInfo);
 
-		if (currentTrack) {
-			const pending = popPending(currentTrack.id);
+		return Result.tryPromise({
+			try: async () => {
+				this.db.transaction((tx) => {
+					const previousRows = tx
+						.select()
+						.from(spotifyQueueSnapshot)
+						.orderBy(asc(spotifyQueueSnapshot.position))
+						.all();
+					const previousSnapshots: SpotifyQueueSnapshotRecord[] = [];
+					for (const row of previousRows) {
+						const parsed = SpotifyQueueSnapshotRecordSchema.safeParse(row);
+						if (!parsed.success)
+							throw new SongQueueParseError({
+								boundary: "persistence",
+								operation: "syncFromSpotify.parseSnapshot",
+								parseError: parsed.error.message,
+							});
+						previousSnapshots.push(parsed.data);
+					}
+					const pendingRows = tx
+						.select()
+						.from(pendingRequests)
+						.orderBy(asc(pendingRequests.requestedAt))
+						.all();
+					const allPending: PendingRequest[] = [];
+					for (const row of pendingRows) {
+						const parsed = PendingRequestRecordSchema.safeParse(row);
+						if (!parsed.success)
+							throw new SongQueueParseError({
+								boundary: "persistence",
+								operation: "syncFromSpotify.parsePending",
+								parseError: parsed.error.message,
+							});
+						allPending.push(parsed.data);
+					}
 
-			attributedItems.push({
-				position: 0,
-				trackId: currentTrack.id,
-				trackName: currentTrack.name,
-				artists: JSON.stringify(currentTrack.artists),
-				album: currentTrack.album,
-				albumCoverUrl: currentTrack.albumCoverUrl,
-				source: pending ? "user" : "autoplay",
-				eventId: pending?.eventId ?? null,
-				requesterUserId: pending?.requesterUserId ?? null,
-				requesterDisplayName: pending?.requesterDisplayName ?? null,
-				requestedAt: pending?.requestedAt ?? null,
-			});
-
-			if (pending) {
-				matchedEventIds.push(pending.eventId);
-			}
-		}
-
-		for (let index = 0; index < queueResult.value.queue.length; index++) {
-			const rawTrack = queueResult.value.queue[index];
-			if (!rawTrack) {
-				continue;
-			}
-
-			const track = toTrackInfo(rawTrack);
-			const pending = popPending(track.id);
-
-			attributedItems.push({
-				position: index + 1,
-				trackId: track.id,
-				trackName: track.name,
-				artists: JSON.stringify(track.artists),
-				album: track.album,
-				albumCoverUrl: track.albumCoverUrl,
-				source: pending ? "user" : "autoplay",
-				eventId: pending?.eventId ?? null,
-				requesterUserId: pending?.requesterUserId ?? null,
-				requesterDisplayName: pending?.requesterDisplayName ?? null,
-				requestedAt: pending?.requestedAt ?? null,
-			});
-
-			if (pending) {
-				matchedEventIds.push(pending.eventId);
-			}
-		}
-
-		const newPos0EventId = attributedItems.find((item) => item.position === 0)?.eventId;
-		const reconcilePlayedResult = await this.reconcilePlayed(previousSnapshot, newPos0EventId);
-		if (reconcilePlayedResult.status === "error") {
-			logger.error("Failed to reconcile played track", {
-				error: reconcilePlayedResult.error.message,
-			});
-		}
-
-		return Result.gen(async function* (this: _SongQueueDO) {
-			yield* Result.await(
-				Result.tryPromise({
-					try: () => this.db.delete(spotifyQueueSnapshot),
-					catch: (cause) => new SongQueueDbError({ operation: "syncFromSpotify.clear", cause }),
-				}),
-			);
-
-			for (const item of attributedItems) {
-				yield* Result.await(
-					Result.tryPromise({
-						try: () =>
-							this.db.insert(spotifyQueueSnapshot).values({
-								...item,
-								syncedAt,
-							}),
-						catch: (cause) =>
-							new SongQueueDbError({
-								operation: `syncFromSpotify.insert[${item.position}]`,
-								cause,
-							}),
-					}),
-				);
-			}
-
-			if (matchedEventIds.length > 0) {
-				yield* Result.await(
-					Result.tryPromise({
-						try: async () => {
-							await this.db
-								.update(pendingRequests)
-								.set({ lastSeenInSpotifyAt: syncedAt })
-								.where(inArray(pendingRequests.eventId, matchedEventIds));
-
-							await this.db
-								.update(pendingRequests)
-								.set({ firstSeenInSpotifyAt: syncedAt })
-								.where(
-									and(
-										inArray(pendingRequests.eventId, matchedEventIds),
-										isNull(pendingRequests.firstSeenInSpotifyAt),
-									),
-								);
-						},
-						catch: (cause) =>
-							new SongQueueDbError({ operation: "syncFromSpotify.updateSeen", cause }),
-					}),
-				);
-			}
-
-			logger.debug("Synced Spotify queue snapshot", {
-				queueSize: attributedItems.length,
-				userRequests: matchedEventIds.length,
-			});
-
-			const [reconcileDroppedResult, cleanupResult] = await Promise.all([
-				this.reconcileDropped(matchedEventIds),
-				this.cleanupStalePending(),
-			]);
-			if (reconcileDroppedResult.status === "error") {
-				logger.error("Failed to reconcile dropped tracks", {
-					error: reconcileDroppedResult.error.message,
-				});
-			}
-
-			if (cleanupResult.status === "error") {
-				logger.error("Failed to cleanup stale pending", {
-					error: cleanupResult.error.message,
-				});
-			}
-
-			return Result.ok();
-		}, this);
-	}
-
-	/**
-	 * Reconcile played track - move from pending to history when position 0 changes
-	 */
-	private async reconcilePlayed(
-		previousSnapshot: schema.SpotifyQueueSnapshotItem | undefined,
-		newEventId: string | null | undefined,
-	): Promise<Result<void, SongQueueDbError>> {
-		if (!previousSnapshot) {
-			return Result.ok();
-		}
-
-		if (!previousSnapshot.eventId) {
-			return Result.ok();
-		}
-
-		if (previousSnapshot.eventId === newEventId) {
-			return Result.ok();
-		}
-
-		const eventId = previousSnapshot.eventId;
-
-		return Result.gen(async function* (this: _SongQueueDO) {
-			const pending = yield* Result.await(
-				Result.tryPromise({
-					try: () =>
-						this.db.query.pendingRequests.findFirst({
-							where: eq(pendingRequests.eventId, eventId),
-						}),
-					catch: (cause) =>
-						new SongQueueDbError({ operation: "reconcilePlayed.findPending", cause }),
-				}),
-			);
-
-			if (!pending) {
-				return Result.ok();
-			}
-
-			const fulfilledAt = new Date().toISOString();
-			yield* Result.await(
-				Result.tryPromise({
-					try: async () => {
-						await this.db.insert(requestHistory).values({
-							eventId: pending.eventId,
-							trackId: pending.trackId,
-							trackName: pending.trackName,
-							artists: pending.artists,
-							album: pending.album,
-							albumCoverUrl: pending.albumCoverUrl,
-							requesterUserId: pending.requesterUserId,
-							requesterDisplayName: pending.requesterDisplayName,
-							requestedAt: pending.requestedAt,
-							fulfilledAt,
-						});
-						await this.db.delete(pendingRequests).where(eq(pendingRequests.eventId, eventId));
-					},
-					catch: (cause) =>
-						new SongQueueDbError({ operation: "reconcilePlayed.moveToHistory", cause }),
-				}),
-			);
-
-			logger.info("Reconciled played track", {
-				eventId: pending.eventId,
-				trackId: pending.trackId,
-				requester: pending.requesterDisplayName,
-			});
-
-			return Result.ok();
-		}, this);
-	}
-
-	/**
-	 * Reconcile dropped tracks - delete pending requests no longer in queue.
-	 */
-	private async reconcileDropped(
-		matchedEventIds: string[],
-	): Promise<Result<void, SongQueueDbError>> {
-		return Result.gen(async function* (this: _SongQueueDO) {
-			const orphaned = yield* Result.await(
-				Result.tryPromise({
-					try: async () => {
-						const conditions = [isNotNull(pendingRequests.firstSeenInSpotifyAt)];
-
-						if (matchedEventIds.length > 0) {
-							conditions.push(notInArray(pendingRequests.eventId, matchedEventIds));
+					const attributedItems = attributeSpotifyOccurrences(
+						previousSnapshots,
+						allPending,
+						currentTrack,
+						upcomingTracks,
+					);
+					const previousCurrent = previousSnapshots.find((snapshot) => snapshot.position === 0);
+					const newCurrentEventId = attributedItems.find((item) => item.position === 0)?.eventId;
+					if (previousCurrent?.eventId && previousCurrent.eventId !== newCurrentEventId) {
+						const played = allPending.find(
+							(request) => request.eventId === previousCurrent.eventId,
+						);
+						if (played) {
+							tx.insert(requestHistory)
+								.values({
+									eventId: played.eventId,
+									trackId: played.trackId,
+									trackName: played.trackName,
+									artists: played.artists,
+									album: played.album,
+									albumCoverUrl: played.albumCoverUrl,
+									requesterUserId: played.requesterUserId,
+									requesterDisplayName: played.requesterDisplayName,
+									requestedAt: played.requestedAt,
+									fulfilledAt: syncedAt,
+								})
+								.onConflictDoNothing()
+								.run();
+							tx.delete(pendingRequests).where(eq(pendingRequests.eventId, played.eventId)).run();
 						}
+					}
 
-						return this.db
-							.select({ eventId: pendingRequests.eventId, trackId: pendingRequests.trackId })
-							.from(pendingRequests)
-							.where(and(...conditions));
-					},
-					catch: (cause) =>
-						new SongQueueDbError({ operation: "reconcileDropped.findOrphaned", cause }),
-				}),
-			);
-
-			if (orphaned.length === 0) {
-				return Result.ok();
-			}
-
-			const orphanedEventIds = orphaned.map((orphan) => orphan.eventId);
-			yield* Result.await(
-				Result.tryPromise({
-					try: () =>
-						this.db
-							.delete(pendingRequests)
-							.where(inArray(pendingRequests.eventId, orphanedEventIds)),
-					catch: (cause) => new SongQueueDbError({ operation: "reconcileDropped.delete", cause }),
-				}),
-			);
-
-			logger.info("Reconciled dropped tracks", {
-				count: orphaned.length,
-				trackIds: orphaned.map((orphan) => orphan.trackId),
-			});
-
-			return Result.ok();
-		}, this);
+					tx.delete(spotifyQueueSnapshot).run();
+					if (attributedItems.length > 0) {
+						tx.insert(spotifyQueueSnapshot)
+							.values(attributedItems.map((item) => ({ ...item, syncedAt })))
+							.run();
+					}
+					const matchedEventIds = attributedItems.flatMap((item) =>
+						item.eventId === null ? [] : [item.eventId],
+					);
+					if (matchedEventIds.length > 0) {
+						tx.update(pendingRequests)
+							.set({ lastSeenInSpotifyAt: syncedAt })
+							.where(inArray(pendingRequests.eventId, matchedEventIds))
+							.run();
+						tx.update(pendingRequests)
+							.set({ firstSeenInSpotifyAt: syncedAt })
+							.where(
+								and(
+									inArray(pendingRequests.eventId, matchedEventIds),
+									isNull(pendingRequests.firstSeenInSpotifyAt),
+								),
+							)
+							.run();
+					}
+					const droppedConditions = [isNotNull(pendingRequests.firstSeenInSpotifyAt)];
+					if (matchedEventIds.length > 0)
+						droppedConditions.push(notInArray(pendingRequests.eventId, matchedEventIds));
+					tx.delete(pendingRequests)
+						.where(and(...droppedConditions))
+						.run();
+					const oneHourAgo = new Date(new Date(syncedAt).getTime() - 60 * 60 * 1000).toISOString();
+					tx.delete(pendingRequests).where(lt(pendingRequests.requestedAt, oneHourAgo)).run();
+					logger.debug("Synced Spotify queue snapshot transaction", {
+						queueSize: attributedItems.length,
+						userRequests: matchedEventIds.length,
+					});
+				});
+			},
+			catch: (cause: unknown) =>
+				cause instanceof SongQueueParseError
+					? cause
+					: new SongQueueDbError({ operation: "syncFromSpotify.transaction", cause }),
+		});
 	}
 
 	/**

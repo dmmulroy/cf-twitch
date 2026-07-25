@@ -47,6 +47,33 @@ async function seedPending(instance: SongQueueDO, rows: InsertPendingRequest[]):
 	}
 }
 
+function mockSpotifyPlayback(
+	currentTrack: typeof QUEUE_RESPONSE.currently_playing,
+	queue: typeof QUEUE_RESPONSE.queue,
+): void {
+	fetchMock
+		.get("https://api.spotify.com")
+		.intercept({ path: "/v1/me/player/currently-playing" })
+		.reply(200, JSON.stringify({ is_playing: true, item: currentTrack }), {
+			headers: { "content-type": "application/json" },
+		});
+	fetchMock
+		.get("https://api.spotify.com")
+		.intercept({ path: "/v1/me/player/queue" })
+		.reply(200, JSON.stringify({ currently_playing: currentTrack, queue }), {
+			headers: { "content-type": "application/json" },
+		});
+}
+
+async function expireSongQueueSnapshot(stub: DurableObjectStub<SongQueueDO>): Promise<void> {
+	await runInDurableObject(stub, (instance: SongQueueDO) => {
+		instance.setState({
+			...instance.state,
+			lastSyncAt: new Date(Date.now() - 60_000).toISOString(),
+		});
+	});
+}
+
 describe("SongQueueDO", () => {
 	let stub: DurableObjectStub<SongQueueDO>;
 	let tokenStub: DurableObjectStub<SpotifyTokenDO>;
@@ -69,6 +96,16 @@ describe("SongQueueDO", () => {
 			const result = await stub.persistRequest(TEST_PENDING_REQUEST);
 
 			expect(result.status).toBe("ok");
+		});
+
+		it("rejects malformed serialized RPC input before persistence", async () => {
+			const result = await stub.persistRequest({
+				...TEST_PENDING_REQUEST,
+				artists: "not-json",
+				requestedAt: "not-an-instant",
+			});
+			expect(result.status).toBe("error");
+			if (result.status === "error") expect(result.error._tag).toBe("SongQueueParseError");
 		});
 
 		it("is idempotent for the same eventId", async () => {
@@ -112,6 +149,28 @@ describe("SongQueueDO", () => {
 					message: `Song queue DB error during persistRequest(${TEST_PENDING_REQUEST.eventId})`,
 				},
 			});
+		});
+
+		it("returns a typed coordination error when durable scheduling fails", async () => {
+			const result = await runInDurableObject(stub, async (instance: SongQueueDO) => {
+				Object.defineProperty(instance, "schedule", {
+					configurable: true,
+					value: async () => {
+						throw new Error("scheduler unavailable");
+					},
+				});
+				return instance.persistRequest(createPendingRequest({ eventId: "schedule-failure" }));
+			});
+
+			expect(result.status).toBe("error");
+			if (result.status === "error") expect(result.error._tag).toBe("SongQueueCoordinationError");
+			const persisted = await runInDurableObject(stub, (instance: SongQueueDO) => {
+				const db = drizzle(instance.ctx.storage, { schema: songQueueSchema });
+				return db.query.pendingRequests.findFirst({
+					where: (table, { eq }) => eq(table.eventId, "schedule-failure"),
+				});
+			});
+			expect(persisted?.eventId).toBe("schedule-failure");
 		});
 
 		it("schedules refresh and cleanup work after a new request", async () => {
@@ -174,7 +233,7 @@ describe("SongQueueDO", () => {
 			}
 		});
 
-		it("removes the request from pending after writing to history", async () => {
+		it("replays an already completed history transition idempotently", async () => {
 			await stub.persistRequest(TEST_PENDING_REQUEST);
 			await stub.writeHistory(TEST_PENDING_REQUEST.eventId, "2026-01-22T12:30:00.000Z");
 
@@ -182,9 +241,11 @@ describe("SongQueueDO", () => {
 				return instance.writeHistory(TEST_PENDING_REQUEST.eventId, "2026-01-22T12:35:00.000Z");
 			});
 
-			expect(result.status).toBe("error");
-			if (result.status === "error") {
-				expect(result.error._tag).toBe("SongRequestNotFoundError");
+			expect(result.status).toBe("ok");
+			const history = await stub.getRequestHistory(10, 0);
+			if (history.status === "ok") {
+				expect(history.value.requests).toHaveLength(1);
+				expect(history.value.requests[0]?.fulfilledAt).toBe("2026-01-22T12:30:00.000Z");
 			}
 		});
 	});
@@ -232,6 +293,29 @@ describe("SongQueueDO", () => {
 				expect(result.value.requests).toHaveLength(1);
 				expect(result.value.requests[0]?.eventId).toBe("new-request");
 			}
+		});
+
+		it("rejects unbounded or malformed service inputs before querying SQLite", async () => {
+			const invalidLimit = await stub.getRequestHistory(10_000, 0);
+			const invalidOffset = await stub.getRequestHistory(10, -1);
+			const invalidInstant = await stub.getRequestHistory(10, 0, "not-an-instant");
+
+			for (const result of [invalidLimit, invalidOffset, invalidInstant]) {
+				expect(result.status).toBe("error");
+				if (result.status === "error") expect(result.error._tag).toBe("SongQueueParseError");
+			}
+		});
+
+		it("returns a typed persistence parse error for corrupt serialized history", async () => {
+			await stub.persistRequest(TEST_PENDING_REQUEST);
+			await stub.writeHistory(TEST_PENDING_REQUEST.eventId, "2026-01-22T12:30:00.000Z");
+			await runInDurableObject(stub, (instance: SongQueueDO) => {
+				instance.ctx.storage.sql.exec("UPDATE request_history SET artists = 'not-json'");
+			});
+
+			const result = await stub.getRequestHistory(10, 0);
+			expect(result.status).toBe("error");
+			if (result.status === "error") expect(result.error._tag).toBe("SongQueueParseError");
 		});
 
 		it("respects limit and offset", async () => {
@@ -393,6 +477,67 @@ describe("SongQueueDO", () => {
 			}
 		});
 
+		it("aggregates one Spotify Track ID across metadata changes and decodes artists", async () => {
+			await stub.persistRequest(
+				createPendingRequest({
+					eventId: "metadata-old",
+					trackId: "stable-track",
+					trackName: "Old Name",
+					artists: JSON.stringify(["Old Artist"]),
+				}),
+			);
+			await stub.writeHistory("metadata-old", "2026-01-20T12:00:00.000Z");
+			await stub.persistRequest(
+				createPendingRequest({
+					eventId: "metadata-new",
+					trackId: "stable-track",
+					trackName: "Current Name",
+					artists: JSON.stringify(["Current Artist"]),
+				}),
+			);
+			await stub.writeHistory("metadata-new", "2026-01-22T12:00:00.000Z");
+
+			const result = await stub.getTopTracks(10);
+			expect(result.status).toBe("ok");
+			if (result.status === "ok") {
+				expect(result.value).toEqual([
+					{
+						trackId: "stable-track",
+						trackName: "Current Name",
+						artists: ["Current Artist"],
+						requestCount: 2,
+					},
+				]);
+			}
+		});
+
+		it("aggregates a Viewer by stable ID and uses the latest display name", async () => {
+			await stub.persistRequest(
+				createPendingRequest({
+					eventId: "viewer-old",
+					requesterUserId: "stable-viewer",
+					requesterDisplayName: "OldName",
+				}),
+			);
+			await stub.writeHistory("viewer-old", "2026-01-20T12:00:00.000Z");
+			await stub.persistRequest(
+				createPendingRequest({
+					eventId: "viewer-new",
+					requesterUserId: "stable-viewer",
+					requesterDisplayName: "NewName",
+				}),
+			);
+			await stub.writeHistory("viewer-new", "2026-01-22T12:00:00.000Z");
+
+			const result = await stub.getTopRequesters(10);
+			expect(result.status).toBe("ok");
+			if (result.status === "ok") {
+				expect(result.value).toEqual([
+					{ userId: "stable-viewer", displayName: "NewName", requestCount: 2 },
+				]);
+			}
+		});
+
 		it("returns top tracks for a specific user", async () => {
 			for (let index = 0; index < 2; index++) {
 				await stub.persistRequest(
@@ -550,6 +695,9 @@ describe("SongQueueDO", () => {
 			if (result.status === "ok") {
 				expect(result.value.tracks).toHaveLength(1);
 				expect(result.value.tracks[0]?.id).toBe(QUEUE_RESPONSE.queue[0]?.id);
+				expect(result.value.tracks[0]).toMatchObject({ source: "autoplay" });
+				expect(result.value.tracks[0]).not.toHaveProperty("requesterUserId");
+				expect(result.value.tracks[0]).not.toHaveProperty("requestedAt");
 			}
 		});
 
@@ -663,6 +811,64 @@ describe("SongQueueDO", () => {
 			errorSpy.mockRestore();
 		});
 
+		it("clears the synchronization lock after a scheduling failure", async () => {
+			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
+			mockSpotifyCurrentlyPlaying(fetchMock);
+			mockSpotifyQueue(fetchMock);
+			const first = await runInDurableObject(stub, async (instance: SongQueueDO) => {
+				Object.defineProperty(instance, "schedule", {
+					configurable: true,
+					value: async () => {
+						throw new Error("scheduler unavailable");
+					},
+				});
+				const result = await instance.getSongQueue(10);
+				Reflect.deleteProperty(instance, "schedule");
+				return result;
+			});
+			expect(first.status).toBe("ok");
+
+			await expireSongQueueSnapshot(stub);
+			mockSpotifyCurrentlyPlaying(fetchMock);
+			mockSpotifyQueue(fetchMock);
+			const second = await stub.getSongQueue(10);
+			expect(second.status).toBe("ok");
+			if (second.status === "ok") expect(second.value.tracks).toHaveLength(1);
+		});
+
+		it("rolls back the whole snapshot replacement when an insert fails", async () => {
+			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
+			const staleSyncedAt = new Date(Date.now() - 60_000).toISOString();
+			await runInDurableObject(stub, async (instance: SongQueueDO) => {
+				await seedSnapshot(instance, [
+					{
+						position: 1,
+						trackId: "atomic-stale-track",
+						trackName: "Atomic Stale Track",
+						artists: JSON.stringify(["Stale Artist"]),
+						album: "Stale Album",
+						albumCoverUrl: null,
+						syncedAt: staleSyncedAt,
+						source: "autoplay",
+						eventId: null,
+						requesterUserId: null,
+						requesterDisplayName: null,
+						requestedAt: null,
+					},
+				]);
+				instance.setState({ ...instance.state, lastSyncAt: staleSyncedAt });
+				instance.ctx.storage.sql.exec(
+					`CREATE TRIGGER fail_snapshot_insert BEFORE INSERT ON spotify_queue_snapshot BEGIN SELECT RAISE(FAIL, 'snapshot insert failed'); END`,
+				);
+			});
+			mockSpotifyCurrentlyPlaying(fetchMock);
+			mockSpotifyQueue(fetchMock);
+
+			const result = await stub.getSongQueue(10);
+			expect(result.status).toBe("ok");
+			if (result.status === "ok") expect(result.value.tracks[0]?.id).toBe("atomic-stale-track");
+		});
+
 		it("invalidates freshness after persistRequest so the next read resyncs", async () => {
 			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
 
@@ -705,6 +911,91 @@ describe("SongQueueDO", () => {
 	});
 
 	describe("reconciliation behavior", () => {
+		it("does not attribute a new request to the already-playing occurrence", async () => {
+			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
+			const request = createPendingRequest({
+				eventId: "same-track-request",
+				trackId: QUEUE_RESPONSE.currently_playing.id,
+				requestedAt: new Date().toISOString(),
+			});
+			const staleSyncedAt = new Date(Date.now() - 60_000).toISOString();
+			await runInDurableObject(stub, async (instance: SongQueueDO) => {
+				await seedPending(instance, [request]);
+				await seedSnapshot(instance, [
+					{
+						position: 0,
+						trackId: request.trackId,
+						trackName: request.trackName,
+						artists: request.artists,
+						album: request.album,
+						albumCoverUrl: request.albumCoverUrl,
+						syncedAt: staleSyncedAt,
+						source: "autoplay",
+						eventId: null,
+						requesterUserId: null,
+						requesterDisplayName: null,
+						requestedAt: null,
+					},
+				]);
+				instance.setState({ ...instance.state, lastSyncAt: staleSyncedAt });
+			});
+
+			mockSpotifyPlayback(QUEUE_RESPONSE.currently_playing, []);
+			const beforeInsertion = await stub.getCurrentlyPlaying();
+			if (beforeInsertion.status === "ok")
+				expect(beforeInsertion.value.track?.source).toBe("autoplay");
+
+			await expireSongQueueSnapshot(stub);
+			mockSpotifyPlayback(QUEUE_RESPONSE.currently_playing, [QUEUE_RESPONSE.currently_playing]);
+			const observedUpcoming = await stub.getSongQueue(10);
+			if (observedUpcoming.status === "ok")
+				expect(observedUpcoming.value.tracks[0]).toMatchObject({
+					source: "user",
+					eventId: request.eventId,
+				});
+
+			await expireSongQueueSnapshot(stub);
+			mockSpotifyPlayback(QUEUE_RESPONSE.currently_playing, []);
+			const promotedCurrent = await stub.getCurrentlyPlaying();
+			if (promotedCurrent.status === "ok")
+				expect(promotedCurrent.value.track).toMatchObject({
+					source: "user",
+					eventId: request.eventId,
+				});
+			const history = await stub.getRequestHistory(10, 0);
+			if (history.status === "ok") expect(history.value.requests).toHaveLength(0);
+		});
+
+		it("preserves attribution across repeated Spotify Track occurrences", async () => {
+			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
+			const track = QUEUE_RESPONSE.currently_playing;
+			const otherTrack = { ...track, id: "other-track", name: "Other Track" };
+			const first = createPendingRequest({
+				eventId: "repeat-first",
+				trackId: track.id,
+				requestedAt: new Date(Date.now() - 1_000).toISOString(),
+			});
+			const second = createPendingRequest({
+				eventId: "repeat-second",
+				trackId: track.id,
+				requestedAt: new Date().toISOString(),
+			});
+			await runInDurableObject(stub, async (instance: SongQueueDO) => {
+				await seedPending(instance, [first, second]);
+			});
+			mockSpotifyPlayback(otherTrack, [track, track]);
+			await stub.getSongQueue(10);
+
+			await expireSongQueueSnapshot(stub);
+			mockSpotifyPlayback(track, [track]);
+			const current = await stub.getCurrentlyPlaying();
+			const upcoming = await stub.getSongQueue(10);
+			if (current.status === "ok")
+				expect(current.value.track).toMatchObject({ eventId: first.eventId });
+			if (upcoming.status === "ok")
+				expect(upcoming.value.tracks[0]).toMatchObject({ eventId: second.eventId });
+		});
+
 		it("moves the previous position 0 user request into history when it finishes playing", async () => {
 			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
 

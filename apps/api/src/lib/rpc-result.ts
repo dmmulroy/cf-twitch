@@ -2,123 +2,73 @@ import { Result, type SerializedResult } from "better-result";
 
 import { DurableObjectError } from "./errors";
 
-/**
- * RPC-safe representation of a {@link Result}.
- *
- * Durable Object RPC cannot clone `better-result` class instances directly, so
- * Result values must cross the wire as plain serialized objects.
- */
+/** RPC-safe representation of a better-result value. */
 export type RpcResult<T, E> = SerializedResult<T, E>;
 
-/**
- * Serializes a project-native {@link Result} into an RPC-safe payload.
- *
- * Use this on the server side at the last transport boundary, typically from a
- * `RpcTarget` method right before the value is returned to a remote caller.
- *
- * @template T Success value type.
- * @template E Error value type.
- * @param result Result produced by Durable Object business logic.
- * @returns A plain-object payload that can be returned over Durable Object RPC.
- * @throws {never} This helper does not throw for valid Result inputs.
- * @example
- * ```ts
- * class SongQueueHandle extends RpcTarget {
- *   getSongQueue(limit: number) {
- *     return queue.getSongQueueInternal(limit).then(toRpcResult);
- *   }
- * }
- * ```
- */
+/** Non-throwing parser used to validate one method-specific RPC payload variant. */
+export type RpcPayloadParser<T> = (value: unknown) => Result<T, string>;
+
+/** Method-specific parsers for both variants of a serialized RPC Result. */
+export interface RpcResultParsers<T, E> {
+	readonly success: RpcPayloadParser<T>;
+	readonly error: RpcPayloadParser<E>;
+}
+
+/** Serialize a Result into a clone-safe Durable Object RPC payload. */
 export function toRpcResult<T, E>(result: Result<T, E>): RpcResult<T, E> {
 	const serialized = Result.serialize(result);
 	if (serialized.status === "ok") return serialized;
-
 	return {
 		status: "error",
-		// SAFETY: RPC error serialization preserves E's enumerable data contract while
-		// replacing an uncloneable Error prototype with a plain transport projection.
+		// SAFETY: serializeRpcError preserves E's enumerable transport contract while replacing only the Error prototype.
 		error: serializeRpcError(serialized.error) as E,
 	};
 }
 
-/**
- * Projects an Error into a plain RPC-safe object while preserving typed context.
- *
- * Non-Error values already use their transport representation and pass through
- * unchanged. Standard Error fields are copied explicitly because they are not
- * enumerable; custom tagged-error fields are retained through object entries.
- *
- * @param error Error value crossing a Durable Object RPC boundary.
- * @returns An RPC-safe error projection, or the original non-Error value.
- */
+/** Project an Error into plain clone-safe data while retaining its typed fields. */
 export function serializeRpcError(error: unknown): unknown {
 	if (!(error instanceof Error)) return error;
-
-	return {
-		...Object.fromEntries(Object.entries(error)),
-		name: error.name,
-		message: error.message,
-	};
+	return { ...Object.fromEntries(Object.entries(error)), name: error.name, message: error.message };
 }
 
-/**
- * Deserializes an unknown RPC payload back into a project-native {@link Result}.
- *
- * If the payload is not a serialized Result, the failure is converted into a
- * {@link DurableObjectError} so callers still receive an error-as-value.
- *
- * @template T Success value type expected by the caller.
- * @template E Error value type expected by the caller.
- * @param value Raw value returned by a remote RPC call.
- * @param method Logical RPC method name used in infrastructure error messages.
- * @returns The deserialized Result on success, or `Result.err(DurableObjectError)`
- * when the payload is not a valid serialized Result.
- * @throws {never} Invalid payloads are wrapped as `DurableObjectError` values.
- * @example
- * ```ts
- * const raw = await handle.getSongQueue(25);
- * const result = fromRpcResult<QueueResult, SongQueueDbError>(raw, "getSongQueue");
- * ```
- */
-export function fromRpcResult<T, E>(
-	value: unknown,
+function invalidRpcPayload(
 	method: string,
-): Result<T, E | DurableObjectError> {
-	const deserialized = Result.deserialize<T, E>(value);
-
-	if (deserialized !== null) {
-		return deserialized;
-	}
-
+	variant: "envelope" | "success" | "error",
+	parseError: string,
+): Result<never, DurableObjectError> {
 	return Result.err(
 		new DurableObjectError({
 			method,
-			message: "Invalid RPC result payload",
+			message: `Invalid RPC ${variant} payload: ${parseError}`,
 		}),
 	);
 }
 
-/**
- * Normalizes an RPC transport failure into a {@link DurableObjectError} Result.
- *
- * Use this when the RPC call itself failed before a serialized Result payload
- * could be returned, for example due to a rejected promise or infrastructure
- * exception.
- *
- * @param method Logical RPC method name used in the generated error message.
- * @param error Unknown thrown or rejected value from the RPC layer.
- * @returns `Result.err(DurableObjectError)` describing the transport failure.
- * @throws {never} This helper always returns an error Result instead of throwing.
- * @example
- * ```ts
- * try {
- *   await handle.getSongQueue(25);
- * } catch (error) {
- *   return rpcInfraError("getSongQueue", error);
- * }
- * ```
- */
+/** Deserialize and parse both the envelope and selected method-specific RPC payload. */
+export function fromRpcResult<T, E>(
+	value: unknown,
+	method: string,
+	parsers: RpcResultParsers<T, E>,
+): Result<T, E | DurableObjectError> {
+	if (typeof value !== "object" || value === null || !("status" in value)) {
+		return invalidRpcPayload(method, "envelope", "expected serialized Result object");
+	}
+	if (value.status === "ok" && "value" in value) {
+		const parsed = parsers.success(value.value);
+		return parsed.status === "ok"
+			? Result.ok(parsed.value)
+			: invalidRpcPayload(method, "success", parsed.error);
+	}
+	if (value.status === "error" && "error" in value) {
+		const parsed = parsers.error(value.error);
+		return parsed.status === "ok"
+			? Result.err(parsed.value)
+			: invalidRpcPayload(method, "error", parsed.error);
+	}
+	return invalidRpcPayload(method, "envelope", "unknown status or missing variant payload");
+}
+
+/** Normalize a Durable Object transport rejection into an expected infrastructure error. */
 export function rpcInfraError(method: string, error: unknown): Result<never, DurableObjectError> {
 	return Result.err(
 		new DurableObjectError({
@@ -129,36 +79,14 @@ export function rpcInfraError(method: string, error: unknown): Result<never, Dur
 	);
 }
 
-/**
- * Executes a remote RPC call and converts its transport payload back into a
- * project-native {@link Result}.
- *
- * This is the client-side convenience wrapper used by typed facades. It handles
- * both success-path deserialization and infrastructure failures so callers can
- * continue working with `Result<T, E | DurableObjectError>`.
- *
- * @template T Success value type expected from the RPC method.
- * @template E Domain error value type expected from the RPC method.
- * @param method Logical RPC method name used for error reporting.
- * @param call Promise for the raw RPC payload returned by the remote handle.
- * @returns A deserialized Result value. Infrastructure failures are returned as
- * `DurableObjectError` values instead of being thrown.
- * @throws {never} Rejections are caught and converted into `DurableObjectError`.
- * @example
- * ```ts
- * return callRpcResult<QueueResult, SongQueueDbError>(
- *   "getSongQueue",
- *   handle.getSongQueue(limit),
- * );
- * ```
- */
+/** Execute a Durable Object RPC call and parse its complete method-specific result contract. */
 export async function callRpcResult<T, E>(
 	method: string,
 	call: Promise<unknown>,
+	parsers: RpcResultParsers<T, E>,
 ): Promise<Result<T, E | DurableObjectError>> {
 	try {
-		const raw = await call;
-		return fromRpcResult<T, E>(raw, method);
+		return fromRpcResult(await call, method, parsers);
 	} catch (error) {
 		return rpcInfraError(method, error);
 	}

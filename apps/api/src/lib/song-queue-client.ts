@@ -1,126 +1,240 @@
 import { Result } from "better-result";
 import { env as globalEnv } from "cloudflare:workers";
+import { z } from "zod";
 
-import { SONG_QUEUE_DO_NAME } from "../durable-objects/song-queue-do";
-import { DurableObjectError } from "./errors";
-import { callRpcResult } from "./rpc-result";
+import {
+	CurrentlyPlayingResultSchema,
+	QueueResultSchema,
+	RequestHistoryResultSchema,
+	TopRequesterSchema,
+	TopTrackSchema,
+	type PendingRequestInput,
+} from "../durable-objects/schemas/song-queue-do.schema";
+import {
+	SONG_QUEUE_DO_NAME,
+	SongQueueCoordinationError,
+	SongQueueParseError,
+	type SongQueueError,
+	type SongQueueRpcHandleStub,
+} from "../durable-objects/song-queue-do";
+import { DurableObjectError, SongQueueDbError } from "./errors";
+import { callRpcResult, type RpcPayloadParser, type RpcResultParsers } from "./rpc-result";
 
-import type { InsertPendingRequest } from "../durable-objects/schemas/song-queue-do.schema";
 import type {
 	CurrentlyPlayingResult,
 	QueueResult,
 	RequestHistoryResult,
-	SongQueueRpcHandleStub,
 	TopRequester,
 	TopTrack,
-} from "../durable-objects/song-queue-do";
+} from "../durable-objects/schemas/song-queue-do.schema";
 import type { Env } from "../index";
-import type { SongQueueDbError } from "./errors";
 
-function getEnv(): Env {
-	return globalEnv as Env;
+const SerializedSongQueueErrorSchema = z.discriminatedUnion("_tag", [
+	z.object({
+		_tag: z.literal("SongQueueDbError"),
+		operation: z.string(),
+		message: z.string(),
+		cause: z.unknown().optional(),
+	}),
+	z.object({
+		_tag: z.literal("SongQueueParseError"),
+		boundary: z.enum(["rpc-input", "persistence"]),
+		operation: z.string(),
+		parseError: z.string(),
+		message: z.string(),
+	}),
+	z.object({
+		_tag: z.literal("SongQueueCoordinationError"),
+		operation: z.string(),
+		message: z.string(),
+		cause: z.unknown().optional(),
+	}),
+]);
+
+function zodRpcParser<T>(schema: z.ZodType<T>): RpcPayloadParser<T> {
+	return (value) => {
+		const parsed = schema.safeParse(value);
+		return parsed.success ? Result.ok(parsed.data) : Result.err(parsed.error.message);
+	};
 }
 
+const parseSongQueueError: RpcPayloadParser<SongQueueError> = (value) => {
+	const parsed = SerializedSongQueueErrorSchema.safeParse(value);
+	if (!parsed.success) return Result.err(parsed.error.message);
+	switch (parsed.data._tag) {
+		case "SongQueueDbError":
+			return Result.ok(
+				new SongQueueDbError({ operation: parsed.data.operation, cause: parsed.data.cause }),
+			);
+		case "SongQueueParseError":
+			return Result.ok(new SongQueueParseError(parsed.data));
+		case "SongQueueCoordinationError":
+			return Result.ok(new SongQueueCoordinationError(parsed.data));
+	}
+};
+
+function rpcParsers<T>(schema: z.ZodType<T>): RpcResultParsers<T, SongQueueError> {
+	return { success: zodRpcParser(schema), error: parseSongQueueError };
+}
+
+const VoidRpcParsers = rpcParsers(z.undefined());
+const NumberRpcParsers = rpcParsers(z.number());
+const TopTracksRpcParsers = rpcParsers(z.array(TopTrackSchema).max(100));
+const TopRequestersRpcParsers = rpcParsers(z.array(TopRequesterSchema).max(100));
+
+type SongQueueHandleAcquisition = Promise<Result<SongQueueRpcHandleStub, DurableObjectError>>;
+
+/** Typed Song Queue facade that owns Durable Object acquisition, transport, and payload parsing failures. */
 export class SongQueueClient {
-	constructor(private readonly handle: SongQueueRpcHandleStub) {}
+	private constructor(private readonly handleAcquisition: SongQueueHandleAcquisition) {}
 
+	/** Build a client around one classified Durable Object handle acquisition. */
+	static fromHandleAcquisition(handleAcquisition: SongQueueHandleAcquisition): SongQueueClient {
+		return new SongQueueClient(handleAcquisition);
+	}
+
+	/** Release an acquired RPC handle without allowing disposal failures to escape. */
 	[Symbol.dispose](): void {
-		this.handle[Symbol.dispose]?.();
+		void this.handleAcquisition.then((result) => {
+			if (result.status === "ok") result.value[Symbol.dispose]?.();
+		});
 	}
 
+	private async call<T>(
+		method: string,
+		invoke: (handle: SongQueueRpcHandleStub) => Promise<unknown>,
+		parsers: RpcResultParsers<T, SongQueueError>,
+	): Promise<Result<T, SongQueueError | DurableObjectError>> {
+		const acquired = await this.handleAcquisition;
+		if (acquired.status === "error") return Result.err(acquired.error);
+		return callRpcResult(method, invoke(acquired.value), parsers);
+	}
+
+	/** Persist a parsed Pending Request and its durable synchronization intent. */
 	persistRequest(
-		request: InsertPendingRequest,
-	): Promise<Result<void, SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<void, SongQueueDbError>(
-			"persistRequest",
-			this.handle.persistRequest(request),
-		);
+		request: PendingRequestInput,
+	): Promise<Result<void, SongQueueError | DurableObjectError>> {
+		return this.call("persistRequest", (handle) => handle.persistRequest(request), VoidRpcParsers);
 	}
 
-	deleteRequest(eventId: string): Promise<Result<void, SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<void, SongQueueDbError>(
-			"deleteRequest",
-			this.handle.deleteRequest(eventId),
-		);
+	/** Delete a Pending Request by event identity. */
+	deleteRequest(eventId: string): Promise<Result<void, SongQueueError | DurableObjectError>> {
+		return this.call("deleteRequest", (handle) => handle.deleteRequest(eventId), VoidRpcParsers);
 	}
 
-	getSongQueue(limit: number): Promise<Result<QueueResult, SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<QueueResult, SongQueueDbError>(
+	/** Read a bounded upcoming Spotify Queue snapshot. */
+	getSongQueue(limit: number): Promise<Result<QueueResult, SongQueueError | DurableObjectError>> {
+		return this.call(
 			"getSongQueue",
-			this.handle.getSongQueue(limit),
+			(handle) => handle.getSongQueue(limit),
+			rpcParsers(QueueResultSchema),
 		);
 	}
 
+	/** Read the current Spotify Track with explicit Viewer or autoplay attribution. */
 	getCurrentlyPlaying(): Promise<
-		Result<CurrentlyPlayingResult, SongQueueDbError | DurableObjectError>
+		Result<CurrentlyPlayingResult, SongQueueError | DurableObjectError>
 	> {
-		return callRpcResult<CurrentlyPlayingResult, SongQueueDbError>(
+		return this.call(
 			"getCurrentlyPlaying",
-			this.handle.getCurrentlyPlaying(),
+			(handle) => handle.getCurrentlyPlaying(),
+			rpcParsers(CurrentlyPlayingResultSchema),
 		);
 	}
 
+	/** Read bounded, decoded Request History records. */
 	getRequestHistory(
 		limit: number,
 		offset = 0,
 		since?: string,
 		until?: string,
-	): Promise<Result<RequestHistoryResult, SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<RequestHistoryResult, SongQueueDbError>(
+	): Promise<Result<RequestHistoryResult, SongQueueError | DurableObjectError>> {
+		return this.call(
 			"getRequestHistory",
-			this.handle.getRequestHistory(limit, offset, since, until),
+			(handle) => handle.getRequestHistory(limit, offset, since, until),
+			rpcParsers(RequestHistoryResultSchema),
 		);
 	}
 
+	/** Count fulfilled Song Requests for one stable Viewer ID. */
 	getUserRequestCount(
 		userId: string,
-	): Promise<Result<number, SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<number, SongQueueDbError>(
+	): Promise<Result<number, SongQueueError | DurableObjectError>> {
+		return this.call(
 			"getUserRequestCount",
-			this.handle.getUserRequestCount(userId),
+			(handle) => handle.getUserRequestCount(userId),
+			NumberRpcParsers,
 		);
 	}
 
+	/** Count fulfilled Song Requests for a historical Viewer display name. */
 	getUserRequestCountByDisplayName(
 		displayName: string,
-	): Promise<Result<number, SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<number, SongQueueDbError>(
+	): Promise<Result<number, SongQueueError | DurableObjectError>> {
+		return this.call(
 			"getUserRequestCountByDisplayName",
-			this.handle.getUserRequestCountByDisplayName(displayName),
+			(handle) => handle.getUserRequestCountByDisplayName(displayName),
+			NumberRpcParsers,
 		);
 	}
 
-	getTopTracks(limit: number): Promise<Result<TopTrack[], SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<TopTrack[], SongQueueDbError>(
-			"getTopTracks",
-			this.handle.getTopTracks(limit),
-		);
+	/** Aggregate Spotify Tracks by stable Track ID with decoded artist names. */
+	getTopTracks(limit: number): Promise<Result<TopTrack[], SongQueueError | DurableObjectError>> {
+		return this.call("getTopTracks", (handle) => handle.getTopTracks(limit), TopTracksRpcParsers);
 	}
 
+	/** Aggregate one Viewer's Spotify Tracks by stable Track ID. */
 	getTopTracksByUser(
 		userId: string,
 		limit: number,
-	): Promise<Result<TopTrack[], SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<TopTrack[], SongQueueDbError>(
+	): Promise<Result<TopTrack[], SongQueueError | DurableObjectError>> {
+		return this.call(
 			"getTopTracksByUser",
-			this.handle.getTopTracksByUser(userId, limit),
+			(handle) => handle.getTopTracksByUser(userId, limit),
+			TopTracksRpcParsers,
 		);
 	}
 
+	/** Aggregate Viewers by stable Viewer ID using their most recent display name. */
 	getTopRequesters(
 		limit: number,
-	): Promise<Result<TopRequester[], SongQueueDbError | DurableObjectError>> {
-		return callRpcResult<TopRequester[], SongQueueDbError>(
+	): Promise<Result<TopRequester[], SongQueueError | DurableObjectError>> {
+		return this.call(
 			"getTopRequesters",
-			this.handle.getTopRequesters(limit),
+			(handle) => handle.getTopRequesters(limit),
+			TopRequestersRpcParsers,
 		);
 	}
 }
 
-export async function getSongQueue(): Promise<SongQueueClient> {
-	const env = getEnv();
-	const id = env.SONG_QUEUE_DO.idFromName(SONG_QUEUE_DO_NAME);
-	const stub = env.SONG_QUEUE_DO.get(id);
-	const handle = await stub.connectRpc();
-	return new SongQueueClient(handle);
+/** Create a Song Queue client that classifies namespace, stub, startup, and connectRpc failures. */
+export function createSongQueueClient(
+	acquireHandle: () => Promise<SongQueueRpcHandleStub>,
+): SongQueueClient {
+	const acquisition: SongQueueHandleAcquisition = (async () => {
+		try {
+			return Result.ok(await acquireHandle());
+		} catch (cause) {
+			return Result.err(
+				new DurableObjectError({
+					method: "connectRpc",
+					message: "Song Queue RPC acquisition failed",
+					cause,
+				}),
+			);
+		}
+	})();
+	return SongQueueClient.fromHandleAcquisition(acquisition);
+}
+
+/** Acquire a Song Queue client whose connection failures remain typed operation results. */
+export function getSongQueue(): Promise<SongQueueClient> {
+	return Promise.resolve(
+		createSongQueueClient(async () => {
+			// SAFETY: Cloudflare supplies the generated Env binding shape for this Worker at runtime.
+			const env = globalEnv as Env;
+			const id = env.SONG_QUEUE_DO.idFromName(SONG_QUEUE_DO_NAME);
+			return env.SONG_QUEUE_DO.get(id).connectRpc();
+		}),
+	);
 }

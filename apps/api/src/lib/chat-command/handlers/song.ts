@@ -28,7 +28,7 @@ export class SongCommandHandler implements ComputedCommandHandler {
 		}
 
 		const attribution =
-			track.requesterUserId === "unknown" ? "" : ` - requested by @${track.requesterDisplayName}`;
+			track.source === "autoplay" ? "" : ` - requested by @${track.requesterDisplayName}`;
 		return Result.ok(
 			chatTextResponse(`Now playing: "${track.name}" by ${track.artists.join(", ")}${attribution}`),
 		);
@@ -57,8 +57,7 @@ export class QueueCommandHandler implements ComputedCommandHandler {
 		}
 
 		const trackLines = tracks.map((track: QueuedTrack, idx: number) => {
-			const requester =
-				track.requesterUserId === "unknown" ? "" : ` (@${track.requesterDisplayName})`;
+			const requester = track.source === "autoplay" ? "" : ` (@${track.requesterDisplayName})`;
 			return `${idx + 1}. "${track.name}" by ${track.artists.join(", ")}${requester}`;
 		});
 
