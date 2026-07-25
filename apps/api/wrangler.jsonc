@@ -72,6 +72,10 @@
 				"name": "OAUTH_STATE_DO",
 				"class_name": "OAuthStateDO",
 			},
+			{
+				"name": "EVENTSUB_WEBHOOK_DO",
+				"class_name": "EventSubWebhookDO",
+			},
 		],
 	},
 	"migrations": [
@@ -116,7 +120,7 @@
 		},
 		{
 			"tag": "v9",
-			"new_sqlite_classes": ["OAuthStateDO"],
+			"new_sqlite_classes": ["OAuthStateDO", "EventSubWebhookDO"],
 		},
 	],
 	"analytics_engine_datasets": [

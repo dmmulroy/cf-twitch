@@ -61,6 +61,10 @@
 				"name": "OAUTH_STATE_DO",
 				"class_name": "OAuthStateDO",
 			},
+			{
+				"name": "EVENTSUB_WEBHOOK_DO",
+				"class_name": "EventSubWebhookDO",
+			},
 		],
 	},
 	"migrations": [
@@ -97,7 +101,7 @@
 		},
 		{
 			"tag": "v7",
-			"new_sqlite_classes": ["OAuthStateDO"],
+			"new_sqlite_classes": ["OAuthStateDO", "EventSubWebhookDO"],
 		},
 	],
 	"vars": {
@@ -105,12 +109,12 @@
 		"KEYBOARD_RAFFLE_REWARD_ID": "test-raffle-reward",
 		"BROADCASTER_USER_ID": "12345",
 		"BROADCASTER_USER_LOGIN": "teststreamer",
+		"TWITCH_BROADCASTER_ID": "12345",
 		"SPOTIFY_CLIENT_ID": "test-spotify-client",
 		"SPOTIFY_CLIENT_SECRET": "test-spotify-secret",
 		"TWITCH_CLIENT_ID": "test-twitch-client",
 		"TWITCH_CLIENT_SECRET": "test-twitch-secret",
 		"TWITCH_EVENTSUB_SECRET": "test-eventsub-secret",
-		"TWITCH_BROADCASTER_ID": "12345",
 		"TWITCH_BROADCASTER_NAME": "dillon",
 		"ADMIN_SECRET": "test-admin-secret",
 		"OAUTH_SETUP_SECRET": "test-oauth-setup-secret",

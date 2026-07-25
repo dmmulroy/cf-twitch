@@ -339,6 +339,7 @@ const SINGLETON_IDS: Record<string, string> = {
 	KEYBOARD_RAFFLE_DO: "keyboard-raffle",
 	EVENT_BUS_DO: "event-bus",
 	COMMANDS_DO: "commands",
+	// EventSub webhook inboxes are keyed by Twitch message ID.
 	// Saga DOs are NOT singletons - they are keyed by redemption ID
 	// Do not add SONG_REQUEST_SAGA_DO or KEYBOARD_RAFFLE_SAGA_DO here
 };
@@ -382,7 +383,12 @@ export function getStubFromNamespace<K extends DONamespaceKeys>(
 		(key === "SPOTIFY_TOKEN_DO" || key === "TWITCH_TOKEN_DO"
 			? TOKEN_RPC_PAYLOAD_CODECS
 			: undefined);
-	return wrapStub<ExtractDO<K>>(stub, resolvedId, effectiveCodecs);
+	return wrapStub<ExtractDO<K>>(
+		stub,
+		resolvedId,
+		effectiveCodecs,
+		key !== "EVENTSUB_WEBHOOK_DO",
+	);
 }
 
 /**
@@ -399,6 +405,7 @@ function wrapStub<DO>(
 	stub: DurableObjectStub,
 	stubName?: string,
 	methodCodecs?: DurableObjectRpcPayloadCodecs,
+	initializeAgentName = true,
 ): DeserializedStub<DO> {
 	const stubLogger = logger.child({
 		component: "durable_object",
@@ -410,7 +417,7 @@ function wrapStub<DO>(
 	let initializeNamePromise: Promise<void> | null = null;
 
 	const ensureAgentName = async (): Promise<void> => {
-		if (!stubName || hasInitializedName) {
+		if (!initializeAgentName || !stubName || hasInitializedName) {
 			return;
 		}
 

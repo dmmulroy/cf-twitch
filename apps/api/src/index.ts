@@ -126,6 +126,7 @@ export { KeyboardRaffleSagaDO } from "./durable-objects/keyboard-raffle-saga-do"
 export { EventBusDO } from "./durable-objects/event-bus-do";
 export { CommandsDO } from "./durable-objects/commands-do";
 export { RaidShoutoutSagaDO } from "./durable-objects/raid-shoutout-saga-do";
+export { EventSubWebhookDO } from "./durable-objects/eventsub-webhook-do";
 export { OAuthStateDO } from "./durable-objects/oauth-state-do";
 
 // Service exports

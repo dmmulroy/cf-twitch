@@ -1,79 +1,132 @@
+import { Result, TaggedError } from "better-result";
 import { z } from "zod";
 
 import type { Clock, IsoTimestamp } from "../lib/clock";
 
-/**
- * Public stream lifecycle response shape returned by StreamLifecycleDO RPC/API callers.
- * Keep this shape stable for compatibility; the precise Agent state lives below.
- */
+/** Public Stream Lifecycle State returned to API and RPC callers. */
 export interface StreamLifecycleState {
-	isLive: boolean;
-	startedAt: string | null;
-	endedAt: string | null;
-	peakViewerCount: number;
+	readonly isLive: boolean;
+	readonly startedAt: string | null;
+	readonly endedAt: string | null;
+	readonly peakViewerCount: number;
 }
 
-/**
- * Persisted Agent state for StreamLifecycleDO.
- *
- * The discriminant makes live-only evidence available only in LiveStream and prevents
- * offline state from carrying active session or polling schedule evidence.
- */
+/** Durable completion evidence for every side effect of one stream transition. */
+export interface StreamLifecycleTransitionIntent {
+	readonly _tag: "StreamOnlineIntent" | "StreamOfflineIntent";
+	readonly eventId: string;
+	readonly streamSessionId: string;
+	readonly transitionAt: IsoTimestamp;
+	readonly viewerPollScheduleId: string | null;
+	readonly spotifyTokenNotified: boolean;
+	readonly twitchTokenNotified: boolean;
+	readonly lifecycleEventPublished: boolean;
+	readonly viewerPollingUpdated: boolean;
+}
+
+/** Persisted Stream Lifecycle State with live-only evidence encoded by its discriminant. */
 export type StreamLifecycleAgentState = OfflineStreamAgentState | LiveStreamAgentState;
 
 /** Stream lifecycle state when there is no active Stream Session. */
 export interface OfflineStreamAgentState {
-	_tag: "OfflineStream";
-	lastStartedAt: IsoTimestamp | null;
-	endedAt: IsoTimestamp | null;
-	peakViewerCount: number;
+	readonly _tag: "OfflineStream";
+	readonly lastStartedAt: IsoTimestamp | null;
+	readonly endedAt: IsoTimestamp | null;
+	readonly peakViewerCount: number;
+	readonly transitionIntent: StreamLifecycleTransitionIntent | null;
 }
 
 /** Stream lifecycle state while a Stream Session is active. */
 export interface LiveStreamAgentState {
-	_tag: "LiveStream";
-	streamSessionId: string;
-	startedAt: IsoTimestamp;
-	peakViewerCount: number;
-	viewerPollScheduleId: string | null;
+	readonly _tag: "LiveStream";
+	readonly streamSessionId: string;
+	readonly startedAt: IsoTimestamp;
+	readonly peakViewerCount: number;
+	readonly viewerPollScheduleId: string | null;
+	readonly transitionIntent: StreamLifecycleTransitionIntent | null;
 }
 
-const NewPersistedStreamLifecycleStateSchema = z.discriminatedUnion("_tag", [
+/** Explicit corruption error for invalid current or legacy Stream Lifecycle persisted state. */
+export class PersistedStreamLifecycleStateError extends TaggedError(
+	"PersistedStreamLifecycleStateError",
+)<{
+	message: string;
+	parseError: string;
+}>() {
+	constructor(parseError: string) {
+		super({
+			message: `Stream Lifecycle persisted state parse failed: ${parseError}`,
+			parseError,
+		});
+	}
+}
+
+const TransitionIntentRecordSchema = z.object({
+	_tag: z.enum(["StreamOnlineIntent", "StreamOfflineIntent"]),
+	eventId: z.string().min(1),
+	streamSessionId: z.string().min(1),
+	transitionAt: z.string().min(1),
+	viewerPollScheduleId: z.string().min(1).nullable(),
+	spotifyTokenNotified: z.boolean(),
+	twitchTokenNotified: z.boolean(),
+	lifecycleEventPublished: z.boolean(),
+	viewerPollingUpdated: z.boolean(),
+});
+
+const CurrentPersistedStreamLifecycleStateSchema = z.discriminatedUnion("_tag", [
 	z.object({
 		_tag: z.literal("OfflineStream"),
 		lastStartedAt: z.string().nullable(),
 		endedAt: z.string().nullable(),
-		peakViewerCount: z.number(),
+		peakViewerCount: z.number().int().nonnegative(),
+		transitionIntent: TransitionIntentRecordSchema.nullable().optional(),
 	}),
 	z.object({
 		_tag: z.literal("LiveStream"),
-		streamSessionId: z.string(),
+		streamSessionId: z.string().min(1),
 		startedAt: z.string(),
-		peakViewerCount: z.number(),
-		viewerPollScheduleId: z.string().nullable(),
+		peakViewerCount: z.number().int().nonnegative(),
+		viewerPollScheduleId: z.string().min(1).nullable(),
+		transitionIntent: TransitionIntentRecordSchema.nullable().optional(),
 	}),
 ]);
 
-const OldPersistedStreamLifecycleStateSchema = z.object({
+const LegacyPersistedStreamLifecycleStateSchema = z.object({
 	isLive: z.boolean(),
 	startedAt: z.string().nullable(),
 	endedAt: z.string().nullable(),
-	peakViewerCount: z.number(),
-	streamSessionId: z.string().nullable(),
-	viewerPollScheduleId: z.string().nullable(),
+	peakViewerCount: z.number().int().nonnegative(),
+	streamSessionId: z.string().min(1).nullable(),
+	viewerPollScheduleId: z.string().min(1).nullable(),
 });
 
-function parseNullableIsoTimestamp(input: string | null, clock: Clock): IsoTimestamp | null {
-	if (input === null) {
-		return null;
-	}
-
+function parseTimestamp(
+	input: string,
+	clock: Clock,
+): Result<IsoTimestamp, PersistedStreamLifecycleStateError> {
 	const parsed = clock.parseIsoTimestamp(input);
-	if (parsed.status === "ok") {
-		return parsed.value;
-	}
+	return parsed.status === "ok"
+		? Result.ok(parsed.value)
+		: Result.err(new PersistedStreamLifecycleStateError(parsed.error.message));
+}
 
-	return clock.nowIsoTimestamp();
+function parseNullableTimestamp(
+	input: string | null,
+	clock: Clock,
+): Result<IsoTimestamp | null, PersistedStreamLifecycleStateError> {
+	if (input === null) return Result.ok(null);
+	return parseTimestamp(input, clock);
+}
+
+function parseTransitionIntent(
+	input: z.infer<typeof TransitionIntentRecordSchema> | null | undefined,
+	clock: Clock,
+): Result<StreamLifecycleTransitionIntent | null, PersistedStreamLifecycleStateError> {
+	if (input === null || input === undefined) return Result.ok(null);
+	const transitionAt = parseTimestamp(input.transitionAt, clock);
+	return transitionAt.status === "error"
+		? transitionAt
+		: Result.ok({ ...input, transitionAt: transitionAt.value });
 }
 
 /** Create the initial offline state for a new StreamLifecycleDO instance. */
@@ -83,18 +136,16 @@ export function initialOfflineState(): OfflineStreamAgentState {
 		lastStartedAt: null,
 		endedAt: null,
 		peakViewerCount: 0,
+		transitionIntent: null,
 	};
 }
 
-/**
- * Transition an offline stream into an active Stream Session.
- *
- * The caller supplies trusted timestamp evidence and the generated Stream Session id.
- */
+/** Create an online Stream Session and its atomically persisted side-effect intent. */
 export function goOnline(
 	state: OfflineStreamAgentState,
 	startedAt: IsoTimestamp,
 	streamSessionId: string,
+	eventId: string,
 ): LiveStreamAgentState {
 	return {
 		_tag: "LiveStream",
@@ -102,78 +153,136 @@ export function goOnline(
 		startedAt,
 		peakViewerCount: state.peakViewerCount,
 		viewerPollScheduleId: null,
+		transitionIntent: {
+			_tag: "StreamOnlineIntent",
+			eventId,
+			streamSessionId,
+			transitionAt: startedAt,
+			viewerPollScheduleId: null,
+			spotifyTokenNotified: false,
+			twitchTokenNotified: false,
+			lifecycleEventPublished: false,
+			viewerPollingUpdated: false,
+		},
 	};
 }
 
-/**
- * Transition an active Stream Session offline, discarding live-only evidence.
- *
- * The returned state preserves lifecycle history and peak viewers, but cannot carry
- * a Stream Session id or viewer poll schedule.
- */
+/** End an active Stream Session and atomically persist its side-effect intent. */
 export function goOffline(
 	state: LiveStreamAgentState,
 	endedAt: IsoTimestamp,
+	eventId: string,
 ): OfflineStreamAgentState {
 	return {
 		_tag: "OfflineStream",
 		lastStartedAt: state.startedAt,
 		endedAt,
 		peakViewerCount: state.peakViewerCount,
+		transitionIntent: {
+			_tag: "StreamOfflineIntent",
+			eventId,
+			streamSessionId: state.streamSessionId,
+			transitionAt: endedAt,
+			viewerPollScheduleId: state.viewerPollScheduleId,
+			spotifyTokenNotified: false,
+			twitchTokenNotified: false,
+			lifecycleEventPublished: false,
+			viewerPollingUpdated: false,
+		},
 	};
 }
 
-/**
- * Parse persisted Agent state into precise Stream Lifecycle State.
- *
- * Accepts both the current discriminated union and the legacy nullable shape so old
- * Durable Object state can be migrated lazily at startup.
- */
+/** Parse current or legacy serialized Stream Lifecycle State without manufacturing evidence. */
 export function parsePersistedStreamLifecycleState(
 	raw: unknown,
 	clock: Clock,
-): StreamLifecycleAgentState {
-	const newState = NewPersistedStreamLifecycleStateSchema.safeParse(raw);
-	if (newState.success) {
-		if (newState.data._tag === "LiveStream") {
-			return {
+): Result<StreamLifecycleAgentState, PersistedStreamLifecycleStateError> {
+	const current = CurrentPersistedStreamLifecycleStateSchema.safeParse(raw);
+	if (current.success) {
+		const intent = parseTransitionIntent(current.data.transitionIntent, clock);
+		if (intent.status === "error") return intent;
+		if (current.data._tag === "LiveStream") {
+			const startedAt = parseTimestamp(current.data.startedAt, clock);
+			if (startedAt.status === "error") return startedAt;
+			if (
+				intent.value !== null &&
+				(intent.value._tag !== "StreamOnlineIntent" ||
+					intent.value.streamSessionId !== current.data.streamSessionId ||
+					intent.value.transitionAt !== startedAt.value)
+			) {
+				return Result.err(
+					new PersistedStreamLifecycleStateError(
+						"Live state requires a matching online transition intent",
+					),
+				);
+			}
+			return Result.ok({
 				_tag: "LiveStream",
-				streamSessionId: newState.data.streamSessionId,
-				startedAt:
-					parseNullableIsoTimestamp(newState.data.startedAt, clock) ?? clock.nowIsoTimestamp(),
-				peakViewerCount: newState.data.peakViewerCount,
-				viewerPollScheduleId: newState.data.viewerPollScheduleId,
-			};
+				streamSessionId: current.data.streamSessionId,
+				startedAt: startedAt.value,
+				peakViewerCount: current.data.peakViewerCount,
+				viewerPollScheduleId: current.data.viewerPollScheduleId,
+				transitionIntent: intent.value,
+			});
 		}
 
-		return {
+		const lastStartedAt = parseNullableTimestamp(current.data.lastStartedAt, clock);
+		if (lastStartedAt.status === "error") return lastStartedAt;
+		const endedAt = parseNullableTimestamp(current.data.endedAt, clock);
+		if (endedAt.status === "error") return endedAt;
+		if (
+			intent.value !== null &&
+			(intent.value._tag !== "StreamOfflineIntent" ||
+				endedAt.value === null ||
+				intent.value.transitionAt !== endedAt.value)
+		) {
+			return Result.err(
+				new PersistedStreamLifecycleStateError(
+					"Offline state requires a matching offline transition intent",
+				),
+			);
+		}
+		return Result.ok({
 			_tag: "OfflineStream",
-			lastStartedAt: parseNullableIsoTimestamp(newState.data.lastStartedAt, clock),
-			endedAt: parseNullableIsoTimestamp(newState.data.endedAt, clock),
-			peakViewerCount: newState.data.peakViewerCount,
-		};
+			lastStartedAt: lastStartedAt.value,
+			endedAt: endedAt.value,
+			peakViewerCount: current.data.peakViewerCount,
+			transitionIntent: intent.value,
+		});
 	}
 
-	const oldState = OldPersistedStreamLifecycleStateSchema.safeParse(raw);
-	if (!oldState.success) {
-		return initialOfflineState();
+	const legacy = LegacyPersistedStreamLifecycleStateSchema.safeParse(raw);
+	if (!legacy.success) {
+		return Result.err(new PersistedStreamLifecycleStateError(legacy.error.message));
 	}
+	const startedAt = parseNullableTimestamp(legacy.data.startedAt, clock);
+	if (startedAt.status === "error") return startedAt;
+	const endedAt = parseNullableTimestamp(legacy.data.endedAt, clock);
+	if (endedAt.status === "error") return endedAt;
 
-	if (oldState.data.isLive) {
-		return {
+	if (legacy.data.isLive) {
+		if (startedAt.value === null || legacy.data.streamSessionId === null) {
+			return Result.err(
+				new PersistedStreamLifecycleStateError(
+					"Legacy live state requires startedAt and streamSessionId",
+				),
+			);
+		}
+		return Result.ok({
 			_tag: "LiveStream",
-			streamSessionId: oldState.data.streamSessionId ?? crypto.randomUUID(),
-			startedAt:
-				parseNullableIsoTimestamp(oldState.data.startedAt, clock) ?? clock.nowIsoTimestamp(),
-			peakViewerCount: oldState.data.peakViewerCount,
-			viewerPollScheduleId: oldState.data.viewerPollScheduleId,
-		};
+			streamSessionId: legacy.data.streamSessionId,
+			startedAt: startedAt.value,
+			peakViewerCount: legacy.data.peakViewerCount,
+			viewerPollScheduleId: legacy.data.viewerPollScheduleId,
+			transitionIntent: null,
+		});
 	}
 
-	return {
+	return Result.ok({
 		_tag: "OfflineStream",
-		lastStartedAt: parseNullableIsoTimestamp(oldState.data.startedAt, clock),
-		endedAt: parseNullableIsoTimestamp(oldState.data.endedAt, clock),
-		peakViewerCount: oldState.data.peakViewerCount,
-	};
+		lastStartedAt: startedAt.value,
+		endedAt: endedAt.value,
+		peakViewerCount: legacy.data.peakViewerCount,
+		transitionIntent: null,
+	});
 }

@@ -510,7 +510,7 @@ api.post("/debug/reconcile-stream-state", async (c) => {
 
 	let action: "noop" | "set_online" | "set_offline" = "noop";
 
-	if (twitchStream !== null && !before.isLive) {
+	if (twitchStream !== null) {
 		const startedAtResult = TwitchStreamStartedAtSchema.safeParse(twitchStream.startedAt);
 		if (!startedAtResult.success) {
 			routeLogger.error("Twitch returned an invalid stream start timestamp", {
@@ -520,23 +520,23 @@ api.post("/debug/reconcile-stream-state", async (c) => {
 		}
 		const onlineResult = await streamStub.onStreamOnline(startedAtResult.data);
 		if (onlineResult.status === "error") {
-			routeLogger.error("Failed to set stream online during reconciliation", {
+			routeLogger.error("Failed to reconcile online Stream Lifecycle effects", {
 				event: "api.reconcile_stream_state.set_online.failed",
 				...onlineResult.error,
 			});
-			return c.json({ error: "Failed to update stream state to online" }, 500);
+			return c.json({ error: "Failed to reconcile online stream state" }, 500);
 		}
-		action = "set_online";
-	} else if (!twitchIsLive && before.isLive) {
+		if (!before.isLive) action = "set_online";
+	} else {
 		const offlineResult = await streamStub.onStreamOffline();
 		if (offlineResult.status === "error") {
-			routeLogger.error("Failed to set stream offline during reconciliation", {
+			routeLogger.error("Failed to reconcile offline Stream Lifecycle effects", {
 				event: "api.reconcile_stream_state.set_offline.failed",
 				...offlineResult.error,
 			});
-			return c.json({ error: "Failed to update stream state to offline" }, 500);
+			return c.json({ error: "Failed to reconcile offline stream state" }, 500);
 		}
-		action = "set_offline";
+		if (before.isLive) action = "set_offline";
 	}
 
 	routeLogger.info("Selected reconciliation action", {

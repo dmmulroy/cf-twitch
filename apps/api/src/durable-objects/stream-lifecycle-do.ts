@@ -3,14 +3,19 @@
  */
 
 import { Agent, type AgentContext } from "agents";
-import { Result } from "better-result";
+import { Result, TaggedError } from "better-result";
 import { and, gte, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/stream-lifecycle-do/migrations";
-import { type Clock, type IsoTimestamp, SystemClock } from "../lib/clock";
+import {
+	type Clock,
+	type InvalidIsoTimestampError,
+	type IsoTimestamp,
+	SystemClock,
+} from "../lib/clock";
 import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
 import { logger } from "../lib/logger";
@@ -23,14 +28,29 @@ import {
 	goOnline,
 	initialOfflineState,
 	parsePersistedStreamLifecycleState,
-	type LiveStreamAgentState,
 	type StreamLifecycleAgentState,
 	type StreamLifecycleState,
+	type StreamLifecycleTransitionIntent,
 } from "./stream-lifecycle-state";
 
 import type { Env } from "../index";
 
 const VIEWER_POLL_INTERVAL_SECONDS = 60;
+
+/** Expected retry signal when a durable Stream Lifecycle transition still has incomplete effects. */
+export class StreamLifecycleEffectsPendingError extends TaggedError(
+	"StreamLifecycleEffectsPendingError",
+)<{
+	message: string;
+	transition: "stream.online" | "stream.offline";
+}>() {
+	constructor(transition: "stream.online" | "stream.offline") {
+		super({
+			message: `Stream Lifecycle effects pending for ${transition}`,
+			transition,
+		});
+	}
+}
 
 const RecordViewerCountBodySchema = z.object({
 	count: z.number(),
@@ -53,22 +73,42 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 			await migrate(this.db, migrations);
 
 			const normalized = parsePersistedStreamLifecycleState(this.state, this.clock);
-			this.setState(normalized);
+			if (normalized.status === "error") {
+				logger.error("Stream Lifecycle persisted state is corrupt", {
+					event: "stream_lifecycle.persisted_state_corrupt",
+					error_tag: normalized.error._tag,
+					parse_error: normalized.error.parseError,
+				});
+				throw normalized.error;
+			}
+			this.setState(normalized.value);
+			await this.resumeTransitionEffects();
 
-			if (normalized._tag === "LiveStream") {
+			if (normalized.value._tag === "LiveStream" && normalized.value.transitionIntent === null) {
 				await this.ensureViewerPollingSchedule();
 			}
 		});
 	}
 
-	/**
-	 * Lifecycle handler: called when stream goes online
-	 *
-	 * @param eventTimestamp - Optional authoritative timestamp from upstream event source.
-	 * When provided, stale out-of-order events are ignored.
-	 */
-	async onStreamOnline(eventTimestamp?: string): Promise<void> {
-		const transitionAt = this.clock.resolveIsoTimestamp(eventTimestamp);
+	/** Accept an online transition using source time and resume every durable side-effect intent. */
+	@rpc
+	async onStreamOnline(
+		eventTimestamp?: string,
+	): Promise<Result<void, InvalidIsoTimestampError | StreamLifecycleEffectsPendingError>> {
+		const parsedTimestamp =
+			eventTimestamp === undefined
+				? Result.ok(this.clock.nowIsoTimestamp())
+				: this.clock.parseIsoTimestamp(eventTimestamp);
+		if (parsedTimestamp.status === "error") return parsedTimestamp;
+		const pendingTransition = this.state.transitionIntent;
+		if (pendingTransition !== null && !(await this.resumeTransitionEffects())) {
+			return Result.err(
+				new StreamLifecycleEffectsPendingError(
+					pendingTransition._tag === "StreamOnlineIntent" ? "stream.online" : "stream.offline",
+				),
+			);
+		}
+		const transitionAt = parsedTimestamp.value;
 		const latestTransitionAt = this.getLatestTransitionAt(this.state);
 
 		if (latestTransitionAt && this.clock.isBefore(transitionAt, latestTransitionAt)) {
@@ -77,37 +117,43 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 				latestTransitionAt,
 				stateTag: this.state._tag,
 			});
-			return;
+			return Result.ok();
 		}
 
-		if (this.state._tag === "LiveStream") {
-			logger.info("Ignoring duplicate stream.online event", {
-				eventTimestamp: transitionAt,
-				startedAt: this.state.startedAt,
+		if (this.state._tag === "OfflineStream") {
+			const streamSessionId = crypto.randomUUID();
+			this.setState(goOnline(this.state, transitionAt, streamSessionId, crypto.randomUUID()));
+			logger.info("Stream online transition durably accepted", {
+				timestamp: transitionAt,
+				streamSessionId,
 			});
-			return;
 		}
 
-		const streamSessionId = crypto.randomUUID();
-		this.setState(goOnline(this.state, transitionAt, streamSessionId));
-
-		logger.info("Stream online", { timestamp: transitionAt, streamSessionId });
-
-		const sideEffects = await Promise.allSettled([
-			this.notifyTokenDOsOnline(transitionAt, streamSessionId),
-			this.ensureViewerPollingSchedule(),
-		]);
-		this.logRejectedSideEffects("stream online", sideEffects);
+		const completed = await this.resumeTransitionEffects();
+		return completed
+			? Result.ok()
+			: Result.err(new StreamLifecycleEffectsPendingError("stream.online"));
 	}
 
-	/**
-	 * Lifecycle handler: called when stream goes offline
-	 *
-	 * @param eventTimestamp - Optional authoritative timestamp from upstream event source.
-	 * When provided, stale out-of-order events are ignored.
-	 */
-	async onStreamOffline(eventTimestamp?: string): Promise<void> {
-		const transitionAt = this.clock.resolveIsoTimestamp(eventTimestamp);
+	/** Accept an offline transition using explicit ordering evidence and resume durable effects. */
+	@rpc
+	async onStreamOffline(
+		eventTimestamp?: string,
+	): Promise<Result<void, InvalidIsoTimestampError | StreamLifecycleEffectsPendingError>> {
+		const parsedTimestamp =
+			eventTimestamp === undefined
+				? Result.ok(this.clock.nowIsoTimestamp())
+				: this.clock.parseIsoTimestamp(eventTimestamp);
+		if (parsedTimestamp.status === "error") return parsedTimestamp;
+		const pendingTransition = this.state.transitionIntent;
+		if (pendingTransition !== null && !(await this.resumeTransitionEffects())) {
+			return Result.err(
+				new StreamLifecycleEffectsPendingError(
+					pendingTransition._tag === "StreamOnlineIntent" ? "stream.online" : "stream.offline",
+				),
+			);
+		}
+		const transitionAt = parsedTimestamp.value;
 		const latestTransitionAt = this.getLatestTransitionAt(this.state);
 
 		if (latestTransitionAt && this.clock.isBefore(transitionAt, latestTransitionAt)) {
@@ -116,30 +162,22 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 				latestTransitionAt,
 				stateTag: this.state._tag,
 			});
-			return;
+			return Result.ok();
 		}
 
-		if (this.state._tag === "OfflineStream") {
-			logger.info("Ignoring duplicate stream.offline event", {
-				eventTimestamp: transitionAt,
-				endedAt: this.state.endedAt,
+		if (this.state._tag === "LiveStream") {
+			const liveState = this.state;
+			this.setState(goOffline(liveState, transitionAt, crypto.randomUUID()));
+			logger.info("Stream offline transition durably accepted", {
+				timestamp: transitionAt,
+				streamSessionId: liveState.streamSessionId,
 			});
-			return;
 		}
 
-		const liveState = this.state;
-		this.setState(goOffline(liveState, transitionAt));
-
-		logger.info("Stream offline", {
-			timestamp: transitionAt,
-			streamSessionId: liveState.streamSessionId,
-		});
-
-		const sideEffects = await Promise.allSettled([
-			this.notifyTokenDOsOffline(transitionAt, liveState.streamSessionId),
-			this.cancelViewerPollingSchedule(liveState),
-		]);
-		this.logRejectedSideEffects("stream offline", sideEffects);
+		const completed = await this.resumeTransitionEffects();
+		return completed
+			? Result.ok()
+			: Result.err(new StreamLifecycleEffectsPendingError("stream.offline"));
 	}
 
 	/**
@@ -317,7 +355,7 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	}
 
 	private async ensureViewerPollingSchedule(): Promise<void> {
-		if (this.state._tag !== "LiveStream") {
+		if (this.state._tag !== "LiveStream" || this.state.viewerPollScheduleId !== null) {
 			return;
 		}
 
@@ -330,12 +368,8 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 		this.setState({ ...this.state, viewerPollScheduleId: schedule.id });
 	}
 
-	private async cancelViewerPollingSchedule(liveState: LiveStreamAgentState): Promise<void> {
-		if (liveState.viewerPollScheduleId === null) {
-			return;
-		}
-
-		await this.cancelSchedule(liveState.viewerPollScheduleId);
+	private async cancelViewerPollingSchedule(scheduleId: string | null): Promise<void> {
+		if (scheduleId !== null) await this.cancelSchedule(scheduleId);
 	}
 
 	/**
@@ -361,119 +395,118 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 		return streamInfo.viewerCount;
 	}
 
-	private logRejectedSideEffects(
-		transition: "stream online" | "stream offline",
-		results: PromiseSettledResult<unknown>[],
-	): void {
-		for (const result of results) {
-			if (result.status === "rejected") {
-				logger.error("Stream lifecycle side effect failed", {
-					transition,
-					error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-				});
-			}
-		}
-	}
-
-	/**
-	 * Get the latest state transition timestamp from persisted stream state.
-	 */
+	/** Get the latest authoritative transition timestamp in persisted state. */
 	private getLatestTransitionAt(state: StreamLifecycleAgentState): IsoTimestamp | null {
-		if (state._tag === "LiveStream") {
-			return state.startedAt;
-		}
-
+		if (state._tag === "LiveStream") return state.startedAt;
 		if (state.lastStartedAt && state.endedAt) {
 			return this.clock.isBefore(state.lastStartedAt, state.endedAt)
 				? state.endedAt
 				: state.lastStartedAt;
 		}
-
 		return state.lastStartedAt ?? state.endedAt ?? null;
 	}
 
-	/**
-	 * Notify dependent DOs that stream is online and publish stream_online event.
-	 */
-	private async notifyTokenDOsOnline(startedAt: string, streamSessionId: string): Promise<void> {
-		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
-		const twitchStub = getStub("TWITCH_TOKEN_DO");
-		const eventBusStub = getStub("EVENT_BUS_DO");
+	private async resumeTransitionEffects(): Promise<boolean> {
+		const intent = this.state.transitionIntent;
+		if (intent === null) return true;
 
-		const event = createStreamOnlineEvent({
-			id: crypto.randomUUID(),
-			streamId: streamSessionId,
-			startedAt,
-		});
+		await this.resumeTokenEffect(intent, "spotifyTokenNotified");
+		await this.resumeTokenEffect(intent, "twitchTokenNotified");
+		await this.resumeLifecycleEventEffect(intent);
+		await this.resumeViewerPollingEffect(intent);
 
-		const [spotifyResult, twitchResult, eventBusResult] = await Promise.all([
-			spotifyStub.onStreamOnline(),
-			twitchStub.onStreamOnline(),
-			eventBusStub.publish(event),
-		]);
+		const current = this.state.transitionIntent;
+		if (current === null) return true;
+		const completed =
+			current.spotifyTokenNotified &&
+			current.twitchTokenNotified &&
+			current.lifecycleEventPublished &&
+			current.viewerPollingUpdated;
+		if (completed) this.setState({ ...this.state, transitionIntent: null });
+		return completed;
+	}
 
-		if (spotifyResult.status === "error") {
-			logger.error("Failed to notify SpotifyTokenDO of stream online", {
-				error: spotifyResult.error.message,
+	private async resumeTokenEffect(
+		intent: StreamLifecycleTransitionIntent,
+		effect: "spotifyTokenNotified" | "twitchTokenNotified",
+	): Promise<void> {
+		if (this.state.transitionIntent?.[effect] !== false) return;
+		const stub =
+			effect === "spotifyTokenNotified" ? getStub("SPOTIFY_TOKEN_DO") : getStub("TWITCH_TOKEN_DO");
+		const result =
+			intent._tag === "StreamOnlineIntent"
+				? await stub.onStreamOnline()
+				: await stub.onStreamOffline();
+		if (result.status === "error") {
+			logger.error("Stream Lifecycle token side effect remains pending", {
+				event: "stream_lifecycle.transition_effect_failed",
+				effect,
+				transition: intent._tag,
+				error_message: result.error.message,
 			});
+			return;
 		}
+		this.markTransitionEffectComplete(intent.eventId, effect);
+	}
 
-		if (twitchResult.status === "error") {
-			logger.error("Failed to notify TwitchTokenDO of stream online", {
-				error: twitchResult.error.message,
+	private async resumeLifecycleEventEffect(intent: StreamLifecycleTransitionIntent): Promise<void> {
+		if (this.state.transitionIntent?.lifecycleEventPublished !== false) return;
+		const event =
+			intent._tag === "StreamOnlineIntent"
+				? createStreamOnlineEvent({
+						id: intent.eventId,
+						streamId: intent.streamSessionId,
+						startedAt: intent.transitionAt,
+					})
+				: createStreamOfflineEvent({
+						id: intent.eventId,
+						streamId: intent.streamSessionId,
+						endedAt: intent.transitionAt,
+					});
+		const result = await getStub("EVENT_BUS_DO").publish(event);
+		if (result.status === "error") {
+			logger.error("Stream Lifecycle event publication remains pending", {
+				event: "stream_lifecycle.transition_effect_failed",
+				effect: "lifecycleEventPublished",
+				transition: intent._tag,
+				event_id: intent.eventId,
+				error_message: result.error.message,
 			});
+			return;
 		}
+		this.markTransitionEffectComplete(intent.eventId, "lifecycleEventPublished");
+	}
 
-		if (eventBusResult.status === "error") {
-			logger.warn("EventBusDO publish stream_online failed (will retry via alarm)", {
-				error: eventBusResult.error.message,
-				eventId: event.id,
+	private async resumeViewerPollingEffect(intent: StreamLifecycleTransitionIntent): Promise<void> {
+		if (this.state.transitionIntent?.viewerPollingUpdated !== false) return;
+		try {
+			if (intent._tag === "StreamOnlineIntent") await this.ensureViewerPollingSchedule();
+			else await this.cancelViewerPollingSchedule(intent.viewerPollScheduleId);
+			this.markTransitionEffectComplete(intent.eventId, "viewerPollingUpdated");
+		} catch (cause) {
+			logger.error("Stream Lifecycle viewer polling effect remains pending", {
+				event: "stream_lifecycle.transition_effect_failed",
+				effect: "viewerPollingUpdated",
+				transition: intent._tag,
+				error_message: cause instanceof Error ? cause.message : String(cause),
 			});
-		} else {
-			logger.info("Published stream_online event", { eventId: event.id });
 		}
 	}
 
-	/**
-	 * Notify dependent DOs that stream is offline and publish stream_offline event.
-	 */
-	private async notifyTokenDOsOffline(endedAt: string, streamSessionId: string): Promise<void> {
-		const spotifyStub = getStub("SPOTIFY_TOKEN_DO");
-		const twitchStub = getStub("TWITCH_TOKEN_DO");
-		const eventBusStub = getStub("EVENT_BUS_DO");
-
-		const event = createStreamOfflineEvent({
-			id: crypto.randomUUID(),
-			streamId: streamSessionId,
-			endedAt,
+	private markTransitionEffectComplete(
+		eventId: string,
+		effect:
+			| "spotifyTokenNotified"
+			| "twitchTokenNotified"
+			| "lifecycleEventPublished"
+			| "viewerPollingUpdated",
+	): void {
+		const current = this.state.transitionIntent;
+		if (current === null || current.eventId !== eventId) return;
+		this.setState({
+			...this.state,
+			transitionIntent: { ...current, [effect]: true },
 		});
-
-		const [spotifyResult, twitchResult, eventBusResult] = await Promise.all([
-			spotifyStub.onStreamOffline(),
-			twitchStub.onStreamOffline(),
-			eventBusStub.publish(event),
-		]);
-
-		if (spotifyResult.status === "error") {
-			logger.error("Failed to notify SpotifyTokenDO of stream offline", {
-				error: spotifyResult.error.message,
-			});
-		}
-
-		if (twitchResult.status === "error") {
-			logger.error("Failed to notify TwitchTokenDO of stream offline", {
-				error: twitchResult.error.message,
-			});
-		}
-
-		if (eventBusResult.status === "error") {
-			logger.warn("EventBusDO publish stream_offline failed (will retry via alarm)", {
-				error: eventBusResult.error.message,
-				eventId: event.id,
-			});
-		} else {
-			logger.info("Published stream_offline event", { eventId: event.id });
-		}
 	}
 }
 
