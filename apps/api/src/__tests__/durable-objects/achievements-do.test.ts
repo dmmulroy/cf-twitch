@@ -5,12 +5,16 @@
  */
 
 import { runInDurableObject } from "cloudflare:test";
+import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/durable-sqlite";
 import { describe, expect, it } from "vite-plus/test";
 
 import { AchievementsDO } from "../../durable-objects/achievements-do";
+import * as achievementSchema from "../../durable-objects/schemas/achievements-do.schema";
 import {
 	createRaffleRollEvent,
 	createSongRequestSuccessEvent,
+	createStreamOfflineEvent,
 	createStreamOnlineEvent,
 } from "../../durable-objects/schemas/event-bus-do.schema";
 import { createAchievementsStub, ensureNamedTwitchTokenStub } from "../helpers/durable-objects";
@@ -116,6 +120,134 @@ describe("AchievementsDO", () => {
 			expect(unlockedResult.value.map((achievement) => achievement.id)).toEqual(
 				expect.arrayContaining(["first_roll", "close_call", "closest_ever"]),
 			);
+		}
+	});
+
+	it("applies a redelivered event exactly once", async () => {
+		await ensureNamedTwitchTokenStub();
+		const stub = await createAchievementsStub(`achievements-${crypto.randomUUID()}`);
+		const event = createSongRequestSuccessEvent({
+			id: crypto.randomUUID(),
+			userId: "stable-viewer-1",
+			userDisplayName: "FirstName",
+			sagaId: "saga-duplicate",
+			trackId: "spotify:track:duplicate",
+		});
+
+		expect((await stub.handleEvent(event)).status).toBe("ok");
+		expect((await stub.handleEvent(event)).status).toBe("ok");
+		const progress = await stub.getUserAchievements("FirstName");
+		expect(progress.status).toBe("ok");
+		if (progress.status === "ok") {
+			expect(progress.value.find((item) => item.achievementId === "request_10")?.progress).toBe(1);
+		}
+	});
+
+	it("keeps Achievement Progress on stable Viewer identity after a display-name change", async () => {
+		await ensureNamedTwitchTokenStub();
+		const stub = await createAchievementsStub(`achievements-${crypto.randomUUID()}`);
+		for (const [index, userDisplayName] of ["OldName", "NewName"].entries()) {
+			await stub.handleEvent(
+				createSongRequestSuccessEvent({
+					id: crypto.randomUUID(),
+					userId: "stable-viewer-2",
+					userDisplayName,
+					sagaId: `saga-name-${index}`,
+					trackId: `spotify:track:name-${index}`,
+				}),
+			);
+		}
+
+		const progress = await stub.getUserAchievements("NewName");
+		expect(progress.status).toBe("ok");
+		if (progress.status === "ok") {
+			expect(progress.value.find((item) => item.achievementId === "request_10")?.progress).toBe(2);
+		}
+	});
+
+	it("does not move Stream Session state backward when an older online event is retried", async () => {
+		const stub = await createAchievementsStub(`achievements-${crypto.randomUUID()}`);
+		await stub.handleEvent(
+			createStreamOfflineEvent({
+				id: crypto.randomUUID(),
+				streamId: "stream-ordered",
+				endedAt: "2026-04-07T16:00:00.000Z",
+			}),
+		);
+		await stub.handleEvent(
+			createStreamOnlineEvent({
+				id: crypto.randomUUID(),
+				streamId: "stream-ordered",
+				startedAt: "2026-04-07T14:00:00.000Z",
+			}),
+		);
+
+		const state = await runInDurableObject(stub, (instance: AchievementsDO) => instance.state);
+		expect(state).toMatchObject({ isStreamLive: false, currentStreamStartedAt: null });
+	});
+
+	it("persists a stable unlock outbox effect and guards repeated callback execution", async () => {
+		await ensureNamedTwitchTokenStub();
+		const stub = await createAchievementsStub(`achievements-${crypto.randomUUID()}`);
+		const event = createSongRequestSuccessEvent({
+			id: crypto.randomUUID(),
+			userId: "outbox-viewer",
+			userDisplayName: "OutboxViewer",
+			sagaId: "saga-outbox",
+			trackId: "spotify:track:outbox",
+		});
+		expect((await stub.handleEvent(event)).status).toBe("ok");
+
+		const effect = await runInDurableObject(stub, async (instance: AchievementsDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: achievementSchema });
+			const [row] = await db
+				.select()
+				.from(achievementSchema.achievementUnlockOutbox)
+				.where(eq(achievementSchema.achievementUnlockOutbox.effectId, `${event.id}:first_request`));
+			if (row === undefined) {
+				throw new Error("Achievement unlock outbox row missing");
+			}
+			await instance.processAchievementUnlockEffects({ effectId: row.effectId });
+			await instance.processAchievementUnlockEffects({ effectId: row.effectId });
+			const [after] = await db
+				.select()
+				.from(achievementSchema.achievementUnlockOutbox)
+				.where(eq(achievementSchema.achievementUnlockOutbox.effectId, row.effectId));
+			return after;
+		});
+		expect(effect).toMatchObject({
+			effectId: `${event.id}:first_request`,
+			metricState: "claimed",
+		});
+	});
+
+	it("parses definition records and rejects unbounded leaderboard limits at the RPC boundary", async () => {
+		const stub = await createAchievementsStub(`achievements-${crypto.randomUUID()}`);
+		const definitions = await stub.getDefinitions();
+		expect(definitions.status).toBe("ok");
+		if (definitions.status === "ok") {
+			expect(definitions.value.length).toBeGreaterThan(0);
+		}
+		const invalidLimit = await stub.getLeaderboard({ limit: -1 });
+		expect(invalidLimit.status).toBe("error");
+		if (invalidLimit.status === "error") {
+			expect(invalidLimit.error._tag).toBe("AchievementQueryValidationError");
+		}
+	});
+
+	it("returns a precise error for an invalid persisted Achievement Definition", async () => {
+		const stub = await createAchievementsStub(`achievements-${crypto.randomUUID()}`);
+		const result = await runInDurableObject(stub, async (instance: AchievementsDO) => {
+			const db = drizzle(instance.ctx.storage, { schema: achievementSchema });
+			await db
+				.update(achievementSchema.achievementDefinitions)
+				.set({ category: "corrupt-category" })
+				.where(eq(achievementSchema.achievementDefinitions.id, "first_request"));
+			return instance.getDefinitions();
+		});
+		expect(result.status).toBe("error");
+		if (result.status === "error") {
+			expect(result.error._tag).toBe("InvalidAchievementRecordError");
 		}
 	});
 

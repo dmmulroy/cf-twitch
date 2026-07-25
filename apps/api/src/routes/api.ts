@@ -24,6 +24,10 @@ const QueueQuerySchema = z.object({
 	limit: z.coerce.number().int().positive().max(100).default(10),
 });
 
+const AchievementLeaderboardQuerySchema = z.object({
+	limit: z.coerce.number().int().min(1).max(100).default(10),
+});
+
 /**
  * Protect debug routes with ADMIN_SECRET bearer auth.
  */
@@ -298,7 +302,13 @@ api.get("/achievements/leaderboard", async (c) => {
 		route: "/api/achievements/leaderboard",
 		component: "route",
 	});
-	const limit = Number(c.req.query("limit") ?? 10);
+	const queryResult = AchievementLeaderboardQuerySchema.safeParse({
+		limit: c.req.query("limit") ?? 10,
+	});
+	if (!queryResult.success) {
+		return c.json({ error: "Invalid Achievement leaderboard limit" }, 400);
+	}
+	const { limit } = queryResult.data;
 	routeLogger.info("Loading achievement leaderboard", {
 		event: "api.achievements.leaderboard.started",
 		limit,

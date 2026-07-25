@@ -26,22 +26,24 @@ export type InsertAchievementDefinition = typeof achievementDefinitions.$inferIn
  * User achievement progress and unlock status
  * - Progress incremented on matching events
  * - unlockedAt populated when threshold reached (or first event for event-based)
- * - announced tracks whether chat notification was sent
+ * - announcement_state records the honest pending/sent chat lifecycle projection
  */
 export const userAchievements = sqliteTable(
 	"user_achievements",
 	{
 		id: text("id").primaryKey(),
+		userId: text("user_id").notNull(),
 		userDisplayName: text("user_display_name").notNull(),
-		achievementId: text("achievement_id").notNull(), // references achievement_definitions.id
+		achievementId: text("achievement_id").notNull(),
 		progress: integer("progress").notNull().default(0),
-		unlockedAt: text("unlocked_at"), // ISO8601, NULL if not unlocked
-		announced: integer("announced", { mode: "boolean" }).notNull().default(false),
-		eventId: text("event_id"), // for idempotency on event-based achievements
+		unlockedAt: text("unlocked_at"),
+		announcementState: text("announcement_state").notNull().default("pending"),
+		eventId: text("event_id"),
 	},
 	(table) => [
-		unique("user_achievement_unique").on(table.userDisplayName, table.achievementId),
-		index("idx_user_achievements_user").on(table.userDisplayName),
+		unique("user_achievement_viewer_unique").on(table.userId, table.achievementId),
+		index("idx_user_achievements_viewer").on(table.userId),
+		index("idx_user_achievements_display_name").on(table.userDisplayName),
 		index("idx_user_achievements_unlocked").on(table.unlockedAt),
 	],
 );
@@ -90,3 +92,35 @@ export const eventHistory = sqliteTable(
 
 export type EventHistory = typeof eventHistory.$inferSelect;
 export type InsertEventHistory = typeof eventHistory.$inferInsert;
+
+/** Persisted ordering watermark for Achievement Stream Session transitions. */
+export const achievementStreamSession = sqliteTable("achievement_stream_session", {
+	singletonId: integer("singleton_id").primaryKey().default(1),
+	status: text("status").notNull(),
+	streamId: text("stream_id"),
+	startedAt: text("started_at"),
+	transitionAt: text("transition_at").notNull(),
+});
+
+/** Transactional outbox for analytics and chat effects created by an Achievement unlock. */
+export const achievementUnlockOutbox = sqliteTable(
+	"achievement_unlock_outbox",
+	{
+		effectId: text("effect_id").primaryKey(),
+		eventId: text("event_id").notNull(),
+		userId: text("user_id").notNull(),
+		userDisplayName: text("user_display_name").notNull(),
+		achievementId: text("achievement_id").notNull(),
+		achievementName: text("achievement_name").notNull(),
+		achievementDescription: text("achievement_description").notNull(),
+		category: text("category").notNull(),
+		metricState: text("metric_state").notNull().default("pending"),
+		announcementState: text("announcement_state").notNull().default("pending"),
+		announcementAttempts: integer("announcement_attempts").notNull().default(0),
+		createdAt: text("created_at").notNull(),
+		updatedAt: text("updated_at").notNull(),
+	},
+	(table) => [
+		index("idx_achievement_unlock_outbox_pending").on(table.announcementState, table.metricState),
+	],
+);

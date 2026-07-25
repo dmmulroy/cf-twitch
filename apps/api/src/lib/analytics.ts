@@ -59,6 +59,7 @@ export interface ErrorMetric {
 /**
  * Achievement unlock metric data.
  *
+ * @param effectId - Stable unlock effect id for analytics deduplication.
  * @param user - Viewer who unlocked the achievement.
  * @param achievementId - Achievement identifier.
  * @param achievementName - Human-readable achievement name.
@@ -66,6 +67,7 @@ export interface ErrorMetric {
  * @returns A serializable achievement unlock metric payload.
  */
 export interface AchievementUnlockMetric {
+	effectId: string;
 	user: string;
 	achievementId: string;
 	achievementName: string;
@@ -262,7 +264,13 @@ export function writeAchievementUnlockMetric(
 	metric: AchievementUnlockMetric,
 ): void {
 	safeWriteMetric(analytics, "achievement_unlock", {
-		blobs: [metric.user, metric.achievementId, metric.achievementName, metric.category],
+		blobs: [
+			metric.effectId,
+			metric.user,
+			metric.achievementId,
+			metric.achievementName,
+			metric.category,
+		],
 		doubles: [],
 	});
 }

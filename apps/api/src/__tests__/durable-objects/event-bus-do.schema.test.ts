@@ -325,6 +325,40 @@ describe("Event Schema", () => {
 		});
 	});
 
+	describe("Raffle Roll invariants", () => {
+		const validRoll = {
+			id: "550e8400-e29b-41d4-a716-446655440099",
+			type: EventType.RaffleRoll,
+			v: 1,
+			timestamp: "2026-01-30T12:00:00.000Z",
+			source: EventSource.KeyboardRaffleSaga,
+			userId: "user-123",
+			userDisplayName: "TestUser",
+			sagaId: "saga-123",
+			roll: 40,
+			winningNumber: 42,
+			distance: 2,
+			isWinner: false,
+			isNewRecord: false,
+		};
+
+		it("rejects a Distance that contradicts the Roll and Winning Number", () => {
+			expect(RaffleRollEventSchema.safeParse({ ...validRoll, distance: 1 }).success).toBe(false);
+		});
+
+		it("rejects winner status that contradicts zero Distance", () => {
+			expect(RaffleRollEventSchema.safeParse({ ...validRoll, isWinner: true }).success).toBe(false);
+			expect(
+				RaffleRollEventSchema.safeParse({
+					...validRoll,
+					roll: 42,
+					distance: 0,
+					isWinner: false,
+				}).success,
+			).toBe(false);
+		});
+	});
+
 	describe("Factory functions", () => {
 		it("createSongRequestSuccessEvent should create valid event", () => {
 			const event = createSongRequestSuccessEvent({

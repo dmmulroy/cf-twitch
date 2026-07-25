@@ -18,7 +18,9 @@ import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
 import {
 	AchievementDbError,
 	AchievementEventValidationError,
+	AchievementQueryValidationError,
 	DurableObjectError,
+	InvalidAchievementRecordError,
 	TokenUnavailableWhileStreamOfflineError,
 	TokenRefreshNetworkError,
 	TwitchNetworkError,
@@ -31,13 +33,13 @@ import { TwitchService } from "../services/twitch-service";
 import {
 	evaluateAchievementRules,
 	type AchievementFacts,
-	type AchievementRuleDecision,
 	type AchievementRuleDefinition,
 } from "./achievements/rules";
 import * as schema from "./schemas/achievements-do.schema";
 import {
-	type AchievementDefinition,
 	achievementDefinitions,
+	achievementStreamSession,
+	achievementUnlockOutbox,
 	eventHistory,
 	userAchievements,
 	userStreaks,
@@ -81,6 +83,7 @@ export type AchievementScope = "session" | "cumulative";
 
 /** Input schema for recordEvent - validated with Zod */
 export const AchievementEventInputSchema = z.object({
+	userId: z.string().min(1),
 	userDisplayName: z.string().min(1),
 	event: z.enum([
 		"song_request",
@@ -101,15 +104,35 @@ export type AchievementEventInput = z.infer<typeof AchievementEventInputSchema>;
 const ANNOUNCEMENT_RETRY_DELAYS_SECONDS = [3, 5, 10] as const;
 
 const AchievementUnlockEffectPayloadSchema = z.object({
-	userDisplayName: z.string().min(1),
-	achievementId: z.string().min(1),
-	achievementName: z.string().min(1),
-	achievementDescription: z.string().min(1),
-	category: AchievementCategorySchema,
-	announcementAttempt: z.number().int().min(0),
+	effectId: z.string().min(1),
 });
 
-type AchievementUnlockEffectPayload = z.infer<typeof AchievementUnlockEffectPayloadSchema>;
+const AchievementDefinitionRecordSchema = z.object({
+	id: z.string().min(1),
+	name: z.string().min(1),
+	description: z.string().min(1),
+	icon: z.string().min(1),
+	category: AchievementCategorySchema,
+	threshold: z.number().int().positive().nullable(),
+	triggerEvent: AchievementTriggerEventSchema,
+	scope: AchievementScopeSchema,
+});
+
+/** Parsed Achievement Definition returned by the public RPC interface. */
+export type AchievementDefinition = z.infer<typeof AchievementDefinitionRecordSchema>;
+
+const LeaderboardOptionsSchema = z.object({
+	limit: z.number().int().min(1).max(100).optional().default(10),
+});
+
+const UnlockedAchievementRecordSchema = z.object({
+	id: z.string().min(1),
+	name: z.string().min(1),
+	description: z.string().min(1),
+	icon: z.string().min(1),
+	category: AchievementCategorySchema,
+	unlockedAt: z.string().datetime(),
+});
 
 /** Unlocked achievement returned from recordEvent */
 export interface UnlockedAchievement {
@@ -222,6 +245,25 @@ class _AchievementsDO
 	async onStart(): Promise<void> {
 		await this.ctx.blockConcurrencyWhile(async () => {
 			await migrate(this.db, migrations);
+			await this.db
+				.update(achievementUnlockOutbox)
+				.set({ announcementState: "uncertain", updatedAt: new Date().toISOString() })
+				.where(eq(achievementUnlockOutbox.announcementState, "sending"));
+			const session = await this.db.query.achievementStreamSession.findFirst({
+				where: eq(achievementStreamSession.singletonId, 1),
+			});
+			if (session !== undefined) {
+				this.setState({
+					isStreamLive: session.status === "online",
+					currentStreamStartedAt: session.startedAt,
+				});
+			}
+			const effects = await this.db
+				.select({ effectId: achievementUnlockOutbox.effectId })
+				.from(achievementUnlockOutbox);
+			for (const effect of effects) {
+				await this.queue("processAchievementUnlockEffects", effect);
+			}
 		});
 	}
 
@@ -252,163 +294,127 @@ class _AchievementsDO
 	private async recordEventInternal(
 		input: AchievementEventInput,
 	): Promise<Result<UnlockedAchievement[], AchievementError>> {
-		const { userDisplayName, event, eventId, increment, metadata } = input;
-
-		logger.info("AchievementsDO: recordEvent started", {
-			userDisplayName,
-			event,
-			eventId,
-			increment,
-		});
-
-		return Result.tryPromise({
-			try: async () => {
-				// Find all achievement definitions that match this event
-				const matchingDefinitions = await this.db.query.achievementDefinitions.findMany({
-					where: eq(achievementDefinitions.triggerEvent, event),
-				});
-
-				logger.debug("AchievementsDO: Found matching definitions", {
-					event,
-					count: matchingDefinitions.length,
-					definitions: matchingDefinitions.map((d) => d.id),
-				});
-
-				if (matchingDefinitions.length === 0) {
-					logger.debug("No achievements match event", { event });
-					return [];
-				}
-
-				const newlyUnlocked: UnlockedAchievement[] = [];
-				const now = new Date().toISOString();
-
-				for (const definition of matchingDefinitions) {
-					// Check if this user+achievement combo exists
-					let userAchievement = await this.db.query.userAchievements.findFirst({
-						where: and(
-							eq(userAchievements.userDisplayName, userDisplayName),
-							eq(userAchievements.achievementId, definition.id),
-						),
-					});
-
-					// For event-based achievements (null threshold), check idempotency
-					if (definition.threshold === null && userAchievement?.eventId === eventId) {
-						logger.debug("Skipping duplicate event-based achievement", {
-							achievementId: definition.id,
-							eventId,
-						});
-						continue;
-					}
-
-					// For threshold-based already unlocked, skip
-					if (
-						userAchievement !== undefined &&
-						userAchievement.unlockedAt !== null &&
-						definition.threshold !== null
-					) {
-						continue;
-					}
-
-					// Calculate new progress
-					// For streak achievements, set progress directly to streak count (not accumulate)
-					// For other achievements, accumulate progress normally
-					const effectiveIncrement = this.calculateIncrement(definition, increment, metadata);
-					const isStreakAchievement = definition.triggerEvent === "request_streak";
-					const currentProgress = userAchievement?.progress ?? 0;
-					const newProgress = isStreakAchievement
-						? effectiveIncrement // SET to streak count
-						: currentProgress + effectiveIncrement; // Accumulate for non-streak
-
-					// Determine if this unlocks the achievement
-					const shouldUnlock = this.shouldUnlock(definition, newProgress);
-
-					if (!userAchievement) {
-						// Create new user achievement record
-						const id = crypto.randomUUID();
-						await this.db.insert(userAchievements).values({
-							id,
+		const { userId, userDisplayName, event, eventId, increment, metadata } = input;
+		const transactionResult = await Result.tryPromise({
+			try: async () =>
+				this.db.transaction(async (tx) => {
+					const inserted = await tx
+						.insert(eventHistory)
+						.values({
+							id: crypto.randomUUID(),
+							eventType: `achievement:${event}`,
+							userId,
 							userDisplayName,
-							achievementId: definition.id,
-							progress: newProgress,
-							unlockedAt: shouldUnlock ? now : null,
-							announced: false,
-							eventId: definition.threshold === null ? eventId : null,
-						});
-					} else {
-						// Update existing record
-						await this.db
-							.update(userAchievements)
-							.set({
-								progress: newProgress,
-								unlockedAt:
-									shouldUnlock && !userAchievement.unlockedAt ? now : userAchievement.unlockedAt,
-								eventId: definition.threshold === null ? eventId : userAchievement.eventId,
-							})
-							.where(eq(userAchievements.id, userAchievement.id));
+							eventId,
+							timestamp: new Date().toISOString(),
+							metadata: JSON.stringify(metadata ?? {}),
+						})
+						.onConflictDoNothing({ target: eventHistory.eventId })
+						.returning({ eventId: eventHistory.eventId });
+					if (inserted.length === 0) {
+						return { newlyUnlocked: [], effectIds: [] };
 					}
 
-					// Track newly unlocked
-					if (shouldUnlock && (!userAchievement || !userAchievement.unlockedAt)) {
-						const category = AchievementCategorySchema.parse(definition.category);
+					const definitionRows = await tx.query.achievementDefinitions.findMany({
+						where: eq(achievementDefinitions.triggerEvent, event),
+					});
+					const definitions = definitionRows.map((row) =>
+						this.parseAchievementDefinitionRecord(row),
+					);
+					const newlyUnlocked: UnlockedAchievement[] = [];
+					const effectIds: string[] = [];
+					const now = new Date().toISOString();
+					for (const definition of definitions) {
+						const existing = await tx.query.userAchievements.findFirst({
+							where: and(
+								eq(userAchievements.userId, userId),
+								eq(userAchievements.achievementId, definition.id),
+							),
+						});
+						if (existing?.unlockedAt !== null && existing !== undefined) {
+							continue;
+						}
+						const effectiveIncrement = this.calculateIncrement(definition, increment, metadata);
+						const progress =
+							definition.triggerEvent === "request_streak"
+								? effectiveIncrement
+								: (existing?.progress ?? 0) + effectiveIncrement;
+						const shouldUnlock = this.shouldUnlock(definition, progress);
+						if (existing === undefined) {
+							await tx.insert(userAchievements).values({
+								id: crypto.randomUUID(),
+								userId,
+								userDisplayName,
+								achievementId: definition.id,
+								progress,
+								unlockedAt: shouldUnlock ? now : null,
+								announcementState: "pending",
+								eventId: definition.threshold === null ? eventId : null,
+							});
+						} else {
+							await tx
+								.update(userAchievements)
+								.set({
+									userDisplayName,
+									progress,
+									unlockedAt: shouldUnlock ? now : null,
+									eventId: definition.threshold === null ? eventId : existing.eventId,
+								})
+								.where(eq(userAchievements.id, existing.id));
+						}
+						if (!shouldUnlock) {
+							continue;
+						}
 						newlyUnlocked.push({
 							id: definition.id,
 							name: definition.name,
 							description: definition.description,
 							icon: definition.icon,
-							category,
+							category: definition.category,
 							unlockedAt: now,
 						});
-
-						logger.info("Achievement unlocked", {
-							userDisplayName,
-							achievementId: definition.id,
-							achievementName: definition.name,
-						});
-
-						const queueResult = await Result.tryPromise(() =>
-							this.queue("processAchievementUnlockEffects", {
+						const effectId = `${eventId}:${definition.id}`;
+						await tx
+							.insert(achievementUnlockOutbox)
+							.values({
+								effectId,
+								eventId,
+								userId,
 								userDisplayName,
 								achievementId: definition.id,
 								achievementName: definition.name,
 								achievementDescription: definition.description,
-								category,
-								announcementAttempt: 0,
-							}),
-						);
-
-						if (queueResult.isErr()) {
-							logger.warn("Failed to queue achievement unlock side effects", {
-								userDisplayName,
-								achievementId: definition.id,
-								error:
-									queueResult.error instanceof Error
-										? queueResult.error.message
-										: String(queueResult.error),
-							});
-						}
+								category: definition.category,
+								createdAt: now,
+								updatedAt: now,
+							})
+							.onConflictDoNothing();
+						effectIds.push(effectId);
 					}
-				}
-
-				logger.info("AchievementsDO: recordEvent completed", {
-					userDisplayName,
-					event,
-					newlyUnlocked: newlyUnlocked.length,
-					achievementIds: newlyUnlocked.map((a) => a.id),
-				});
-
-				return newlyUnlocked;
-			},
-			catch: (cause) => {
-				logger.error("AchievementsDO: recordEvent failed", {
-					userDisplayName,
-					event,
-					eventId,
-					error: cause instanceof Error ? cause.message : String(cause),
-					stack: cause instanceof Error ? cause.stack : undefined,
-				});
-				return new AchievementDbError({ operation: "recordEvent", cause });
-			},
+					return { newlyUnlocked, effectIds };
+				}),
+			catch: (cause) =>
+				InvalidAchievementRecordError.is(cause)
+					? cause
+					: new AchievementDbError({ operation: "recordEventTransaction", cause }),
 		});
+		if (transactionResult.isErr()) {
+			return Result.err(transactionResult.error);
+		}
+		for (const effectId of transactionResult.value.effectIds) {
+			const queueResult = await Result.tryPromise(() =>
+				this.queue("processAchievementUnlockEffects", { effectId }),
+			);
+			if (queueResult.isErr()) {
+				return Result.err(
+					new AchievementDbError({
+						operation: "queueAchievementUnlockEffect",
+						cause: queueResult.error,
+					}),
+				);
+			}
+		}
+		return Result.ok(transactionResult.value.newlyUnlocked);
 	}
 
 	/**
@@ -417,11 +423,12 @@ class _AchievementsDO
 	@rpc
 	async getUserAchievements(
 		userDisplayName: string,
-	): Promise<Result<UserAchievementProgress[], AchievementDbError>> {
+	): Promise<Result<UserAchievementProgress[], AchievementError>> {
 		return Result.tryPromise({
 			try: async () => {
 				// Get all definitions
-				const definitions = await this.db.query.achievementDefinitions.findMany();
+				const definitionRows = await this.db.query.achievementDefinitions.findMany();
+				const definitions = definitionRows.map((row) => this.parseAchievementDefinitionRecord(row));
 
 				// Get user's progress for all achievements
 				const userProgress = await this.db.query.userAchievements.findMany({
@@ -446,7 +453,10 @@ class _AchievementsDO
 					};
 				});
 			},
-			catch: (cause) => new AchievementDbError({ operation: "getUserAchievements", cause }),
+			catch: (cause) =>
+				InvalidAchievementRecordError.is(cause)
+					? cause
+					: new AchievementDbError({ operation: "getUserAchievements", cause }),
 		});
 	}
 
@@ -456,7 +466,7 @@ class _AchievementsDO
 	@rpc
 	async getUnlockedAchievements(
 		userDisplayName: string,
-	): Promise<Result<UnlockedAchievement[], AchievementDbError>> {
+	): Promise<Result<UnlockedAchievement[], AchievementError>> {
 		return Result.tryPromise({
 			try: async () => {
 				const results = await this.db
@@ -481,22 +491,24 @@ class _AchievementsDO
 					)
 					.orderBy(desc(userAchievements.unlockedAt));
 
-				return results.flatMap((r) =>
-					r.unlockedAt === null
-						? []
-						: [
-								{
-									id: r.id,
-									name: r.name,
-									description: r.description,
-									icon: r.icon,
-									category: AchievementCategorySchema.parse(r.category),
-									unlockedAt: r.unlockedAt,
-								},
-							],
-				);
+				return results.flatMap((row) => {
+					if (row.unlockedAt === null) {
+						return [];
+					}
+					const result = UnlockedAchievementRecordSchema.safeParse(row);
+					if (!result.success) {
+						throw new InvalidAchievementRecordError({
+							recordType: "unlocked progress",
+							parseError: result.error.message,
+						});
+					}
+					return [result.data];
+				});
 			},
-			catch: (cause) => new AchievementDbError({ operation: "getUnlockedAchievements", cause }),
+			catch: (cause) =>
+				InvalidAchievementRecordError.is(cause)
+					? cause
+					: new AchievementDbError({ operation: "getUnlockedAchievements", cause }),
 		});
 	}
 
@@ -504,12 +516,16 @@ class _AchievementsDO
 	 * Get all achievement definitions
 	 */
 	@rpc
-	async getDefinitions(): Promise<Result<AchievementDefinition[], AchievementDbError>> {
+	async getDefinitions(): Promise<Result<AchievementDefinition[], AchievementError>> {
 		return Result.tryPromise({
 			try: async () => {
-				return this.db.query.achievementDefinitions.findMany();
+				const rows = await this.db.query.achievementDefinitions.findMany();
+				return rows.map((row) => this.parseAchievementDefinitionRecord(row));
 			},
-			catch: (cause) => new AchievementDbError({ operation: "getDefinitions", cause }),
+			catch: (cause) =>
+				InvalidAchievementRecordError.is(cause)
+					? cause
+					: new AchievementDbError({ operation: "getDefinitions", cause }),
 		});
 	}
 
@@ -702,7 +718,12 @@ class _AchievementsDO
 						achievementDefinitions,
 						eq(userAchievements.achievementId, achievementDefinitions.id),
 					)
-					.where(and(isNotNull(userAchievements.unlockedAt), eq(userAchievements.announced, false)))
+					.where(
+						and(
+							isNotNull(userAchievements.unlockedAt),
+							eq(userAchievements.announcementState, "pending"),
+						),
+					)
 					.orderBy(userAchievements.unlockedAt);
 
 				return results.flatMap((r) =>
@@ -728,48 +749,21 @@ class _AchievementsDO
 	}
 
 	/**
-	 * Mark an achievement as announced
-	 *
-	 * Returns true if this call did the update, false if already announced.
-	 * Atomic check prevents duplicate announcements.
-	 */
-	@rpc
-	async markAnnounced(
-		userDisplayName: string,
-		achievementId: string,
-	): Promise<Result<boolean, AchievementError>> {
-		return Result.tryPromise({
-			try: async () => {
-				// Atomic update with condition
-				const result = await this.db
-					.update(userAchievements)
-					.set({ announced: true })
-					.where(
-						and(
-							eq(userAchievements.userDisplayName, userDisplayName),
-							eq(userAchievements.achievementId, achievementId),
-							eq(userAchievements.announced, false),
-							isNotNull(userAchievements.unlockedAt),
-						),
-					)
-					.returning({ id: userAchievements.id });
-
-				return result.length > 0;
-			},
-			catch: (cause) => new AchievementDbError({ operation: "markAnnounced", cause }),
-		});
-	}
-
-	/**
 	 * Get leaderboard of users by achievement unlock count
 	 */
 	@rpc
 	async getLeaderboard(
 		options?: LeaderboardOptions,
-	): Promise<Result<LeaderboardEntry[], AchievementDbError>> {
+	): Promise<Result<LeaderboardEntry[], AchievementError>> {
+		const optionsResult = LeaderboardOptionsSchema.safeParse(options ?? {});
+		if (!optionsResult.success) {
+			return Result.err(
+				new AchievementQueryValidationError({ parseError: optionsResult.error.message }),
+			);
+		}
 		return Result.tryPromise({
 			try: async () => {
-				const limit = options?.limit ?? 10;
+				const limit = optionsResult.data.limit;
 
 				const results = await this.db
 					.select({
@@ -857,6 +851,19 @@ class _AchievementsDO
 					isStreamLive: true,
 					currentStreamStartedAt: now,
 				});
+				await this.db
+					.insert(achievementStreamSession)
+					.values({
+						singletonId: 1,
+						status: "online",
+						streamId: `direct:${now}`,
+						startedAt: now,
+						transitionAt: now,
+					})
+					.onConflictDoUpdate({
+						target: achievementStreamSession.singletonId,
+						set: { status: "online", streamId: `direct:${now}`, startedAt: now, transitionAt: now },
+					});
 
 				// Get session-scoped achievement IDs
 				const sessionAchievements = await this.db.query.achievementDefinitions.findMany({
@@ -873,7 +880,7 @@ class _AchievementsDO
 						.set({
 							progress: 0,
 							unlockedAt: null,
-							announced: false,
+							announcementState: "pending",
 							eventId: null,
 						})
 						.where(inArray(userAchievements.achievementId, sessionIds));
@@ -901,21 +908,29 @@ class _AchievementsDO
 	 */
 	@rpc
 	async onStreamOffline(): Promise<Result<void, AchievementDbError>> {
-		logger.info("AchievementsDO: Stream offline");
-		this.setState({
-			isStreamLive: false,
-			currentStreamStartedAt: null,
+		return Result.tryPromise({
+			try: async () => {
+				const now = new Date().toISOString();
+				this.setState({ isStreamLive: false, currentStreamStartedAt: null });
+				await this.db
+					.insert(achievementStreamSession)
+					.values({
+						singletonId: 1,
+						status: "offline",
+						streamId: null,
+						startedAt: null,
+						transitionAt: now,
+					})
+					.onConflictDoUpdate({
+						target: achievementStreamSession.singletonId,
+						set: { status: "offline", streamId: null, startedAt: null, transitionAt: now },
+					});
+			},
+			catch: (cause) => new AchievementDbError({ operation: "onStreamOffline", cause }),
 		});
-		// No cleanup needed on stream end
-		return Result.ok();
 	}
 
-	/**
-	 * Background/scheduled callback for unlock side effects.
-	 *
-	 * Durable achievement state is written synchronously in recordEventInternal().
-	 * Analytics and chat announcement happen out-of-band via Agent queue/schedule APIs.
-	 */
+	/** Dispatches one persisted Achievement unlock outbox effect with guarded side effects. */
 	async processAchievementUnlockEffects(payload: unknown): Promise<void> {
 		const parseResult = AchievementUnlockEffectPayloadSchema.safeParse(payload);
 		if (!parseResult.success) {
@@ -925,18 +940,133 @@ class _AchievementsDO
 			return;
 		}
 
-		const effect = parseResult.data;
+		const effect = await this.db.query.achievementUnlockOutbox.findFirst({
+			where: eq(achievementUnlockOutbox.effectId, parseResult.data.effectId),
+		});
+		if (effect === undefined) {
+			return;
+		}
 
-		if (effect.announcementAttempt === 0) {
+		if (effect.metricState === "pending") {
+			await this.db
+				.update(achievementUnlockOutbox)
+				.set({ metricState: "claimed", updatedAt: new Date().toISOString() })
+				.where(
+					and(
+						eq(achievementUnlockOutbox.effectId, effect.effectId),
+						eq(achievementUnlockOutbox.metricState, "pending"),
+					),
+				);
 			writeAchievementUnlockMetric(this.env.ANALYTICS, {
+				effectId: effect.effectId,
 				user: effect.userDisplayName,
 				achievementId: effect.achievementId,
 				achievementName: effect.achievementName,
-				category: effect.category,
+				category: AchievementCategorySchema.parse(effect.category),
 			});
 		}
 
-		await this.announceAchievementWithRetry(effect);
+		if (
+			effect.announcementState === "sent" ||
+			effect.announcementState === "abandoned" ||
+			effect.announcementState === "uncertain" ||
+			effect.announcementState === "sending"
+		) {
+			return;
+		}
+
+		const tokenResult = await getStub("TWITCH_TOKEN_DO").getValidToken();
+		if (tokenResult.status === "error") {
+			await this.retryOrAbandonAchievementAnnouncement(
+				effect.effectId,
+				effect.announcementAttempts,
+				tokenResult.error,
+			);
+			return;
+		}
+
+		const claim = await this.db
+			.update(achievementUnlockOutbox)
+			.set({ announcementState: "sending", updatedAt: new Date().toISOString() })
+			.where(
+				and(
+					eq(achievementUnlockOutbox.effectId, effect.effectId),
+					eq(achievementUnlockOutbox.announcementState, "pending"),
+				),
+			)
+			.returning({ effectId: achievementUnlockOutbox.effectId });
+		if (claim.length === 0) {
+			return;
+		}
+
+		const twitchService = new TwitchService(this.env);
+		const message = `🏆 @${effect.userDisplayName} unlocked "${effect.achievementName}"! ${effect.achievementDescription}`;
+		const sendResult = await twitchService.sendChatMessage(message);
+		if (sendResult.status === "ok") {
+			await this.db.transaction(async (tx) => {
+				await tx
+					.update(achievementUnlockOutbox)
+					.set({ announcementState: "sent", updatedAt: new Date().toISOString() })
+					.where(eq(achievementUnlockOutbox.effectId, effect.effectId));
+				await tx
+					.update(userAchievements)
+					.set({ announcementState: "sent" })
+					.where(
+						and(
+							eq(userAchievements.userId, effect.userId),
+							eq(userAchievements.achievementId, effect.achievementId),
+						),
+					);
+			});
+			return;
+		}
+
+		await this.db
+			.update(achievementUnlockOutbox)
+			.set({ announcementState: "pending", updatedAt: new Date().toISOString() })
+			.where(eq(achievementUnlockOutbox.effectId, effect.effectId));
+		await this.retryOrAbandonAchievementAnnouncement(
+			effect.effectId,
+			effect.announcementAttempts,
+			sendResult.error,
+		);
+	}
+
+	private async retryOrAbandonAchievementAnnouncement(
+		effectId: string,
+		attempts: number,
+		error: unknown,
+	): Promise<void> {
+		const delayInSeconds = ANNOUNCEMENT_RETRY_DELAYS_SECONDS[attempts] ?? null;
+		const retryable =
+			this.isRetryableAnnouncementPreflightError(error) ||
+			TwitchNetworkError.is(error) ||
+			TwitchRateLimitError.is(error);
+		if (!retryable || delayInSeconds === null) {
+			await this.db
+				.update(achievementUnlockOutbox)
+				.set({ announcementState: "abandoned", updatedAt: new Date().toISOString() })
+				.where(eq(achievementUnlockOutbox.effectId, effectId));
+			return;
+		}
+
+		await this.db
+			.update(achievementUnlockOutbox)
+			.set({
+				announcementState: "pending",
+				announcementAttempts: attempts + 1,
+				updatedAt: new Date().toISOString(),
+			})
+			.where(eq(achievementUnlockOutbox.effectId, effectId));
+		await this.schedule(
+			delayInSeconds,
+			"processAchievementUnlockEffects",
+			{ effectId },
+			{
+				idempotent: true,
+				retry: { maxAttempts: 5 },
+			},
+		);
 	}
 
 	// =============================================================================
@@ -951,370 +1081,314 @@ class _AchievementsDO
 	 */
 	@rpc
 	async handleEvent(event: unknown): Promise<Result<void, AchievementError>> {
-		// Validate event with Zod
 		const parseResult = EventSchema.safeParse(event);
 		if (!parseResult.success) {
-			logger.warn("AchievementsDO: Invalid event format", {
-				error: parseResult.error.message,
-			});
 			return Result.err(
-				new AchievementEventValidationError({
-					parseError: parseResult.error.message,
-				}),
+				new AchievementEventValidationError({ parseError: parseResult.error.message }),
 			);
 		}
 
 		const validEvent = parseResult.data;
+		const transactionResult = await Result.tryPromise({
+			try: async () =>
+				this.db.transaction(async (tx) => {
+					const userInfo = this.extractUserInfo(validEvent);
+					const insertedHistory = await tx
+						.insert(eventHistory)
+						.values({
+							id: crypto.randomUUID(),
+							eventType: validEvent.type,
+							userId: userInfo.userId,
+							userDisplayName: userInfo.userDisplayName,
+							eventId: validEvent.id,
+							timestamp: validEvent.timestamp,
+							metadata: JSON.stringify(this.extractMetadata(validEvent)),
+						})
+						.onConflictDoNothing({ target: eventHistory.eventId })
+						.returning({ eventId: eventHistory.eventId });
 
-		logger.info("AchievementsDO: Handling event", {
-			eventId: validEvent.id,
-			eventType: validEvent.type,
-			source: validEvent.source,
+					if (insertedHistory.length === 0) {
+						const outstanding = await tx
+							.select({ effectId: achievementUnlockOutbox.effectId })
+							.from(achievementUnlockOutbox);
+						return { effectIds: outstanding.map((row) => row.effectId), streamState: null };
+					}
+
+					const definitionRows = await tx.query.achievementDefinitions.findMany();
+					const definitions = definitionRows.map((row) =>
+						AchievementDefinitionRecordSchema.parse(row),
+					);
+					const persistedSession = await tx.query.achievementStreamSession.findFirst({
+						where: eq(achievementStreamSession.singletonId, 1),
+					});
+
+					let transitionAccepted = true;
+					if (validEvent.type === EventType.StreamOnline) {
+						transitionAccepted =
+							(persistedSession === undefined ||
+								validEvent.startedAt > persistedSession.transitionAt) &&
+							!(
+								persistedSession?.status === "online" &&
+								persistedSession.streamId === validEvent.streamId
+							);
+					} else if (validEvent.type === EventType.StreamOffline) {
+						transitionAccepted =
+							persistedSession === undefined ||
+							(persistedSession.status === "offline" &&
+								validEvent.endedAt > persistedSession.transitionAt) ||
+							(persistedSession.status === "online" &&
+								persistedSession.streamId === validEvent.streamId &&
+								validEvent.endedAt >= persistedSession.transitionAt);
+					}
+
+					if (!transitionAccepted) {
+						return { effectIds: [], streamState: persistedSession ?? null };
+					}
+
+					let viewer: AchievementFacts["viewer"];
+					let isStreamOpenerCandidate = false;
+					if (
+						validEvent.type === EventType.SongRequestSuccess ||
+						validEvent.type === EventType.RaffleRoll
+					) {
+						await tx
+							.update(userAchievements)
+							.set({ userDisplayName: validEvent.userDisplayName })
+							.where(eq(userAchievements.userId, validEvent.userId));
+						const [progressRows, streak] = await Promise.all([
+							tx.query.userAchievements.findMany({
+								where: eq(userAchievements.userId, validEvent.userId),
+							}),
+							tx.query.userStreaks.findFirst({
+								where: eq(userStreaks.userId, validEvent.userId),
+							}),
+						]);
+						if (
+							validEvent.type === EventType.SongRequestSuccess &&
+							persistedSession?.status === "online" &&
+							persistedSession.startedAt !== null
+						) {
+							const priorRequests = await tx
+								.select({ count: count() })
+								.from(eventHistory)
+								.where(
+									and(
+										eq(eventHistory.eventType, EventType.SongRequestSuccess),
+										gt(eventHistory.timestamp, persistedSession.startedAt),
+										ne(eventHistory.eventId, validEvent.id),
+									),
+								);
+							isStreamOpenerCandidate = (priorRequests[0]?.count ?? 0) === 0;
+						}
+						viewer = {
+							userId: validEvent.userId,
+							userDisplayName: validEvent.userDisplayName,
+							progressByAchievementId: new Map(
+								progressRows.map((progress) => [progress.achievementId, progress]),
+							),
+							requestStreak: streak,
+						};
+					}
+
+					const ruleDefinitions = definitions.map((definition) =>
+						this.toAchievementRuleDefinition(definition),
+					);
+					const now =
+						validEvent.type === EventType.StreamOnline
+							? validEvent.startedAt
+							: validEvent.type === EventType.StreamOffline
+								? validEvent.endedAt
+								: new Date().toISOString();
+					const decisions = evaluateAchievementRules({
+						event: validEvent,
+						now,
+						facts: {
+							definitions: ruleDefinitions,
+							viewer,
+							streamSession: {
+								isLive: persistedSession?.status === "online",
+								currentStreamStartedAt: persistedSession?.startedAt ?? null,
+								isStreamOpenerCandidate,
+							},
+						},
+					});
+
+					const effectIds: string[] = [];
+					for (const decision of decisions) {
+						switch (decision.kind) {
+							case "upsert-achievement-progress": {
+								const existing = await tx.query.userAchievements.findFirst({
+									where: and(
+										eq(userAchievements.userId, decision.userId),
+										eq(userAchievements.achievementId, decision.achievementId),
+									),
+								});
+								if (existing === undefined) {
+									await tx.insert(userAchievements).values({
+										id: crypto.randomUUID(),
+										userId: decision.userId,
+										userDisplayName: decision.userDisplayName,
+										achievementId: decision.achievementId,
+										progress: decision.progress,
+										unlockedAt: decision.unlockedAt,
+										announcementState: "pending",
+										eventId: decision.eventId,
+									});
+								} else {
+									await tx
+										.update(userAchievements)
+										.set({
+											userDisplayName: decision.userDisplayName,
+											progress: decision.progress,
+											unlockedAt: decision.unlockedAt,
+											eventId: decision.eventId ?? existing.eventId,
+										})
+										.where(eq(userAchievements.id, existing.id));
+								}
+								break;
+							}
+							case "queue-achievement-unlock-effect": {
+								const effectId = `${validEvent.id}:${decision.achievement.id}`;
+								await tx
+									.insert(achievementUnlockOutbox)
+									.values({
+										effectId,
+										eventId: validEvent.id,
+										userId: decision.userId,
+										userDisplayName: decision.userDisplayName,
+										achievementId: decision.achievement.id,
+										achievementName: decision.achievement.name,
+										achievementDescription: decision.achievement.description,
+										category: decision.achievement.category,
+										createdAt: now,
+										updatedAt: now,
+									})
+									.onConflictDoNothing();
+								effectIds.push(effectId);
+								break;
+							}
+							case "update-request-streak":
+								await tx
+									.insert(userStreaks)
+									.values(decision)
+									.onConflictDoUpdate({
+										target: userStreaks.userId,
+										set: {
+											userDisplayName: decision.userDisplayName,
+											sessionStreak: decision.sessionStreak,
+											longestStreak: decision.longestStreak,
+											lastRequestAt: decision.lastRequestAt,
+										},
+									});
+								break;
+							case "reset-session-achievement-progress":
+								if (decision.achievementIds.length > 0) {
+									await tx
+										.update(userAchievements)
+										.set({
+											progress: 0,
+											unlockedAt: null,
+											announcementState: "pending",
+											eventId: null,
+										})
+										.where(inArray(userAchievements.achievementId, decision.achievementIds));
+									await tx
+										.update(achievementUnlockOutbox)
+										.set({ announcementState: "abandoned", updatedAt: now })
+										.where(
+											and(
+												inArray(achievementUnlockOutbox.achievementId, decision.achievementIds),
+												ne(achievementUnlockOutbox.announcementState, "sent"),
+											),
+										);
+								}
+								break;
+							case "reset-all-request-streaks":
+								await tx.update(userStreaks).set({
+									sessionStreak: 0,
+									sessionStartedAt: decision.sessionStartedAt,
+								});
+								break;
+							case "set-stream-session-state": {
+								const streamId =
+									validEvent.type === EventType.StreamOnline ||
+									validEvent.type === EventType.StreamOffline
+										? validEvent.streamId
+										: null;
+								await tx
+									.insert(achievementStreamSession)
+									.values({
+										singletonId: 1,
+										status: decision.isLive ? "online" : "offline",
+										streamId,
+										startedAt: decision.currentStreamStartedAt,
+										transitionAt: now,
+									})
+									.onConflictDoUpdate({
+										target: achievementStreamSession.singletonId,
+										set: {
+											status: decision.isLive ? "online" : "offline",
+											streamId,
+											startedAt: decision.currentStreamStartedAt,
+											transitionAt: now,
+										},
+									});
+								break;
+							}
+						}
+					}
+					const finalSession = await tx.query.achievementStreamSession.findFirst({
+						where: eq(achievementStreamSession.singletonId, 1),
+					});
+					return { effectIds, streamState: finalSession ?? null };
+				}),
+			catch: (cause) => new AchievementDbError({ operation: "handleEventTransaction", cause }),
 		});
 
-		// Record to event_history for auditing and "first request" checks
-		const recordResult = await this.recordToEventHistory(validEvent);
-
-		if (recordResult.isErr()) {
-			return recordResult;
+		if (transactionResult.isErr()) {
+			return Result.err(transactionResult.error);
 		}
 
-		const factsResult = await this.loadAchievementFacts(validEvent);
-		if (factsResult.isErr()) {
-			return factsResult;
+		const streamState = transactionResult.value.streamState;
+		if (streamState !== null) {
+			this.setState({
+				isStreamLive: streamState.status === "online",
+				currentStreamStartedAt: streamState.startedAt,
+			});
 		}
 
-		const decisions = evaluateAchievementRules({
-			event: validEvent,
-			facts: factsResult.value,
-			now: new Date().toISOString(),
-		});
+		for (const effectId of transactionResult.value.effectIds) {
+			const queueResult = await Result.tryPromise(() =>
+				this.queue("processAchievementUnlockEffects", { effectId }),
+			);
+			if (queueResult.isErr()) {
+				return Result.err(
+					new AchievementDbError({
+						operation: "queueAchievementUnlockEffect",
+						cause: queueResult.error,
+					}),
+				);
+			}
+		}
 
-		return this.applyAchievementDecisions(decisions);
+		return Result.ok();
 	}
 
-	private async loadAchievementFacts(
-		event: Event,
-	): Promise<Result<AchievementFacts, AchievementDbError>> {
-		return Result.tryPromise({
-			try: async () => {
-				const definitions = await this.db.query.achievementDefinitions.findMany();
-				const ruleDefinitions = definitions.map((definition) =>
-					this.toAchievementRuleDefinition(definition),
-				);
-
-				const streamSession = {
-					isLive: this.state.isStreamLive,
-					currentStreamStartedAt: this.state.currentStreamStartedAt,
-					isStreamOpenerCandidate: false,
-				};
-
-				if (event.type !== EventType.SongRequestSuccess && event.type !== EventType.RaffleRoll) {
-					return {
-						definitions: ruleDefinitions,
-						streamSession,
-					};
-				}
-
-				const [userProgress, requestStreak] = await Promise.all([
-					this.db.query.userAchievements.findMany({
-						where: eq(userAchievements.userDisplayName, event.userDisplayName),
-					}),
-					this.db.query.userStreaks.findFirst({
-						where: eq(userStreaks.userId, event.userId),
-					}),
-				]);
-
-				const progressByAchievementId = new Map(
-					userProgress.map((progress) => [
-						progress.achievementId,
-						{
-							achievementId: progress.achievementId,
-							progress: progress.progress,
-							unlockedAt: progress.unlockedAt,
-							eventId: progress.eventId,
-						},
-					]),
-				);
-
-				let isStreamOpenerCandidate = false;
-				if (event.type === EventType.SongRequestSuccess) {
-					const firstRequestResult = await this.isFirstRequestOfStream(event.id);
-					if (firstRequestResult.status === "ok") {
-						isStreamOpenerCandidate = firstRequestResult.value;
-					} else {
-						logger.warn("AchievementsDO: Failed to check first request", {
-							error: firstRequestResult.error,
-							eventId: event.id,
-						});
-					}
-				}
-
-				return {
-					definitions: ruleDefinitions,
-					viewer: {
-						userId: event.userId,
-						userDisplayName: event.userDisplayName,
-						progressByAchievementId,
-						requestStreak:
-							requestStreak === undefined
-								? undefined
-								: {
-										userId: requestStreak.userId,
-										userDisplayName: requestStreak.userDisplayName,
-										sessionStreak: requestStreak.sessionStreak,
-										longestStreak: requestStreak.longestStreak,
-										lastRequestAt: requestStreak.lastRequestAt,
-									},
-					},
-					streamSession: {
-						...streamSession,
-						isStreamOpenerCandidate,
-					},
-				};
-			},
-			catch: (cause) => new AchievementDbError({ operation: "loadAchievementFacts", cause }),
-		});
+	private parseAchievementDefinitionRecord(input: unknown): AchievementDefinition {
+		const result = AchievementDefinitionRecordSchema.safeParse(input);
+		if (!result.success) {
+			throw new InvalidAchievementRecordError({
+				recordType: "definition",
+				parseError: result.error.message,
+			});
+		}
+		return result.data;
 	}
 
 	private toAchievementRuleDefinition(
 		definition: AchievementDefinition,
 	): AchievementRuleDefinition {
-		return {
-			id: definition.id,
-			name: definition.name,
-			description: definition.description,
-			icon: definition.icon,
-			category: AchievementCategorySchema.parse(definition.category),
-			threshold: definition.threshold,
-			triggerEvent: AchievementTriggerEventSchema.parse(definition.triggerEvent),
-			scope: AchievementScopeSchema.parse(definition.scope),
-		};
-	}
-
-	private async applyAchievementDecisions(
-		decisions: AchievementRuleDecision[],
-	): Promise<Result<void, AchievementDbError>> {
-		return Result.tryPromise({
-			try: async () => {
-				for (const decision of decisions) {
-					switch (decision.kind) {
-						case "upsert-achievement-progress":
-							await this.applyAchievementProgressDecision(decision);
-							break;
-						case "queue-achievement-unlock-effect": {
-							const queueResult = await Result.tryPromise(() =>
-								this.queue("processAchievementUnlockEffects", {
-									userDisplayName: decision.userDisplayName,
-									achievementId: decision.achievement.id,
-									achievementName: decision.achievement.name,
-									achievementDescription: decision.achievement.description,
-									category: decision.achievement.category,
-									announcementAttempt: 0,
-								}),
-							);
-							if (queueResult.isErr()) {
-								logger.warn("Failed to queue achievement unlock side effects", {
-									userDisplayName: decision.userDisplayName,
-									achievementId: decision.achievement.id,
-									error:
-										queueResult.error instanceof Error
-											? queueResult.error.message
-											: String(queueResult.error),
-								});
-							}
-							break;
-						}
-						case "update-request-streak":
-							await this.upsertRequestStreak(decision);
-							break;
-						case "reset-session-achievement-progress":
-							await this.resetSessionAchievementProgress(decision.achievementIds);
-							break;
-						case "reset-all-request-streaks":
-							await this.db.update(userStreaks).set({
-								sessionStreak: 0,
-								sessionStartedAt: decision.sessionStartedAt,
-							});
-							break;
-						case "set-stream-session-state":
-							this.setState({
-								isStreamLive: decision.isLive,
-								currentStreamStartedAt: decision.currentStreamStartedAt,
-							});
-							break;
-					}
-				}
-			},
-			catch: (cause) => new AchievementDbError({ operation: "applyAchievementDecisions", cause }),
-		});
-	}
-
-	private async applyAchievementProgressDecision(
-		decision: Extract<AchievementRuleDecision, { kind: "upsert-achievement-progress" }>,
-	): Promise<void> {
-		const existing = await this.db.query.userAchievements.findFirst({
-			where: and(
-				eq(userAchievements.userDisplayName, decision.userDisplayName),
-				eq(userAchievements.achievementId, decision.achievementId),
-			),
-		});
-
-		if (existing === undefined) {
-			await this.db.insert(userAchievements).values({
-				id: crypto.randomUUID(),
-				userDisplayName: decision.userDisplayName,
-				achievementId: decision.achievementId,
-				progress: decision.progress,
-				unlockedAt: decision.unlockedAt,
-				announced: false,
-				eventId: decision.eventId,
-			});
-			return;
-		}
-
-		await this.db
-			.update(userAchievements)
-			.set({
-				progress: decision.progress,
-				unlockedAt: decision.unlockedAt,
-				eventId: decision.eventId ?? existing.eventId,
-			})
-			.where(eq(userAchievements.id, existing.id));
-	}
-
-	private async upsertRequestStreak(
-		decision: Extract<AchievementRuleDecision, { kind: "update-request-streak" }>,
-	): Promise<void> {
-		const existing = await this.db.query.userStreaks.findFirst({
-			where: eq(userStreaks.userId, decision.userId),
-		});
-
-		if (existing === undefined) {
-			await this.db.insert(userStreaks).values({
-				userId: decision.userId,
-				userDisplayName: decision.userDisplayName,
-				sessionStreak: decision.sessionStreak,
-				longestStreak: decision.longestStreak,
-				lastRequestAt: decision.lastRequestAt,
-			});
-			return;
-		}
-
-		await this.db
-			.update(userStreaks)
-			.set({
-				userDisplayName: decision.userDisplayName,
-				sessionStreak: decision.sessionStreak,
-				longestStreak: decision.longestStreak,
-				lastRequestAt: decision.lastRequestAt,
-			})
-			.where(eq(userStreaks.userId, decision.userId));
-	}
-
-	private async resetSessionAchievementProgress(achievementIds: string[]): Promise<void> {
-		if (achievementIds.length === 0) {
-			return;
-		}
-
-		await this.db
-			.update(userAchievements)
-			.set({
-				progress: 0,
-				unlockedAt: null,
-				announced: false,
-				eventId: null,
-			})
-			.where(inArray(userAchievements.achievementId, achievementIds));
-	}
-
-	/**
-	 * Check if this is the first song request of the current stream session
-	 *
-	 * Queries event_history for the most recent stream_online event to get session start,
-	 * then counts song_request_success events after that time (excluding current event).
-	 * Returns true if no prior requests exist in this session.
-	 */
-	private async isFirstRequestOfStream(
-		eventId: string,
-	): Promise<Result<boolean, AchievementDbError>> {
-		return Result.tryPromise({
-			try: async () => {
-				// Get most recent stream_online event to determine session start
-				const latestStreamOnline = await this.db.query.eventHistory.findFirst({
-					where: eq(eventHistory.eventType, "stream_online"),
-					orderBy: [desc(eventHistory.timestamp)],
-					columns: { timestamp: true },
-				});
-
-				// If no stream_online recorded, we can't determine "first of stream"
-				// This shouldn't happen in normal flow but handle gracefully
-				if (!latestStreamOnline) {
-					logger.debug("AchievementsDO: No stream_online event found, cannot check first request");
-					return false;
-				}
-
-				const streamStartedAt = latestStreamOnline.timestamp;
-
-				// Count song_request_success events after stream start, excluding current
-				const priorRequests = await this.db
-					.select({ count: count() })
-					.from(eventHistory)
-					.where(
-						and(
-							eq(eventHistory.eventType, "song_request_success"),
-							gt(eventHistory.timestamp, streamStartedAt),
-							ne(eventHistory.eventId, eventId),
-						),
-					);
-
-				const priorCount = priorRequests[0]?.count ?? 0;
-
-				logger.debug("AchievementsDO: First request check", {
-					eventId,
-					streamStartedAt,
-					priorRequestCount: priorCount,
-					isFirst: priorCount === 0,
-				});
-
-				return priorCount === 0;
-			},
-			catch: (cause) => new AchievementDbError({ operation: "isFirstRequestOfStream", cause }),
-		});
-	}
-
-	/**
-	 * Record event to event_history table for auditing and "first request" checks
-	 *
-	 * Idempotent: uses ON CONFLICT DO NOTHING for the unique eventId index.
-	 * Retried events (from EventBusDO retry or DLQ replay) are safely ignored.
-	 */
-	private async recordToEventHistory(event: Event): Promise<Result<void, AchievementDbError>> {
-		return Result.tryPromise({
-			try: async () => {
-				// Extract user info based on event type
-				const userInfo = this.extractUserInfo(event);
-
-				await this.db
-					.insert(eventHistory)
-					.values({
-						id: crypto.randomUUID(),
-						eventType: event.type,
-						userId: userInfo.userId,
-						userDisplayName: userInfo.userDisplayName,
-						eventId: event.id,
-						timestamp: event.timestamp,
-						metadata: JSON.stringify(this.extractMetadata(event)),
-					})
-					.onConflictDoNothing({ target: eventHistory.eventId });
-
-				logger.debug("AchievementsDO: Recorded event to history", {
-					eventId: event.id,
-					eventType: event.type,
-				});
-			},
-			catch: (cause) => new AchievementDbError({ operation: "recordToEventHistory", cause }),
-		});
+		return definition;
 	}
 
 	/**
@@ -1394,45 +1468,6 @@ class _AchievementsDO
 		return progress >= definition.threshold;
 	}
 
-	private async announceAchievementWithRetry(
-		effect: AchievementUnlockEffectPayload,
-	): Promise<void> {
-		const tokenResult = await getStub("TWITCH_TOKEN_DO").getValidToken();
-		if (tokenResult.status === "error") {
-			if (this.isRetryableAnnouncementPreflightError(tokenResult.error)) {
-				const delayInSeconds =
-					ANNOUNCEMENT_RETRY_DELAYS_SECONDS[effect.announcementAttempt] ?? null;
-				if (delayInSeconds !== null) {
-					await this.schedule(delayInSeconds, "processAchievementUnlockEffects", {
-						...effect,
-						announcementAttempt: effect.announcementAttempt + 1,
-					});
-					logger.warn("AchievementsDO: Scheduled short announcement retry", {
-						userDisplayName: effect.userDisplayName,
-						achievementId: effect.achievementId,
-						delayInSeconds,
-						attempt: effect.announcementAttempt + 1,
-						error: tokenResult.error.message,
-					});
-					return;
-				}
-			}
-
-			logger.warn("AchievementsDO: Skipping achievement announcement", {
-				userDisplayName: effect.userDisplayName,
-				achievementId: effect.achievementId,
-				error: tokenResult.error.message,
-			});
-			return;
-		}
-
-		await this.announceAchievement(effect.userDisplayName, {
-			id: effect.achievementId,
-			name: effect.achievementName,
-			description: effect.achievementDescription,
-		});
-	}
-
 	private isRetryableAnnouncementPreflightError(error: unknown): boolean {
 		return (
 			TokenUnavailableWhileStreamOfflineError.is(error) ||
@@ -1441,52 +1476,6 @@ class _AchievementsDO
 			TwitchRateLimitError.is(error) ||
 			DurableObjectError.is(error)
 		);
-	}
-
-	/**
-	 * Announce achievement unlock to chat (best-effort)
-	 *
-	 * Atomically claims announcement rights via markAnnounced() BEFORE sending
-	 * to prevent duplicate chat messages from concurrent requests.
-	 * Failures are logged but do not propagate - announcements are non-critical.
-	 */
-	private async announceAchievement(
-		userDisplayName: string,
-		definition: Pick<AchievementDefinition, "id" | "name" | "description">,
-	): Promise<void> {
-		// Atomically claim announcement rights FIRST to prevent duplicate messages
-		const markResult = await this.markAnnounced(userDisplayName, definition.id);
-		if (markResult.status !== "ok" || !markResult.value) {
-			// Already announced by another request, or failed to claim
-			logger.debug("Achievement already announced or claim failed", {
-				userDisplayName,
-				achievementId: definition.id,
-			});
-			return;
-		}
-
-		// Now safe to send - we own this announcement
-		const twitchService = new TwitchService(this.env);
-		const message = `🏆 @${userDisplayName} unlocked "${definition.name}"! ${definition.description}`;
-
-		const sendResult = await twitchService.sendChatMessage(message);
-
-		if (sendResult.status === "ok") {
-			logger.info("Achievement announced", {
-				userDisplayName,
-				achievementId: definition.id,
-				achievementName: definition.name,
-			});
-		} else {
-			logger.warn("Failed to announce achievement to chat (already marked)", {
-				userDisplayName,
-				achievementId: definition.id,
-				achievementName: definition.name,
-				error: sendResult.error.message,
-			});
-			// Note: Achievement is already marked as announced, so no retry.
-			// This is acceptable - chat is ephemeral, achievement is still recorded.
-		}
 	}
 }
 

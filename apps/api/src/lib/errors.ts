@@ -548,7 +548,30 @@ export class AchievementEventValidationError extends TaggedError(
 	constructor(args: { parseError: string }) {
 		super({
 			...args,
-			message: `Invalid event format: ${args.parseError}`,
+			message: `Invalid Achievement event format: ${args.parseError}`,
+		});
+	}
+}
+
+/** Expected failure for invalid serialized Achievement query options. */
+export class AchievementQueryValidationError extends TaggedError(
+	"AchievementQueryValidationError",
+)<{ parseError: string; message: string }>() {
+	constructor(args: { parseError: string }) {
+		super({ ...args, message: `Invalid Achievement query options: ${args.parseError}` });
+	}
+}
+
+/** Expected failure when persisted Achievement data violates its runtime schema. */
+export class InvalidAchievementRecordError extends TaggedError("InvalidAchievementRecordError")<{
+	recordType: string;
+	parseError: string;
+	message: string;
+}>() {
+	constructor(args: { recordType: string; parseError: string }) {
+		super({
+			...args,
+			message: `Invalid persisted Achievement ${args.recordType} record: ${args.parseError}`,
 		});
 	}
 }
@@ -557,7 +580,9 @@ export class AchievementEventValidationError extends TaggedError(
 export type AchievementError =
 	| AchievementDbError
 	| AchievementNotFoundError
-	| AchievementEventValidationError;
+	| AchievementEventValidationError
+	| AchievementQueryValidationError
+	| InvalidAchievementRecordError;
 
 // =============================================================================
 // Commands Errors

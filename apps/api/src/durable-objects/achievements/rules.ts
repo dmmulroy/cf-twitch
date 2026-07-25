@@ -61,6 +61,7 @@ export type AchievementRuleInput = {
 
 export type UpsertAchievementProgress = {
 	kind: "upsert-achievement-progress";
+	userId: string;
 	userDisplayName: string;
 	achievementId: string;
 	progress: number;
@@ -71,6 +72,7 @@ export type UpsertAchievementProgress = {
 
 export type QueueAchievementUnlockEffect = {
 	kind: "queue-achievement-unlock-effect";
+	userId: string;
 	userDisplayName: string;
 	achievement: {
 		id: string;
@@ -246,6 +248,7 @@ function progressForTrigger(
 
 		decisions.push({
 			kind: "upsert-achievement-progress",
+			userId: viewer.userId,
 			userDisplayName: viewer.userDisplayName,
 			achievementId: definition.id,
 			progress,
@@ -257,6 +260,7 @@ function progressForTrigger(
 		if (newlyUnlocked) {
 			decisions.push({
 				kind: "queue-achievement-unlock-effect",
+				userId: viewer.userId,
 				userDisplayName: viewer.userDisplayName,
 				achievement: {
 					id: definition.id,

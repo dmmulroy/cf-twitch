@@ -27,6 +27,7 @@ import { logger } from "../lib/logger";
 import * as schema from "./schemas/event-bus-do.schema";
 import {
 	deadLetterQueue,
+	deliveredEvents,
 	EventSchema,
 	EventType,
 	pendingEvents,
@@ -104,6 +105,14 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 
 		const domainEvent = parseResult.data;
 		const handlerKey = EVENT_ROUTES[domainEvent.type];
+		const receiptResult = await this.findDeliveryReceipt(domainEvent.id);
+		if (receiptResult.isErr()) {
+			return Result.err(receiptResult.error);
+		}
+		if (receiptResult.value) {
+			const reconcileResult = await this.reconcileTerminalEvent(domainEvent.id);
+			return reconcileResult.isErr() ? Result.err(reconcileResult.error) : Result.ok();
+		}
 
 		logger.info("EventBusDO: Publishing event", {
 			eventId: domainEvent.id,
@@ -113,6 +122,10 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 
 		const deliveryResult = await this.deliverEvent(domainEvent, handlerKey);
 		if (deliveryResult.isOk()) {
+			const receiptWriteResult = await this.recordSuccessfulDelivery(domainEvent.id);
+			if (receiptWriteResult.isErr()) {
+				return Result.err(receiptWriteResult.error);
+			}
 			logger.info("EventBusDO: Event delivered", {
 				eventId: domainEvent.id,
 				eventType: domainEvent.type,
@@ -137,46 +150,38 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 	}
 
 	async retryDueEventsTick(_scheduledFor?: string): Promise<void> {
-		if (this.state.retrySweepScheduleId !== null || this.state.retrySweepDueAt !== null) {
+		try {
+			const now = new Date().toISOString();
+			const dueEvents = await this.db
+				.select()
+				.from(pendingEvents)
+				.where(lte(pendingEvents.nextRetryAt, now));
+			logger.info("EventBusDO: Processing pending events", { count: dueEvents.length, now });
+			for (const pending of dueEvents) {
+				await this.processPendingEvent(pending);
+			}
+		} finally {
 			this.setState({
 				...this.state,
 				retrySweepScheduleId: null,
 				retrySweepDueAt: null,
 			});
-		}
-
-		const now = new Date().toISOString();
-		const dueEvents = await this.db
-			.select()
-			.from(pendingEvents)
-			.where(lte(pendingEvents.nextRetryAt, now));
-
-		if (dueEvents.length === 0) {
 			await this.ensureRetrySweepSchedule();
-			return;
+			await this.ensureDlqPurgeSchedule();
 		}
-
-		logger.info("EventBusDO: Processing pending events", { count: dueEvents.length, now });
-
-		for (const pending of dueEvents) {
-			await this.processPendingEvent(pending);
-		}
-
-		await this.ensureRetrySweepSchedule();
-		await this.ensureDlqPurgeSchedule();
 	}
 
 	async purgeExpiredDlqTick(_scheduledFor?: string): Promise<void> {
-		if (this.state.dlqPurgeScheduleId !== null || this.state.dlqPurgeDueAt !== null) {
+		try {
+			await this.purgeExpiredDLQ();
+		} finally {
 			this.setState({
 				...this.state,
 				dlqPurgeScheduleId: null,
 				dlqPurgeDueAt: null,
 			});
+			await this.ensureDlqPurgeSchedule();
 		}
-
-		await this.purgeExpiredDLQ();
-		await this.ensureDlqPurgeSchedule();
 	}
 
 	private async processPendingEvent(pending: PendingEvent): Promise<void> {
@@ -220,7 +225,10 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 				eventType: event.type,
 				attempt: attemptNumber,
 			});
-			await this.db.delete(pendingEvents).where(eq(pendingEvents.id, pending.id));
+			const receiptResult = await this.recordSuccessfulDelivery(event.id);
+			if (receiptResult.isErr()) {
+				throw receiptResult.error;
+			}
 			return;
 		}
 
@@ -286,9 +294,10 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 					.where(eq(pendingEvents.id, event.id))
 					.limit(1);
 				if (existingPending) {
-					logger.info("EventBusDO: Event already pending, skipping duplicate retry queue", {
+					logger.info("EventBusDO: Event already pending, reconciling retry schedule", {
 						eventId: event.id,
 					});
+					await this.ensureRetrySweepSchedule();
 					return;
 				}
 
@@ -298,9 +307,10 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 					.where(eq(deadLetterQueue.id, event.id))
 					.limit(1);
 				if (existingDlq) {
-					logger.info("EventBusDO: Event already in DLQ, skipping duplicate retry queue", {
+					logger.info("EventBusDO: Event already in DLQ, reconciling purge schedule", {
 						eventId: event.id,
 					});
+					await this.ensureDlqPurgeSchedule();
 					return;
 				}
 
@@ -342,8 +352,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 
 		const earliestDueAt = earliest.nextRetryAt;
 		if (new Date(earliestDueAt).getTime() <= Date.now()) {
-			await this.clearRetrySweepSchedule();
-			await this.retryDueEventsTick(earliestDueAt);
+			await this.scheduleRetrySweepAt(earliestDueAt);
 			return;
 		}
 
@@ -372,8 +381,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 
 		const earliestExpiryAt = earliest.expiresAt;
 		if (new Date(earliestExpiryAt).getTime() <= Date.now()) {
-			await this.clearDlqPurgeSchedule();
-			await this.purgeExpiredDlqTick(earliestExpiryAt);
+			await this.scheduleDlqPurgeAt(earliestExpiryAt);
 			return;
 		}
 
@@ -390,9 +398,10 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 
 	private async scheduleRetrySweepAt(whenIso: string): Promise<void> {
 		await this.clearRetrySweepSchedule();
-		const schedule = await this.schedule(new Date(whenIso), "retryDueEventsTick", whenIso, {
+		const scheduleAt = new Date(Math.max(new Date(whenIso).getTime(), Date.now() + 100));
+		const schedule = await this.schedule(scheduleAt, "retryDueEventsTick", whenIso, {
 			idempotent: true,
-			retry: { maxAttempts: 1 },
+			retry: { maxAttempts: 5 },
 		});
 		this.setState({
 			...this.state,
@@ -403,9 +412,10 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 
 	private async scheduleDlqPurgeAt(whenIso: string): Promise<void> {
 		await this.clearDlqPurgeSchedule();
-		const schedule = await this.schedule(new Date(whenIso), "purgeExpiredDlqTick", whenIso, {
+		const scheduleAt = new Date(Math.max(new Date(whenIso).getTime(), Date.now() + 100));
+		const schedule = await this.schedule(scheduleAt, "purgeExpiredDlqTick", whenIso, {
 			idempotent: true,
-			retry: { maxAttempts: 1 },
+			retry: { maxAttempts: 5 },
 		});
 		this.setState({
 			...this.state,
@@ -440,6 +450,52 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 				dlqPurgeDueAt: null,
 			});
 		}
+	}
+
+	private async findDeliveryReceipt(eventId: string): Promise<Result<boolean, EventBusDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				const [receipt] = await this.db
+					.select({ id: deliveredEvents.id })
+					.from(deliveredEvents)
+					.where(eq(deliveredEvents.id, eventId))
+					.limit(1);
+				return receipt !== undefined;
+			},
+			catch: (cause) => new EventBusDbError({ operation: "findDeliveryReceipt", cause }),
+		});
+	}
+
+	private async recordSuccessfulDelivery(eventId: string): Promise<Result<void, EventBusDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				await this.db.transaction(async (tx) => {
+					await tx
+						.insert(deliveredEvents)
+						.values({ id: eventId, deliveredAt: new Date().toISOString() })
+						.onConflictDoNothing();
+					await tx.delete(pendingEvents).where(eq(pendingEvents.id, eventId));
+					await tx.delete(deadLetterQueue).where(eq(deadLetterQueue.id, eventId));
+				});
+				await this.ensureRetrySweepSchedule();
+				await this.ensureDlqPurgeSchedule();
+			},
+			catch: (cause) => new EventBusDbError({ operation: "recordSuccessfulDelivery", cause }),
+		});
+	}
+
+	private async reconcileTerminalEvent(eventId: string): Promise<Result<void, EventBusDbError>> {
+		return Result.tryPromise({
+			try: async () => {
+				await this.db.transaction(async (tx) => {
+					await tx.delete(pendingEvents).where(eq(pendingEvents.id, eventId));
+					await tx.delete(deadLetterQueue).where(eq(deadLetterQueue.id, eventId));
+				});
+				await this.ensureRetrySweepSchedule();
+				await this.ensureDlqPurgeSchedule();
+			},
+			catch: (cause) => new EventBusDbError({ operation: "reconcileTerminalEvent", cause }),
+		});
 	}
 
 	private async deliverEvent(
@@ -607,9 +663,21 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 	): Promise<
 		Result<ReplayResult, EventBusDbError | DLQItemNotFoundError | EventBusValidationError>
 	> {
-		const [item] = await this.db.select().from(deadLetterQueue).where(eq(deadLetterQueue.id, id));
-
-		if (!item) {
+		const lookupResult = await Result.tryPromise({
+			try: async () => {
+				const [item] = await this.db
+					.select()
+					.from(deadLetterQueue)
+					.where(eq(deadLetterQueue.id, id));
+				return item;
+			},
+			catch: (cause) => new EventBusDbError({ operation: "replayDLQLookup", cause }),
+		});
+		if (lookupResult.isErr()) {
+			return Result.err(lookupResult.error);
+		}
+		const item = lookupResult.value;
+		if (item === undefined) {
 			return Result.err(new DLQItemNotFoundError({ eventId: id }));
 		}
 
@@ -625,37 +693,27 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 		}
 
 		const event = parseResult.data;
-		const handlerKey = EVENT_ROUTES[event.type];
-
-		logger.info("EventBusDO: Replaying DLQ item", {
-			eventId: event.id,
-			eventType: event.type,
-			handler: handlerKey,
-		});
-
-		const deliveryResult = await this.deliverEvent(event, handlerKey);
+		const deliveryResult = await this.deliverEvent(event, EVENT_ROUTES[event.type]);
 		if (deliveryResult.isOk()) {
-			await this.db.delete(deadLetterQueue).where(eq(deadLetterQueue.id, id));
-			await this.ensureDlqPurgeSchedule();
-			logger.info("EventBusDO: DLQ replay succeeded", { eventId: event.id });
-			return Result.ok({ success: true, eventId: event.id });
+			const receiptResult = await this.recordSuccessfulDelivery(event.id);
+			return receiptResult.isErr()
+				? Result.err(receiptResult.error)
+				: Result.ok({ success: true, eventId: event.id });
 		}
 
-		const now = new Date().toISOString();
-		await this.db
-			.update(deadLetterQueue)
-			.set({
-				lastFailedAt: now,
-				error: deliveryResult.error.message,
-			})
-			.where(eq(deadLetterQueue.id, id));
-		await this.ensureDlqPurgeSchedule();
-
-		logger.warn("EventBusDO: DLQ replay failed", {
-			eventId: event.id,
-			error: deliveryResult.error.message,
+		const updateResult = await Result.tryPromise({
+			try: async () => {
+				await this.db
+					.update(deadLetterQueue)
+					.set({ lastFailedAt: new Date().toISOString(), error: deliveryResult.error.message })
+					.where(eq(deadLetterQueue.id, id));
+				await this.ensureDlqPurgeSchedule();
+			},
+			catch: (cause) => new EventBusDbError({ operation: "replayDLQFailureUpdate", cause }),
 		});
-
+		if (updateResult.isErr()) {
+			return Result.err(updateResult.error);
+		}
 		return Result.ok({
 			success: false,
 			eventId: event.id,
@@ -665,19 +723,22 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 
 	@rpc
 	async deleteDLQ(id: string): Promise<Result<void, EventBusDbError | DLQItemNotFoundError>> {
-		const [item] = await this.db.select().from(deadLetterQueue).where(eq(deadLetterQueue.id, id));
-
-		if (!item) {
-			return Result.err(new DLQItemNotFoundError({ eventId: id }));
-		}
-
 		return Result.tryPromise({
 			try: async () => {
+				const [item] = await this.db
+					.select({ id: deadLetterQueue.id })
+					.from(deadLetterQueue)
+					.where(eq(deadLetterQueue.id, id));
+				if (item === undefined) {
+					throw new DLQItemNotFoundError({ eventId: id });
+				}
 				await this.db.delete(deadLetterQueue).where(eq(deadLetterQueue.id, id));
 				await this.ensureDlqPurgeSchedule();
-				logger.info("EventBusDO: DLQ item deleted", { eventId: id });
 			},
-			catch: (cause) => new EventBusDbError({ operation: "deleteDLQ", cause }),
+			catch: (cause) =>
+				DLQItemNotFoundError.is(cause)
+					? cause
+					: new EventBusDbError({ operation: "deleteDLQ", cause }),
 		});
 	}
 

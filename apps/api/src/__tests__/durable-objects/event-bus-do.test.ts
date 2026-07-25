@@ -14,6 +14,7 @@ import * as eventBusSchema from "../../durable-objects/schemas/event-bus-do.sche
 import {
 	createSongRequestSuccessEvent,
 	deadLetterQueue,
+	deliveredEvents,
 	pendingEvents,
 } from "../../durable-objects/schemas/event-bus-do.schema";
 import {
@@ -98,6 +99,30 @@ describe("EventBusDO", () => {
 			if (pendingResult.status === "ok") {
 				expect(pendingResult.value.totalCount).toBe(0);
 			}
+		});
+
+		it("reconciles a pending copy and persists a delivery receipt after repeated publish succeeds", async () => {
+			const event = createTestEvent();
+			const result = await runInDurableObject(stub, async (instance: EventBusDO) => {
+				await seedPendingRow(instance, {
+					id: event.id,
+					event: JSON.stringify(event),
+					attempts: 0,
+					nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
+					createdAt: new Date().toISOString(),
+				});
+				const publishResult = await instance.publish(event);
+				const db = drizzle(instance.ctx.storage, { schema: eventBusSchema });
+				return {
+					publishResult,
+					pending: await db.select().from(pendingEvents),
+					receipts: await db.select().from(deliveredEvents),
+				};
+			});
+
+			expect(result.publishResult.status).toBe("ok");
+			expect(result.pending).toHaveLength(0);
+			expect(result.receipts).toContainEqual(expect.objectContaining({ id: event.id }));
 		});
 	});
 

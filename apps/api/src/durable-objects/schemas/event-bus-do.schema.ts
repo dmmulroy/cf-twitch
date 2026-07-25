@@ -98,11 +98,11 @@ export const RaffleRollEventSchema = BaseEventSchema.extend({
 	v: z.literal(1),
 	source: z.literal(EventSource.KeyboardRaffleSaga),
 	/** Twitch user ID */
-	userId: z.string(),
+	userId: z.string().min(1),
 	/** Twitch display name */
-	userDisplayName: z.string(),
+	userDisplayName: z.string().min(1),
 	/** Saga instance ID (redemption ID) */
-	sagaId: z.string(),
+	sagaId: z.string().min(1),
 	/** Roll value (1-10000) */
 	roll: z.number().int().min(1).max(10000),
 	/** Target winning number (1-10000) */
@@ -113,6 +113,23 @@ export const RaffleRollEventSchema = BaseEventSchema.extend({
 	isWinner: z.boolean(),
 	/** Whether this roll set a new closest non-winning record */
 	isNewRecord: z.boolean(),
+}).superRefine((event, context) => {
+	const derivedDistance = Math.abs(event.roll - event.winningNumber);
+	if (event.distance !== derivedDistance) {
+		context.addIssue({
+			code: "custom",
+			path: ["distance"],
+			message:
+				"Raffle Roll distance must equal the absolute difference between roll and winning number",
+		});
+	}
+	if (event.isWinner !== (derivedDistance === 0)) {
+		context.addIssue({
+			code: "custom",
+			path: ["isWinner"],
+			message: "Raffle Roll winner status must equal whether distance is zero",
+		});
+	}
 });
 
 export type RaffleRollEvent = z.infer<typeof RaffleRollEventSchema>;
@@ -242,6 +259,12 @@ export const deadLetterQueue = sqliteTable(
 
 export type DeadLetterEvent = typeof deadLetterQueue.$inferSelect;
 export type InsertDeadLetterEvent = typeof deadLetterQueue.$inferInsert;
+
+/** Durable EventBus delivery receipts suppress producer retries after successful delivery. */
+export const deliveredEvents = sqliteTable("delivered_events", {
+	id: text("id").primaryKey(),
+	deliveredAt: text("delivered_at").notNull(),
+});
 
 // =============================================================================
 // Factory Functions
