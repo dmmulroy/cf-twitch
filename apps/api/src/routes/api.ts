@@ -96,42 +96,6 @@ api.use("/debug/*", async (c, next) => {
 });
 
 /**
- * GET /api/now-playing
- * Returns the currently playing track with requester attribution
- */
-api.get("/now-playing", async (c) => {
-	const routeLogger = getRequestLogger(c).child({ route: "/api/now-playing", component: "route" });
-	routeLogger.info("Loading now playing", {
-		event: "api.now_playing.started",
-	});
-	const connection = await connectSongQueueForHttp("getCurrentlyPlaying");
-	if (connection.status === "error") {
-		routeLogger.error("Failed to connect to Song Queue for now playing", {
-			event: "api.now_playing.failed",
-			error_tag: connection.error._tag,
-		});
-		return c.json({ error: "Service temporarily unavailable" }, 503);
-	}
-	using songQueue = connection.value;
-	const result = await songQueue.getCurrentlyPlaying();
-
-	if (result.status === "error") {
-		routeLogger.error("Failed to get now playing", {
-			event: "api.now_playing.failed",
-			...result.error,
-		});
-		return c.json({ error: "Failed to fetch now playing" }, 500);
-	}
-
-	routeLogger.info("Loaded now playing", {
-		event: "api.now_playing.succeeded",
-		has_track: result.value.track !== null,
-		track_id: result.value.track?.id ?? undefined,
-	});
-	return c.json(result.value);
-});
-
-/**
  * GET /api/queue?limit=10
  * Returns upcoming tracks with requester attribution
  */

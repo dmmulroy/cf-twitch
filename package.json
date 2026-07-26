@@ -12,7 +12,8 @@
 		"lint:fix": "vp lint --fix .",
 		"fmt": "vp fmt .",
 		"fmt:check": "vp fmt --check .",
-		"check": "vp check && vp run --filter \"./apps/*\" typecheck"
+		"architecture": "vp run --filter \"./apps/*\" architecture",
+		"check": "vp check && vp run --filter \"./apps/*\" architecture && vp run --filter \"./apps/*\" typecheck"
 	},
 	"devDependencies": {
 		"@types/node": "^24.13.3",

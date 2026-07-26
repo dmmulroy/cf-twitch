@@ -8,6 +8,7 @@
 		"deploy": "wrangler deploy",
 		"test": "vp test run",
 		"test:watch": "vp test",
+		"architecture": "tsx tools/architecture/check-cloudflare-composition.ts",
 		"typecheck": "tsc --noEmit",
 		"build": "vp run typecheck",
 		"db:generate": "vp run db:generate:song-queue && vp run db:generate:stream-lifecycle && vp run db:generate:keyboard-raffle",

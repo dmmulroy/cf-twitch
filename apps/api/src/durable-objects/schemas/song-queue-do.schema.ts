@@ -1,4 +1,12 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+
+import { CurrentlyPlayingResultSchema, QueuedTrackSchema } from "../../domain/spotify-queue";
+
+import type { CurrentlyPlayingResult, QueuedTrack } from "../../domain/spotify-queue";
+
+export { CurrentlyPlayingResultSchema, QueuedTrackSchema };
+export type { CurrentlyPlayingResult, QueuedTrack };
+
 import { z } from "zod";
 
 /** Runtime parser for bounded Song Queue display metadata. */
@@ -178,43 +186,6 @@ export type RequestHistoryQuery = z.infer<typeof RequestHistoryQuerySchema>;
 
 /** Runtime parser for bounded Song Queue and statistics limits. */
 export const SongQueueLimitSchema = z.number().int().min(1).max(100);
-
-const TrackInfoSchema = z.object({
-	id: DomainIdSchema,
-	name: NonEmptyBoundedTextSchema,
-	artists: z.array(NonEmptyBoundedTextSchema).max(50),
-	album: NonEmptyBoundedTextSchema,
-	albumCoverUrl: z.url().max(2_048).nullable(),
-});
-
-/** Public Spotify Track representation preserving Viewer attribution or autoplay explicitly. */
-export const QueuedTrackSchema = z.discriminatedUnion("source", [
-	TrackInfoSchema.extend({
-		source: z.literal("user"),
-		eventId: DomainIdSchema,
-		requesterUserId: DomainIdSchema,
-		requesterDisplayName: NonEmptyBoundedTextSchema,
-		requestedAt: IsoInstantSchema,
-	}),
-	TrackInfoSchema.extend({
-		source: z.literal("autoplay"),
-		eventId: z.undefined().optional(),
-		requesterUserId: z.undefined().optional(),
-		requesterDisplayName: z.undefined().optional(),
-		requestedAt: z.undefined().optional(),
-	}),
-]);
-
-/** Public Spotify Track occurrence with explicit source attribution. */
-export type QueuedTrack = z.infer<typeof QueuedTrackSchema>;
-
-/** Parsed Now Playing response contract. */
-export const CurrentlyPlayingResultSchema = z.object({
-	track: QueuedTrackSchema.nullable(),
-	position: z.literal(0),
-});
-/** Parsed Now Playing response contract. */
-export type CurrentlyPlayingResult = z.infer<typeof CurrentlyPlayingResultSchema>;
 
 /** Parsed Spotify Queue response contract. */
 export const QueueResultSchema = z.object({
