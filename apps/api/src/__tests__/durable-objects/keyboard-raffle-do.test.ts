@@ -4,10 +4,12 @@
  * Tests public raffle behavior through the Agent interface.
  */
 
+import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { getStub } from "../../lib/durable-objects";
+import { initializeDurableObjectAgentStub } from "../../adapters/cloudflare/durable-object-agent-stub";
 
+import type { KeyboardRaffleDO } from "../../durable-objects/keyboard-raffle-do";
 import type { RecordRaffleRollInput } from "../../durable-objects/schemas/keyboard-raffle-do.schema";
 
 type TestRollOverrides = Partial<RecordRaffleRollInput> & { readonly distance?: number };
@@ -28,14 +30,15 @@ function createTestRoll(overrides: TestRollOverrides = {}): RecordRaffleRollInpu
 }
 
 describe("KeyboardRaffleDO", () => {
-	type KeyboardRaffleStub = ReturnType<typeof getStub<"KEYBOARD_RAFFLE_DO">>;
-
-	let stub: KeyboardRaffleStub;
+	let stub: DurableObjectStub<KeyboardRaffleDO>;
 	let raffleName: string;
 
 	beforeEach(async () => {
 		raffleName = `keyboard-raffle-${crypto.randomUUID()}`;
-		stub = getStub("KEYBOARD_RAFFLE_DO", raffleName);
+		stub = await initializeDurableObjectAgentStub(
+			env.KEYBOARD_RAFFLE_DO.getByName(raffleName),
+			raffleName,
+		);
 		await stub.getClosestRecord();
 	});
 

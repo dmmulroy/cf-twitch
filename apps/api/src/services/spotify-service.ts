@@ -8,9 +8,8 @@
 import { Result } from "better-result";
 import { z } from "zod";
 
-import { getStub } from "../lib/durable-objects";
+import { ProviderAccessTokenError } from "../capabilities/provider-access-tokens";
 import {
-	DurableObjectError,
 	SpotifyNetworkError,
 	SpotifyNoActiveDeviceError,
 	SpotifyParseError,
@@ -19,18 +18,13 @@ import {
 	SpotifyTrackNotFoundError,
 	SpotifyUnauthorizedError,
 	type SpotifyApiError,
-	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { RedactedValue } from "../lib/redacted";
 
-import type { Env } from "../index";
+import type { SpotifyAccessTokens } from "../capabilities/provider-access-tokens";
+import type { SpotifyProviderConfiguration } from "../configuration/worker-configuration";
 import type { SpotifyTrackId, SpotifyTrackUri } from "../lib/spotify-track-id";
-
-const SpotifyServiceConfigSchema = z.object({
-	SPOTIFY_CLIENT_ID: z.string().trim().min(1),
-	SPOTIFY_CLIENT_SECRET: z.string().min(1),
-});
 
 // Zod schema for Spotify OAuth token response
 const SpotifyTokenResponseSchema = z.object({
@@ -136,8 +130,8 @@ export interface TrackInfo {
 	albumCoverUrl: string | null;
 }
 
-/** Errors that can occur during Spotify operations */
-export type SpotifyError = SpotifyApiError | TokenError;
+/** Errors that can occur during Spotify provider operations. */
+export type SpotifyError = SpotifyApiError | ProviderAccessTokenError;
 
 /**
  * SpotifyService - Spotify API operations
@@ -145,16 +139,15 @@ export type SpotifyError = SpotifyApiError | TokenError;
 export class SpotifyService {
 	private readonly spotifyClientId: string;
 	private readonly spotifyClientSecret: RedactedValue<string>;
+	private readonly accessTokens: SpotifyAccessTokens;
 
-	constructor(env: Pick<Env, "SPOTIFY_CLIENT_ID" | "SPOTIFY_CLIENT_SECRET">) {
-		const parsedConfig = SpotifyServiceConfigSchema.safeParse(env);
-		if (!parsedConfig.success) {
-			throw new Error("Spotify provider configuration is invalid");
-		}
-		this.spotifyClientId = parsedConfig.data.SPOTIFY_CLIENT_ID;
-		this.spotifyClientSecret = RedactedValue.fromSensitiveValue(
-			parsedConfig.data.SPOTIFY_CLIENT_SECRET,
-		);
+	constructor(dependencies: {
+		readonly configuration: SpotifyProviderConfiguration;
+		readonly accessTokens: SpotifyAccessTokens;
+	}) {
+		this.spotifyClientId = dependencies.configuration.clientId;
+		this.spotifyClientSecret = dependencies.configuration.clientSecret;
+		this.accessTokens = dependencies.accessTokens;
 	}
 
 	/**
@@ -249,13 +242,12 @@ export class SpotifyService {
 	): Promise<
 		Result<
 			TrackInfo,
-			| DurableObjectError
+			| ProviderAccessTokenError
 			| SpotifyTrackNotFoundError
 			| SpotifyRateLimitError
 			| SpotifyUnauthorizedError
 			| SpotifyNetworkError
 			| SpotifyParseError
-			| TokenError
 		>
 	> {
 		const tokenResult = await this.getToken();
@@ -374,12 +366,11 @@ export class SpotifyService {
 	): Promise<
 		Result<
 			void,
-			| DurableObjectError
+			| ProviderAccessTokenError
 			| SpotifyNoActiveDeviceError
 			| SpotifyRateLimitError
 			| SpotifyUnauthorizedError
 			| SpotifyNetworkError
-			| TokenError
 		>
 	> {
 		const tokenResult = await this.getToken();
@@ -447,11 +438,7 @@ export class SpotifyService {
 	async getCurrentlyPlaying(): Promise<
 		Result<
 			TrackInfo | null,
-			| DurableObjectError
-			| SpotifyUnauthorizedError
-			| SpotifyNetworkError
-			| SpotifyParseError
-			| TokenError
+			ProviderAccessTokenError | SpotifyUnauthorizedError | SpotifyNetworkError | SpotifyParseError
 		>
 	> {
 		const tokenResult = await this.getToken();
@@ -549,12 +536,11 @@ export class SpotifyService {
 	async getQueue(): Promise<
 		Result<
 			SpotifyQueue,
-			| DurableObjectError
+			| ProviderAccessTokenError
 			| SpotifyNoActiveDeviceError
 			| SpotifyUnauthorizedError
 			| SpotifyNetworkError
 			| SpotifyParseError
-			| TokenError
 		>
 	> {
 		const tokenResult = await this.getToken();
@@ -633,11 +619,10 @@ export class SpotifyService {
 	async skipTrack(): Promise<
 		Result<
 			void,
-			| DurableObjectError
+			| ProviderAccessTokenError
 			| SpotifyNoActiveDeviceError
 			| SpotifyUnauthorizedError
 			| SpotifyNetworkError
-			| TokenError
 		>
 	> {
 		const tokenResult = await this.getToken();
@@ -698,11 +683,7 @@ export class SpotifyService {
 	async getActiveDevice(): Promise<
 		Result<
 			SpotifyDevice | null,
-			| DurableObjectError
-			| SpotifyUnauthorizedError
-			| SpotifyNetworkError
-			| SpotifyParseError
-			| TokenError
+			ProviderAccessTokenError | SpotifyUnauthorizedError | SpotifyNetworkError | SpotifyParseError
 		>
 	> {
 		return Result.gen(async function* (this: SpotifyService) {
@@ -819,10 +800,7 @@ export class SpotifyService {
 	async getConnectState(
 		deviceId: string,
 	): Promise<
-		Result<
-			ConnectStatePlayer,
-			DurableObjectError | SpotifyNetworkError | SpotifyParseError | TokenError
-		>
+		Result<ConnectStatePlayer, ProviderAccessTokenError | SpotifyNetworkError | SpotifyParseError>
 	> {
 		return Result.gen(async function* (this: SpotifyService) {
 			const token = yield* Result.await(this.getToken());
@@ -889,12 +867,11 @@ export class SpotifyService {
 	): Promise<
 		Result<
 			boolean,
-			| DurableObjectError
+			| ProviderAccessTokenError
 			| SpotifyNoActiveDeviceError
 			| SpotifyNetworkError
 			| SpotifyParseError
 			| SpotifyUnauthorizedError
-			| TokenError
 		>
 	> {
 		logger.info("Attempting to remove track from queue via internal API", { trackUri });
@@ -1001,8 +978,10 @@ export class SpotifyService {
 	 * Get valid token from SpotifyTokenDO
 	 * Type-safe: DurableObjectStub<SpotifyTokenDO> exposes RPC methods directly
 	 */
-	private async getToken(): Promise<Result<string, TokenError | DurableObjectError>> {
-		const stub = getStub("SPOTIFY_TOKEN_DO");
-		return stub.getValidToken();
+	private async getToken(): Promise<Result<string, ProviderAccessTokenError>> {
+		const token = await this.accessTokens.getValidAccessToken();
+		return token.status === "ok"
+			? Result.ok(token.value.unsafeUnwrapForFinalIo())
+			: Result.err(token.error);
 	}
 }

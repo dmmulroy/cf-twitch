@@ -1,4 +1,4 @@
-import { EventType, type Event } from "../schemas/event-bus-do.schema";
+import { EventType, type Event } from "../../domain/domain-event";
 
 export type TriggerEvent =
 	| "song_request"

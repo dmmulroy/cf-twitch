@@ -1,0 +1,388 @@
+/**
+ * EventSub Setup Routes
+ *
+ * Routes for setting up and managing Twitch EventSub subscriptions.
+ * These are typically called once during initial setup or when adding new subscriptions.
+ */
+
+import { Hono } from "hono";
+
+import { constantTimeEquals } from "../../lib/crypto";
+import { type AppRouteEnv, getRequestLogger } from "../../lib/request-context";
+
+import type { RedactedValue } from "../../lib/redacted";
+import type {
+	EventSubSubscription,
+	EventSubSubscriptionType,
+	TwitchService,
+} from "../../services/twitch-service";
+
+/** Exact dependencies required by EventSub management routes. */
+export type EventSubRouteDependencies = Readonly<{
+	administratorSecret: RedactedValue<string>;
+	broadcasterId: string;
+	eventSubSecret: RedactedValue<string>;
+	eventSubAdministration: Pick<
+		TwitchService,
+		"listEventSubSubscriptions" | "createEventSubSubscription" | "deleteEventSubSubscription"
+	>;
+}>;
+
+/** Creates authenticated Twitch EventSub management routes. */
+export function createEventSubRoutes(
+	dependencies: EventSubRouteDependencies,
+): Hono<AppRouteEnv<object>> {
+	const eventsub = new Hono<AppRouteEnv<object>>();
+
+	eventsub.use("*", async (c, next) => {
+		const adminSecret = dependencies.administratorSecret.unsafeUnwrapForFinalIo();
+		if (!adminSecret) return c.json({ error: "EventSub management is not configured" }, 503);
+
+		const authorization = c.req.header("Authorization");
+		if (authorization === undefined) return c.json({ error: "Missing Authorization header" }, 401);
+
+		const [scheme, token, extra] = authorization.split(" ");
+		if (scheme !== "Bearer" || token === undefined || token.length === 0 || extra !== undefined) {
+			return c.json({ error: "Invalid Authorization header format" }, 401);
+		}
+		if (!constantTimeEquals(token, adminSecret)) return c.json({ error: "Invalid token" }, 403);
+
+		await next();
+	});
+
+	interface SubscriptionConfig {
+		type: EventSubSubscriptionType;
+		version: string;
+		condition: Record<string, string>;
+	}
+
+	function hasMatchingSubscription(
+		existing: EventSubSubscription[],
+		config: SubscriptionConfig,
+		callbackUrl: string,
+	): boolean {
+		return existing.some((sub) => {
+			if (sub.type !== config.type) return false;
+			if (sub.version !== config.version) return false;
+			if (sub.status !== "enabled" && sub.status !== "webhook_callback_verification_pending")
+				return false;
+			if (sub.transport.callback !== callbackUrl) return false;
+
+			return Object.entries(config.condition).every(([key, value]) => sub.condition[key] === value);
+		});
+	}
+
+	/**
+	 * POST /eventsub/setup
+	 *
+	 * Creates all required EventSub subscriptions for the application.
+	 * This should be called once during initial setup.
+	 *
+	 * Required subscriptions:
+	 * - stream.online
+	 * - stream.offline
+	 * - channel.channel_points_custom_reward_redemption.add
+	 * - channel.chat.message
+	 */
+	eventsub.post("/setup", async (c) => {
+		const routeLogger = getRequestLogger(c).child({ route: "/eventsub/setup", component: "route" });
+		const twitchService = dependencies.eventSubAdministration;
+		const twitchBroadcasterId = dependencies.broadcasterId;
+
+		const url = new URL(c.req.url);
+		const callbackUrl = `${url.protocol}//${url.host}/webhooks/twitch`;
+
+		routeLogger.info("Setting up EventSub subscriptions", {
+			event: "eventsub.setup.started",
+			callback_url: callbackUrl,
+			broadcaster_id: twitchBroadcasterId,
+		});
+
+		// Define all required subscriptions
+		const subscriptions: SubscriptionConfig[] = [
+			{
+				type: "stream.online",
+				version: "1",
+				condition: {
+					broadcaster_user_id: twitchBroadcasterId,
+				},
+			},
+			{
+				type: "stream.offline",
+				version: "1",
+				condition: {
+					broadcaster_user_id: twitchBroadcasterId,
+				},
+			},
+			{
+				type: "channel.channel_points_custom_reward_redemption.add",
+				version: "1",
+				condition: {
+					broadcaster_user_id: twitchBroadcasterId,
+				},
+			},
+			{
+				type: "channel.chat.message",
+				version: "1",
+				condition: {
+					broadcaster_user_id: twitchBroadcasterId,
+					user_id: twitchBroadcasterId, // Bot user ID (using broadcaster for now)
+				},
+			},
+			{
+				type: "channel.raid",
+				version: "1",
+				condition: {
+					to_broadcaster_user_id: twitchBroadcasterId,
+				},
+			},
+		];
+
+		const existingResult = await twitchService.listEventSubSubscriptions();
+		if (existingResult.status === "error") {
+			routeLogger.error("Failed to list existing EventSub subscriptions", {
+				event: "eventsub.setup.list_existing_failed",
+				...existingResult.error,
+			});
+			return c.json(
+				{
+					success: false,
+					message: existingResult.error.message,
+					code: existingResult.error._tag,
+				},
+				500,
+			);
+		}
+
+		const results = [];
+		const skipped = [];
+		const errors = [];
+
+		// Create each subscription
+		for (const config of subscriptions) {
+			if (hasMatchingSubscription(existingResult.value, config, callbackUrl)) {
+				skipped.push(config);
+				routeLogger.info("Skipping existing EventSub subscription", {
+					event: "eventsub.subscription.create.skipped_existing",
+					subscription_type: config.type,
+					version: config.version,
+					callback_url: callbackUrl,
+				});
+				continue;
+			}
+
+			routeLogger.info("Creating EventSub subscription", {
+				event: "eventsub.subscription.create.started",
+				subscription_type: config.type,
+				version: config.version,
+				callback_url: callbackUrl,
+			});
+			const result = await twitchService.createEventSubSubscription(
+				config.type,
+				config.version,
+				config.condition,
+				callbackUrl,
+				dependencies.eventSubSecret,
+			);
+
+			if (result.status === "ok") {
+				results.push(result.value);
+				routeLogger.info("Created EventSub subscription", {
+					event: "eventsub.subscription.create.succeeded",
+					subscription_type: config.type,
+					version: config.version,
+					subscription_id: result.value.id,
+					status: result.value.status,
+				});
+			} else {
+				errors.push({
+					type: config.type,
+					error: result.error.message,
+					code: result.error._tag,
+				});
+				routeLogger.error("Failed to create EventSub subscription", {
+					event: "eventsub.subscription.create.failed",
+					subscription_type: config.type,
+					version: config.version,
+					...result.error,
+				});
+			}
+		}
+
+		routeLogger.info("EventSub setup completed", {
+			event: "eventsub.setup.completed",
+			callback_url: callbackUrl,
+			subscription_count: subscriptions.length,
+			created_count: results.length,
+			skipped_count: skipped.length,
+			failed_count: errors.length,
+		});
+
+		if (errors.length > 0) {
+			return c.json(
+				{
+					success: false,
+					message: "Some subscriptions failed to create",
+					created: results,
+					skipped,
+					errors,
+				},
+				500,
+			);
+		}
+
+		return c.json({
+			success: true,
+			message: "All EventSub subscriptions are configured",
+			subscriptions: results,
+			skipped,
+		});
+	});
+
+	/**
+	 * GET /eventsub/list
+	 *
+	 * Lists all current EventSub subscriptions
+	 */
+	eventsub.get("/list", async (c) => {
+		const routeLogger = getRequestLogger(c).child({ route: "/eventsub/list", component: "route" });
+		const twitchService = dependencies.eventSubAdministration;
+		routeLogger.info("Listing EventSub subscriptions", {
+			event: "eventsub.list.started",
+		});
+
+		const result = await twitchService.listEventSubSubscriptions();
+
+		if (result.status === "error") {
+			routeLogger.error("Failed to list EventSub subscriptions", {
+				event: "eventsub.list.failed",
+				...result.error,
+			});
+			return c.json(
+				{
+					error: result.error.message,
+					code: result.error._tag,
+				},
+				500,
+			);
+		}
+
+		routeLogger.info("Listed EventSub subscriptions", {
+			event: "eventsub.list.succeeded",
+			count: result.value.length,
+		});
+		return c.json({
+			subscriptions: result.value,
+			total: result.value.length,
+		});
+	});
+
+	/**
+	 * DELETE /eventsub/:id
+	 *
+	 * Deletes a specific EventSub subscription
+	 */
+	eventsub.delete("/:id", async (c) => {
+		const routeLogger = getRequestLogger(c).child({ route: "/eventsub/:id", component: "route" });
+		const twitchService = dependencies.eventSubAdministration;
+		const subscriptionId = c.req.param("id");
+		routeLogger.info("Deleting EventSub subscription", {
+			event: "eventsub.delete.started",
+			subscription_id: subscriptionId,
+		});
+
+		const result = await twitchService.deleteEventSubSubscription(subscriptionId);
+
+		if (result.status === "error") {
+			routeLogger.error("Failed to delete EventSub subscription", {
+				event: "eventsub.delete.failed",
+				subscription_id: subscriptionId,
+				...result.error,
+			});
+			return c.json(
+				{
+					success: false,
+					message: result.error.message,
+					code: result.error._tag,
+				},
+				500,
+			);
+		}
+
+		routeLogger.info("Deleted EventSub subscription", {
+			event: "eventsub.delete.succeeded",
+			subscription_id: subscriptionId,
+		});
+		return c.json({
+			success: true,
+			message: "Subscription deleted successfully",
+		});
+	});
+
+	/**
+	 * POST /eventsub/cleanup
+	 *
+	 * Deletes all existing EventSub subscriptions
+	 * Useful for testing or resetting subscriptions
+	 */
+	eventsub.post("/cleanup", async (c) => {
+		const routeLogger = getRequestLogger(c).child({
+			route: "/eventsub/cleanup",
+			component: "route",
+		});
+		const twitchService = dependencies.eventSubAdministration;
+		routeLogger.info("Cleaning up EventSub subscriptions", {
+			event: "eventsub.cleanup.started",
+		});
+
+		const listResult = await twitchService.listEventSubSubscriptions();
+
+		if (listResult.status === "error") {
+			routeLogger.error("Failed to list EventSub subscriptions for cleanup", {
+				event: "eventsub.cleanup.list_failed",
+				...listResult.error,
+			});
+			return c.json(
+				{
+					error: listResult.error.message,
+					code: listResult.error._tag,
+				},
+				500,
+			);
+		}
+
+		const subscriptions = listResult.value;
+		const results = {
+			deleted: 0,
+			failed: 0,
+		};
+
+		for (const sub of subscriptions) {
+			const result = await twitchService.deleteEventSubSubscription(sub.id);
+			if (result.status === "ok") {
+				results.deleted++;
+			} else {
+				results.failed++;
+				routeLogger.error("Failed to delete subscription during cleanup", {
+					event: "eventsub.cleanup.subscription_delete_failed",
+					subscription_id: sub.id,
+					subscription_type: sub.type,
+					...result.error,
+				});
+			}
+		}
+
+		routeLogger.info("EventSub cleanup completed", {
+			event: "eventsub.cleanup.completed",
+			deleted_count: results.deleted,
+			failed_count: results.failed,
+		});
+		return c.json({
+			success: results.failed === 0,
+			message: `Deleted ${results.deleted} subscriptions, ${results.failed} failed`,
+			...results,
+		});
+	});
+
+	return eventsub;
+}

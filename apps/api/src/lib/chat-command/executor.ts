@@ -6,7 +6,7 @@ import { ChatCommandRenderError, type ChatCommandError } from "./errors";
 import { applyOutputTemplate, renderStoredValueTemplate } from "./render";
 import { chatTextResponse } from "./types";
 
-import type { Command } from "../../durable-objects/commands-do";
+import type { ChatCommandDefinition as Command } from "../../domain/chat-command-definition";
 import type { Clock } from "../clock";
 import type { Logger } from "../logging";
 import type {

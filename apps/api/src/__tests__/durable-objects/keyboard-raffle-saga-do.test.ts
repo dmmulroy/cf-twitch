@@ -10,13 +10,13 @@ import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { describe, expect, it } from "vite-plus/test";
 
+import { initializeDurableObjectAgentStub } from "../../adapters/cloudflare/durable-object-agent-stub";
 import { EventBusDO } from "../../durable-objects/event-bus-do";
 import { KeyboardRaffleDO } from "../../durable-objects/keyboard-raffle-do";
 import { KeyboardRaffleSagaDO } from "../../durable-objects/keyboard-raffle-saga-do";
 import * as raffleSchema from "../../durable-objects/schemas/keyboard-raffle-do.schema";
 import * as sagaSchema from "../../durable-objects/schemas/saga.schema";
 import { TwitchTokenDO } from "../../durable-objects/twitch-token-do";
-import { getStub } from "../../lib/durable-objects";
 import {
 	VALID_TOKEN_RESPONSE as VALID_TWITCH_TOKEN_RESPONSE,
 	mockTwitchChatMessage,
@@ -119,7 +119,10 @@ async function cancelKeyboardRaffleSagaSchedules(
 describe("KeyboardRaffleSagaDO", () => {
 	it("rejects invalid parameters before persistence or raffle effects", async () => {
 		const stub = await createKeyboardRaffleSagaStub(`keyboard-raffle-saga-${crypto.randomUUID()}`);
-		const raffle = getStub("KEYBOARD_RAFFLE_DO");
+		const raffle = await initializeDurableObjectAgentStub(
+			env.KEYBOARD_RAFFLE_DO.getByName("keyboard-raffle"),
+			"keyboard-raffle",
+		);
 		const userId = `invalid-${crypto.randomUUID()}`;
 
 		const result = await stub.start({

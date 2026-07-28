@@ -1,10 +1,12 @@
 import { Result } from "better-result";
 
-import { getStub } from "../../durable-objects";
-import { getSongQueue } from "../../song-queue-client";
+import { RaffleViewerNotFoundError } from "../../../capabilities/raffle-statistics";
 import { ChatCommandExecutionError } from "../errors";
 import { chatTextResponse } from "../types";
 
+import type { AchievementReader } from "../../../capabilities/http-state-readers";
+import type { RaffleStatistics } from "../../../capabilities/raffle-statistics";
+import type { SongRequestStatistics } from "../../../capabilities/song-queue";
 import type { ComputedCommandContext, ComputedCommandHandler } from "../types";
 
 function formatRaffleStats(entry: {
@@ -27,6 +29,12 @@ function formatRaffleStats(entry: {
  * Computed chat command handler for combined viewer stats.
  */
 export class StatsCommandHandler implements ComputedCommandHandler {
+	constructor(
+		private readonly achievements: AchievementReader,
+		private readonly songRequests: SongRequestStatistics,
+		private readonly raffles: RaffleStatistics,
+	) {}
+
 	/**
 	 * Aggregate song request, achievement, and raffle stats for a viewer or target user.
 	 *
@@ -36,10 +44,9 @@ export class StatsCommandHandler implements ComputedCommandHandler {
 	async handle(context: ComputedCommandContext) {
 		const isSelf = context.arg === null;
 		const targetUser = context.arg ?? context.viewer.displayName;
-		const achievementsStub = getStub("ACHIEVEMENTS_DO");
 		const [unlockedResult, definitionsResult] = await Promise.all([
-			achievementsStub.getUnlockedAchievements(targetUser),
-			achievementsStub.getDefinitions(),
+			this.achievements.getViewerUnlockedAchievements(targetUser),
+			this.achievements.getDefinitions(),
 		]);
 
 		let achievementStats = "?/?";
@@ -51,27 +58,13 @@ export class StatsCommandHandler implements ComputedCommandHandler {
 			achievementStats = `${unlockedCount}/${totalAchievementCount}`;
 		}
 
-		const raffleStub = getStub("KEYBOARD_RAFFLE_DO");
-		let songQueue: Awaited<ReturnType<typeof getSongQueue>>;
-		try {
-			songQueue = await getSongQueue();
-		} catch (cause) {
-			return Result.err(
-				new ChatCommandExecutionError({
-					commandName: "stats",
-					cause,
-					message: "Viewer stats unavailable: Song Queue connection failed",
-				}),
-			);
-		}
-		using disposableSongQueue = songQueue;
 		const [songResult, raffleResult] = await Promise.all([
 			isSelf
-				? disposableSongQueue.getUserRequestCount(context.viewer.userId)
-				: disposableSongQueue.getUserRequestCountByDisplayName(targetUser),
+				? this.songRequests.getViewerRequestCount(context.viewer.userId)
+				: this.songRequests.getViewerRequestCountByDisplayName(targetUser),
 			isSelf
-				? raffleStub.getUserStats(context.viewer.userId)
-				: raffleStub.getUserStatsByDisplayName(targetUser),
+				? this.raffles.getViewerStats(context.viewer.userId)
+				: this.raffles.getViewerStatsByDisplayName(targetUser),
 		]);
 
 		if (songResult.status === "error") {
@@ -83,7 +76,7 @@ export class StatsCommandHandler implements ComputedCommandHandler {
 				}),
 			);
 		}
-		if (raffleResult.status === "error" && raffleResult.error._tag !== "UserStatsNotFoundError") {
+		if (raffleResult.status === "error" && !RaffleViewerNotFoundError.is(raffleResult.error)) {
 			return Result.err(
 				new ChatCommandExecutionError({
 					commandName: "stats",
@@ -102,7 +95,7 @@ export class StatsCommandHandler implements ComputedCommandHandler {
 			unlockedCount === 0 &&
 			totalAchievementCount !== null &&
 			raffleResult.status === "error" &&
-			raffleResult.error._tag === "UserStatsNotFoundError";
+			RaffleViewerNotFoundError.is(raffleResult.error);
 
 		if (noStatsForTargetUser) {
 			return Result.ok(

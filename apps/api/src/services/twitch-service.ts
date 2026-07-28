@@ -8,7 +8,7 @@
 import { Result } from "better-result";
 import { z } from "zod";
 
-import { getStub } from "../lib/durable-objects";
+import { ProviderAccessTokenError } from "../capabilities/provider-access-tokens";
 import {
 	TwitchChatDroppedError,
 	TwitchChatSendError,
@@ -23,12 +23,12 @@ import {
 	TwitchTokenExchangeError,
 	TwitchUnauthorizedError,
 	type TwitchApiError,
-	type TokenError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { RedactedValue } from "../lib/redacted";
 
-import type { Env } from "../index";
+import type { TwitchAccessTokens } from "../capabilities/provider-access-tokens";
+import type { TwitchProviderConfiguration } from "../configuration/worker-configuration";
 
 const DEFAULT_TWITCH_RETRY_AFTER_MS = 1_000;
 const MAXIMUM_TWITCH_RETRY_AFTER_MS = 15 * 60 * 1_000;
@@ -47,12 +47,6 @@ function isRetryableTwitchTechnicalError(error: unknown): boolean {
 		.safeParse(error);
 	return parsed.success && (parsed.data.status === 0 || parsed.data.status >= 500);
 }
-
-const TwitchServiceConfigSchema = z.object({
-	TWITCH_CLIENT_ID: z.string().trim().min(1),
-	TWITCH_CLIENT_SECRET: z.string().min(1),
-	TWITCH_BROADCASTER_ID: z.string().trim().min(1),
-});
 
 // Zod schema for Twitch OAuth token response
 const NonEmptyProviderStringSchema = z.string().trim().min(1);
@@ -191,30 +185,26 @@ export interface EventSubSubscription {
 	};
 }
 
-/** Errors that can occur during Twitch operations */
-export type TwitchError = TwitchApiError | TokenError;
+/** Errors that can occur during Twitch provider operations. */
+export type TwitchError = TwitchApiError | ProviderAccessTokenError;
 
 /**
  * TwitchService - Twitch API operations
  */
 export class TwitchService {
-	private readonly env: Pick<Env, "TWITCH_CLIENT_ID" | "TWITCH_BROADCASTER_ID">;
+	private readonly clientId: string;
+	private readonly broadcasterId: string;
 	private readonly twitchClientSecret: RedactedValue<string>;
+	private readonly accessTokens: TwitchAccessTokens;
 
-	constructor(
-		env: Pick<Env, "TWITCH_CLIENT_ID" | "TWITCH_CLIENT_SECRET" | "TWITCH_BROADCASTER_ID">,
-	) {
-		const parsedConfig = TwitchServiceConfigSchema.safeParse(env);
-		if (!parsedConfig.success) {
-			throw new Error("Twitch provider configuration is invalid");
-		}
-		this.env = {
-			TWITCH_CLIENT_ID: parsedConfig.data.TWITCH_CLIENT_ID,
-			TWITCH_BROADCASTER_ID: parsedConfig.data.TWITCH_BROADCASTER_ID,
-		};
-		this.twitchClientSecret = RedactedValue.fromSensitiveValue(
-			parsedConfig.data.TWITCH_CLIENT_SECRET,
-		);
+	constructor(dependencies: {
+		readonly configuration: TwitchProviderConfiguration;
+		readonly accessTokens: TwitchAccessTokens;
+	}) {
+		this.clientId = dependencies.configuration.clientId;
+		this.broadcasterId = dependencies.configuration.broadcaster.id;
+		this.twitchClientSecret = dependencies.configuration.clientSecret;
+		this.accessTokens = dependencies.accessTokens;
 	}
 
 	/**
@@ -237,7 +227,7 @@ export class TwitchService {
 						"Content-Type": "application/x-www-form-urlencoded",
 					},
 					body: new URLSearchParams({
-						client_id: this.env.TWITCH_CLIENT_ID,
+						client_id: this.clientId,
 						client_secret: this.twitchClientSecret.unsafeUnwrapForFinalIo(),
 						grant_type: "authorization_code",
 						code: code.unsafeUnwrapForFinalIo(),
@@ -325,7 +315,7 @@ export class TwitchService {
 			try: () =>
 				fetch(`https://api.twitch.tv/helix/streams?user_login=${userLogin}`, {
 					headers: {
-						"Client-ID": this.env.TWITCH_CLIENT_ID,
+						"Client-ID": this.clientId,
 						Authorization: `Bearer ${accessToken}`,
 					},
 				}),
@@ -438,7 +428,7 @@ export class TwitchService {
 				fetch("https://api.twitch.tv/helix/eventsub/subscriptions", {
 					method: "POST",
 					headers: {
-						"Client-ID": this.env.TWITCH_CLIENT_ID,
+						"Client-ID": this.clientId,
 						Authorization: `Bearer ${accessToken}`,
 						"Content-Type": "application/json",
 					},
@@ -557,7 +547,7 @@ export class TwitchService {
 				try: () =>
 					fetch(url, {
 						headers: {
-							"Client-ID": this.env.TWITCH_CLIENT_ID,
+							"Client-ID": this.clientId,
 							Authorization: `Bearer ${accessToken}`,
 						},
 					}),
@@ -640,7 +630,7 @@ export class TwitchService {
 				fetch(url, {
 					method: "DELETE",
 					headers: {
-						"Client-ID": this.env.TWITCH_CLIENT_ID,
+						"Client-ID": this.clientId,
 						Authorization: `Bearer ${accessToken}`,
 					},
 				}),
@@ -704,8 +694,8 @@ export class TwitchService {
 							"Content-Type": "application/json",
 						}),
 						body: JSON.stringify({
-							broadcaster_id: this.env.TWITCH_BROADCASTER_ID,
-							sender_id: this.env.TWITCH_BROADCASTER_ID,
+							broadcaster_id: this.broadcasterId,
+							sender_id: this.broadcasterId,
 							message: parsedMessage.data,
 						}),
 					});
@@ -798,9 +788,9 @@ export class TwitchService {
 			{
 				try: async () => {
 					const url = new URL("https://api.twitch.tv/helix/chat/shoutouts");
-					url.searchParams.set("from_broadcaster_id", this.env.TWITCH_BROADCASTER_ID);
+					url.searchParams.set("from_broadcaster_id", this.broadcasterId);
 					url.searchParams.set("to_broadcaster_id", toBroadcasterId);
-					url.searchParams.set("moderator_id", this.env.TWITCH_BROADCASTER_ID);
+					url.searchParams.set("moderator_id", this.broadcasterId);
 
 					const response = await fetch(url, {
 						method: "POST",
@@ -872,7 +862,7 @@ export class TwitchService {
 			{
 				try: async () => {
 					const response = await fetch(
-						`https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions?broadcaster_id=${this.env.TWITCH_BROADCASTER_ID}&reward_id=${rewardId}&id=${redemptionId}`,
+						`https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions?broadcaster_id=${this.broadcasterId}&reward_id=${rewardId}&id=${redemptionId}`,
 						{
 							method: "PATCH",
 							signal: options.signal,
@@ -957,7 +947,7 @@ export class TwitchService {
 	 */
 	private userTokenHeaders(accessToken: string, headers?: HeadersInit): Headers {
 		const result = new Headers(headers);
-		result.set("Client-ID", this.env.TWITCH_CLIENT_ID);
+		result.set("Client-ID", this.clientId);
 		result.set("Authorization", `Bearer ${accessToken}`);
 		return result;
 	}
@@ -966,9 +956,11 @@ export class TwitchService {
 	 * Get valid token from TwitchTokenDO
 	 * Type-safe: DurableObjectStub<TwitchTokenDO> exposes RPC methods directly
 	 */
-	private async getToken() {
-		const stub = getStub("TWITCH_TOKEN_DO");
-		return stub.getValidToken();
+	private async getToken(): Promise<Result<string, ProviderAccessTokenError>> {
+		const token = await this.accessTokens.getValidAccessToken();
+		return token.status === "ok"
+			? Result.ok(token.value.unsafeUnwrapForFinalIo())
+			: Result.err(token.error);
 	}
 
 	/**
@@ -982,7 +974,7 @@ export class TwitchService {
 					method: "POST",
 					headers: { "Content-Type": "application/x-www-form-urlencoded" },
 					body: new URLSearchParams({
-						client_id: this.env.TWITCH_CLIENT_ID,
+						client_id: this.clientId,
 						client_secret: this.twitchClientSecret.unsafeUnwrapForFinalIo(),
 						grant_type: "client_credentials",
 					}),

@@ -7,7 +7,7 @@
  */
 
 import { Agent, type AgentContext } from "agents";
-import { Result, TaggedError } from "better-result";
+import { Result } from "better-result";
 import { RpcTarget } from "cloudflare:workers";
 import {
 	and,
@@ -29,7 +29,29 @@ import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/song-queue-do/migrations";
-import { rpc, withRpcSerialization } from "../lib/durable-objects";
+import { DurableObjectSpotifyAccessTokens } from "../adapters/cloudflare/durable-object-access-tokens";
+import {
+	SongQueueCoordinationError,
+	SongQueueParseError,
+	type SongQueueFailure,
+} from "../capabilities/song-queue";
+import { LoggingTracer } from "../capabilities/tracer";
+import { parseWorkerConfiguration } from "../configuration/worker-configuration";
+import {
+	PendingRequestInputSchema,
+	SongRequestDisplayTextSchema,
+	SongRequestDomainIdSchema,
+	SongRequestInstantSchema,
+	SongRequestLimitSchema,
+	type PendingRequestInput,
+	type RequestHistoryItem,
+	type RequestHistoryResult,
+	type SpotifyQueueResult,
+	type TopRequestedTrack,
+	type TopSongRequester,
+} from "../domain/song-request";
+import { QueuedTrackSchema, type NowPlaying, type QueuedTrack } from "../domain/spotify-queue";
+import { rpc } from "../lib/durable-objects";
 import { SongQueueDbError, SongRequestNotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { toRpcResult, type RpcResult } from "../lib/rpc-result";
@@ -37,25 +59,12 @@ import { SpotifyService, type SpotifyTrack, type TrackInfo } from "../services/s
 import * as schema from "./schemas/song-queue-do.schema";
 import {
 	ArtistNamesJsonSchema,
-	PendingRequestInputSchema,
 	PendingRequestRecordSchema,
 	RequestHistoryQuerySchema,
 	RequestHistoryRecordSchema,
-	SongQueueDisplayTextSchema,
-	SongQueueDomainIdSchema,
-	SongQueueInstantSchema,
-	SongQueueLimitSchema,
 	SpotifyQueueSnapshotRecordSchema,
-	type CurrentlyPlayingResult,
 	type PendingRequest,
-	type PendingRequestInput,
-	type QueueResult,
-	type QueuedTrack,
-	type RequestHistoryItem,
-	type RequestHistoryResult,
 	type SpotifyQueueSnapshotRecord,
-	type TopRequester,
-	type TopTrack,
 	type TrackSource,
 	pendingRequests,
 	requestHistory,
@@ -72,55 +81,22 @@ const REFRESH_AFTER_MUTATION_DELAY_SECONDS = 1;
 const CLEANUP_INTERVAL_SECONDS = 5 * 60;
 const MAX_REFRESH_BACKOFF_SECONDS = 5 * 60;
 
-/** Expected failure when Song Queue RPC input or persisted records cannot be parsed. */
-export class SongQueueParseError extends TaggedError("SongQueueParseError")<{
-	readonly boundary: "rpc-input" | "persistence";
-	readonly operation: string;
-	readonly parseError: string;
-	readonly message: string;
-}>() {
-	constructor(args: {
-		boundary: "rpc-input" | "persistence";
-		operation: string;
-		parseError: string;
-	}) {
-		super({ ...args, message: `Invalid Song Queue data during ${args.operation}` });
-	}
-}
+type QueueResult = SpotifyQueueResult;
+type TopTrack = TopRequestedTrack;
+type TopRequester = TopSongRequester;
 
-/** Expected failure while coordinating durable Song Queue refresh and cleanup schedules. */
-export class SongQueueCoordinationError extends TaggedError("SongQueueCoordinationError")<{
-	readonly operation: string;
-	readonly message: string;
-	readonly cause?: unknown;
-}>() {
-	constructor(args: { operation: string; cause?: unknown }) {
-		super({ ...args, message: `Song Queue coordination failed during ${args.operation}` });
-	}
-}
+/** Complete internal error contract for Song Queue persistence and coordination operations. */
+type SongQueueError = Exclude<
+	SongQueueFailure,
+	import("../capabilities/song-queue").SongQueueUnavailableError
+>;
 
-/** Complete expected-error contract for Song Queue operations. */
-export type SongQueueError = SongQueueDbError | SongQueueParseError | SongQueueCoordinationError;
-
-/** Public Spotify Track occurrence with explicit Viewer or autoplay source. */
-export type { QueuedTrack } from "./schemas/song-queue-do.schema";
-/** Parsed Now Playing response contract. */
-export type { CurrentlyPlayingResult } from "./schemas/song-queue-do.schema";
-/** Parsed Spotify Queue response contract. */
-export type { QueueResult } from "./schemas/song-queue-do.schema";
-/** Parsed Request History response contract. */
-export type { RequestHistoryResult } from "./schemas/song-queue-do.schema";
-/** Spotify Track aggregation grouped by stable Track ID. */
-export type { TopTrack } from "./schemas/song-queue-do.schema";
-/** Viewer aggregation grouped by stable Viewer ID. */
-export type { TopRequester } from "./schemas/song-queue-do.schema";
-
-/** Cohesive Song Queue application capability exposed over Durable Object RPC. */
-export interface SongQueue {
+/** Cohesive Song Queue implementation contract exposed over Durable Object RPC. */
+interface SongQueue {
 	persistRequest(request: PendingRequestInput): Promise<Result<void, SongQueueError>>;
 	deleteRequest(eventId: string): Promise<Result<void, SongQueueError>>;
 	getSongQueue(limit: number): Promise<Result<QueueResult, SongQueueError>>;
-	getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueError>>;
+	getCurrentlyPlaying(): Promise<Result<NowPlaying, SongQueueError>>;
 	getRequestHistory(
 		limit: number,
 		offset: number,
@@ -188,17 +164,22 @@ function toQueuedTrack(snapshot: SpotifyQueueSnapshotRecord, artists: string[]):
 		album: snapshot.album,
 		albumCoverUrl: snapshot.albumCoverUrl,
 	};
-	if (snapshot.source === "user") {
-		return {
-			...track,
-			source: "user",
-			eventId: snapshot.eventId,
-			requesterUserId: snapshot.requesterUserId,
-			requesterDisplayName: snapshot.requesterDisplayName,
-			requestedAt: snapshot.requestedAt,
-		};
+	const parsed = QueuedTrackSchema.safeParse(
+		snapshot.source === "user"
+			? {
+					...track,
+					source: "user",
+					eventId: snapshot.eventId,
+					requesterUserId: snapshot.requesterUserId,
+					requesterDisplayName: snapshot.requesterDisplayName,
+					requestedAt: snapshot.requestedAt,
+				}
+			: { ...track, source: "autoplay" },
+	);
+	if (!parsed.success) {
+		throw new Error(`Song Queue track projection invariant failed: ${parsed.error.message}`);
 	}
-	return { ...track, source: "autoplay" };
+	return parsed.data;
 }
 
 function parseSnapshotRecord(
@@ -376,7 +357,7 @@ class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
 		return this.queue.getSongQueue(limit).then(toRpcResult);
 	}
 
-	getCurrentlyPlaying(): Promise<RpcResult<CurrentlyPlayingResult, SongQueueError>> {
+	getCurrentlyPlaying(): Promise<RpcResult<NowPlaying, SongQueueError>> {
 		return this.queue.getCurrentlyPlaying().then(toRpcResult);
 	}
 
@@ -420,6 +401,7 @@ class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
  */
 class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
+	private readonly spotifyService: SpotifyService;
 	private syncLock: Promise<Result<void, SongQueueError>> | null = null;
 
 	initialState: SongQueueAgentState = {
@@ -434,6 +416,15 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
+		const configuration = parseWorkerConfiguration(env);
+		if (configuration.status === "error") {
+			throw new Error("Song Queue Durable Object configuration is invalid");
+		}
+		const tracer = new LoggingTracer(logger);
+		this.spotifyService = new SpotifyService({
+			configuration: configuration.value.spotify,
+			accessTokens: new DurableObjectSpotifyAccessTokens(env.SPOTIFY_TOKEN_DO, tracer),
+		});
 	}
 
 	async onStart(): Promise<void> {
@@ -499,7 +490,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 */
 	@rpc
 	async deleteRequest(eventId: string): Promise<Result<void, SongQueueError>> {
-		const parsedEventId = parseRpcInput(SongQueueDomainIdSchema, eventId, "deleteRequest");
+		const parsedEventId = parseRpcInput(SongRequestDomainIdSchema, eventId, "deleteRequest");
 		if (parsedEventId.status === "error") return parsedEventId;
 		return Result.tryPromise({
 			try: async () => {
@@ -516,7 +507,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 */
 	@rpc
 	async deleteHistory(eventId: string): Promise<Result<void, SongQueueError>> {
-		const parsedEventId = parseRpcInput(SongQueueDomainIdSchema, eventId, "deleteHistory");
+		const parsedEventId = parseRpcInput(SongRequestDomainIdSchema, eventId, "deleteHistory");
 		if (parsedEventId.status === "error") return parsedEventId;
 		return Result.tryPromise({
 			try: async () => {
@@ -533,9 +524,9 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		eventId: string,
 		fulfilledAt: string,
 	): Promise<Result<void, SongQueueError | SongRequestNotFoundError>> {
-		const parsedEventId = parseRpcInput(SongQueueDomainIdSchema, eventId, "writeHistory");
+		const parsedEventId = parseRpcInput(SongRequestDomainIdSchema, eventId, "writeHistory");
 		if (parsedEventId.status === "error") return parsedEventId;
-		const parsedInstant = SongQueueInstantSchema.safeParse(fulfilledAt);
+		const parsedInstant = SongRequestInstantSchema.safeParse(fulfilledAt);
 		if (!parsedInstant.success)
 			return Result.err(
 				new SongQueueParseError({
@@ -591,7 +582,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * Uses denormalized attribution from snapshot (no join needed)
 	 */
 	@rpc
-	async getCurrentlyPlaying(): Promise<Result<CurrentlyPlayingResult, SongQueueError>> {
+	async getCurrentlyPlaying(): Promise<Result<NowPlaying, SongQueueError>> {
 		await this.ensureFresh();
 		const readResult = await Result.tryPromise({
 			try: () =>
@@ -617,7 +608,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 */
 	@rpc
 	async getSongQueue(limit = 50): Promise<Result<QueueResult, SongQueueError>> {
-		const parsedLimit = SongQueueLimitSchema.safeParse(limit);
+		const parsedLimit = SongRequestLimitSchema.safeParse(limit);
 		if (!parsedLimit.success)
 			return Result.err(
 				new SongQueueParseError({
@@ -709,7 +700,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 */
 	@rpc
 	async getSessionRequestCount(since: string): Promise<Result<number, SongQueueError>> {
-		const parsedSince = parseRpcInput(SongQueueInstantSchema, since, "getSessionRequestCount");
+		const parsedSince = parseRpcInput(SongRequestInstantSchema, since, "getSessionRequestCount");
 		if (parsedSince.status === "error") return parsedSince;
 		return Result.tryPromise({
 			try: async () => {
@@ -729,7 +720,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 */
 	@rpc
 	async getUserRequestCount(userId: string): Promise<Result<number, SongQueueError>> {
-		const parsedUserId = parseRpcInput(SongQueueDomainIdSchema, userId, "getUserRequestCount");
+		const parsedUserId = parseRpcInput(SongRequestDomainIdSchema, userId, "getUserRequestCount");
 		if (parsedUserId.status === "error") return parsedUserId;
 		return Result.tryPromise({
 			try: async () => {
@@ -753,7 +744,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		displayName: string,
 	): Promise<Result<number, SongQueueError>> {
 		const parsedDisplayName = parseRpcInput(
-			SongQueueDisplayTextSchema,
+			SongRequestDisplayTextSchema,
 			displayName,
 			"getUserRequestCountByDisplayName",
 		);
@@ -791,7 +782,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		userId: string,
 		limit = 10,
 	): Promise<Result<TopTrack[], SongQueueError>> {
-		const parsedUserId = parseRpcInput(SongQueueDomainIdSchema, userId, "getTopTracksByUser");
+		const parsedUserId = parseRpcInput(SongRequestDomainIdSchema, userId, "getTopTracksByUser");
 		if (parsedUserId.status === "error") return parsedUserId;
 		return this.getTopTracksForViewer(parsedUserId.value, limit);
 	}
@@ -800,7 +791,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		userId: string | undefined,
 		limit: number,
 	): Promise<Result<TopTrack[], SongQueueError>> {
-		const parsedLimit = SongQueueLimitSchema.safeParse(limit);
+		const parsedLimit = SongRequestLimitSchema.safeParse(limit);
 		if (!parsedLimit.success)
 			return Result.err(
 				new SongQueueParseError({
@@ -851,7 +842,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 */
 	@rpc
 	async getTopRequesters(limit = 10): Promise<Result<TopRequester[], SongQueueError>> {
-		const parsedLimit = SongQueueLimitSchema.safeParse(limit);
+		const parsedLimit = SongRequestLimitSchema.safeParse(limit);
 		if (!parsedLimit.success)
 			return Result.err(
 				new SongQueueParseError({
@@ -897,19 +888,19 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		windowMinutes = 30,
 	): Promise<Result<boolean, SongQueueError>> {
 		const parsedUserId = parseRpcInput(
-			SongQueueDomainIdSchema,
+			SongRequestDomainIdSchema,
 			userId,
 			"checkDuplicateRequest.userId",
 		);
 		if (parsedUserId.status === "error") return parsedUserId;
 		const parsedTrackId = parseRpcInput(
-			SongQueueDomainIdSchema,
+			SongRequestDomainIdSchema,
 			trackId,
 			"checkDuplicateRequest.trackId",
 		);
 		if (parsedTrackId.status === "error") return parsedTrackId;
 		const parsedWindow = parseRpcInput(
-			SongQueueLimitSchema,
+			SongRequestLimitSchema,
 			windowMinutes,
 			"checkDuplicateRequest.windowMinutes",
 		);
@@ -1067,10 +1058,9 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	 * fallback semantics are preserved when Spotify is unavailable.
 	 */
 	private async syncFromSpotify(syncedAt: string): Promise<Result<void, SongQueueError>> {
-		const spotifyService = new SpotifyService(this.env);
 		const [currentlyPlayingResult, queueResult] = await Promise.all([
-			spotifyService.getCurrentlyPlaying(),
-			spotifyService.getQueue(),
+			this.spotifyService.getCurrentlyPlaying(),
+			this.spotifyService.getQueue(),
 		]);
 		if (queueResult.status === "error") {
 			return Result.err(
@@ -1383,4 +1373,4 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 	}
 }
 
-export const SongQueueDO = withRpcSerialization(_SongQueueDO);
+export { _SongQueueDO as SongQueueDO };

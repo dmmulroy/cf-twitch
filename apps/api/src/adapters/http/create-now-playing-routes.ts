@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 
-import { SongQueueUnavailableError } from "../../capabilities/song-queue-reader";
+import { SongQueueUnavailableError } from "../../capabilities/song-queue";
 
-import type { SongQueueReader } from "../../capabilities/song-queue-reader";
+import type { SongQueueReader } from "../../capabilities/song-queue";
 import type { Logger } from "../../lib/logger";
 
 /** Exact dependencies required by the Now Playing HTTP route. */

@@ -1,23 +1,16 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-
-import { CurrentlyPlayingResultSchema, QueuedTrackSchema } from "../../domain/spotify-queue";
-
-import type { CurrentlyPlayingResult, QueuedTrack } from "../../domain/spotify-queue";
-
-export { CurrentlyPlayingResultSchema, QueuedTrackSchema };
-export type { CurrentlyPlayingResult, QueuedTrack };
-
 import { z } from "zod";
 
-/** Runtime parser for bounded Song Queue display metadata. */
-export const SongQueueDisplayTextSchema = z.string().min(1).max(512);
-/** Runtime parser for bounded Song Request, Viewer, and Spotify identifiers. */
-export const SongQueueDomainIdSchema = z.string().min(1).max(128);
-const NonEmptyBoundedTextSchema = SongQueueDisplayTextSchema;
-const DomainIdSchema = SongQueueDomainIdSchema;
-/** Runtime parser for ISO-8601 instants crossing Song Queue boundaries. */
-export const SongQueueInstantSchema = z.iso.datetime({ offset: true });
-const IsoInstantSchema = SongQueueInstantSchema;
+import {
+	PendingRequestInputSchema,
+	SongRequestDisplayTextSchema,
+	SongRequestDomainIdSchema,
+	SongRequestInstantSchema,
+} from "../../domain/song-request";
+
+const NonEmptyBoundedTextSchema = SongRequestDisplayTextSchema;
+const DomainIdSchema = SongRequestDomainIdSchema;
+const IsoInstantSchema = SongRequestInstantSchema;
 
 /** Runtime parser for the JSON-encoded Spotify artist-name list stored in SQLite. */
 export const ArtistNamesJsonSchema = z.string().transform((value, context) => {
@@ -50,26 +43,6 @@ export const pendingRequests = sqliteTable("pending_requests", {
 export type PendingRequest = typeof pendingRequests.$inferSelect;
 /** SQLite insert representation retained for migration and test fixtures. */
 export type InsertPendingRequest = typeof pendingRequests.$inferInsert;
-
-/** Parsed RPC input for accepting a new Pending Request. */
-export const PendingRequestInputSchema = z.object({
-	eventId: DomainIdSchema,
-	trackId: DomainIdSchema,
-	trackName: NonEmptyBoundedTextSchema,
-	artists: z
-		.string()
-		.max(8_192)
-		.pipe(ArtistNamesJsonSchema)
-		.transform((artists) => JSON.stringify(artists)),
-	album: NonEmptyBoundedTextSchema,
-	albumCoverUrl: z.url().max(2_048).nullable(),
-	requesterUserId: DomainIdSchema,
-	requesterDisplayName: NonEmptyBoundedTextSchema,
-	requestedAt: IsoInstantSchema,
-});
-
-/** Validated application input for accepting a Pending Request. */
-export type PendingRequestInput = z.infer<typeof PendingRequestInputSchema>;
 
 /** Runtime parser for persisted Pending Request rows and occurrence-seen timestamps. */
 export const PendingRequestRecordSchema = PendingRequestInputSchema.extend({
@@ -183,48 +156,3 @@ export const RequestHistoryQuerySchema = z
 
 /** Parsed, bounded Request History query options. */
 export type RequestHistoryQuery = z.infer<typeof RequestHistoryQuerySchema>;
-
-/** Runtime parser for bounded Song Queue and statistics limits. */
-export const SongQueueLimitSchema = z.number().int().min(1).max(100);
-
-/** Parsed Spotify Queue response contract. */
-export const QueueResultSchema = z.object({
-	tracks: z.array(QueuedTrackSchema).max(100),
-	totalCount: z.number().int().nonnegative(),
-});
-/** Parsed Spotify Queue response contract. */
-export type QueueResult = z.infer<typeof QueueResultSchema>;
-
-/** Public Request History item with decoded artist names. */
-export const RequestHistoryItemSchema = RequestHistoryRecordSchema.omit({ artists: true }).extend({
-	artists: z.array(NonEmptyBoundedTextSchema).max(50),
-});
-/** Public Request History item with decoded artist names. */
-export type RequestHistoryItem = z.infer<typeof RequestHistoryItemSchema>;
-
-/** Parsed paginated Request History response contract. */
-export const RequestHistoryResultSchema = z.object({
-	requests: z.array(RequestHistoryItemSchema).max(100),
-	totalCount: z.number().int().nonnegative(),
-});
-/** Parsed paginated Request History response contract. */
-export type RequestHistoryResult = z.infer<typeof RequestHistoryResultSchema>;
-
-/** Stable Spotify Track aggregation grouped only by Spotify Track ID. */
-export const TopTrackSchema = z.object({
-	trackId: DomainIdSchema,
-	trackName: NonEmptyBoundedTextSchema,
-	artists: z.array(NonEmptyBoundedTextSchema).max(50),
-	requestCount: z.number().int().nonnegative(),
-});
-/** Stable Spotify Track aggregation grouped only by Spotify Track ID. */
-export type TopTrack = z.infer<typeof TopTrackSchema>;
-
-/** Stable Viewer aggregation grouped only by Viewer ID. */
-export const TopRequesterSchema = z.object({
-	userId: DomainIdSchema,
-	displayName: NonEmptyBoundedTextSchema,
-	requestCount: z.number().int().nonnegative(),
-});
-/** Stable Viewer aggregation grouped only by Viewer ID. */
-export type TopRequester = z.infer<typeof TopRequesterSchema>;

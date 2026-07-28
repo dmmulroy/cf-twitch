@@ -4,7 +4,7 @@ import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
 import { z } from "zod";
 
-import { rpc, withRpcSerialization } from "../lib/durable-objects";
+import { rpc } from "../lib/durable-objects";
 import {
 	NoRefreshTokenError,
 	TokenAuthorizationRevokedError,
@@ -514,4 +514,4 @@ function toTwitchPersistedState(state: TwitchRuntimeState): TwitchPersistedState
 }
 
 /** Cloudflare Durable Object export for the Twitch token lifecycle. */
-export const TwitchTokenDO = withRpcSerialization(_TwitchTokenDO);
+export { _TwitchTokenDO as TwitchTokenDO };

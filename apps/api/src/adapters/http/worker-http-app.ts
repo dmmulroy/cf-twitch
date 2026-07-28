@@ -1,18 +1,18 @@
 import { Hono } from "hono";
 
 import { normalizeError, startTimer, withLogContext } from "../../lib/logger";
-import admin from "../../routes/admin";
-import api from "../../routes/api";
-import eventsub from "../../routes/eventsub-setup";
-import oauth from "../../routes/oauth";
-import overlay from "../../routes/overlay";
-import stats from "../../routes/stats";
-import webhooks from "../../routes/webhooks";
+import { createApiRoutes } from "./create-api-routes";
 import { createNowPlayingRoutes } from "./create-now-playing-routes";
+import { createStatsRoutes } from "./create-stats-routes";
 
-import type { SongQueueReader } from "../../capabilities/song-queue-reader";
+import type { AchievementReader, StreamLifecycle } from "../../capabilities/http-state-readers";
+import type { RaffleStatistics } from "../../capabilities/raffle-statistics";
+import type { SongQueue } from "../../capabilities/song-queue";
 import type { Logger } from "../../lib/logger";
+import type { RedactedValue } from "../../lib/redacted";
 import type { AppRouteEnv, RequestId, TraceId } from "../../lib/request-context";
+import type { TwitchService } from "../../services/twitch-service";
+import type { CloudflareEdgeResponseCache } from "../cloudflare/cloudflare-edge-response-cache";
 
 /** Correlation established once for a Worker HTTP invocation. */
 export type HttpInvocationCorrelation = Readonly<{
@@ -24,7 +24,19 @@ export type HttpInvocationCorrelation = Readonly<{
 export type WorkerHttpAppDependencies = Readonly<{
 	correlation: HttpInvocationCorrelation;
 	logger: Logger;
-	songQueue: SongQueueReader;
+	songQueue: SongQueue;
+	raffles: RaffleStatistics;
+	edgeResponseCache: CloudflareEdgeResponseCache;
+	administratorSecret: RedactedValue<string>;
+	streamLifecycle: StreamLifecycle;
+	achievements: AchievementReader;
+	twitchStreams: Pick<TwitchService, "getStreamInfo">;
+	broadcasterDisplayName: string;
+	oauthRoutes: Hono<AppRouteEnv<object>>;
+	eventSubRoutes: Hono<AppRouteEnv<object>>;
+	eventSubWebhookRoutes: Hono<AppRouteEnv<object>>;
+	overlayRoutes: Hono<AppRouteEnv<object>>;
+	adminRoutes: Hono<AppRouteEnv<object>>;
 }>;
 
 /** Assembles HTTP middleware and route groups for one Worker invocation. */
@@ -85,9 +97,9 @@ export function createWorkerHttpApp<Bindings extends object>(
 		return context.res;
 	});
 
-	app.route("/oauth", oauth);
-	app.route("/eventsub", eventsub);
-	app.route("/webhooks", webhooks);
+	app.route("/oauth", dependencies.oauthRoutes);
+	app.route("/eventsub", dependencies.eventSubRoutes);
+	app.route("/webhooks", dependencies.eventSubWebhookRoutes);
 	app.route(
 		"/api",
 		createNowPlayingRoutes({
@@ -95,10 +107,29 @@ export function createWorkerHttpApp<Bindings extends object>(
 			logger: dependencies.logger.child({ component: "route", route: "/api/now-playing" }),
 		}),
 	);
-	app.route("/api", api);
-	app.route("/api/stats", stats);
-	app.route("/api/admin", admin);
-	app.route("/overlay", overlay);
+	app.route(
+		"/api",
+		createApiRoutes({
+			administratorSecret: dependencies.administratorSecret,
+			songQueue: dependencies.songQueue,
+			streamLifecycle: dependencies.streamLifecycle,
+			raffles: dependencies.raffles,
+			achievements: dependencies.achievements,
+			twitchStreams: dependencies.twitchStreams,
+			broadcasterDisplayName: dependencies.broadcasterDisplayName,
+		}),
+	);
+	app.route(
+		"/api/stats",
+		createStatsRoutes({
+			songRequests: dependencies.songQueue,
+			raffles: dependencies.raffles,
+			edgeResponseCache: dependencies.edgeResponseCache,
+			logger: dependencies.logger,
+		}),
+	);
+	app.route("/api/admin", dependencies.adminRoutes);
+	app.route("/overlay", dependencies.overlayRoutes);
 	app.get("/health", (context) => context.json({ status: "ok" }));
 
 	return app;

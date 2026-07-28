@@ -15,7 +15,10 @@ import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/event-bus-do/migrations";
-import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
+import { DurableObjectAchievementEventHandler } from "../adapters/cloudflare/durable-object-domain-event-handler";
+import { LoggingTracer } from "../capabilities/tracer";
+import { EventSchema, EventType, type Event } from "../domain/domain-event";
+import { rpc } from "../lib/durable-objects";
 import {
 	DLQItemNotFoundError,
 	EventBusDbError,
@@ -28,13 +31,16 @@ import * as schema from "./schemas/event-bus-do.schema";
 import {
 	deadLetterQueue,
 	deliveredEvents,
-	EventSchema,
-	EventType,
 	pendingEvents,
-	type Event,
 	type PendingEvent,
 } from "./schemas/event-bus-do.schema";
 
+import type { DomainEventHandler } from "../capabilities/domain-event-handler";
+import type {
+	DeadLetterList as DLQListResponse,
+	DeadLetterReplayResult as ReplayResult,
+	PendingEventList as PendingListResponse,
+} from "../capabilities/event-bus-administration";
 import type { Env } from "../index";
 
 const MAX_ATTEMPTS = 3;
@@ -45,10 +51,6 @@ const DLQ_RETENTION_MS = DLQ_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 function getBackoffDelayMs(attempt: number): number {
 	const index = Math.min(attempt, BACKOFF_DELAYS_MS.length - 1);
 	return BACKOFF_DELAYS_MS[index] ?? BACKOFF_DELAYS_MS[0];
-}
-
-export interface EventHandler {
-	handleEvent(event: Event): Promise<Result<void, unknown>>;
 }
 
 const EVENT_ROUTES = {
@@ -67,6 +69,7 @@ interface EventBusAgentState {
 
 class _EventBusDO extends Agent<Env, EventBusAgentState> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
+	private readonly achievementEvents: DomainEventHandler;
 
 	initialState: EventBusAgentState = {
 		retrySweepScheduleId: null,
@@ -78,6 +81,10 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
+		this.achievementEvents = new DurableObjectAchievementEventHandler(
+			env.ACHIEVEMENTS_DO,
+			new LoggingTracer(logger),
+		);
 	}
 
 	async onStart(): Promise<void> {
@@ -503,8 +510,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 		handlerKey: "ACHIEVEMENTS_DO",
 	): Promise<Result<void, EventBusHandlerError>> {
 		try {
-			const stub = getStub(handlerKey);
-			const result = await stub.handleEvent(event);
+			const result = await this.achievementEvents.handleEvent(event);
 
 			if (result.isErr()) {
 				const cause = result.error;
@@ -578,7 +584,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 				const allItems = await this.db.select().from(pendingEvents);
 				const totalCount = allItems.length;
 
-				const parsedItems: PendingItem[] = items.map((item) => {
+				const parsedItems: PendingListResponse["items"] = items.map((item) => {
 					let event: Event | null = null;
 					try {
 						const parseResult = EventSchema.safeParse(JSON.parse(item.event));
@@ -627,7 +633,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 				const allItems = await this.db.select().from(deadLetterQueue);
 				const totalCount = allItems.length;
 
-				const parsedItems: DLQItem[] = items.map((item) => {
+				const parsedItems: DLQListResponse["items"] = items.map((item) => {
 					let event: Event | null = null;
 					try {
 						const parseResult = EventSchema.safeParse(JSON.parse(item.event));
@@ -758,42 +764,4 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 	}
 }
 
-export interface DLQItem {
-	id: string;
-	event: Event | null;
-	error: string;
-	attempts: number;
-	firstFailedAt: string;
-	lastFailedAt: string;
-	expiresAt: string;
-}
-
-export interface DLQListResponse {
-	items: DLQItem[];
-	totalCount: number;
-	limit: number;
-	offset: number;
-}
-
-export interface PendingItem {
-	id: string;
-	event: Event | null;
-	attempts: number;
-	nextRetryAt: string;
-	createdAt: string;
-}
-
-export interface PendingListResponse {
-	items: PendingItem[];
-	totalCount: number;
-	limit: number;
-	offset: number;
-}
-
-export interface ReplayResult {
-	success: boolean;
-	eventId: string;
-	error?: string;
-}
-
-export const EventBusDO = withRpcSerialization(_EventBusDO);
+export { _EventBusDO as EventBusDO };

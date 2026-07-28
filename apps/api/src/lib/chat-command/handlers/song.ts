@@ -1,23 +1,24 @@
 import { Result } from "better-result";
 
-import { getSongQueue } from "../../song-queue-client";
 import { chatTextResponse } from "../types";
 
-import type { QueuedTrack } from "../../../durable-objects/song-queue-do";
+import type { SongQueueReader } from "../../../capabilities/song-queue";
+import type { QueuedTrack } from "../../../domain/spotify-queue";
 import type { ComputedCommandHandler } from "../types";
 
 /**
  * Computed chat command handler for the currently playing song.
  */
 export class SongCommandHandler implements ComputedCommandHandler {
+	constructor(private readonly songQueue: SongQueueReader) {}
+
 	/**
 	 * Report the currently playing song and requester attribution when available.
 	 *
 	 * @returns A Result containing a chat response with the current song details.
 	 */
 	async handle() {
-		using songQueue = await getSongQueue();
-		const result = await songQueue.getCurrentlyPlaying();
+		const result = await this.songQueue.getNowPlaying();
 		if (result.status === "error") {
 			return Result.ok(chatTextResponse("Sorry, couldn't get the current song info."));
 		}
@@ -39,14 +40,15 @@ export class SongCommandHandler implements ComputedCommandHandler {
  * Computed chat command handler for the song request queue.
  */
 export class QueueCommandHandler implements ComputedCommandHandler {
+	constructor(private readonly songQueue: SongQueueReader) {}
+
 	/**
 	 * Report the next requested songs in the queue.
 	 *
 	 * @returns A Result containing a chat response with the next queued tracks.
 	 */
 	async handle() {
-		using songQueue = await getSongQueue();
-		const result = await songQueue.getSongQueue(4);
+		const result = await this.songQueue.getSpotifyQueue(4);
 		if (result.status === "error") {
 			return Result.ok(chatTextResponse("Sorry, couldn't get the queue info."));
 		}

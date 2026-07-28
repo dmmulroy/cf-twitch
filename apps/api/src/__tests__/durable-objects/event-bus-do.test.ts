@@ -9,10 +9,10 @@ import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { createSongRequestSuccessEvent } from "../../domain/domain-event";
 import { EventBusDO } from "../../durable-objects/event-bus-do";
 import * as eventBusSchema from "../../durable-objects/schemas/event-bus-do.schema";
 import {
-	createSongRequestSuccessEvent,
 	deadLetterQueue,
 	deliveredEvents,
 	pendingEvents,

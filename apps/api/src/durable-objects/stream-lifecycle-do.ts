@@ -11,16 +11,23 @@ import { z } from "zod";
 
 import migrations from "../../drizzle/stream-lifecycle-do/migrations";
 import {
+	DurableObjectSpotifyAccessTokens,
+	DurableObjectTwitchAccessTokens,
+} from "../adapters/cloudflare/durable-object-access-tokens";
+import { DurableObjectDomainEventPublisher } from "../adapters/cloudflare/durable-object-domain-event-publisher";
+import { LoggingTracer } from "../capabilities/tracer";
+import { parseWorkerConfiguration } from "../configuration/worker-configuration";
+import { createStreamOfflineEvent, createStreamOnlineEvent } from "../domain/domain-event";
+import {
 	type Clock,
 	type InvalidIsoTimestampError,
 	type IsoTimestamp,
 	SystemClock,
 } from "../lib/clock";
-import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
+import { rpc } from "../lib/durable-objects";
 import { DurableObjectError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { TwitchService } from "../services/twitch-service";
-import { createStreamOfflineEvent, createStreamOnlineEvent } from "./schemas/event-bus-do.schema";
 import * as schema from "./stream-lifecycle-do.schema";
 import { type ViewerSnapshot, viewerSnapshots } from "./stream-lifecycle-do.schema";
 import {
@@ -29,10 +36,12 @@ import {
 	initialOfflineState,
 	parsePersistedStreamLifecycleState,
 	type StreamLifecycleAgentState,
-	type StreamLifecycleState,
 	type StreamLifecycleTransitionIntent,
 } from "./stream-lifecycle-state";
 
+import type { DomainEventPublisher } from "../capabilities/domain-event-publisher";
+import type { ProviderTokenLifecycle } from "../capabilities/provider-access-tokens";
+import type { StreamLifecycleState } from "../domain/stream-lifecycle";
 import type { Env } from "../index";
 
 const VIEWER_POLL_INTERVAL_SECONDS = 60;
@@ -60,12 +69,31 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
 	private nextViewerSnapshotAtMs = 0;
 	private readonly clock: Clock = new SystemClock();
+	private readonly domainEvents: DomainEventPublisher;
+	private readonly spotifyTokenLifecycle: ProviderTokenLifecycle;
+	private readonly twitchTokenLifecycle: ProviderTokenLifecycle;
+	private readonly twitchService: TwitchService;
+	private readonly broadcasterDisplayName: string;
 
 	initialState: StreamLifecycleAgentState = initialOfflineState();
 
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
+		const configuration = parseWorkerConfiguration(env);
+		if (configuration.status === "error") {
+			throw new Error("Stream Lifecycle Durable Object configuration is invalid");
+		}
+		this.broadcasterDisplayName = configuration.value.twitch.broadcaster.displayName;
+		const tracer = new LoggingTracer(logger);
+		this.domainEvents = new DurableObjectDomainEventPublisher(env.EVENT_BUS_DO, tracer);
+		this.spotifyTokenLifecycle = new DurableObjectSpotifyAccessTokens(env.SPOTIFY_TOKEN_DO, tracer);
+		const twitchAccessTokens = new DurableObjectTwitchAccessTokens(env.TWITCH_TOKEN_DO, tracer);
+		this.twitchTokenLifecycle = twitchAccessTokens;
+		this.twitchService = new TwitchService({
+			configuration: configuration.value.twitch,
+			accessTokens: twitchAccessTokens,
+		});
 	}
 
 	async onStart(): Promise<void> {
@@ -376,8 +404,7 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	 * Poll viewer count from Twitch using TwitchService.
 	 */
 	private async pollViewerCount(): Promise<number | null> {
-		const twitchService = new TwitchService(this.env);
-		const result = await twitchService.getStreamInfo(this.env.TWITCH_BROADCASTER_NAME);
+		const result = await this.twitchService.getStreamInfo(this.broadcasterDisplayName);
 
 		if (result.status === "error") {
 			logger.error("Error polling viewer count", {
@@ -431,12 +458,12 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 		effect: "spotifyTokenNotified" | "twitchTokenNotified",
 	): Promise<void> {
 		if (this.state.transitionIntent?.[effect] !== false) return;
-		const stub =
-			effect === "spotifyTokenNotified" ? getStub("SPOTIFY_TOKEN_DO") : getStub("TWITCH_TOKEN_DO");
+		const tokenLifecycle =
+			effect === "spotifyTokenNotified" ? this.spotifyTokenLifecycle : this.twitchTokenLifecycle;
 		const result =
 			intent._tag === "StreamOnlineIntent"
-				? await stub.onStreamOnline()
-				: await stub.onStreamOffline();
+				? await tokenLifecycle.onStreamOnline()
+				: await tokenLifecycle.onStreamOffline();
 		if (result.status === "error") {
 			logger.error("Stream Lifecycle token side effect remains pending", {
 				event: "stream_lifecycle.transition_effect_failed",
@@ -463,7 +490,7 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 						streamId: intent.streamSessionId,
 						endedAt: intent.transitionAt,
 					});
-		const result = await getStub("EVENT_BUS_DO").publish(event);
+		const result = await this.domainEvents.publish(event);
 		if (result.status === "error") {
 			logger.error("Stream Lifecycle event publication remains pending", {
 				event: "stream_lifecycle.transition_effect_failed",
@@ -510,4 +537,4 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	}
 }
 
-export const StreamLifecycleDO = withRpcSerialization(_StreamLifecycleDO);
+export { _StreamLifecycleDO as StreamLifecycleDO };

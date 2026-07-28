@@ -2,39 +2,58 @@ import { Result, TaggedError } from "better-result";
 import { DurableObject } from "cloudflare:workers";
 import { z } from "zod";
 
+import { DurableObjectTwitchAccessTokens } from "../adapters/cloudflare/durable-object-access-tokens";
+import { DurableObjectChatCommands } from "../adapters/cloudflare/durable-object-chat-commands";
+import { DurableObjectEventSubWorkStarters } from "../adapters/cloudflare/durable-object-eventsub-work-starters";
+import {
+	DurableObjectAchievementReader,
+	DurableObjectStreamLifecycle,
+} from "../adapters/cloudflare/durable-object-http-state";
+import { DurableObjectRaffleStatistics } from "../adapters/cloudflare/durable-object-raffle-statistics";
+import { DurableObjectSongQueue } from "../adapters/cloudflare/durable-object-song-queue";
+import {
+	AcceptedEventSubReceiptSchema,
+	EventSubReceiptCorrelationSchema,
+} from "../capabilities/eventsub-receipts";
+import { LoggingTracer } from "../capabilities/tracer";
+import { parseWorkerConfiguration } from "../configuration/worker-configuration";
 import {
 	parseKnownRewardRedemption,
 	type RewardRoutingConfig,
 } from "../lib/channel-point-redemptions";
-import { makeChatCommandExecutor } from "../lib/chat-command";
-import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
+import { makeChatCommandExecutor, type ChatCommandEngineDependencies } from "../lib/chat-command";
+import { AnalyticsEngineChatCommandMetrics } from "../lib/chat-command/metrics";
+import { TwitchChatSender } from "../lib/chat-command/sender";
+import { SystemClock } from "../lib/clock";
+import { rpc } from "../lib/durable-objects";
 import { UnknownRewardError } from "../lib/errors";
-import {
-	EventSubHeadersSchema,
-	parseEventSubMessage,
-	type ParsedEventSubMessage,
-} from "../lib/eventsub-webhook-message";
-import { logger } from "../lib/logger";
+import { parseEventSubMessage, type ParsedEventSubMessage } from "../lib/eventsub-webhook-message";
+import { logger, withLogContext } from "../lib/logger";
 import { getUserPermission } from "../lib/permissions";
+import { TwitchService } from "../services/twitch-service";
 
+import type { AcceptedEventSubReceipt } from "../capabilities/eventsub-receipts";
+import type { EventSubWorkStarters } from "../capabilities/eventsub-work-starters";
+import type { StreamLifecycle } from "../capabilities/http-state-readers";
 import type { Env } from "../index";
 
 const EVENTSUB_RECEIPT_STORAGE_KEY = "eventsub-receipt";
 const MAX_EVENTSUB_PROCESSING_ATTEMPTS = 20;
-
-const AcceptedEventSubReceiptSchema = z.object({
-	headers: EventSubHeadersSchema,
-	body: z.unknown(),
-});
 
 const ChatCommandDeliverySchema = z.object({
 	status: z.enum(["sending", "sent", "uncertain"]),
 	commandName: z.string().min(1),
 });
 
-const PersistedEventSubReceiptSchema = z.object({
-	headers: EventSubHeadersSchema,
-	body: z.unknown(),
+const PersistedEventSubReceiptSchema = AcceptedEventSubReceiptSchema.omit({
+	correlation: true,
+}).extend({
+	correlation: EventSubReceiptCorrelationSchema.optional().default(() =>
+		EventSubReceiptCorrelationSchema.parse({
+			traceId: crypto.randomUUID(),
+			requestId: crypto.randomUUID(),
+		}),
+	),
 	status: z.enum(["pending", "completed", "dead_letter"]),
 	attempts: z.number().int().nonnegative(),
 	acceptedAt: z.string(),
@@ -43,7 +62,6 @@ const PersistedEventSubReceiptSchema = z.object({
 	chatCommandDelivery: ChatCommandDeliverySchema.optional(),
 });
 
-type AcceptedEventSubReceipt = z.infer<typeof AcceptedEventSubReceiptSchema>;
 type PersistedEventSubReceipt = z.infer<typeof PersistedEventSubReceiptSchema>;
 
 function isAmbiguousChatSendFailure(error: unknown): boolean {
@@ -109,6 +127,45 @@ class EventSubProcessingError extends TaggedError("EventSubProcessingError")<{
  * valid notification when downstream work fails. Pending work is retried by alarm.
  */
 class _EventSubWebhookDO extends DurableObject<Env> {
+	private readonly chatCommandDependencies: Omit<ChatCommandEngineDependencies, "sendCheckpoint">;
+	private readonly rewardRouting: RewardRoutingConfig;
+	private readonly streamLifecycle: StreamLifecycle;
+	private readonly workStarters: EventSubWorkStarters;
+
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
+		const configuration = parseWorkerConfiguration(env);
+		if (configuration.status === "error") {
+			throw new Error("EventSub webhook Durable Object configuration is invalid");
+		}
+		const tracer = new LoggingTracer(logger);
+		this.rewardRouting = configuration.value.rewardRouting;
+		this.streamLifecycle = new DurableObjectStreamLifecycle(env.STREAM_LIFECYCLE_DO, tracer);
+		this.workStarters = new DurableObjectEventSubWorkStarters(
+			env.SONG_REQUEST_SAGA_DO,
+			env.KEYBOARD_RAFFLE_SAGA_DO,
+			env.RAID_SHOUTOUT_SAGA_DO,
+			tracer,
+		);
+		const chatCommands = new DurableObjectChatCommands(env.COMMANDS_DO, tracer);
+		this.chatCommandDependencies = {
+			catalog: chatCommands,
+			counters: chatCommands,
+			sender: new TwitchChatSender(
+				new TwitchService({
+					configuration: configuration.value.twitch,
+					accessTokens: new DurableObjectTwitchAccessTokens(env.TWITCH_TOKEN_DO, tracer),
+				}),
+			),
+			metrics: new AnalyticsEngineChatCommandMetrics(env.ANALYTICS),
+			achievements: new DurableObjectAchievementReader(env.ACHIEVEMENTS_DO, tracer),
+			raffles: new DurableObjectRaffleStatistics(env.KEYBOARD_RAFFLE_DO, tracer),
+			songQueue: new DurableObjectSongQueue(env.SONG_QUEUE_DO, tracer),
+			clock: new SystemClock(),
+			logger: logger.child({ module: "chat-command" }),
+		};
+	}
+
 	/** Durably accepts one fully parsed EventSub receipt and idempotently resumes its work. */
 	@rpc
 	async accept(input: unknown): Promise<Result<void, EventSubAcceptanceError>> {
@@ -202,7 +259,20 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 		);
 	}
 
-	private async processPendingReceipt(receipt: PersistedEventSubReceipt): Promise<void> {
+	private processPendingReceipt(receipt: PersistedEventSubReceipt): Promise<void> {
+		return withLogContext(
+			{
+				trace_id: receipt.correlation.traceId,
+				request_id: receipt.correlation.requestId,
+				message_id: receipt.headers["twitch-eventsub-message-id"],
+			},
+			() => this.processPendingReceiptWithCorrelation(receipt),
+		);
+	}
+
+	private async processPendingReceiptWithCorrelation(
+		receipt: PersistedEventSubReceipt,
+	): Promise<void> {
 		const parsed = parseEventSubMessage(receipt.headers, receipt.body);
 		if (parsed.status === "error") {
 			await this.recordProcessingFailure(receipt, parsed.error.message);
@@ -293,16 +363,14 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 				});
 				return Result.ok();
 			case "StreamOnlineNotification": {
-				const result = await getStub("STREAM_LIFECYCLE_DO").onStreamOnline(
-					message.event.started_at,
-				);
+				const result = await this.streamLifecycle.markStreamOnline(message.event.started_at);
 				return result.status === "ok"
 					? Result.ok()
 					: Result.err(new EventSubProcessingError("stream.online", result.error.message));
 			}
 			case "StreamOfflineNotification": {
 				// Twitch stream.offline has no event timestamp; signed receipt time is the ordering fallback.
-				const result = await getStub("STREAM_LIFECYCLE_DO").onStreamOffline(receivedAt);
+				const result = await this.streamLifecycle.markStreamOffline(receivedAt);
 				return result.status === "ok"
 					? Result.ok()
 					: Result.err(new EventSubProcessingError("stream.offline", result.error.message));
@@ -310,7 +378,7 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 			case "RewardRedemptionNotification":
 				return this.dispatchRewardRedemption(message.event);
 			case "RaidNotification": {
-				const result = await getStub("RAID_SHOUTOUT_SAGA_DO", messageId).start({
+				const result = await this.workStarters.startRaidShoutout({
 					messageId,
 					receivedAt,
 					raider: {
@@ -339,17 +407,20 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 					return Result.ok();
 				}
 
-				const executor = makeChatCommandExecutor(this.env, {
-					beforeSend: async ({ commandName }) => {
-						await this.writeChatCommandDelivery(receipt, "sending", commandName);
-					},
-					afterSendFailure: async ({ error }) => {
-						if (!isAmbiguousChatSendFailure(error)) {
-							await this.clearChatCommandDelivery(receipt);
-						}
-					},
-					afterSend: async ({ commandName }) => {
-						await this.writeChatCommandDelivery(receipt, "sent", commandName);
+				const executor = makeChatCommandExecutor({
+					...this.chatCommandDependencies,
+					sendCheckpoint: {
+						beforeSend: async ({ commandName }) => {
+							await this.writeChatCommandDelivery(receipt, "sending", commandName);
+						},
+						afterSendFailure: async ({ error }) => {
+							if (!isAmbiguousChatSendFailure(error)) {
+								await this.clearChatCommandDelivery(receipt);
+							}
+						},
+						afterSend: async ({ commandName }) => {
+							await this.writeChatCommandDelivery(receipt, "sent", commandName);
+						},
 					},
 				});
 				const result = await executor.execute({
@@ -394,11 +465,7 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 	private async dispatchRewardRedemption(
 		redemption: Extract<ParsedEventSubMessage, { _tag: "RewardRedemptionNotification" }>["event"],
 	): Promise<Result<void, EventSubProcessingError>> {
-		const routingConfig: RewardRoutingConfig = {
-			songRequestRewardId: this.env.SONG_REQUEST_REWARD_ID,
-			keyboardRaffleRewardId: this.env.KEYBOARD_RAFFLE_REWARD_ID,
-		};
-		const known = parseKnownRewardRedemption(redemption, routingConfig);
+		const known = parseKnownRewardRedemption(redemption, this.rewardRouting);
 		if (known.status === "error") {
 			if (UnknownRewardError.is(known.error)) return Result.ok();
 			return Result.err(
@@ -407,12 +474,12 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 		}
 
 		if (known.value._tag === "SongRequestRedemption") {
-			const result = await getStub("SONG_REQUEST_SAGA_DO", redemption.id).start(known.value);
+			const result = await this.workStarters.startSongRequest(known.value);
 			return result.status === "ok"
 				? Result.ok()
 				: Result.err(new EventSubProcessingError("song request saga start", result.error.message));
 		}
-		const result = await getStub("KEYBOARD_RAFFLE_SAGA_DO", redemption.id).start(known.value);
+		const result = await this.workStarters.startKeyboardRaffle(known.value);
 		return result.status === "ok"
 			? Result.ok()
 			: Result.err(new EventSubProcessingError("keyboard raffle saga start", result.error.message));
@@ -420,4 +487,4 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 }
 
 /** Production Durable Object that owns EventSub durable acceptance and retry. */
-export const EventSubWebhookDO = withRpcSerialization(_EventSubWebhookDO);
+export { _EventSubWebhookDO as EventSubWebhookDO };

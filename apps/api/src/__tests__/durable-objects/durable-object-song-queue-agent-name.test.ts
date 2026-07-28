@@ -10,9 +10,11 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
 
+import { DurableObjectSpotifyAccessTokens } from "../../adapters/cloudflare/durable-object-access-tokens";
+import { DurableObjectSongQueue } from "../../adapters/cloudflare/durable-object-song-queue";
+import { LoggingTracer } from "../../capabilities/tracer";
 import { SongQueueDO } from "../../durable-objects/song-queue-do";
-import { getStub } from "../../lib/durable-objects";
-import { getSongQueue } from "../../lib/song-queue-client";
+import { logger } from "../../lib/logger";
 import {
 	VALID_TOKEN_RESPONSE,
 	mockSpotifyCurrentlyPlaying,
@@ -20,17 +22,18 @@ import {
 } from "../fixtures/spotify";
 import { fetchMock } from "../helpers/fetch-mock";
 
-describe("getSongQueue", () => {
-	it("connects to SongQueueDO and initializes Agent names before scheduling refresh work", async () => {
-		const spotifyTokenStub = getStub("SPOTIFY_TOKEN_DO");
-		const setTokensResult = await spotifyTokenStub.setTokens(VALID_TOKEN_RESPONSE);
+describe("DurableObjectSongQueue", () => {
+	it("initializes Agent names before scheduling refresh work", async () => {
+		const tracer = new LoggingTracer(logger);
+		const spotifyTokens = new DurableObjectSpotifyAccessTokens(env.SPOTIFY_TOKEN_DO, tracer);
+		const setTokensResult = await spotifyTokens.setTokens(VALID_TOKEN_RESPONSE);
 		expect(setTokensResult.status).toBe("ok");
 
 		mockSpotifyCurrentlyPlaying(fetchMock);
 		mockSpotifyQueue(fetchMock);
 
-		using songQueue = await getSongQueue();
-		const queueResult = await songQueue.getSongQueue(10);
+		const songQueue = new DurableObjectSongQueue(env.SONG_QUEUE_DO, tracer);
+		const queueResult = await songQueue.getSpotifyQueue(10);
 
 		expect(queueResult.status).toBe("ok");
 		if (queueResult.status === "ok") {

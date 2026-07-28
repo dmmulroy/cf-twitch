@@ -1,35 +1,53 @@
-import { TwitchService } from "../../services/twitch-service";
-import { SystemClock } from "../clock";
-import { logger } from "../logger";
-import { CommandsDOCommandCatalog } from "./catalog";
 import { ChatCommandEngine } from "./executor";
 import { makeComputedCommandHandlers } from "./handlers";
-import { AnalyticsEngineChatCommandMetrics } from "./metrics";
-import { TwitchChatSender } from "./sender";
 
-import type { Env } from "../../index";
-import type { ChatCommandExecutor, ChatCommandSendCheckpoint } from "./types";
+import type { AchievementReader } from "../../capabilities/http-state-readers";
+import type { RaffleStatistics } from "../../capabilities/raffle-statistics";
+import type { SongQueue } from "../../capabilities/song-queue";
+import type { Clock } from "../clock";
+import type { Logger } from "../logging";
+import type {
+	ChatCommandExecutor,
+	ChatCommandMetrics,
+	ChatCommandSendCheckpoint,
+	ChatSender,
+	CommandCatalog,
+	CommandCounterStore,
+} from "./types";
 
-/**
- * Construct the production chat command executor for the worker environment.
- *
- * @param env - Worker environment containing service bindings and analytics dataset.
- * @returns A configured chat command executor.
- */
+/** Exact dependencies required to compose the production Chat Command engine. */
+export type ChatCommandEngineDependencies = Readonly<{
+	catalog: CommandCatalog;
+	counters: CommandCounterStore;
+	sender: ChatSender;
+	metrics: ChatCommandMetrics;
+	achievements: AchievementReader;
+	raffles: RaffleStatistics;
+	songQueue: SongQueue;
+	clock: Clock;
+	logger: Logger;
+	sendCheckpoint?: ChatCommandSendCheckpoint;
+}>;
+
+/** Constructs the Chat Command engine without Worker bindings or ambient dependencies. */
 export function makeChatCommandExecutor(
-	env: Env,
-	sendCheckpoint?: ChatCommandSendCheckpoint,
+	dependencies: ChatCommandEngineDependencies,
 ): ChatCommandExecutor {
-	const catalog = new CommandsDOCommandCatalog();
-	const clock = new SystemClock();
 	return new ChatCommandEngine(
-		catalog,
-		new TwitchChatSender(new TwitchService(env)),
-		new AnalyticsEngineChatCommandMetrics(env.ANALYTICS),
-		makeComputedCommandHandlers({ catalog, clock }),
-		clock,
-		logger.child({ module: "chat-command" }),
-		sendCheckpoint,
+		dependencies.catalog,
+		dependencies.sender,
+		dependencies.metrics,
+		makeComputedCommandHandlers({
+			catalog: dependencies.catalog,
+			clock: dependencies.clock,
+			counters: dependencies.counters,
+			achievements: dependencies.achievements,
+			raffles: dependencies.raffles,
+			songQueue: dependencies.songQueue,
+		}),
+		dependencies.clock,
+		dependencies.logger,
+		dependencies.sendCheckpoint,
 	);
 }
 

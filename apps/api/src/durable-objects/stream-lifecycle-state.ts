@@ -3,14 +3,6 @@ import { z } from "zod";
 
 import type { Clock, IsoTimestamp } from "../lib/clock";
 
-/** Public Stream Lifecycle State returned to API and RPC callers. */
-export interface StreamLifecycleState {
-	readonly isLive: boolean;
-	readonly startedAt: string | null;
-	readonly endedAt: string | null;
-	readonly peakViewerCount: number;
-}
-
 /** Durable completion evidence for every side effect of one stream transition. */
 export interface StreamLifecycleTransitionIntent {
 	readonly _tag: "StreamOnlineIntent" | "StreamOfflineIntent";

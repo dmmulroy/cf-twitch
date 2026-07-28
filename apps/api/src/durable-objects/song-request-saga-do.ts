@@ -1,8 +1,16 @@
 import { Result } from "better-result";
 import { z } from "zod";
 
+import {
+	DurableObjectSpotifyAccessTokens,
+	DurableObjectTwitchAccessTokens,
+} from "../adapters/cloudflare/durable-object-access-tokens";
+import { DurableObjectDomainEventPublisher } from "../adapters/cloudflare/durable-object-domain-event-publisher";
+import { DurableObjectSongQueue } from "../adapters/cloudflare/durable-object-song-queue";
+import { LoggingTracer } from "../capabilities/tracer";
+import { parseWorkerConfiguration } from "../configuration/worker-configuration";
+import { createSongRequestSuccessEvent } from "../domain/domain-event";
 import { noResultCodec, stringCodec, zodSagaCodec } from "../lib/codecs";
-import { getStub, withRpcSerialization } from "../lib/durable-objects";
 import {
 	InvalidSpotifyUrlError,
 	SagaEffectOutcomeUnknown,
@@ -21,7 +29,6 @@ import {
 	type SagaStepDefinition,
 	type SagaStepExecutionError,
 } from "../lib/saga-runner";
-import { getSongQueue } from "../lib/song-queue-client";
 import {
 	parseSpotifyTrackInput,
 	spotifyTrackUri,
@@ -29,7 +36,11 @@ import {
 } from "../lib/spotify-track-id";
 import { SpotifyService } from "../services/spotify-service";
 import { TwitchService } from "../services/twitch-service";
-import { createSongRequestSuccessEvent } from "./schemas/event-bus-do.schema";
+
+import type { DomainEventPublisher } from "../capabilities/domain-event-publisher";
+import type { SongQueue } from "../capabilities/song-queue";
+import type { Env } from "../index";
+import type { AgentContext } from "agents";
 
 /** Boundary schema for canonical Song Request redemption parameters. */
 export const SongRequestParamsSchema = z.object({
@@ -182,6 +193,30 @@ const SONG_REQUEST_SAGA: SagaHostDefinition<SongRequestParams> = {
 
 /** Song Request orchestration hosted by the shared saga lifecycle. */
 class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaError> {
+	private readonly domainEvents: DomainEventPublisher;
+	private readonly songQueue: SongQueue;
+	private readonly spotifyService: SpotifyService;
+	private readonly twitchService: TwitchService;
+
+	constructor(ctx: AgentContext, env: Env) {
+		super(ctx, env);
+		const configuration = parseWorkerConfiguration(env);
+		if (configuration.status === "error") {
+			throw new Error("Song Request saga configuration is invalid");
+		}
+		const tracer = new LoggingTracer(logger);
+		this.domainEvents = new DurableObjectDomainEventPublisher(env.EVENT_BUS_DO, tracer);
+		this.songQueue = new DurableObjectSongQueue(env.SONG_QUEUE_DO, tracer);
+		this.spotifyService = new SpotifyService({
+			configuration: configuration.value.spotify,
+			accessTokens: new DurableObjectSpotifyAccessTokens(env.SPOTIFY_TOKEN_DO, tracer),
+		});
+		this.twitchService = new TwitchService({
+			configuration: configuration.value.twitch,
+			accessTokens: new DurableObjectTwitchAccessTokens(env.TWITCH_TOKEN_DO, tracer),
+		});
+	}
+
 	protected get sagaDefinition(): SagaHostDefinition<SongRequestParams> {
 		return SONG_REQUEST_SAGA;
 	}
@@ -209,7 +244,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		const trackId = parseResult.value;
 
 		const trackInfoResult = await runner.executeStep(GetTrackInfoStep, async () => {
-			const spotify = new SpotifyService(this.env);
+			const spotify = this.spotifyService;
 			const result = await spotify.getTrack(trackId);
 			if (result.status === "error") {
 				if (result.error._tag === "SpotifyTrackNotFoundError") {
@@ -233,8 +268,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		const persistResult = await runner.executeStepWithRollback(
 			PersistRequestStep,
 			async () => {
-				using songQueue = await getSongQueue();
-				const result = await songQueue.persistRequest({
+				const result = await this.songQueue.persistPendingRequest({
 					eventId: sagaId,
 					trackId: trackInfo.id,
 					trackName: trackInfo.name,
@@ -251,8 +285,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 				return { result: sagaId, undoPayload: { eventId: sagaId } };
 			},
 			async (undoPayload) => {
-				using songQueue = await getSongQueue();
-				const result = await songQueue.deleteRequest(undoPayload.eventId);
+				const result = await this.songQueue.deletePendingRequest(undoPayload.eventId);
 				if (result.status === "error") throw result.error;
 				logger.info("Rolled back song request", { eventId: undoPayload.eventId });
 			},
@@ -264,7 +297,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		const addToQueueResult = await runner.executeStepWithRollback(
 			AddToSpotifyQueueStep,
 			async (signal) => {
-				const spotify = new SpotifyService(this.env);
+				const spotify = this.spotifyService;
 				const result = await spotify.addToQueue(spotifyTrackUri(trackId), { signal });
 				if (result.status === "error") throw result.error;
 
@@ -272,7 +305,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 				return { result: trackId, undoPayload: { trackId } };
 			},
 			async (undoPayload) => {
-				const spotify = new SpotifyService(this.env);
+				const spotify = this.spotifyService;
 				const removed = await spotify.removeFromQueue(spotifyTrackUri(undoPayload.trackId));
 				if (removed.status === "error") throw removed.error;
 				if (!removed.value) {
@@ -288,7 +321,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		}
 
 		const fulfillResult = await runner.executeStep(FulfillRedemptionStep, async (signal) => {
-			const twitch = new TwitchService(this.env);
+			const twitch = this.twitchService;
 			const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "FULFILLED", {
 				signal,
 			});
@@ -309,7 +342,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		if (pointOfNoReturn.status === "error") return Result.err(pointOfNoReturn.error);
 
 		const chatResult = await runner.executeStep(SendChatConfirmationStep, async (signal) => {
-			const twitch = new TwitchService(this.env);
+			const twitch = this.twitchService;
 			const artistNames = trackInfo.artists.join(", ");
 			const message = `@${params.user_name} added "${trackInfo.name}" by ${artistNames} to the queue!`;
 			const result = await twitch.sendChatMessage(message, { signal });
@@ -335,7 +368,6 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		}
 
 		const publishResult = await runner.executeStep(PublishEventStep, async () => {
-			const eventBus = getStub("EVENT_BUS_DO");
 			const event = {
 				...createSongRequestSuccessEvent({
 					id: await deriveSagaEventId(sagaId),
@@ -346,7 +378,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 				}),
 				timestamp: params.redeemed_at,
 			};
-			const result = await eventBus.publish(event);
+			const result = await this.domainEvents.publish(event);
 			if (result.status === "error") throw result.error;
 			logger.info("Published song_request_success event", { sagaId, eventId: event.id });
 			return { result: undefined };
@@ -427,7 +459,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		return runner.executeCompensationStep(
 			"refund-redemption",
 			async () => {
-				const twitch = new TwitchService(this.env);
+				const twitch = this.twitchService;
 				const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "CANCELED");
 				if (result.status === "error") throw result.error;
 				logger.info("Refunded Song Request redemption", {
@@ -443,7 +475,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		params: SongRequestParams,
 		error: SagaStepExecutionError,
 	): Promise<void> {
-		const twitch = new TwitchService(this.env);
+		const twitch = this.twitchService;
 		const invalidTrackInput =
 			SagaStepError.is(error) &&
 			(error.stepName === ParseSpotifyUrlStep.name || error.causeTag === "InvalidSpotifyUrlError");
@@ -467,4 +499,4 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 }
 
 /** Production Song Request Durable Object with inherited serialized saga RPCs. */
-export const SongRequestSagaDO = withRpcSerialization(_SongRequestSagaDO);
+export { _SongRequestSagaDO as SongRequestSagaDO };

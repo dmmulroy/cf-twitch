@@ -2,9 +2,14 @@ import { type AgentContext } from "agents";
 import { Result } from "better-result";
 import { z } from "zod";
 
+import { DurableObjectTwitchAccessTokens } from "../adapters/cloudflare/durable-object-access-tokens";
+import { DurableObjectDomainEventPublisher } from "../adapters/cloudflare/durable-object-domain-event-publisher";
+import { DurableObjectRaffleStatistics } from "../adapters/cloudflare/durable-object-raffle-statistics";
+import { LoggingTracer } from "../capabilities/tracer";
+import { parseWorkerConfiguration } from "../configuration/worker-configuration";
+import { createRaffleRollEvent } from "../domain/domain-event";
 import { writeRaffleRollMetric } from "../lib/analytics";
 import { noResultCodec, zodSagaCodec } from "../lib/codecs";
-import { getStub, withRpcSerialization } from "../lib/durable-objects";
 import {
 	SagaNotFoundError,
 	SagaPersistedDataError,
@@ -22,8 +27,9 @@ import {
 } from "../lib/saga-runner";
 import { TwitchService } from "../services/twitch-service";
 import { CryptoRaffleRandom, type RaffleRandom } from "./raffle-random";
-import { createRaffleRollEvent } from "./schemas/event-bus-do.schema";
 
+import type { DomainEventPublisher } from "../capabilities/domain-event-publisher";
+import type { KeyboardRaffleRollStore } from "../capabilities/keyboard-raffle-roll-store";
 import type { Env } from "../index";
 
 /** Boundary schema for canonical Keyboard Raffle redemption parameters. */
@@ -140,12 +146,29 @@ const KEYBOARD_RAFFLE_SAGA: SagaHostDefinition<KeyboardRaffleParams> = {
 
 /** Keyboard Raffle orchestration hosted by the shared saga lifecycle. */
 class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffleSagaError> {
+	private readonly analytics: Cloudflare.Env["ANALYTICS"];
+	private readonly domainEvents: DomainEventPublisher;
+	private readonly raffleRolls: KeyboardRaffleRollStore;
+	private readonly twitchService: TwitchService;
+
 	constructor(
 		ctx: AgentContext,
 		env: Env,
 		private readonly raffleRandom: RaffleRandom = new CryptoRaffleRandom(),
 	) {
 		super(ctx, env);
+		this.analytics = env.ANALYTICS;
+		const configuration = parseWorkerConfiguration(env);
+		if (configuration.status === "error") {
+			throw new Error("Keyboard Raffle saga configuration is invalid");
+		}
+		const tracer = new LoggingTracer(logger);
+		this.domainEvents = new DurableObjectDomainEventPublisher(env.EVENT_BUS_DO, tracer);
+		this.raffleRolls = new DurableObjectRaffleStatistics(env.KEYBOARD_RAFFLE_DO, tracer);
+		this.twitchService = new TwitchService({
+			configuration: configuration.value.twitch,
+			accessTokens: new DurableObjectTwitchAccessTokens(env.TWITCH_TOKEN_DO, tracer),
+		});
 	}
 	protected get sagaDefinition(): SagaHostDefinition<KeyboardRaffleParams> {
 		return KEYBOARD_RAFFLE_SAGA;
@@ -190,8 +213,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		const recordRollResult = await runner.executeStepWithRollback(
 			RecordRollStep,
 			async () => {
-				const raffle = getStub("KEYBOARD_RAFFLE_DO");
-				const result = await raffle.recordRoll({
+				const result = await this.raffleRolls.recordRoll({
 					id: sagaId,
 					userId: params.user_id,
 					displayName: params.user_name,
@@ -216,11 +238,8 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 				};
 			},
 			async (rollId) => {
-				const raffle = getStub("KEYBOARD_RAFFLE_DO");
-				const result = await raffle.deleteRollById(rollId);
-				if (result.status === "error" && result.error._tag !== "RollNotFoundError") {
-					throw result.error;
-				}
+				const result = await this.raffleRolls.deleteRoll(rollId);
+				if (result.status === "error") throw result.error;
 				logger.info("Rolled back raffle Roll", { rollId });
 			},
 		);
@@ -230,7 +249,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		const { isNewRecord } = recordRollResult.value;
 
 		const fulfillResult = await runner.executeStep(FulfillRedemptionStep, async (signal) => {
-			const twitch = new TwitchService(this.env);
+			const twitch = this.twitchService;
 			const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "FULFILLED", {
 				signal,
 			});
@@ -252,7 +271,6 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		if (pointOfNoReturn.status === "error") return Result.err(pointOfNoReturn.error);
 
 		const publishResult = await runner.executeStep(PublishEventStep, async () => {
-			const eventBus = getStub("EVENT_BUS_DO");
 			const event = {
 				...createRaffleRollEvent({
 					id: await deriveSagaEventId(sagaId),
@@ -267,7 +285,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 				}),
 				timestamp: params.redeemed_at,
 			};
-			const result = await eventBus.publish(event);
+			const result = await this.domainEvents.publish(event);
 			if (result.status === "error") throw result.error;
 			logger.info("Published raffle_roll event", {
 				sagaId,
@@ -281,7 +299,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		}
 
 		const chatResult = await runner.executeStep(SendChatMessageStep, async (signal) => {
-			const twitch = new TwitchService(this.env);
+			const twitch = this.twitchService;
 			const message = isWinner
 				? `@${params.user_name} YOU WON THE KEYBOARD! 🎉 Your roll: ${userRoll} | Winning number: ${winningNumber}`
 				: `@${params.user_name} lost 😭 Winning number was ${winningNumber} and they rolled ${userRoll}. Distance: ${distance}`;
@@ -310,7 +328,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		const completion = await runner.complete();
 		if (completion.status === "error") return Result.err(completion.error);
 
-		writeRaffleRollMetric(this.env.ANALYTICS, {
+		writeRaffleRollMetric(this.analytics, {
 			user: params.user_name,
 			roll: userRoll,
 			winningNumber,
@@ -389,7 +407,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 		return runner.executeCompensationStep(
 			"refund-redemption",
 			async () => {
-				const twitch = new TwitchService(this.env);
+				const twitch = this.twitchService;
 				const result = await twitch.updateRedemptionStatus(params.reward.id, params.id, "CANCELED");
 				if (result.status === "error") throw result.error;
 				logger.info("Refunded Keyboard Raffle redemption", {
@@ -403,4 +421,4 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 }
 
 /** Production Keyboard Raffle Durable Object with inherited serialized saga RPCs. */
-export const KeyboardRaffleSagaDO = withRpcSerialization(_KeyboardRaffleSagaDO);
+export { _KeyboardRaffleSagaDO as KeyboardRaffleSagaDO };

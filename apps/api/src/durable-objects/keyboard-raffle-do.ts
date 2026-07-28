@@ -13,18 +13,17 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/keyboard-raffle-do/migrations";
-import { rpc, withRpcSerialization } from "../lib/durable-objects";
+import {
+	KeyboardRaffleRollSchema as RollSchema,
+	RaffleLeaderboardEntrySchema as LeaderboardEntrySchema,
+	RecordKeyboardRaffleRollSchema as RecordRaffleRollInputSchema,
+	type KeyboardRaffleRoll as Roll,
+	type RaffleLeaderboardEntry as LeaderboardEntry,
+} from "../domain/keyboard-raffle";
+import { rpc } from "../lib/durable-objects";
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/keyboard-raffle-do.schema";
-import {
-	LeaderboardEntrySchema,
-	RecordRaffleRollInputSchema,
-	RollSchema,
-	type LeaderboardEntry,
-	type Roll,
-	raffleLeaderboard,
-	rolls,
-} from "./schemas/keyboard-raffle-do.schema";
+import { raffleLeaderboard, rolls } from "./schemas/keyboard-raffle-do.schema";
 
 import type { Env } from "../index";
 
@@ -473,4 +472,4 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	}
 }
 
-export const KeyboardRaffleDO = withRpcSerialization(_KeyboardRaffleDO);
+export { _KeyboardRaffleDO as KeyboardRaffleDO };

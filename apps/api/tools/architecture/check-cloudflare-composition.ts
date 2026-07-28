@@ -9,65 +9,6 @@ const productionFiles = project
 	.filter((sourceFile) => !sourceFile.getFilePath().includes(`${sep}__tests__${sep}`))
 	.filter((sourceFile) => !sourceFile.getBaseName().endsWith(".test.ts"));
 
-const temporaryRouteBindingLookupAllowlist = new Set([
-	"src/routes/admin.ts",
-	"src/routes/api.ts",
-	"src/routes/eventsub-setup.ts",
-	"src/routes/oauth.ts",
-	"src/routes/webhooks.ts",
-]);
-
-const temporaryGlobalStubLocatorAllowlist = new Set([
-	"src/durable-objects/achievements-do.ts",
-	"src/durable-objects/event-bus-do.ts",
-	"src/durable-objects/eventsub-webhook-do.ts",
-	"src/durable-objects/keyboard-raffle-saga-do.ts",
-	"src/durable-objects/song-request-saga-do.ts",
-	"src/durable-objects/stream-lifecycle-do.ts",
-	"src/lib/chat-command/catalog.ts",
-	"src/lib/chat-command/handlers/achievements.ts",
-	"src/lib/chat-command/handlers/raffle-leaderboard.ts",
-	"src/lib/chat-command/handlers/stats.ts",
-	"src/routes/admin.ts",
-	"src/routes/api.ts",
-	"src/routes/oauth.ts",
-	"src/routes/stats.ts",
-	"src/routes/webhooks.ts",
-	"src/services/spotify-service.ts",
-	"src/services/twitch-service.ts",
-]);
-
-const temporaryHonoImportAllowlist = new Set(["src/lib/cache.ts", "src/lib/request-context.ts"]);
-
-const temporaryCloudflareRuntimeImportAllowlist = new Set([
-	"src/lib/durable-objects.ts",
-	"src/lib/song-queue-client.ts",
-]);
-
-const temporaryGeneratedEnvAllowlist = new Set([
-	"src/cloudflare-secret-bindings.d.ts",
-	"src/lib/chat-command/index.ts",
-	"src/lib/durable-objects.ts",
-	"src/lib/saga-host.ts",
-	"src/lib/song-queue-client.ts",
-	"src/routes/admin.ts",
-	"src/routes/api.ts",
-	"src/routes/eventsub-setup.ts",
-	"src/routes/oauth.ts",
-	"src/routes/overlay.ts",
-	"src/routes/stats.ts",
-	"src/routes/webhooks.ts",
-	"src/services/spotify-service.ts",
-	"src/services/twitch-service.ts",
-]);
-
-const temporaryApplicationBindingNameAllowlist = new Set([
-	"src/lib/chat-command/catalog.ts",
-	"src/lib/chat-command/handlers/achievements.ts",
-	"src/lib/chat-command/handlers/raffle-leaderboard.ts",
-	"src/lib/chat-command/handlers/stats.ts",
-]);
-
 function repositoryPath(filePath: string): string {
 	return relative(packageRoot, filePath).split(sep).join("/");
 }
@@ -78,6 +19,8 @@ for (const sourceFile of productionFiles) {
 	const source = sourceFile.getFullText();
 	const isCloudflareOwner =
 		path === "src/index.ts" ||
+		path === "src/cloudflare-secret-bindings.d.ts" ||
+		path === "src/lib/saga-host.ts" ||
 		path.startsWith("src/adapters/cloudflare/") ||
 		path.startsWith("src/durable-objects/");
 
@@ -85,37 +28,34 @@ for (const sourceFile of productionFiles) {
 		const moduleName = declaration.getModuleSpecifierValue();
 		const isHonoOwner =
 			path === "src/index.ts" ||
-			path.startsWith("src/adapters/http/") ||
-			path.startsWith("src/routes/");
-		if (moduleName === "hono" && !isHonoOwner && !temporaryHonoImportAllowlist.has(path)) {
+			path === "src/lib/request-context.ts" ||
+			path.startsWith("src/adapters/http/");
+		if (moduleName === "hono" && !isHonoOwner) {
 			violations.push(`${path}: Hono import is outside an HTTP adapter`);
 		}
-		if (
-			moduleName === "cloudflare:workers" &&
-			!isCloudflareOwner &&
-			!temporaryCloudflareRuntimeImportAllowlist.has(path)
-		) {
+		if (moduleName === "cloudflare:workers" && !isCloudflareOwner) {
 			violations.push(`${path}: Cloudflare runtime import is outside a runtime owner`);
+		}
+		const importsAmbientWorkerEnvironment = declaration
+			.getNamedImports()
+			.some((namedImport) => namedImport.getName() === "env");
+		if (moduleName === "cloudflare:workers" && importsAmbientWorkerEnvironment) {
+			violations.push(`${path}: ambient Cloudflare Worker env import is forbidden`);
 		}
 
 		const importsGlobalStubLocator = declaration
 			.getNamedImports()
 			.some((namedImport) => namedImport.getName() === "getStub");
-		if (
-			importsGlobalStubLocator &&
-			!path.startsWith("src/adapters/cloudflare/") &&
-			!temporaryGlobalStubLocatorAllowlist.has(path)
-		) {
-			violations.push(`${path}: getStub import is outside its migration allowlist`);
+		if (importsGlobalStubLocator) {
+			violations.push(`${path}: ambient getStub import is forbidden`);
 		}
 	}
 
-	if (
-		/\b(?:Cloudflare\.)?Env\b/u.test(source) &&
-		!isCloudflareOwner &&
-		!temporaryGeneratedEnvAllowlist.has(path)
-	) {
-		violations.push(`${path}: generated Env reference is outside its migration allowlist`);
+	if (/\b(?:Cloudflare\.)?Env\b/u.test(source) && !isCloudflareOwner) {
+		violations.push(`${path}: generated Env reference is outside a runtime owner`);
+	}
+	if (/\bthis\.env\b/u.test(source)) {
+		violations.push(`${path}: inherited ambient env access is forbidden after construction`);
 	}
 
 	const isApplicationCode =
@@ -123,22 +63,19 @@ for (const sourceFile of productionFiles) {
 		path.startsWith("src/domain/") ||
 		path.startsWith("src/capabilities/") ||
 		path.startsWith("src/lib/chat-command/");
+	if (isApplicationCode && /\b[A-Z][A-Z0-9_]*(?:_DO|_BUCKET|_KV|_QUEUE)\b/u.test(source)) {
+		violations.push(`${path}: Cloudflare binding name is forbidden in application code`);
+	}
 	if (
-		isApplicationCode &&
-		/\b[A-Z][A-Z0-9_]*(?:_DO|_BUCKET|_KV|_QUEUE)\b/u.test(source) &&
-		!temporaryApplicationBindingNameAllowlist.has(path)
+		(path.startsWith("src/capabilities/") || path.startsWith("src/domain/")) &&
+		/\b(?:Promise|Result)\s*<\s*unknown\b/u.test(source)
 	) {
-		violations.push(`${path}: Cloudflare binding name is outside its migration allowlist`);
+		violations.push(`${path}: application contract returns unknown boundary data`);
 	}
 
-	const isHttpAdapterOrLegacyRoute =
-		path.startsWith("src/adapters/http/") || path.startsWith("src/routes/");
-	if (
-		isHttpAdapterOrLegacyRoute &&
-		/\.env\b/u.test(source) &&
-		!temporaryRouteBindingLookupAllowlist.has(path)
-	) {
-		violations.push(`${path}: route binding lookup is outside its migration allowlist`);
+	const isHttpAdapter = path.startsWith("src/adapters/http/");
+	if (isHttpAdapter && /\.env\b/u.test(source)) {
+		violations.push(`${path}: HTTP adapter binding lookup is forbidden`);
 	}
 }
 

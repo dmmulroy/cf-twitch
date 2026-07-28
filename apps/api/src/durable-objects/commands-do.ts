@@ -8,7 +8,19 @@ import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
 import { z } from "zod";
 
-import { rpc, withRpcSerialization } from "../lib/durable-objects";
+import {
+	ChatCommandDefinitionSchema as CommandDefinitionSchema,
+	ChatCommandInstantSchema as IsoTimestampSchema,
+	ChatCommandNameSchema as CommandNameSchema,
+	ChatCommandPermissionSchema as PermissionSchema,
+	ChatCommandValueSchema as CommandValueSchema,
+	CreateChatCommandInputSchema as CreateCommandInputSchema,
+	UpdateChatCommandInputSchema as UpdateCommandInputSchema,
+	type ChatCommandDefinition as Command,
+	type CreateChatCommandInput as CreateCommandInput,
+	type UpdateChatCommandInput as UpdateCommandInput,
+} from "../domain/chat-command-definition";
+import { rpc } from "../lib/durable-objects";
 import {
 	CommandAliasConflictError,
 	CommandAlreadyExistsError,
@@ -27,19 +39,7 @@ import { hasPermission } from "../lib/permissions";
 import type { Env } from "../index";
 import type { Permission } from "../lib/permissions";
 
-const CommandNameSchema = z
-	.string()
-	.min(1)
-	.max(50)
-	.regex(/^[a-z0-9-]+$/);
-const PermissionSchema = z.enum(["everyone", "vip", "moderator", "broadcaster"]);
-const ResponseTypeSchema = z.enum(["static", "dynamic", "computed"]);
-const CategorySchema = z.enum(["info", "stats", "meta", "music"]);
-const CommandValueSchema = z.string().min(0).max(2000);
 const CounterIncrementSchema = z.number().int().min(1).max(100);
-const IsoTimestampSchema = z.iso.datetime({ offset: true });
-const HandlerKeySchema = z.string().min(1).max(100);
-const TemplateSchema = z.string().min(1).max(2000);
 
 const DynamicCommandEmptyResponse = "No topic set for today.";
 const DynamicCommandOutputTemplate = "Working on: {value}";
@@ -51,53 +51,6 @@ const PermissionLevels: Record<Permission, number> = {
 	moderator: 2,
 	broadcaster: 3,
 };
-
-const CommandDefinitionBaseShape = {
-	name: CommandNameSchema,
-	description: z.string().min(1).max(200),
-	category: CategorySchema,
-	permission: PermissionSchema,
-	enabled: z.boolean(),
-	createdAt: IsoTimestampSchema,
-	aliases: z.array(CommandNameSchema).max(20),
-};
-
-/** Persisted Chat Command definition with response-type invariants encoded by its discriminator. */
-export const CommandDefinitionSchema = z.discriminatedUnion("responseType", [
-	z.strictObject({
-		...CommandDefinitionBaseShape,
-		responseType: z.literal("static"),
-		valueSourceName: CommandNameSchema,
-		counterSourceName: z.null(),
-		handlerKey: z.null(),
-		outputTemplate: TemplateSchema,
-		emptyResponse: TemplateSchema,
-		writePermission: z.null(),
-	}),
-	z.strictObject({
-		...CommandDefinitionBaseShape,
-		responseType: z.literal("dynamic"),
-		valueSourceName: CommandNameSchema,
-		counterSourceName: z.null(),
-		handlerKey: z.null(),
-		outputTemplate: TemplateSchema,
-		emptyResponse: TemplateSchema,
-		writePermission: PermissionSchema,
-	}),
-	z.strictObject({
-		...CommandDefinitionBaseShape,
-		responseType: z.literal("computed"),
-		valueSourceName: z.null(),
-		counterSourceName: CommandNameSchema.nullable(),
-		handlerKey: HandlerKeySchema,
-		outputTemplate: z.null(),
-		emptyResponse: z.null(),
-		writePermission: z.null(),
-	}),
-]);
-
-/** Parsed persisted Chat Command definition. */
-export type Command = z.infer<typeof CommandDefinitionSchema>;
 
 const CommandValueStateSchema = z.object({
 	value: CommandValueSchema,
@@ -135,68 +88,6 @@ export const CommandsAgentStateSchema = z.strictObject({
 
 /** Parsed, rehydrated Commands Agent state. */
 export type CommandsAgentState = z.infer<typeof CommandsAgentStateSchema>;
-
-const CreateCommandBaseShape = {
-	name: CommandNameSchema,
-	description: z.string().min(1).max(200),
-	category: CategorySchema,
-	permission: PermissionSchema,
-	enabled: z.boolean().optional(),
-	aliases: z.array(CommandNameSchema).max(20).optional(),
-	createdAt: IsoTimestampSchema.optional(),
-};
-
-/** Strict create input accepting only fields legal for the selected response type. */
-export const CreateCommandInputSchema = z.discriminatedUnion("responseType", [
-	z.strictObject({
-		...CreateCommandBaseShape,
-		responseType: z.literal("static"),
-		valueSourceName: CommandNameSchema.optional(),
-		outputTemplate: TemplateSchema.optional(),
-		emptyResponse: TemplateSchema.optional(),
-		initialValue: CommandValueSchema.optional(),
-	}),
-	z.strictObject({
-		...CreateCommandBaseShape,
-		responseType: z.literal("dynamic"),
-		valueSourceName: CommandNameSchema.optional(),
-		outputTemplate: TemplateSchema.optional(),
-		emptyResponse: TemplateSchema.optional(),
-		writePermission: PermissionSchema.optional(),
-		initialValue: CommandValueSchema.optional(),
-	}),
-	z.strictObject({
-		...CreateCommandBaseShape,
-		responseType: z.literal("computed"),
-		handlerKey: HandlerKeySchema,
-		counterSourceName: CommandNameSchema.optional(),
-		initialCounter: z.number().int().nonnegative().optional(),
-	}),
-]);
-
-/** Parsed strict input for creating one response-type-specific Chat Command. */
-export type CreateCommandInput = z.infer<typeof CreateCommandInputSchema>;
-
-/** Strict non-empty command patch; response-type transitions must include all coupled fields. */
-export const UpdateCommandInputSchema = z
-	.strictObject({
-		description: z.string().min(1).max(200).optional(),
-		category: CategorySchema.optional(),
-		responseType: ResponseTypeSchema.optional(),
-		permission: PermissionSchema.optional(),
-		enabled: z.boolean().optional(),
-		aliases: z.array(CommandNameSchema).max(20).optional(),
-		valueSourceName: CommandNameSchema.nullable().optional(),
-		counterSourceName: CommandNameSchema.nullable().optional(),
-		handlerKey: HandlerKeySchema.nullable().optional(),
-		outputTemplate: TemplateSchema.nullable().optional(),
-		emptyResponse: TemplateSchema.nullable().optional(),
-		writePermission: PermissionSchema.nullable().optional(),
-	})
-	.refine((patch) => Object.keys(patch).length > 0, { message: "Command patch must not be empty" });
-
-/** Parsed non-empty Chat Command update patch. */
-export type UpdateCommandInput = z.infer<typeof UpdateCommandInputSchema>;
 
 const CommandUpdateActorSchema = z.strictObject({
 	displayName: z.string().min(1).max(100),
@@ -1723,4 +1614,4 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	}
 }
 
-export const CommandsDO = withRpcSerialization(_CommandsDO);
+export { _CommandsDO as CommandsDO };

@@ -1,4 +1,4 @@
-import type { Command } from "../../durable-objects/commands-do";
+import type { ChatCommandDefinition as Command } from "../../domain/chat-command-definition";
 import type { Permission } from "../permissions";
 import type { ChatCommandCatalogError, ChatCommandError } from "./errors";
 import type { Result } from "better-result";

@@ -7,25 +7,31 @@
 import { Hono } from "hono";
 import { html } from "hono/html";
 
-import { logger } from "../lib/logger";
-import { type AppRouteEnv } from "../lib/request-context";
+import { type AppRouteEnv } from "../../lib/request-context";
 
-import type { Env } from "../index";
+import type { Logger } from "../../lib/logging";
 
-const overlay = new Hono<AppRouteEnv<Env>>();
+/** Exact dependencies required by the Now Playing overlay route. */
+export type OverlayRouteDependencies = Readonly<{ logger: Logger }>;
 
-/**
- * GET /overlay/now-playing
- * HTML overlay showing currently playing track with transparent background
- * Polls /api/now-playing every 5 seconds for updates
- */
-overlay.get("/now-playing", (c) => {
-	logger.info("Served now playing overlay page", {
-		event: "overlay.now_playing_page.served",
-		component: "route",
-		route: "/overlay/now-playing",
-	});
-	const overlayHtml = html`
+/** Creates the OBS Now Playing overlay route. */
+export function createOverlayRoutes(
+	dependencies: OverlayRouteDependencies,
+): Hono<AppRouteEnv<object>> {
+	const overlay = new Hono<AppRouteEnv<object>>();
+
+	/**
+	 * GET /overlay/now-playing
+	 * HTML overlay showing currently playing track with transparent background
+	 * Polls /api/now-playing every 5 seconds for updates
+	 */
+	overlay.get("/now-playing", (c) => {
+		dependencies.logger.info("Served now playing overlay page", {
+			event: "overlay.now_playing_page.served",
+			component: "route",
+			route: "/overlay/now-playing",
+		});
+		const overlayHtml = html`
 		<!doctype html>
 		<html lang="en">
 			<head>
@@ -374,7 +380,8 @@ overlay.get("/now-playing", (c) => {
 		</html>
 	`;
 
-	return c.html(overlayHtml);
-});
+		return c.html(overlayHtml);
+	});
 
-export default overlay;
+	return overlay;
+}

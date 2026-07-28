@@ -1,12 +1,18 @@
 import { Result } from "better-result";
 import { z } from "zod";
 
+import { DurableObjectTwitchAccessTokens } from "../adapters/cloudflare/durable-object-access-tokens";
+import { LoggingTracer } from "../capabilities/tracer";
+import { parseWorkerConfiguration } from "../configuration/worker-configuration";
 import { noResultCodec, zodSagaCodec } from "../lib/codecs";
-import { withRpcSerialization } from "../lib/durable-objects";
 import { SagaEffectOutcomeUnknown, SagaStepRetrying } from "../lib/errors";
+import { logger } from "../lib/logger";
 import { SagaHost, type SagaHostDefinition } from "../lib/saga-host";
 import { SagaRunner, type SagaStepExecutionError } from "../lib/saga-runner";
 import { TwitchService } from "../services/twitch-service";
+
+import type { Env } from "../index";
+import type { AgentContext } from "agents";
 
 /** Boundary schema for raid shoutout saga parameters. */
 export const RaidShoutoutParamsSchema = z.object({
@@ -39,6 +45,23 @@ const RAID_SHOUTOUT_SAGA: SagaHostDefinition<RaidShoutoutParams> = {
 
 /** Raid thank-you and native shoutout orchestration hosted by the shared saga lifecycle. */
 class _RaidShoutoutSagaDO extends SagaHost<RaidShoutoutParams, SagaStepExecutionError> {
+	private readonly twitchService: TwitchService;
+
+	constructor(ctx: AgentContext, env: Env) {
+		super(ctx, env);
+		const configuration = parseWorkerConfiguration(env);
+		if (configuration.status === "error") {
+			throw new Error("Raid Shoutout saga configuration is invalid");
+		}
+		this.twitchService = new TwitchService({
+			configuration: configuration.value.twitch,
+			accessTokens: new DurableObjectTwitchAccessTokens(
+				env.TWITCH_TOKEN_DO,
+				new LoggingTracer(logger),
+			),
+		});
+	}
+
 	protected get sagaDefinition(): SagaHostDefinition<RaidShoutoutParams> {
 		return RAID_SHOUTOUT_SAGA;
 	}
@@ -47,7 +70,7 @@ class _RaidShoutoutSagaDO extends SagaHost<RaidShoutoutParams, SagaStepExecution
 		params: RaidShoutoutParams,
 		runner: SagaRunner<RaidShoutoutParams>,
 	): Promise<Result<void, SagaStepExecutionError>> {
-		const twitch = new TwitchService(this.env);
+		const twitch = this.twitchService;
 
 		const chatResult = await runner.executeStep(
 			{
@@ -101,4 +124,4 @@ class _RaidShoutoutSagaDO extends SagaHost<RaidShoutoutParams, SagaStepExecution
 }
 
 /** Production raid shoutout Durable Object with inherited serialized saga RPCs. */
-export const RaidShoutoutSagaDO = withRpcSerialization(_RaidShoutoutSagaDO);
+export { _RaidShoutoutSagaDO as RaidShoutoutSagaDO };

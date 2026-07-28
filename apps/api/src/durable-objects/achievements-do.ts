@@ -13,8 +13,29 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 
 import migrations from "../../drizzle/achievements-do/migrations";
+import { DurableObjectTwitchAccessTokens } from "../adapters/cloudflare/durable-object-access-tokens";
+import {
+	ProviderAccessTokenError,
+	type TwitchAccessTokens,
+} from "../capabilities/provider-access-tokens";
+import { LoggingTracer } from "../capabilities/tracer";
+import { parseWorkerConfiguration } from "../configuration/worker-configuration";
+import {
+	AchievementCategorySchema,
+	AchievementDefinitionSchema,
+	AchievementLeaderboardEntrySchema,
+	AchievementTriggerEventSchema,
+	UnlockedAchievementSchema,
+	type AchievementDebugTableCounts,
+	type AchievementDebugUserSnapshot,
+	type AchievementDefinition,
+	type AchievementLeaderboardEntry,
+	type UnlockedAchievement,
+	type ViewerAchievementProgress,
+} from "../domain/achievement";
+import { EventSchema, EventType, type Event } from "../domain/domain-event";
 import { writeAchievementUnlockMetric } from "../lib/analytics";
-import { getStub, rpc, withRpcSerialization } from "../lib/durable-objects";
+import { rpc } from "../lib/durable-objects";
 import {
 	AchievementDbError,
 	AchievementEventValidationError,
@@ -44,7 +65,6 @@ import {
 	userAchievements,
 	userStreaks,
 } from "./schemas/achievements-do.schema";
-import { EventSchema, EventType, type Event } from "./schemas/event-bus-do.schema";
 
 import type { Env } from "../index";
 
@@ -52,48 +72,11 @@ import type { Env } from "../index";
 // Types
 // =============================================================================
 
-/** Achievement trigger event types */
-export type TriggerEvent =
-	| "song_request"
-	| "stream_first_request"
-	| "raffle_roll"
-	| "raffle_win"
-	| "raffle_close"
-	| "raffle_closest_record"
-	| "request_streak";
-
-/** Achievement categories */
-export type AchievementCategory = "song_request" | "raffle" | "engagement" | "special";
-
-/** Zod schema for validating category from DB */
-const AchievementCategorySchema = z.enum(["song_request", "raffle", "engagement", "special"]);
-const AchievementTriggerEventSchema = z.enum([
-	"song_request",
-	"stream_first_request",
-	"raffle_roll",
-	"raffle_win",
-	"raffle_close",
-	"raffle_closest_record",
-	"request_streak",
-]);
-const AchievementScopeSchema = z.enum(["session", "cumulative"]);
-
-/** Achievement scope - determines reset behavior */
-export type AchievementScope = "session" | "cumulative";
-
 /** Input schema for recordEvent - validated with Zod */
 export const AchievementEventInputSchema = z.object({
 	userId: z.string().min(1),
 	userDisplayName: z.string().min(1),
-	event: z.enum([
-		"song_request",
-		"stream_first_request",
-		"raffle_roll",
-		"raffle_win",
-		"raffle_close",
-		"raffle_closest_record",
-		"request_streak",
-	]),
+	event: AchievementTriggerEventSchema,
 	eventId: z.string().min(1), // idempotency key
 	increment: z.number().int().positive().optional().default(1),
 	metadata: z.record(z.string(), z.unknown()).optional(),
@@ -107,55 +90,13 @@ const AchievementUnlockEffectPayloadSchema = z.object({
 	effectId: z.string().min(1),
 });
 
-const AchievementDefinitionRecordSchema = z.object({
-	id: z.string().min(1),
-	name: z.string().min(1),
-	description: z.string().min(1),
-	icon: z.string().min(1),
-	category: AchievementCategorySchema,
-	threshold: z.number().int().positive().nullable(),
-	triggerEvent: AchievementTriggerEventSchema,
-	scope: AchievementScopeSchema,
-});
-
-/** Parsed Achievement Definition returned by the public RPC interface. */
-export type AchievementDefinition = z.infer<typeof AchievementDefinitionRecordSchema>;
+const AchievementDefinitionRecordSchema = AchievementDefinitionSchema;
 
 const LeaderboardOptionsSchema = z.object({
 	limit: z.number().int().min(1).max(100).optional().default(10),
 });
 
-const UnlockedAchievementRecordSchema = z.object({
-	id: z.string().min(1),
-	name: z.string().min(1),
-	description: z.string().min(1),
-	icon: z.string().min(1),
-	category: AchievementCategorySchema,
-	unlockedAt: z.string().datetime(),
-});
-
-/** Unlocked achievement returned from recordEvent */
-export interface UnlockedAchievement {
-	id: string;
-	name: string;
-	description: string;
-	icon: string;
-	category: AchievementCategory;
-	unlockedAt: string;
-}
-
-/** Achievement progress for a user */
-export interface UserAchievementProgress {
-	achievementId: string;
-	name: string;
-	description: string;
-	icon: string;
-	category: AchievementCategory;
-	threshold: number | null;
-	progress: number;
-	unlocked: boolean;
-	unlockedAt: string | null;
-}
+const UnlockedAchievementRecordSchema = UnlockedAchievementSchema;
 
 /** Unannounced achievement with user info */
 export interface UnannouncedAchievement {
@@ -163,47 +104,9 @@ export interface UnannouncedAchievement {
 	achievement: UnlockedAchievement;
 }
 
-/** Leaderboard entry */
-export interface LeaderboardEntry {
-	userDisplayName: string;
-	count: number;
-}
-
 /** Leaderboard query options */
 export interface LeaderboardOptions {
 	limit?: number;
-}
-
-/** Debug counts for achievements tables */
-export interface AchievementDebugTableCounts {
-	definitions: number;
-	userAchievements: number;
-	unlockedAchievements: number;
-	userStreaks: number;
-	eventHistory: number;
-}
-
-/** Debug snapshot for a specific user */
-export interface AchievementDebugUserSnapshot {
-	requestedUser: string;
-	normalizedUser: string;
-	exactUserAchievementRows: number;
-	caseInsensitiveUserAchievementRows: number;
-	exactUnlockedRows: number;
-	caseInsensitiveUnlockedRows: number;
-	exactStreakRows: number;
-	caseInsensitiveStreakRows: number;
-	exactEventHistoryRows: number;
-	caseInsensitiveEventHistoryRows: number;
-	recentEvents: Array<{
-		eventId: string;
-		eventType: string;
-		userId: string;
-		userDisplayName: string;
-		timestamp: string;
-		metadata: string | null;
-	}>;
-	similarUsers: string[];
 }
 
 function normalizeUserDisplayName(value: string): string {
@@ -231,6 +134,9 @@ class _AchievementsDO
 	implements StreamLifecycleHandler<AchievementDbError>
 {
 	private db: ReturnType<typeof drizzle<typeof schema>>;
+	private readonly analytics: Cloudflare.Env["ANALYTICS"];
+	private readonly twitchAccessTokens: TwitchAccessTokens;
+	private readonly twitchService: TwitchService;
 
 	initialState: AchievementsAgentState = {
 		isStreamLive: false,
@@ -240,6 +146,17 @@ class _AchievementsDO
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
+		this.analytics = env.ANALYTICS;
+		const configuration = parseWorkerConfiguration(env);
+		if (configuration.status === "error") {
+			throw new Error("Achievements Durable Object configuration is invalid");
+		}
+		const tracer = new LoggingTracer(logger);
+		this.twitchAccessTokens = new DurableObjectTwitchAccessTokens(env.TWITCH_TOKEN_DO, tracer);
+		this.twitchService = new TwitchService({
+			configuration: configuration.value.twitch,
+			accessTokens: this.twitchAccessTokens,
+		});
 	}
 
 	async onStart(): Promise<void> {
@@ -423,7 +340,7 @@ class _AchievementsDO
 	@rpc
 	async getUserAchievements(
 		userDisplayName: string,
-	): Promise<Result<UserAchievementProgress[], AchievementError>> {
+	): Promise<Result<ViewerAchievementProgress[], AchievementError>> {
 		return Result.tryPromise({
 			try: async () => {
 				// Get all definitions
@@ -754,7 +671,7 @@ class _AchievementsDO
 	@rpc
 	async getLeaderboard(
 		options?: LeaderboardOptions,
-	): Promise<Result<LeaderboardEntry[], AchievementError>> {
+	): Promise<Result<AchievementLeaderboardEntry[], AchievementError>> {
 		const optionsResult = LeaderboardOptionsSchema.safeParse(options ?? {});
 		if (!optionsResult.success) {
 			return Result.err(
@@ -776,7 +693,7 @@ class _AchievementsDO
 					.orderBy(desc(count(userAchievements.id)))
 					.limit(limit);
 
-				return results;
+				return z.array(AchievementLeaderboardEntrySchema).parse(results);
 			},
 			catch: (cause) => new AchievementDbError({ operation: "getLeaderboard", cause }),
 		});
@@ -957,7 +874,7 @@ class _AchievementsDO
 						eq(achievementUnlockOutbox.metricState, "pending"),
 					),
 				);
-			writeAchievementUnlockMetric(this.env.ANALYTICS, {
+			writeAchievementUnlockMetric(this.analytics, {
 				effectId: effect.effectId,
 				user: effect.userDisplayName,
 				achievementId: effect.achievementId,
@@ -975,7 +892,7 @@ class _AchievementsDO
 			return;
 		}
 
-		const tokenResult = await getStub("TWITCH_TOKEN_DO").getValidToken();
+		const tokenResult = await this.twitchAccessTokens.getValidAccessToken();
 		if (tokenResult.status === "error") {
 			await this.retryOrAbandonAchievementAnnouncement(
 				effect.effectId,
@@ -999,9 +916,8 @@ class _AchievementsDO
 			return;
 		}
 
-		const twitchService = new TwitchService(this.env);
 		const message = `🏆 @${effect.userDisplayName} unlocked "${effect.achievementName}"! ${effect.achievementDescription}`;
-		const sendResult = await twitchService.sendChatMessage(message);
+		const sendResult = await this.twitchService.sendChatMessage(message);
 		if (sendResult.status === "ok") {
 			await this.db.transaction(async (tx) => {
 				await tx
@@ -1470,6 +1386,12 @@ class _AchievementsDO
 
 	private isRetryableAnnouncementPreflightError(error: unknown): boolean {
 		return (
+			(ProviderAccessTokenError.is(error) &&
+				[
+					"TokenUnavailableWhileStreamOfflineError",
+					"TokenRefreshNetworkError",
+					"TwitchNetworkError",
+				].includes(error.failureTag)) ||
 			TokenUnavailableWhileStreamOfflineError.is(error) ||
 			TokenRefreshNetworkError.is(error) ||
 			TwitchNetworkError.is(error) ||
@@ -1479,4 +1401,4 @@ class _AchievementsDO
 	}
 }
 
-export const AchievementsDO = withRpcSerialization(_AchievementsDO);
+export { _AchievementsDO as AchievementsDO };

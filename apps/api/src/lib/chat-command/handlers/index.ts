@@ -1,4 +1,3 @@
-import { CommandsDOCommandCounterStore } from "../catalog";
 import { AchievementsCommandHandler } from "./achievements";
 import { CommandsCommandHandler } from "./commands";
 import { RaffleLeaderboardCommandHandler } from "./raffle-leaderboard";
@@ -8,6 +7,9 @@ import { StatsCommandHandler } from "./stats";
 import { TimeCommandHandler } from "./time";
 import { UpdateCommandHandler } from "./update";
 
+import type { AchievementReader } from "../../../capabilities/http-state-readers";
+import type { RaffleStatistics } from "../../../capabilities/raffle-statistics";
+import type { SongQueue } from "../../../capabilities/song-queue";
 import type { Clock } from "../../clock";
 import type { CommandCatalog, CommandCounterStore, ComputedCommandHandlers } from "../types";
 
@@ -20,17 +22,23 @@ import type { CommandCatalog, CommandCounterStore, ComputedCommandHandlers } fro
 export function makeComputedCommandHandlers(dependencies: {
 	catalog: CommandCatalog;
 	clock: Clock;
-	counters?: CommandCounterStore;
+	counters: CommandCounterStore;
+	achievements: AchievementReader;
+	raffles: RaffleStatistics;
+	songQueue: SongQueue;
 }): ComputedCommandHandlers {
-	const counters = dependencies.counters ?? new CommandsDOCommandCounterStore();
 	return {
-		achievements: new AchievementsCommandHandler(),
+		achievements: new AchievementsCommandHandler(dependencies.achievements),
 		commands: new CommandsCommandHandler(dependencies.catalog),
-		queue: new QueueCommandHandler(),
-		"raffle-leaderboard": new RaffleLeaderboardCommandHandler(),
-		skillissue: new SkillIssueCommandHandler(counters),
-		song: new SongCommandHandler(),
-		stats: new StatsCommandHandler(),
+		queue: new QueueCommandHandler(dependencies.songQueue),
+		"raffle-leaderboard": new RaffleLeaderboardCommandHandler(dependencies.raffles),
+		skillissue: new SkillIssueCommandHandler(dependencies.counters),
+		song: new SongCommandHandler(dependencies.songQueue),
+		stats: new StatsCommandHandler(
+			dependencies.achievements,
+			dependencies.songQueue,
+			dependencies.raffles,
+		),
 		time: new TimeCommandHandler(dependencies.clock),
 		update: new UpdateCommandHandler(dependencies.catalog),
 	};

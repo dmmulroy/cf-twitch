@@ -9,14 +9,14 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { describe, expect, it } from "vite-plus/test";
 
-import { AchievementsDO } from "../../durable-objects/achievements-do";
-import * as achievementSchema from "../../durable-objects/schemas/achievements-do.schema";
 import {
 	createRaffleRollEvent,
 	createSongRequestSuccessEvent,
 	createStreamOfflineEvent,
 	createStreamOnlineEvent,
-} from "../../durable-objects/schemas/event-bus-do.schema";
+} from "../../domain/domain-event";
+import { AchievementsDO } from "../../durable-objects/achievements-do";
+import * as achievementSchema from "../../durable-objects/schemas/achievements-do.schema";
 import { createAchievementsStub, ensureNamedTwitchTokenStub } from "../helpers/durable-objects";
 
 describe("AchievementsDO", () => {

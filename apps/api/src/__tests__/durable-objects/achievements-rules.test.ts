@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { createSongRequestSuccessEvent } from "../../domain/domain-event";
 import {
 	evaluateAchievementRules,
 	type AchievementRuleDefinition,
 } from "../../durable-objects/achievements/rules";
-import { createSongRequestSuccessEvent } from "../../durable-objects/schemas/event-bus-do.schema";
 
 function definition(params: {
 	id: string;

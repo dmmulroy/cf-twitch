@@ -63,6 +63,7 @@ export type SagaHostStartError<E> = SagaInputParseError | SagaHostLifecycleError
  */
 export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 	private readonly db: ReturnType<typeof drizzle<typeof sagaSchema>>;
+	private readonly sagaAnalytics: AnalyticsEngineDataset;
 	private runner: SagaRunner<P> | null = null;
 
 	/** Empty retry coordination state; SQLite remains the lifecycle source of truth. */
@@ -75,6 +76,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 	constructor(ctx: AgentContext, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema: sagaSchema });
+		this.sagaAnalytics = env.ANALYTICS;
 	}
 
 	/** The parameter codec and analytics identity supplied by a concrete saga. */
@@ -199,7 +201,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 				retryScheduler: {
 					scheduleRetry: (delayMs) => this.scheduleRetry(delayMs),
 				},
-				analytics: this.env.ANALYTICS,
+				analytics: this.sagaAnalytics,
 				sagaType: this.sagaDefinition.sagaType,
 			});
 		}

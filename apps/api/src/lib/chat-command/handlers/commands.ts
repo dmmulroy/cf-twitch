@@ -3,7 +3,7 @@ import { Result } from "better-result";
 import { hasPermission, type Permission } from "../../permissions";
 import { chatTextResponse } from "../types";
 
-import type { Command } from "../../../durable-objects/commands-do";
+import type { ChatCommandDefinition as Command } from "../../../domain/chat-command-definition";
 import type { CommandCatalog, ComputedCommandContext, ComputedCommandHandler } from "../types";
 
 /**

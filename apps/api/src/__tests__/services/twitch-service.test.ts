@@ -1,7 +1,11 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
 
+import { DurableObjectTwitchAccessTokens } from "../../adapters/cloudflare/durable-object-access-tokens";
+import { LoggingTracer } from "../../capabilities/tracer";
+import { parseWorkerConfiguration } from "../../configuration/worker-configuration";
 import { TwitchTokenDO } from "../../durable-objects/twitch-token-do";
+import { logger } from "../../lib/logger";
 import { TwitchService } from "../../services/twitch-service";
 import { VALID_TOKEN_RESPONSE } from "../fixtures/twitch";
 import { fetchMock } from "../helpers/fetch-mock";
@@ -15,14 +19,21 @@ async function ensureTwitchTokenStub(): Promise<DurableObjectStub<TwitchTokenDO>
 }
 
 function twitchService(): TwitchService {
-	return new TwitchService(env);
+	const configuration = parseWorkerConfiguration(env);
+	if (configuration.status === "error") throw configuration.error;
+	return new TwitchService({
+		configuration: configuration.value.twitch,
+		accessTokens: new DurableObjectTwitchAccessTokens(
+			env.TWITCH_TOKEN_DO,
+			new LoggingTracer(logger),
+		),
+	});
 }
 
 describe("TwitchService", () => {
 	it("rejects blank provider configuration before outbound I/O", () => {
-		expect(() => new TwitchService({ ...env, TWITCH_CLIENT_SECRET: "" })).toThrow(
-			"Twitch provider configuration is invalid",
-		);
+		const result = parseWorkerConfiguration({ ...env, TWITCH_CLIENT_SECRET: "" });
+		expect(result.status).toBe("error");
 		expect(fetchMock.getRequests()).toHaveLength(0);
 	});
 

@@ -3,7 +3,7 @@ import { Result } from "better-result";
 import { ChatCommandSendError } from "../../../lib/chat-command";
 import { CommandNotFoundError, type CommandsError } from "../../../lib/errors";
 
-import type { Command } from "../../../durable-objects/commands-do";
+import type { ChatCommandDefinition as Command } from "../../../domain/chat-command-definition";
 import type {
 	ChatCommandMetric,
 	ChatCommandMetrics,

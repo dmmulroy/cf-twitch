@@ -1,0 +1,546 @@
+/**
+ * Admin routes for DLQ inspection and management
+ *
+ * All routes require bearer token authentication via ADMIN_SECRET env var.
+ */
+
+import { Hono } from "hono";
+import { z } from "zod";
+
+import {
+	CreateChatCommandInputSchema as CreateCommandInputSchema,
+	UpdateChatCommandInputSchema as UpdateCommandInputSchema,
+} from "../../domain/chat-command-definition";
+import { constantTimeEquals } from "../../lib/crypto";
+import { DLQItemNotFoundError } from "../../lib/errors";
+import { type AppRouteEnv } from "../../lib/request-context";
+
+import type { ChatCommandAdministration } from "../../capabilities/chat-command-administration";
+import type { EventBusAdministration } from "../../capabilities/event-bus-administration";
+import type {
+	AchievementAdministration,
+	AchievementReader,
+} from "../../capabilities/http-state-readers";
+import type { RaffleStatistics } from "../../capabilities/raffle-statistics";
+import type { SongQueue } from "../../capabilities/song-queue";
+import type { Logger } from "../../lib/logger";
+import type { RedactedValue } from "../../lib/redacted";
+
+/** Exact dependencies required by administrator routes. */
+export type AdminRouteDependencies = Readonly<{
+	administratorSecret: RedactedValue<string>;
+	eventBus: EventBusAdministration;
+	achievements: AchievementReader & AchievementAdministration;
+	chatCommands: ChatCommandAdministration;
+	songQueue: SongQueue;
+	raffles: RaffleStatistics;
+	logger: Logger;
+}>;
+
+/** Creates administrator routes without Worker binding or global stub lookup. */
+export function createAdminRoutes(dependencies: AdminRouteDependencies): Hono<AppRouteEnv<object>> {
+	const admin = new Hono<AppRouteEnv<object>>();
+	const logger = dependencies.logger;
+
+	// =============================================================================
+	// Auth Middleware
+	// =============================================================================
+
+	/**
+	 * Bearer token authentication middleware.
+	 * Requires Authorization: Bearer <ADMIN_SECRET> header.
+	 */
+	admin.use("*", async (c, next) => {
+		const adminSecret = dependencies.administratorSecret.unsafeUnwrapForFinalIo();
+
+		if (!adminSecret) {
+			logger.error("Admin API authentication misconfigured", {
+				event: "admin.auth.misconfigured",
+			});
+			return c.json({ error: "Admin API not configured" }, 503);
+		}
+
+		const authHeader = c.req.header("Authorization");
+
+		if (!authHeader) {
+			logger.warn("Admin API authentication header missing", { event: "admin.auth.missing" });
+			return c.json({ error: "Missing Authorization header" }, 401);
+		}
+
+		const [scheme, token] = authHeader.split(" ");
+
+		if (scheme !== "Bearer" || !token) {
+			logger.warn("Admin API authentication header malformed", { event: "admin.auth.malformed" });
+			return c.json(
+				{ error: "Invalid Authorization header format. Expected: Bearer <token>" },
+				401,
+			);
+		}
+
+		if (!constantTimeEquals(token, adminSecret)) {
+			logger.warn("Admin API authentication denied", { event: "admin.auth.denied" });
+			return c.json({ error: "Invalid token" }, 403);
+		}
+
+		logger.info("Admin API authentication authorized", { event: "admin.auth.authorized" });
+		await next();
+	});
+
+	// =============================================================================
+	// DLQ Routes
+	// =============================================================================
+
+	/**
+	 * Query params schema for GET /admin/dlq
+	 */
+	const DLQListQuerySchema = z.object({
+		limit: z.coerce.number().int().positive().max(100).default(50),
+		offset: z.coerce.number().int().nonnegative().default(0),
+	});
+
+	/**
+	 * GET /admin/dlq
+	 * List failed events from the dead letter queue (paginated)
+	 */
+	admin.get("/dlq", async (c) => {
+		const queryResult = DLQListQuerySchema.safeParse({
+			limit: c.req.query("limit"),
+			offset: c.req.query("offset"),
+		});
+
+		if (!queryResult.success) {
+			return c.json({ error: "Invalid query parameters", details: queryResult.error.issues }, 400);
+		}
+
+		const { limit, offset } = queryResult.data;
+
+		const result = await dependencies.eventBus.getDeadLetters({ limit, offset });
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to get DLQ", { error: result.error.message });
+			return c.json({ error: "Failed to fetch DLQ" }, 500);
+		}
+
+		return c.json(result.value);
+	});
+
+	/**
+	 * GET /admin/event-bus/pending
+	 * List pending (retry queued) events from EventBusDO
+	 */
+	admin.get("/event-bus/pending", async (c) => {
+		const queryResult = DLQListQuerySchema.safeParse({
+			limit: c.req.query("limit"),
+			offset: c.req.query("offset"),
+		});
+
+		if (!queryResult.success) {
+			return c.json({ error: "Invalid query parameters", details: queryResult.error.issues }, 400);
+		}
+
+		const { limit, offset } = queryResult.data;
+
+		const result = await dependencies.eventBus.getPending({ limit, offset });
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to get pending events", { error: result.error.message });
+			return c.json({ error: "Failed to fetch pending events" }, 500);
+		}
+
+		return c.json(result.value);
+	});
+
+	/**
+	 * POST /admin/dlq/:id/replay
+	 * Retry delivery of a specific failed event
+	 */
+	admin.post("/dlq/:id/replay", async (c) => {
+		const id = c.req.param("id");
+
+		const result = await dependencies.eventBus.replayDeadLetter(id);
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to replay DLQ item", { id, error: result.error.message });
+
+			if (DLQItemNotFoundError.is(result.error)) {
+				return c.json({ error: result.error.message }, 404);
+			}
+
+			return c.json({ error: "Failed to replay DLQ item" }, 500);
+		}
+
+		const replayResult = result.value;
+
+		if (replayResult.success) {
+			return c.json({
+				message: "Event replayed successfully",
+				eventId: replayResult.eventId,
+			});
+		}
+
+		return c.json(
+			{
+				message: "Replay failed - event remains in DLQ",
+				eventId: replayResult.eventId,
+				error: replayResult.error,
+			},
+			200,
+		);
+	});
+
+	/**
+	 * DELETE /admin/dlq/:id
+	 * Discard a failed event from the DLQ
+	 */
+	admin.delete("/dlq/:id", async (c) => {
+		const id = c.req.param("id");
+
+		const result = await dependencies.eventBus.deleteDeadLetter(id);
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to delete DLQ item", { id, error: result.error.message });
+
+			if (DLQItemNotFoundError.is(result.error)) {
+				return c.json({ error: result.error.message }, 404);
+			}
+
+			return c.json({ error: "Failed to delete DLQ item" }, 500);
+		}
+
+		return c.json({ message: "Event deleted from DLQ", eventId: id });
+	});
+
+	// =============================================================================
+	// Achievement Routes
+	// =============================================================================
+
+	/**
+	 * POST /admin/achievements/reset-one-time
+	 * Reset one-time cumulative achievements (close_call, closest_ever)
+	 *
+	 * Query params:
+	 * - user: (optional) Only reset for this user display name
+	 */
+	admin.post("/achievements/reset-one-time", async (c) => {
+		const userDisplayName = c.req.query("user");
+		if (userDisplayName !== undefined && userDisplayName.trim().length === 0) {
+			return c.json({ error: "Viewer display name must not be empty" }, 400);
+		}
+
+		const result = await dependencies.achievements.resetOneTimeAchievements(userDisplayName);
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to reset one-time achievements", {
+				error: result.error.message,
+				user: userDisplayName,
+			});
+			return c.json({ error: "Failed to reset achievements" }, 500);
+		}
+
+		// If specific user requested but nothing deleted, user doesn't exist or has no achievements
+		if (userDisplayName && result.value.deleted === 0) {
+			return c.json(
+				{
+					error: "User not found or no one-time achievements to reset",
+					user: userDisplayName,
+				},
+				404,
+			);
+		}
+
+		return c.json({
+			message: "One-time achievements reset",
+			deleted: result.value.deleted,
+			achievementIds: result.value.achievementIds,
+			user: userDisplayName ?? "all",
+		});
+	});
+
+	/**
+	 * GET /admin/achievements/debug/counts
+	 * Table-level counts for achievements state
+	 */
+	admin.get("/achievements/debug/counts", async (c) => {
+		const result = await dependencies.achievements.getDebugTableCounts();
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to get achievements debug counts", {
+				error: result.error.message,
+			});
+			return c.json({ error: "Failed to fetch achievements debug counts" }, 500);
+		}
+
+		return c.json(result.value);
+	});
+
+	/**
+	 * GET /admin/achievements/debug/user/:user
+	 * Per-user debug snapshot with normalization diagnostics
+	 */
+	admin.get("/achievements/debug/user/:user", async (c) => {
+		const user = c.req.param("user");
+
+		const result = await dependencies.achievements.getDebugUserSnapshot(user);
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to get user debug snapshot", {
+				user,
+				error: result.error.message,
+			});
+			return c.json({ error: "Failed to fetch user debug snapshot" }, 500);
+		}
+
+		return c.json(result.value);
+	});
+
+	/**
+	 * GET /admin/commands
+	 * List all persisted command definitions.
+	 */
+	admin.get("/commands", async (c) => {
+		const result = await dependencies.chatCommands.getAllCommands();
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to list commands", {
+				error: result.error.message,
+			});
+			return c.json({ error: "Failed to list commands" }, 500);
+		}
+
+		return c.json(result.value);
+	});
+
+	/**
+	 * POST /admin/commands
+	 * Create a new persisted command definition.
+	 */
+	admin.post("/commands", async (c) => {
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		const parsed = CreateCommandInputSchema.safeParse(body);
+		if (!parsed.success) {
+			return c.json({ error: "Invalid command payload", details: parsed.error.issues }, 400);
+		}
+
+		const result = await dependencies.chatCommands.createCommand(parsed.data);
+
+		if (result.status === "error") {
+			switch (result.error._tag) {
+				case "CommandAlreadyExistsError":
+				case "CommandAliasConflictError":
+					return c.json({ error: result.error.message, code: result.error._tag }, 409);
+				case "CommandInputParseError":
+				case "CommandInvalidDefinitionError":
+					return c.json({ error: result.error.message, code: result.error._tag }, 400);
+				case "CommandsDbError":
+					logger.error("Admin: Failed to create command", {
+						command: parsed.data.name,
+						error_tag: result.error._tag,
+						error: result.error.message,
+					});
+					return c.json({ error: "Failed to create command" }, 500);
+			}
+			return c.json({ error: "Failed to create command" }, 500);
+		}
+
+		return c.json(result.value, 201);
+	});
+
+	/**
+	 * PATCH /admin/commands/:name
+	 * Update a persisted command definition.
+	 */
+	admin.patch("/commands/:name", async (c) => {
+		const name = c.req.param("name");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		const parsed = UpdateCommandInputSchema.safeParse(body);
+		if (!parsed.success) {
+			return c.json({ error: "Invalid command patch", details: parsed.error.issues }, 400);
+		}
+
+		const result = await dependencies.chatCommands.updateCommand(name, parsed.data);
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to update command", {
+				command: name,
+				error: result.error.message,
+			});
+
+			switch (result.error._tag) {
+				case "CommandNotFoundError":
+					return c.json({ error: result.error.message, code: result.error._tag }, 404);
+				case "InvalidCommandNameError":
+				case "CommandInputParseError":
+				case "CommandInvalidDefinitionError":
+					return c.json({ error: result.error.message, code: result.error._tag }, 400);
+				case "CommandAliasConflictError":
+					return c.json({ error: result.error.message, code: result.error._tag }, 409);
+				case "CommandsDbError":
+					return c.json({ error: "Failed to update command" }, 500);
+			}
+			return c.json({ error: "Failed to update command" }, 500);
+		}
+
+		return c.json(result.value);
+	});
+
+	/**
+	 * DELETE /admin/commands/:name
+	 * Delete a persisted command definition.
+	 */
+	admin.delete("/commands/:name", async (c) => {
+		const name = c.req.param("name");
+		const result = await dependencies.chatCommands.deleteCommand(name);
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to delete command", {
+				command: name,
+				error: result.error.message,
+			});
+
+			switch (result.error._tag) {
+				case "CommandNotFoundError":
+					return c.json({ error: result.error.message, code: result.error._tag }, 404);
+				case "InvalidCommandNameError":
+					return c.json({ error: result.error.message, code: result.error._tag }, 400);
+				case "CommandAliasConflictError":
+				case "CommandInvalidDefinitionError":
+				case "CommandsDbError":
+					return c.json({ error: "Failed to delete command" }, 500);
+			}
+			return c.json({ error: "Failed to delete command" }, 500);
+		}
+
+		return c.json({ message: "Command deleted", command: name });
+	});
+
+	/**
+	 * GET /admin/commands/debug/snapshot
+	 * Full command registry snapshot (definitions, values, and counters).
+	 */
+	admin.get("/commands/debug/snapshot", async (c) => {
+		const result = await dependencies.chatCommands.getDebugSnapshot();
+
+		if (result.status === "error") {
+			logger.error("Admin: Failed to get commands debug snapshot", {
+				error: result.error.message,
+			});
+			return c.json({ error: "Failed to fetch commands debug snapshot" }, 500);
+		}
+
+		return c.json(result.value);
+	});
+
+	/**
+	 * GET /admin/debug/stats/:user
+	 * Debug what !stats <user> would resolve to.
+	 */
+	admin.get("/debug/stats/:user", async (c) => {
+		const rawUser = c.req.param("user");
+		const targetUser = rawUser.trim().replace(/^@+/, "");
+
+		if (targetUser.length === 0) {
+			return c.json({ error: "User is required" }, 400);
+		}
+
+		const [unlockedResult, definitionsResult, songResult, raffleResult] = await Promise.all([
+			dependencies.achievements.getViewerUnlockedAchievements(targetUser),
+			dependencies.achievements.getDefinitions(),
+			dependencies.songQueue.getViewerRequestCountByDisplayName(targetUser),
+			dependencies.raffles.getViewerStatsByDisplayName(targetUser),
+		]);
+
+		let unlockedCount: number | null = null;
+		let definitionsCount: number | null = null;
+		let achievementStats = "?/?";
+
+		if (unlockedResult.status === "ok" && definitionsResult.status === "ok") {
+			unlockedCount = unlockedResult.value.length;
+			definitionsCount = definitionsResult.value.length;
+			achievementStats = `${unlockedCount}/${definitionsCount}`;
+		}
+
+		const songCount = songResult.status === "ok" ? songResult.value : null;
+
+		const formatRaffleStats = (entry: {
+			totalRolls: number;
+			totalWins: number;
+			closestDistance: number | null;
+		}) => {
+			const base = `${entry.totalRolls} rolls`;
+			const extras: string[] = [];
+			if (entry.closestDistance !== null) {
+				extras.push(`closest: ${entry.closestDistance}`);
+			}
+			if (entry.totalWins > 0) {
+				extras.push(`${entry.totalWins} win${entry.totalWins > 1 ? "s" : ""}!`);
+			}
+			return extras.length > 0 ? `${base} (${extras.join(", ")})` : base;
+		};
+
+		const raffleNotFound =
+			raffleResult.status === "error" && raffleResult.error._tag === "RaffleViewerNotFoundError";
+
+		const raffleStats =
+			raffleResult.status === "ok"
+				? formatRaffleStats(raffleResult.value)
+				: raffleNotFound
+					? "0 rolls"
+					: "unavailable";
+
+		const noStatsForTargetUser =
+			songResult.status === "ok" &&
+			songResult.value === 0 &&
+			unlockedCount === 0 &&
+			definitionsCount !== null &&
+			raffleNotFound;
+
+		const chatMessage = noStatsForTargetUser
+			? `No records found for @${targetUser} yet — no songs, achievements, or raffle stats.`
+			: `@${targetUser} — Songs: ${songCount ?? "unavailable"} | Achievements: ${achievementStats} | Raffles: ${raffleStats}`;
+
+		return c.json({
+			targetUser,
+			noStatsForTargetUser,
+			chatMessage,
+			components: {
+				song: {
+					status: songResult.status,
+					count: songCount,
+					error: songResult.status === "error" ? songResult.error.message : null,
+				},
+				achievements: {
+					status:
+						unlockedResult.status === "ok" && definitionsResult.status === "ok" ? "ok" : "error",
+					unlockedCount,
+					definitionsCount,
+					error:
+						unlockedResult.status === "error"
+							? unlockedResult.error.message
+							: definitionsResult.status === "error"
+								? definitionsResult.error.message
+								: null,
+				},
+				raffle: {
+					status: raffleResult.status,
+					notFound: raffleNotFound,
+					stats: raffleStats,
+					error: raffleResult.status === "error" ? raffleResult.error.message : null,
+				},
+			},
+		});
+	});
+
+	return admin;
+}

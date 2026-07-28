@@ -1,33 +1,28 @@
 import { Result } from "better-result";
-import { env as globalEnv } from "cloudflare:workers";
 import { z } from "zod";
 
+import { SongQueueCoordinationError, SongQueueParseError } from "../capabilities/song-queue";
 import {
-	CurrentlyPlayingResultSchema,
-	QueueResultSchema,
 	RequestHistoryResultSchema,
-	TopRequesterSchema,
-	TopTrackSchema,
+	SpotifyQueueResultSchema as QueueResultSchema,
+	TopRequestedTrackSchema as TopTrackSchema,
+	TopSongRequesterSchema as TopRequesterSchema,
 	type PendingRequestInput,
-} from "../durable-objects/schemas/song-queue-do.schema";
-import {
-	SONG_QUEUE_DO_NAME,
-	SongQueueCoordinationError,
-	SongQueueParseError,
-	type SongQueueError,
-	type SongQueueRpcHandleStub,
-} from "../durable-objects/song-queue-do";
+} from "../domain/song-request";
+import { NowPlayingSchema } from "../domain/spotify-queue";
 import { DurableObjectError, SongQueueDbError } from "./errors";
 import { callRpcResult, type RpcPayloadParser, type RpcResultParsers } from "./rpc-result";
 
 import type {
-	CurrentlyPlayingResult,
-	QueueResult,
 	RequestHistoryResult,
-	TopRequester,
-	TopTrack,
-} from "../durable-objects/schemas/song-queue-do.schema";
-import type { Env } from "../index";
+	SpotifyQueueResult as QueueResult,
+	TopRequestedTrack as TopTrack,
+	TopSongRequester as TopRequester,
+} from "../domain/song-request";
+import type { NowPlaying } from "../domain/spotify-queue";
+import type { SongQueueRpcHandleStub } from "../durable-objects/song-queue-do";
+
+type SongQueueError = SongQueueDbError | SongQueueParseError | SongQueueCoordinationError;
 
 const SerializedSongQueueErrorSchema = z.discriminatedUnion("_tag", [
 	z.object({
@@ -132,13 +127,11 @@ export class SongQueueClient {
 	}
 
 	/** Read the current Spotify Track with explicit Viewer or autoplay attribution. */
-	getCurrentlyPlaying(): Promise<
-		Result<CurrentlyPlayingResult, SongQueueError | DurableObjectError>
-	> {
+	getCurrentlyPlaying(): Promise<Result<NowPlaying, SongQueueError | DurableObjectError>> {
 		return this.call(
 			"getCurrentlyPlaying",
 			(handle) => handle.getCurrentlyPlaying(),
-			rpcParsers(CurrentlyPlayingResultSchema),
+			rpcParsers(NowPlayingSchema),
 		);
 	}
 
@@ -225,16 +218,4 @@ export function createSongQueueClient(
 		}
 	})();
 	return SongQueueClient.fromHandleAcquisition(acquisition);
-}
-
-/** Acquire a Song Queue client whose connection failures remain typed operation results. */
-export function getSongQueue(): Promise<SongQueueClient> {
-	return Promise.resolve(
-		createSongQueueClient(async () => {
-			// SAFETY: Cloudflare supplies the generated Env binding shape for this Worker at runtime.
-			const env = globalEnv as Env;
-			const id = env.SONG_QUEUE_DO.idFromName(SONG_QUEUE_DO_NAME);
-			return env.SONG_QUEUE_DO.get(id).connectRpc();
-		}),
-	);
 }
