@@ -232,6 +232,30 @@ describe("CommandsDO", () => {
 		}
 	});
 
+	it("rehydrates Commands Agent state containing deprecated migration metadata", () => {
+		const rehydrated = CommandsAgentStateSchema.safeParse({
+			revision: 7,
+			legacyImportCompleted: true,
+			migrationReport: { importedCommands: 13 },
+			commandsByName: {},
+			valuesByName: {},
+			countersByName: {},
+			appliedMigrations: [],
+		});
+
+		expect(rehydrated.success).toBe(true);
+		if (rehydrated.success) {
+			expect(rehydrated.data).toEqual({
+				revision: 7,
+				commandsByName: {},
+				valuesByName: {},
+				countersByName: {},
+				mutationReceiptsByOperationId: {},
+				appliedMigrations: [],
+			});
+		}
+	});
+
 	it("rejects malformed serialized Agent state before it can be served", () => {
 		const malformed = CommandsAgentStateSchema.safeParse({
 			revision: Number.NaN,

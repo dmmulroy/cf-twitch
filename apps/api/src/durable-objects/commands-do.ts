@@ -74,8 +74,7 @@ const CommandMutationReceiptSchema = z.discriminatedUnion("kind", [
 ]);
 type CommandMutationReceipt = z.infer<typeof CommandMutationReceiptSchema>;
 
-/** Versioned serialized state owned by the Commands Agent persistence boundary. */
-export const CommandsAgentStateSchema = z.strictObject({
+const CurrentCommandsAgentStateSchema = z.strictObject({
 	revision: z.number().int().nonnegative(),
 	commandsByName: z.record(CommandNameSchema, CommandDefinitionSchema),
 	valuesByName: z.record(CommandNameSchema, CommandValueStateSchema),
@@ -85,6 +84,19 @@ export const CommandsAgentStateSchema = z.strictObject({
 		.default({}),
 	appliedMigrations: z.array(z.string().min(1).max(200)).default([]),
 });
+
+/** Rehydrates current state while stripping known metadata from earlier Commands Agent versions. */
+export const CommandsAgentStateSchema = CurrentCommandsAgentStateSchema.extend({
+	legacyImportCompleted: z.boolean().optional(),
+	migrationReport: z.json().optional(),
+}).transform((state) => ({
+	revision: state.revision,
+	commandsByName: state.commandsByName,
+	valuesByName: state.valuesByName,
+	countersByName: state.countersByName,
+	mutationReceiptsByOperationId: state.mutationReceiptsByOperationId,
+	appliedMigrations: state.appliedMigrations,
+}));
 
 /** Parsed, rehydrated Commands Agent state. */
 export type CommandsAgentState = z.infer<typeof CommandsAgentStateSchema>;

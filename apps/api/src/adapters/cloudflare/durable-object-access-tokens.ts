@@ -52,7 +52,11 @@ export class DurableObjectSpotifyAccessTokens
 			{},
 			async () => {
 				try {
-					const raw: unknown = await this.namespace.getByName("spotify-token").getValidToken();
+					const stub = await initializeDurableObjectAgentStub(
+						this.namespace.getByName("spotify-token"),
+						"spotify-token",
+					);
+					const raw: unknown = await stub.getValidToken();
 					const parsed = TokenRpcResultSchema.safeParse(raw);
 					if (!parsed.success) {
 						return Result.err(
@@ -111,7 +115,11 @@ export class DurableObjectSpotifyAccessTokens
 		tokens: SpotifyTokenResponse,
 	): Promise<ResultType<void, ProviderAccessTokenError>> {
 		try {
-			const raw: unknown = await this.namespace.getByName("spotify-token").setTokens(tokens);
+			const stub = await initializeDurableObjectAgentStub(
+				this.namespace.getByName("spotify-token"),
+				"spotify-token",
+			);
+			const raw: unknown = await stub.setTokens(tokens);
 			const parsed = SetTokensRpcResultSchema.safeParse(raw);
 			if (parsed.success && parsed.data.status === "ok") return Result.ok(undefined);
 			return Result.err(
@@ -151,7 +159,11 @@ export class DurableObjectTwitchAccessTokens implements TwitchAccessTokens, Prov
 			{},
 			async () => {
 				try {
-					const raw: unknown = await this.namespace.getByName("twitch-token").getValidToken();
+					const stub = await initializeDurableObjectAgentStub(
+						this.namespace.getByName("twitch-token"),
+						"twitch-token",
+					);
+					const raw: unknown = await stub.getValidToken();
 					const parsed = TokenRpcResultSchema.safeParse(raw);
 					if (!parsed.success) {
 						return Result.err(
@@ -210,7 +222,11 @@ export class DurableObjectTwitchAccessTokens implements TwitchAccessTokens, Prov
 		tokens: TwitchTokenResponse,
 	): Promise<ResultType<void, ProviderAccessTokenError>> {
 		try {
-			const raw: unknown = await this.namespace.getByName("twitch-token").setTokens(tokens);
+			const stub = await initializeDurableObjectAgentStub(
+				this.namespace.getByName("twitch-token"),
+				"twitch-token",
+			);
+			const raw: unknown = await stub.setTokens(tokens);
 			const parsed = SetTokensRpcResultSchema.safeParse(raw);
 			if (parsed.success && parsed.data.status === "ok") return Result.ok(undefined);
 			return Result.err(
