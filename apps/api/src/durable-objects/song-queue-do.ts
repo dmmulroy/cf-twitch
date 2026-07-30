@@ -9,22 +9,7 @@
 import { Agent, type AgentContext } from "agents";
 import { Result } from "better-result";
 import { RpcTarget } from "cloudflare:workers";
-import {
-	and,
-	asc,
-	count,
-	desc,
-	eq,
-	gt,
-	gte,
-	inArray,
-	isNotNull,
-	isNull,
-	lt,
-	lte,
-	max,
-	notInArray,
-} from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, isNull, lt, lte, max } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
@@ -1143,35 +1128,35 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 					}
 
 					tx.delete(spotifyQueueSnapshot).run();
-					if (attributedItems.length > 0) {
+					for (const item of attributedItems) {
 						tx.insert(spotifyQueueSnapshot)
-							.values(attributedItems.map((item) => ({ ...item, syncedAt })))
+							.values({ ...item, syncedAt })
 							.run();
 					}
 					const matchedEventIds = attributedItems.flatMap((item) =>
 						item.eventId === null ? [] : [item.eventId],
 					);
-					if (matchedEventIds.length > 0) {
+					const matchedEventIdSet = new Set(matchedEventIds);
+					for (const eventId of matchedEventIds) {
 						tx.update(pendingRequests)
 							.set({ lastSeenInSpotifyAt: syncedAt })
-							.where(inArray(pendingRequests.eventId, matchedEventIds))
+							.where(eq(pendingRequests.eventId, eventId))
 							.run();
 						tx.update(pendingRequests)
 							.set({ firstSeenInSpotifyAt: syncedAt })
 							.where(
 								and(
-									inArray(pendingRequests.eventId, matchedEventIds),
+									eq(pendingRequests.eventId, eventId),
 									isNull(pendingRequests.firstSeenInSpotifyAt),
 								),
 							)
 							.run();
 					}
-					const droppedConditions = [isNotNull(pendingRequests.firstSeenInSpotifyAt)];
-					if (matchedEventIds.length > 0)
-						droppedConditions.push(notInArray(pendingRequests.eventId, matchedEventIds));
-					tx.delete(pendingRequests)
-						.where(and(...droppedConditions))
-						.run();
+					for (const pending of allPending) {
+						if (pending.firstSeenInSpotifyAt !== null && !matchedEventIdSet.has(pending.eventId)) {
+							tx.delete(pendingRequests).where(eq(pendingRequests.eventId, pending.eventId)).run();
+						}
+					}
 					const oneHourAgo = new Date(new Date(syncedAt).getTime() - 60 * 60 * 1000).toISOString();
 					tx.delete(pendingRequests).where(lt(pendingRequests.requestedAt, oneHourAgo)).run();
 					logger.debug("Synced Spotify queue snapshot transaction", {

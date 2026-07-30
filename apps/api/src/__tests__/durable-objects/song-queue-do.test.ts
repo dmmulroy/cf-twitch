@@ -709,6 +709,26 @@ describe("SongQueueDO", () => {
 			}
 		});
 
+		it("returns a large Spotify Queue without exceeding SQLite variable limits", async () => {
+			await tokenStub.setTokens(VALID_TOKEN_RESPONSE);
+			const queue = Array.from({ length: 50 }, (_, index) => ({
+				...QUEUE_RESPONSE.currently_playing,
+				id: `large-queue-track-${index}`,
+				name: `Large Queue Track ${index}`,
+			}));
+			mockSpotifyPlayback(QUEUE_RESPONSE.currently_playing, queue);
+
+			const result = await stub.getSongQueue(100);
+
+			expect(result.status).toBe("ok");
+			if (result.status === "ok") {
+				expect(result.value.totalCount).toBe(50);
+				expect(result.value.tracks).toHaveLength(50);
+				expect(result.value.tracks[0]?.id).toBe("large-queue-track-0");
+				expect(result.value.tracks[49]?.id).toBe("large-queue-track-49");
+			}
+		});
+
 		it("falls back to stale snapshot data when Spotify sync fails", async () => {
 			const staleSyncedAt = new Date(Date.now() - 60_000).toISOString();
 
