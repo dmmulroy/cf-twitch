@@ -20,6 +20,12 @@ import {
 } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { redactValue, revealRedactedValue, type Redacted } from "../lib/redacted";
+import {
+	GetValidSpotifyTokenResultCodec,
+	SetSpotifyTokensResultCodec,
+	SpotifyTokenStreamOfflineResultCodec,
+	SpotifyTokenStreamOnlineResultCodec,
+} from "../lib/token-rpc-result-codecs";
 
 import type { Env } from "../index";
 
@@ -163,7 +169,7 @@ class _SpotifyTokenDO
 	}
 
 	/** Mark the Stream Session online and durably retry transient token refresh failures. */
-	@rpc
+	@rpc(SpotifyTokenStreamOnlineResultCodec)
 	async onStreamOnline(): Promise<Result<void, TokenError>> {
 		const persistResult = this.tryPersistRuntimeState({ ...this.runtimeState, isStreamLive: true });
 		if (persistResult.status === "error") return persistResult;
@@ -177,7 +183,7 @@ class _SpotifyTokenDO
 	}
 
 	/** Mark the Stream Session offline and cancel proactive refresh work. */
-	@rpc
+	@rpc(SpotifyTokenStreamOfflineResultCodec)
 	async onStreamOffline(): Promise<Result<void, TokenError>> {
 		const persistResult = this.tryPersistRuntimeState({
 			...this.runtimeState,
@@ -205,7 +211,7 @@ class _SpotifyTokenDO
 	}
 
 	/** Return a valid Spotify access token or a truthful lifecycle error. */
-	@rpc
+	@rpc(GetValidSpotifyTokenResultCodec)
 	async getValidToken(): Promise<Result<string, TokenError>> {
 		if (this.runtimeState.authorizationStatus === "reauthorization-required") {
 			return Result.err(new TokenAuthorizationRevokedError({ provider: "spotify" }));
@@ -223,7 +229,7 @@ class _SpotifyTokenDO
 	}
 
 	/** Parse and durably accept Spotify OAuth tokens at the public RPC boundary. */
-	@rpc
+	@rpc(SetSpotifyTokensResultCodec)
 	async setTokens(tokens: SpotifyTokenResponse): Promise<Result<void, TokenError>> {
 		const parseResult = SpotifyTokenResponseSchema.safeParse(tokens);
 		if (!parseResult.success) {

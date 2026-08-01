@@ -17,7 +17,7 @@ const EVENTSUB_TIMESTAMP_TOLERANCE_MS = 10 * 60 * 1_000;
 class EventSubBodyTooLargeError extends TaggedError("EventSubBodyTooLargeError")<{
 	message: string;
 	maximumBytes: number;
-}>() {
+}> {
 	constructor() {
 		super({
 			message: `EventSub body too large: maximum is ${MAX_EVENTSUB_BODY_BYTES} bytes`,

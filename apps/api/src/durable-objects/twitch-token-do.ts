@@ -20,6 +20,12 @@ import {
 } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { redactValue, revealRedactedValue, type Redacted } from "../lib/redacted";
+import {
+	GetValidTwitchTokenResultCodec,
+	SetTwitchTokensResultCodec,
+	TwitchTokenStreamOfflineResultCodec,
+	TwitchTokenStreamOnlineResultCodec,
+} from "../lib/token-rpc-result-codecs";
 
 import type { Env } from "../index";
 
@@ -163,7 +169,7 @@ class _TwitchTokenDO
 	}
 
 	/** Mark the Stream Session online and durably retry transient token refresh failures. */
-	@rpc
+	@rpc(TwitchTokenStreamOnlineResultCodec)
 	async onStreamOnline(): Promise<Result<void, TokenError>> {
 		const persistResult = this.tryPersistRuntimeState({ ...this.runtimeState, isStreamLive: true });
 		if (persistResult.status === "error") return persistResult;
@@ -177,7 +183,7 @@ class _TwitchTokenDO
 	}
 
 	/** Mark the Stream Session offline and cancel proactive refresh work. */
-	@rpc
+	@rpc(TwitchTokenStreamOfflineResultCodec)
 	async onStreamOffline(): Promise<Result<void, TokenError>> {
 		const persistResult = this.tryPersistRuntimeState({
 			...this.runtimeState,
@@ -205,7 +211,7 @@ class _TwitchTokenDO
 	}
 
 	/** Return a valid Twitch access token or a truthful lifecycle error. */
-	@rpc
+	@rpc(GetValidTwitchTokenResultCodec)
 	async getValidToken(): Promise<Result<string, TokenError>> {
 		if (this.runtimeState.authorizationStatus === "reauthorization-required") {
 			return Result.err(new TokenAuthorizationRevokedError({ provider: "twitch" }));
@@ -223,7 +229,7 @@ class _TwitchTokenDO
 	}
 
 	/** Parse and durably accept Twitch OAuth tokens at the public RPC boundary. */
-	@rpc
+	@rpc(SetTwitchTokensResultCodec)
 	async setTokens(tokens: TwitchTokenResponse): Promise<Result<void, TokenError>> {
 		const parseResult = TwitchTokenResponseSchema.safeParse(tokens);
 		if (!parseResult.success) {

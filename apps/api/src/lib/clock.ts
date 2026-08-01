@@ -7,7 +7,7 @@ export type IsoTimestamp = string & { readonly [isoTimestampEvidence]: true };
 export class InvalidIsoTimestampError extends TaggedError("InvalidIsoTimestampError")<{
 	input: string;
 	message: string;
-}>() {
+}> {
 	constructor(input: string) {
 		super({ input, message: `Invalid ISO timestamp: ${input}` });
 	}

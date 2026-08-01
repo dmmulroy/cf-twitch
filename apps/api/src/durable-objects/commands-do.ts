@@ -20,6 +20,21 @@ import {
 	type CreateChatCommandInput as CreateCommandInput,
 	type UpdateChatCommandInput as UpdateCommandInput,
 } from "../domain/chat-command-definition";
+import {
+	CreateChatCommandResultCodec,
+	DeleteChatCommandResultCodec,
+	GetAllChatCommandsResultCodec,
+	GetChatCommandCounterResultCodec,
+	GetChatCommandDebugSnapshotResultCodec,
+	GetChatCommandResultCodec,
+	GetChatCommandValueResultCodec,
+	GetChatCommandWithValueResultCodec,
+	GetEnabledChatCommandsResultCodec,
+	GetEnabledChatCommandsWithValuesResultCodec,
+	IncrementChatCommandCounterResultCodec,
+	UpdateChatCommandResultCodec,
+	UpdateChatCommandValueResultCodec,
+} from "../lib/commands-rpc-result-codecs";
 import { rpc } from "../lib/durable-objects";
 import {
 	CommandAliasConflictError,
@@ -684,7 +699,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		return Result.ok();
 	}
 
-	@rpc
+	@rpc(GetChatCommandResultCodec)
 	async getCommand(
 		name: string,
 	): Promise<Result<Command, InvalidCommandNameError | CommandNotFoundError>> {
@@ -701,7 +716,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		return Result.ok(command);
 	}
 
-	@rpc
+	@rpc(GetAllChatCommandsResultCodec)
 	async getAllCommands(): Promise<Result<Command[], CommandsDbError>> {
 		return Result.try({
 			try: () => Object.values(this.state.commandsByName),
@@ -709,7 +724,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(GetEnabledChatCommandsResultCodec)
 	async getEnabledCommandsByPermission(
 		maxPerm: Permission,
 	): Promise<Result<Command[], CommandInputParseError | CommandsDbError>> {
@@ -734,7 +749,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(GetChatCommandValueResultCodec)
 	async getCommandValue(
 		name: string,
 	): Promise<Result<string | null, InvalidCommandNameError | CommandsDbError>> {
@@ -754,7 +769,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(UpdateChatCommandValueResultCodec)
 	async updateCommandValue(
 		name: string,
 		value: string,
@@ -871,7 +886,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		}, this);
 	}
 
-	@rpc
+	@rpc(GetChatCommandCounterResultCodec)
 	async getCommandCounter(
 		name: string,
 	): Promise<Result<number, InvalidCommandNameError | CommandNotFoundError>> {
@@ -889,7 +904,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		return Result.ok(this.state.countersByName[counterName]?.count ?? 0);
 	}
 
-	@rpc
+	@rpc(IncrementChatCommandCounterResultCodec)
 	async incrementCommandCounter(
 		name: string,
 		increment = 1,
@@ -986,7 +1001,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		}, this);
 	}
 
-	@rpc
+	@rpc(GetChatCommandWithValueResultCodec)
 	async getCommandWithValue(
 		name: string,
 	): Promise<
@@ -1012,7 +1027,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		return Result.ok({ command, value });
 	}
 
-	@rpc
+	@rpc(CreateChatCommandResultCodec)
 	async createCommand(
 		input: unknown,
 	): Promise<
@@ -1062,7 +1077,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		}, this);
 	}
 
-	@rpc
+	@rpc(UpdateChatCommandResultCodec)
 	async updateCommand(
 		name: string,
 		patch: unknown,
@@ -1122,7 +1137,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		}, this);
 	}
 
-	@rpc
+	@rpc(DeleteChatCommandResultCodec)
 	async deleteCommand(
 		name: string,
 	): Promise<
@@ -1166,7 +1181,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		}, this);
 	}
 
-	@rpc
+	@rpc(GetChatCommandDebugSnapshotResultCodec)
 	async getDebugSnapshot(): Promise<
 		Result<
 			{
@@ -1227,7 +1242,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(GetEnabledChatCommandsWithValuesResultCodec)
 	async getEnabledCommandsWithValues(): Promise<
 		Result<Array<{ command: Command; value: string | null }>, CommandsDbError>
 	> {

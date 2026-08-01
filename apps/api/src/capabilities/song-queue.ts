@@ -18,7 +18,7 @@ export class SongQueueParseError extends TaggedError("SongQueueParseError")<{
 	readonly operation: string;
 	readonly parseError: string;
 	readonly message: string;
-}>() {
+}> {
 	constructor(args: {
 		boundary: "rpc-input" | "persistence" | "rpc-result";
 		operation: string;
@@ -33,7 +33,7 @@ export class SongQueueCoordinationError extends TaggedError("SongQueueCoordinati
 	readonly operation: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: { operation: string; cause?: unknown }) {
 		super({ ...args, message: `Song Queue coordination failed during ${args.operation}` });
 	}
@@ -45,7 +45,7 @@ export class SongQueueUnavailableError extends TaggedError("SongQueueUnavailable
 	readonly failure: "acquire-stub" | "connect-rpc" | "invoke-rpc";
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		operation: SongQueueOperation;
 		failure: "acquire-stub" | "connect-rpc" | "invoke-rpc";

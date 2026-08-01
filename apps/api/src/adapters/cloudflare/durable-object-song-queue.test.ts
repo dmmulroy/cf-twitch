@@ -63,19 +63,13 @@ describe("Durable Object Song Queue adapter", () => {
 		undefined,
 		{ status: "ok", value: { track: null, position: 1 } },
 		{ status: "error", error: { _tag: "UnknownSongQueueError", message: "bad wire" } },
-	])("rejects a malformed complete Now Playing wire contract", async (rawResult) => {
+	])("panics on a malformed owned Now Playing wire contract", async (rawResult) => {
 		const songQueue = new DurableObjectSongQueue(
 			songQueueNamespaceReturning(rawResult),
 			new RecordingTracer(),
 		);
 
-		const result = await songQueue.getNowPlaying();
-
-		expect(result.status).toBe("error");
-		if (result.status === "error") {
-			expect(result.error._tag).toBe("SongQueueParseError");
-			expect(result.error.operation).toBe("getCurrentlyPlaying");
-		}
+		await expect(songQueue.getNowPlaying()).rejects.toThrow();
 	});
 
 	it("preserves the operation and transport stage when RPC connection fails", async () => {

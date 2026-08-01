@@ -10,7 +10,7 @@ export class ProviderAccessTokenError extends TaggedError("ProviderAccessTokenEr
 	readonly failureTag: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		provider: "spotify" | "twitch";
 		failureTag: string;

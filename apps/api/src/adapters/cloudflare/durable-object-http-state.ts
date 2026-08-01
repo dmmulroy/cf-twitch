@@ -1,5 +1,4 @@
 import { Result } from "better-result";
-import { z } from "zod";
 
 import {
 	ApplicationStateError,
@@ -9,13 +8,6 @@ import {
 	type StreamLifecycle,
 } from "../../capabilities/http-state-readers";
 import {
-	AchievementDebugTableCountsSchema,
-	AchievementDebugUserSnapshotSchema,
-	AchievementDefinitionsSchema,
-	AchievementLeaderboardSchema,
-	AchievementResetResultSchema,
-	UnlockedAchievementsSchema,
-	ViewerAchievementProgressListSchema,
 	type AchievementDebugTableCounts,
 	type AchievementDebugUserSnapshot,
 	type AchievementDefinition,
@@ -25,39 +17,27 @@ import {
 	type ViewerAchievementProgress,
 } from "../../domain/achievement";
 import {
-	StreamLifecycleStateSchema,
-	type StreamLifecycleState,
-} from "../../domain/stream-lifecycle";
-import { DurableObjectError } from "../../lib/errors";
-import { fromRpcResult, type RpcPayloadParser, type RpcResultParsers } from "../../lib/rpc-result";
+	GetAchievementDefinitionsResultCodec,
+	GetAchievementLeaderboardResultCodec,
+	GetAchievementTableCountsResultCodec,
+	GetAchievementUserSnapshotResultCodec,
+	GetUnlockedAchievementsResultCodec,
+	GetViewerAchievementsResultCodec,
+	ResetOneTimeAchievementsResultCodec,
+} from "../../lib/achievement-rpc-result-codecs";
+import {
+	GetStreamLifecycleStateResultCodec,
+	StreamOfflineResultCodec,
+	StreamOnlineResultCodec,
+} from "../../lib/stream-lifecycle-rpc-result-codecs";
 import { initializeDurableObjectAgentStub } from "./durable-object-agent-stub";
 
 import type { Tracer } from "../../capabilities/tracer";
+import type { StreamLifecycleState } from "../../domain/stream-lifecycle";
 import type { DurableObjectAgentStub } from "./durable-object-agent-stub";
 import type { Result as ResultType } from "better-result";
 
-const StreamStateWireErrorSchema = z
-	.object({ _tag: z.literal("DurableObjectError"), message: z.string() })
-	.passthrough();
-const StreamTransitionWireErrorSchema = z.discriminatedUnion("_tag", [
-	z.object({ _tag: z.literal("InvalidIsoTimestampError"), message: z.string() }).passthrough(),
-	z
-		.object({ _tag: z.literal("StreamLifecycleEffectsPendingError"), message: z.string() })
-		.passthrough(),
-]);
-const AchievementWireErrorSchema = z.discriminatedUnion("_tag", [
-	z.object({ _tag: z.literal("AchievementDbError"), message: z.string() }).passthrough(),
-	z.object({ _tag: z.literal("AchievementNotFoundError"), message: z.string() }).passthrough(),
-	z
-		.object({ _tag: z.literal("AchievementEventValidationError"), message: z.string() })
-		.passthrough(),
-	z
-		.object({ _tag: z.literal("AchievementQueryValidationError"), message: z.string() })
-		.passthrough(),
-	z.object({ _tag: z.literal("InvalidAchievementRecordError"), message: z.string() }).passthrough(),
-]);
-
-type StateWireError = Readonly<{ _tag: string; message: string }>;
+type StateRpcError = Readonly<{ _tag: string }>;
 
 const ApplicationStateSpanNames: Readonly<Record<ApplicationStateOperation, string>> = {
 	getStreamState: "durable_object.stream_lifecycle.get_stream_state",
@@ -88,23 +68,6 @@ interface AchievementReaderRpcStub extends DurableObjectAgentStub {
 	getDebugUserSnapshot(viewer: string): Promise<unknown>;
 }
 
-function parseStatePayload<T>(schema: z.ZodType<T>): RpcPayloadParser<T> {
-	return (input) => {
-		const parsed = schema.safeParse(input);
-		return parsed.success ? Result.ok(parsed.data) : Result.err(parsed.error.message);
-	};
-}
-
-function stateRpcParsers<T, E extends StateWireError>(
-	successSchema: z.ZodType<T>,
-	errorSchema: z.ZodType<E>,
-): RpcResultParsers<T, E> {
-	return {
-		success: parseStatePayload(successSchema),
-		error: parseStatePayload(errorSchema),
-	};
-}
-
 /** Durable Object adapter for runtime-validated Stream Lifecycle reads and transitions. */
 export class DurableObjectStreamLifecycle implements StreamLifecycle {
 	constructor(
@@ -119,7 +82,7 @@ export class DurableObjectStreamLifecycle implements StreamLifecycle {
 			operation: "getStreamState",
 			tracer: this.tracer,
 			invoke: async () => (await this.acquireStreamLifecycleStub()).getStreamState(),
-			parsers: stateRpcParsers(StreamLifecycleStateSchema, StreamStateWireErrorSchema),
+			deserializeUnsafe: (value) => GetStreamLifecycleStateResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -130,7 +93,7 @@ export class DurableObjectStreamLifecycle implements StreamLifecycle {
 			operation: "markStreamOnline",
 			tracer: this.tracer,
 			invoke: async () => (await this.acquireStreamLifecycleStub()).onStreamOnline(startedAt),
-			parsers: stateRpcParsers(z.undefined(), StreamTransitionWireErrorSchema),
+			deserializeUnsafe: (value) => StreamOnlineResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -141,7 +104,7 @@ export class DurableObjectStreamLifecycle implements StreamLifecycle {
 			operation: "markStreamOffline",
 			tracer: this.tracer,
 			invoke: async () => (await this.acquireStreamLifecycleStub()).onStreamOffline(endedAt),
-			parsers: stateRpcParsers(z.undefined(), StreamTransitionWireErrorSchema),
+			deserializeUnsafe: (value) => StreamOfflineResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -172,7 +135,7 @@ export class DurableObjectAchievementReader
 			tracer: this.tracer,
 			invoke: async () =>
 				(await this.acquireAchievementReaderStub()).resetOneTimeAchievements(viewer),
-			parsers: stateRpcParsers(AchievementResetResultSchema, AchievementWireErrorSchema),
+			deserializeUnsafe: (value) => ResetOneTimeAchievementsResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -183,7 +146,7 @@ export class DurableObjectAchievementReader
 			operation: "getAchievementDebugTableCounts",
 			tracer: this.tracer,
 			invoke: async () => (await this.acquireAchievementReaderStub()).getDebugTableCounts(),
-			parsers: stateRpcParsers(AchievementDebugTableCountsSchema, AchievementWireErrorSchema),
+			deserializeUnsafe: (value) => GetAchievementTableCountsResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -196,7 +159,7 @@ export class DurableObjectAchievementReader
 			operation: "getAchievementDebugUserSnapshot",
 			tracer: this.tracer,
 			invoke: async () => (await this.acquireAchievementReaderStub()).getDebugUserSnapshot(viewer),
-			parsers: stateRpcParsers(AchievementDebugUserSnapshotSchema, AchievementWireErrorSchema),
+			deserializeUnsafe: (value) => GetAchievementUserSnapshotResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -207,7 +170,7 @@ export class DurableObjectAchievementReader
 			operation: "getAchievementDefinitions",
 			tracer: this.tracer,
 			invoke: async () => (await this.acquireAchievementReaderStub()).getDefinitions(),
-			parsers: stateRpcParsers(AchievementDefinitionsSchema, AchievementWireErrorSchema),
+			deserializeUnsafe: (value) => GetAchievementDefinitionsResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -220,7 +183,7 @@ export class DurableObjectAchievementReader
 			operation: "getAchievementLeaderboard",
 			tracer: this.tracer,
 			invoke: async () => (await this.acquireAchievementReaderStub()).getLeaderboard(options),
-			parsers: stateRpcParsers(AchievementLeaderboardSchema, AchievementWireErrorSchema),
+			deserializeUnsafe: (value) => GetAchievementLeaderboardResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -233,7 +196,7 @@ export class DurableObjectAchievementReader
 			operation: "getViewerAchievements",
 			tracer: this.tracer,
 			invoke: async () => (await this.acquireAchievementReaderStub()).getUserAchievements(viewer),
-			parsers: stateRpcParsers(ViewerAchievementProgressListSchema, AchievementWireErrorSchema),
+			deserializeUnsafe: (value) => GetViewerAchievementsResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -247,7 +210,7 @@ export class DurableObjectAchievementReader
 			tracer: this.tracer,
 			invoke: async () =>
 				(await this.acquireAchievementReaderStub()).getUnlockedAchievements(viewer),
-			parsers: stateRpcParsers(UnlockedAchievementsSchema, AchievementWireErrorSchema),
+			deserializeUnsafe: (value) => GetUnlockedAchievementsResultCodec.deserializeUnsafe(value),
 		});
 	}
 
@@ -259,15 +222,15 @@ export class DurableObjectAchievementReader
 	}
 }
 
-type ApplicationStateRpcCall<T, E extends StateWireError> = Readonly<{
+type ApplicationStateRpcCall<T, E extends StateRpcError> = Readonly<{
 	resource: "stream-lifecycle" | "achievements";
 	operation: ApplicationStateOperation;
 	tracer: Tracer;
 	invoke: () => Promise<unknown>;
-	parsers: RpcResultParsers<T, E>;
+	deserializeUnsafe: (value: unknown) => ResultType<T, E> | Promise<ResultType<T, E>>;
 }>;
 
-async function callApplicationStateRpc<T, E extends StateWireError>(
+async function callApplicationStateRpc<T, E extends StateRpcError>(
 	call: ApplicationStateRpcCall<T, E>,
 ): Promise<ResultType<T, ApplicationStateError>> {
 	return call.tracer.span(
@@ -288,18 +251,8 @@ async function callApplicationStateRpc<T, E extends StateWireError>(
 				);
 			}
 
-			const parsed = fromRpcResult(rawResult, call.operation, call.parsers);
+			const parsed = await call.deserializeUnsafe(rawResult);
 			if (parsed.status === "ok") return Result.ok(parsed.value);
-			if (DurableObjectError.is(parsed.error)) {
-				return Result.err(
-					new ApplicationStateError({
-						resource: call.resource,
-						operation: call.operation,
-						failure: "protocol",
-						cause: parsed.error,
-					}),
-				);
-			}
 			return Result.err(
 				new ApplicationStateError({
 					resource: call.resource,

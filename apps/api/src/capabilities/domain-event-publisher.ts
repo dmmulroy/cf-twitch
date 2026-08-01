@@ -11,7 +11,7 @@ export class DomainEventPublishError extends TaggedError("DomainEventPublishErro
 	readonly remoteErrorTag?: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		eventId: string;
 		eventType: Event["type"];

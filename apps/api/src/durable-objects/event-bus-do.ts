@@ -26,6 +26,14 @@ import {
 	EventBusValidationError,
 	type EventBusError,
 } from "../lib/errors";
+import {
+	DeleteDeadLetterEventResultCodec,
+	GetDeadLetterEventsResultCodec,
+	GetPendingEventCountResultCodec,
+	GetPendingEventsResultCodec,
+	PublishDomainEventResultCodec,
+	ReplayDeadLetterEventResultCodec,
+} from "../lib/event-bus-rpc-result-codecs";
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/event-bus-do.schema";
 import {
@@ -96,7 +104,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(PublishDomainEventResultCodec)
 	async publish(event: unknown): Promise<Result<void, EventBusError>> {
 		const parseResult = EventSchema.safeParse(event);
 		if (!parseResult.success) {
@@ -553,7 +561,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 		}
 	}
 
-	@rpc
+	@rpc(GetPendingEventCountResultCodec)
 	async getPendingCount(): Promise<Result<number, EventBusDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -564,7 +572,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(GetPendingEventsResultCodec)
 	async getPending(options?: {
 		limit?: number;
 		offset?: number;
@@ -613,7 +621,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(GetDeadLetterEventsResultCodec)
 	async getDLQ(options?: {
 		limit?: number;
 		offset?: number;
@@ -663,7 +671,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(ReplayDeadLetterEventResultCodec)
 	async replayDLQ(
 		id: string,
 	): Promise<
@@ -727,7 +735,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 		});
 	}
 
-	@rpc
+	@rpc(DeleteDeadLetterEventResultCodec)
 	async deleteDLQ(id: string): Promise<Result<void, EventBusDbError | DLQItemNotFoundError>> {
 		return Result.tryPromise({
 			try: async () => {

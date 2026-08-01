@@ -100,7 +100,7 @@ export class SagaRunnerDbError extends TaggedError("SagaRunnerDbError")<{
 	readonly operation: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: { readonly operation: string; readonly cause?: unknown }) {
 		super({
 			...args,

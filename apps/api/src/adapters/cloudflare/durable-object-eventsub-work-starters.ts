@@ -1,9 +1,7 @@
 import { Result } from "better-result";
-import { z } from "zod";
 
 import { EventSubWorkStartError } from "../../capabilities/eventsub-work-starters";
-import { DurableObjectError } from "../../lib/errors";
-import { fromRpcResult, type RpcPayloadParser } from "../../lib/rpc-result";
+import { StartSagaResultCodec } from "../../lib/saga-rpc-result-codecs";
 import { initializeDurableObjectAgentStub } from "./durable-object-agent-stub";
 
 import type {
@@ -13,32 +11,6 @@ import type {
 import type { Tracer } from "../../capabilities/tracer";
 import type { KnownRewardRedemption } from "../../lib/channel-point-redemptions";
 import type { Result as ResultType } from "better-result";
-
-const SagaStartWireErrorSchema = z
-	.object({
-		_tag: z.enum([
-			"SagaAlreadyExistsError",
-			"SagaInputParseError",
-			"SagaNotFoundError",
-			"SagaPersistedDataError",
-			"SagaRunnerDbError",
-			"SagaScheduleError",
-			"SagaStepError",
-			"SagaStepRetrying",
-			"SagaEffectOutcomeUnknown",
-		]),
-		message: z.string(),
-	})
-	.passthrough();
-
-type SagaStartWireError = z.infer<typeof SagaStartWireErrorSchema>;
-
-const parseVoidPayload: RpcPayloadParser<void> = (input) =>
-	input === undefined ? Result.ok(undefined) : Result.err("Expected an undefined success value");
-const parseSagaStartWireError: RpcPayloadParser<SagaStartWireError> = (input) => {
-	const parsed = SagaStartWireErrorSchema.safeParse(input);
-	return parsed.success ? Result.ok(parsed.data) : Result.err(parsed.error.message);
-};
 
 /** Durable Object adapter for downstream work started by accepted EventSub notifications. */
 export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
@@ -106,19 +78,14 @@ export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
 					new EventSubWorkStartError({ work, operationId, failure: "transport", cause }),
 				);
 			}
-			const parsed = fromRpcResult(rawResult, spanName, {
-				success: parseVoidPayload,
-				error: parseSagaStartWireError,
-			});
+			const parsed = await StartSagaResultCodec.deserializeUnsafe(rawResult);
 			if (parsed.status === "ok") return Result.ok(undefined);
 			return Result.err(
 				new EventSubWorkStartError({
 					work,
 					operationId,
-					failure: DurableObjectError.is(parsed.error) ? "protocol" : "remote",
-					...(DurableObjectError.is(parsed.error)
-						? { cause: parsed.error }
-						: { remoteErrorTag: parsed.error._tag }),
+					failure: "remote",
+					remoteErrorTag: parsed.error._tag,
 				}),
 			);
 		});

@@ -30,7 +30,7 @@ export class EventSubReceiptAcceptanceError extends TaggedError("EventSubReceipt
 	readonly failure: "transport" | "protocol" | "conflict" | "corrupt";
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		messageId: string;
 		failure: "transport" | "protocol" | "conflict" | "corrupt";

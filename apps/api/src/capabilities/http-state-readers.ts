@@ -20,7 +20,7 @@ export class ApplicationStateError extends TaggedError("ApplicationStateError")<
 	readonly remoteErrorTag?: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		resource: "stream-lifecycle" | "achievements";
 		operation: ApplicationStateOperation;

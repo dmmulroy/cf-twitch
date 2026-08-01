@@ -26,7 +26,16 @@ import { AnalyticsEngineChatCommandMetrics } from "../lib/chat-command/metrics";
 import { TwitchChatSender } from "../lib/chat-command/sender";
 import { SystemClock } from "../lib/clock";
 import { rpc } from "../lib/durable-objects";
-import { UnknownRewardError } from "../lib/errors";
+import {
+	EventSubReceiptConflictError,
+	EventSubReceiptCorruptError,
+	UnknownRewardError,
+	type EventSubAcceptanceError,
+} from "../lib/errors";
+import {
+	AcceptEventSubReceiptResultCodec,
+	GetEventSubReceiptStatusResultCodec,
+} from "../lib/eventsub-receipt-rpc-result-codecs";
 import { parseEventSubMessage, type ParsedEventSubMessage } from "../lib/eventsub-webhook-message";
 import { logger, withLogContext } from "../lib/logger";
 import { getUserPermission } from "../lib/permissions";
@@ -71,35 +80,6 @@ function isAmbiguousChatSendFailure(error: unknown): boolean {
 	return cause._tag === "TwitchNetworkError" || cause._tag === "TwitchParseError";
 }
 
-/** Expected error when a webhook message id is reused for different signed content. */
-export class EventSubReceiptConflictError extends TaggedError("EventSubReceiptConflictError")<{
-	message: string;
-	messageId: string;
-}>() {
-	constructor(messageId: string) {
-		super({
-			message: `EventSub receipt conflict: message ${messageId} already has different content`,
-			messageId,
-		});
-	}
-}
-
-/** Expected error when an accepted webhook receipt cannot be decoded from durable storage. */
-export class EventSubReceiptCorruptError extends TaggedError("EventSubReceiptCorruptError")<{
-	message: string;
-	parseError: string;
-}>() {
-	constructor(parseError: string) {
-		super({
-			message: `EventSub receipt storage parse failed: ${parseError}`,
-			parseError,
-		});
-	}
-}
-
-/** Errors that can prevent durable EventSub receipt acceptance. */
-export type EventSubAcceptanceError = EventSubReceiptConflictError | EventSubReceiptCorruptError;
-
 /** Operational projection of one durably accepted EventSub inbox receipt. */
 export interface EventSubReceiptStatus {
 	readonly status: "pending" | "completed" | "dead_letter";
@@ -111,7 +91,7 @@ export interface EventSubReceiptStatus {
 class EventSubProcessingError extends TaggedError("EventSubProcessingError")<{
 	message: string;
 	operation: string;
-}>() {
+}> {
 	constructor(operation: string, detail: string) {
 		super({
 			message: `EventSub durable processing failed during ${operation}: ${detail}`,
@@ -167,7 +147,7 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 	}
 
 	/** Durably accepts one fully parsed EventSub receipt and idempotently resumes its work. */
-	@rpc
+	@rpc(AcceptEventSubReceiptResultCodec)
 	async accept(input: unknown): Promise<Result<void, EventSubAcceptanceError>> {
 		const accepted = AcceptedEventSubReceiptSchema.safeParse(input);
 		if (!accepted.success) {
@@ -206,7 +186,7 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 	}
 
 	/** Read durable EventSub receipt progress without exposing the signed body. */
-	@rpc
+	@rpc(GetEventSubReceiptStatusResultCodec)
 	async getReceiptStatus(): Promise<
 		Result<EventSubReceiptStatus | null, EventSubReceiptCorruptError>
 	> {

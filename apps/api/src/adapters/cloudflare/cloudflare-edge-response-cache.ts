@@ -11,7 +11,7 @@ export class EdgeCacheValueError extends TaggedError("EdgeCacheValueError")<{
 	readonly operation: "parseFreshValue";
 	readonly message: string;
 	readonly parseError: string;
-}>() {
+}> {
 	constructor(parseError: string) {
 		super({
 			operation: "parseFreshValue",
@@ -26,7 +26,7 @@ export class EdgeCacheLoadError extends TaggedError("EdgeCacheLoadError")<{
 	readonly operation: "loadFreshValue";
 	readonly message: string;
 	readonly cause: unknown;
-}>() {
+}> {
 	constructor(cause: unknown) {
 		super({ operation: "loadFreshValue", message: "Edge cache fresh value loading failed", cause });
 	}

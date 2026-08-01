@@ -10,7 +10,7 @@ export class RaffleStatisticsReadError extends TaggedError("RaffleStatisticsRead
 	readonly remoteErrorTag?: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		operation: RaffleStatisticsOperation;
 		failure: "transport" | "protocol" | "query" | "persistence";
@@ -29,7 +29,7 @@ export class RaffleViewerNotFoundError extends TaggedError("RaffleViewerNotFound
 	readonly operation: "getViewerStats" | "getViewerStatsByDisplayName";
 	readonly viewerReference: string;
 	readonly message: string;
-}>() {
+}> {
 	constructor(args: {
 		operation: "getViewerStats" | "getViewerStatsByDisplayName";
 		viewerReference: string;

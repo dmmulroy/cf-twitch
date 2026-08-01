@@ -56,7 +56,7 @@ export type WorkerConfiguration = Readonly<{
 export class WorkerConfigurationError extends TaggedError("WorkerConfigurationError")<{
 	readonly message: string;
 	readonly parseError: string;
-}>() {
+}> {
 	constructor(parseError: string) {
 		super({ message: "Worker configuration parsing failed", parseError });
 	}

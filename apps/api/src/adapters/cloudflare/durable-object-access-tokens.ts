@@ -1,8 +1,17 @@
 import { Result } from "better-result";
-import { z } from "zod";
 
 import { ProviderAccessTokenError } from "../../capabilities/provider-access-tokens";
 import { RedactedValue } from "../../lib/redacted";
+import {
+	GetValidSpotifyTokenResultCodec,
+	GetValidTwitchTokenResultCodec,
+	SetSpotifyTokensResultCodec,
+	SetTwitchTokensResultCodec,
+	SpotifyTokenStreamOfflineResultCodec,
+	SpotifyTokenStreamOnlineResultCodec,
+	TwitchTokenStreamOfflineResultCodec,
+	TwitchTokenStreamOnlineResultCodec,
+} from "../../lib/token-rpc-result-codecs";
 import { initializeDurableObjectAgentStub } from "./durable-object-agent-stub";
 
 import type {
@@ -16,25 +25,53 @@ import type { TwitchTokenResponse } from "../../services/twitch-service";
 import type { DurableObjectAgentStub } from "./durable-object-agent-stub";
 import type { Result as ResultType } from "better-result";
 
-const TokenRpcResultSchema = z.discriminatedUnion("status", [
-	z.object({ status: z.literal("ok"), value: z.string().min(1) }).strict(),
-	z
-		.object({
-			status: z.literal("error"),
-			error: z.object({ _tag: z.string().min(1), message: z.string() }).passthrough(),
-		})
-		.strict(),
-]);
+type TokenProvider = "spotify" | "twitch";
+type TokenRpcOperation = "getValidAccessToken" | "setTokens" | "onStreamOnline" | "onStreamOffline";
+interface TokenRpcStub extends DurableObjectAgentStub {
+	getValidToken(): Promise<unknown>;
+	setTokens(tokens: unknown): Promise<unknown>;
+	onStreamOnline(): Promise<unknown>;
+	onStreamOffline(): Promise<unknown>;
+}
+type TokenRpcNamespace = Readonly<{ getByName(name: string): TokenRpcStub }>;
 
-const SetTokensRpcResultSchema = z.discriminatedUnion("status", [
-	z.object({ status: z.literal("ok"), value: z.undefined() }).strict(),
-	z
-		.object({
-			status: z.literal("error"),
-			error: z.object({ _tag: z.string().min(1), message: z.string() }).passthrough(),
-		})
-		.strict(),
-]);
+async function callProviderTokenRpc<T>(args: {
+	readonly namespace: TokenRpcNamespace;
+	readonly provider: TokenProvider;
+	readonly operation: TokenRpcOperation;
+	readonly invoke: (stub: TokenRpcStub) => Promise<unknown>;
+	readonly deserializeUnsafe: (
+		value: unknown,
+	) =>
+		| ResultType<T, Readonly<{ _tag: string }>>
+		| Promise<ResultType<T, Readonly<{ _tag: string }>>>;
+}): Promise<ResultType<T, ProviderAccessTokenError>> {
+	let rawResult: unknown;
+	try {
+		const name = args.provider === "spotify" ? "spotify-token" : "twitch-token";
+		const stub = await initializeDurableObjectAgentStub(args.namespace.getByName(name), name);
+		rawResult = await args.invoke(stub);
+	} catch (cause) {
+		return Result.err(
+			new ProviderAccessTokenError({
+				provider: args.provider,
+				operation: args.operation,
+				failureTag: "DurableObjectUnavailable",
+				cause,
+			}),
+		);
+	}
+	const result = await args.deserializeUnsafe(rawResult);
+	return result.status === "ok"
+		? Result.ok(result.value)
+		: Result.err(
+				new ProviderAccessTokenError({
+					provider: args.provider,
+					operation: args.operation,
+					failureTag: result.error._tag,
+				}),
+			);
+}
 
 /** Durable Object adapter for Spotify access-token lifecycle operations. */
 export class DurableObjectSpotifyAccessTokens
@@ -45,103 +82,63 @@ export class DurableObjectSpotifyAccessTokens
 		private readonly tracer: Tracer,
 	) {}
 
-	/** Returns a runtime-validated, redacted Spotify user access token. */
+	/** Returns a validated, redacted Spotify user access token. */
 	getValidAccessToken(): Promise<ResultType<RedactedValue<string>, ProviderAccessTokenError>> {
 		return this.tracer.span(
 			"durable_object.spotify_access_tokens.get_valid_access_token",
 			{},
 			async () => {
-				try {
-					const stub = await initializeDurableObjectAgentStub(
-						this.namespace.getByName("spotify-token"),
-						"spotify-token",
-					);
-					const raw: unknown = await stub.getValidToken();
-					const parsed = TokenRpcResultSchema.safeParse(raw);
-					if (!parsed.success) {
-						return Result.err(
-							new ProviderAccessTokenError({
-								provider: "spotify",
-								failureTag: "DurableObjectRpcProtocolError",
-								cause: parsed.error,
-							}),
-						);
-					}
-					return parsed.data.status === "ok"
-						? Result.ok(RedactedValue.fromSensitiveValue(parsed.data.value))
-						: Result.err(
-								new ProviderAccessTokenError({
-									provider: "spotify",
-									failureTag: parsed.data.error._tag,
-								}),
-							);
-				} catch (cause) {
-					return Result.err(
-						new ProviderAccessTokenError({
-							provider: "spotify",
-							failureTag: "DurableObjectUnavailable",
-							cause,
-						}),
-					);
-				}
+				const result = await callProviderTokenRpc({
+					namespace: this.namespace,
+					provider: "spotify",
+					operation: "getValidAccessToken",
+					invoke: (stub) => stub.getValidToken(),
+					deserializeUnsafe: (value) => GetValidSpotifyTokenResultCodec.deserializeUnsafe(value),
+				});
+				return result.map(RedactedValue.fromSensitiveValue);
 			},
 		);
 	}
 
-	/** Marks Spotify token refresh as eligible for an active Stream Session. */
 	onStreamOnline(): Promise<ResultType<void, ProviderAccessTokenError>> {
-		return callTokenLifecycleRpc(
-			this.namespace,
-			"spotify-token",
-			"spotify",
-			"onStreamOnline",
-			this.tracer,
-		);
+		return this.callLifecycle("onStreamOnline");
 	}
 
-	/** Marks Spotify token refresh as unavailable after a Stream Session ends. */
 	onStreamOffline(): Promise<ResultType<void, ProviderAccessTokenError>> {
-		return callTokenLifecycleRpc(
-			this.namespace,
-			"spotify-token",
-			"spotify",
-			"onStreamOffline",
-			this.tracer,
-		);
+		return this.callLifecycle("onStreamOffline");
 	}
 
-	/** Persists a parsed Spotify OAuth token response. */
-	async setTokens(
-		tokens: SpotifyTokenResponse,
+	setTokens(tokens: SpotifyTokenResponse): Promise<ResultType<void, ProviderAccessTokenError>> {
+		return callProviderTokenRpc({
+			namespace: this.namespace,
+			provider: "spotify",
+			operation: "setTokens",
+			invoke: (stub) => stub.setTokens(tokens),
+			deserializeUnsafe: (value) => SetSpotifyTokensResultCodec.deserializeUnsafe(value),
+		});
+	}
+
+	private callLifecycle(
+		operation: "onStreamOnline" | "onStreamOffline",
 	): Promise<ResultType<void, ProviderAccessTokenError>> {
-		try {
-			const stub = await initializeDurableObjectAgentStub(
-				this.namespace.getByName("spotify-token"),
-				"spotify-token",
-			);
-			const raw: unknown = await stub.setTokens(tokens);
-			const parsed = SetTokensRpcResultSchema.safeParse(raw);
-			if (parsed.success && parsed.data.status === "ok") return Result.ok(undefined);
-			return Result.err(
-				new ProviderAccessTokenError({
+		return this.tracer.span(
+			operation === "onStreamOnline"
+				? "durable_object.spotify_access_tokens.on_stream_online"
+				: "durable_object.spotify_access_tokens.on_stream_offline",
+			{ provider: "spotify", operation },
+			() =>
+				callProviderTokenRpc({
+					namespace: this.namespace,
 					provider: "spotify",
-					operation: "setTokens",
-					failureTag:
-						parsed.success && parsed.data.status === "error"
-							? parsed.data.error._tag
-							: "DurableObjectRpcProtocolError",
+					operation,
+					invoke: (stub) =>
+						operation === "onStreamOnline" ? stub.onStreamOnline() : stub.onStreamOffline(),
+					deserializeUnsafe: (value) =>
+						operation === "onStreamOnline"
+							? SpotifyTokenStreamOnlineResultCodec.deserializeUnsafe(value)
+							: SpotifyTokenStreamOfflineResultCodec.deserializeUnsafe(value),
 				}),
-			);
-		} catch (cause) {
-			return Result.err(
-				new ProviderAccessTokenError({
-					provider: "spotify",
-					operation: "setTokens",
-					failureTag: "DurableObjectUnavailable",
-					cause,
-				}),
-			);
-		}
+		);
 	}
 }
 
@@ -152,156 +149,62 @@ export class DurableObjectTwitchAccessTokens implements TwitchAccessTokens, Prov
 		private readonly tracer: Tracer,
 	) {}
 
-	/** Returns a runtime-validated, redacted Twitch broadcaster access token. */
+	/** Returns a validated, redacted Twitch broadcaster access token. */
 	getValidAccessToken(): Promise<ResultType<RedactedValue<string>, ProviderAccessTokenError>> {
 		return this.tracer.span(
 			"durable_object.twitch_access_tokens.get_valid_access_token",
 			{},
 			async () => {
-				try {
-					const stub = await initializeDurableObjectAgentStub(
-						this.namespace.getByName("twitch-token"),
-						"twitch-token",
-					);
-					const raw: unknown = await stub.getValidToken();
-					const parsed = TokenRpcResultSchema.safeParse(raw);
-					if (!parsed.success) {
-						return Result.err(
-							new ProviderAccessTokenError({
-								provider: "twitch",
-								failureTag: "DurableObjectRpcProtocolError",
-								cause: parsed.error,
-							}),
-						);
-					}
-					return parsed.data.status === "ok"
-						? Result.ok(RedactedValue.fromSensitiveValue(parsed.data.value))
-						: Result.err(
-								new ProviderAccessTokenError({
-									provider: "twitch",
-									failureTag: parsed.data.error._tag,
-								}),
-							);
-				} catch (cause) {
-					return Result.err(
-						new ProviderAccessTokenError({
-							provider: "twitch",
-							failureTag: "DurableObjectUnavailable",
-							cause,
-						}),
-					);
-				}
+				const result = await callProviderTokenRpc({
+					namespace: this.namespace,
+					provider: "twitch",
+					operation: "getValidAccessToken",
+					invoke: (stub) => stub.getValidToken(),
+					deserializeUnsafe: (value) => GetValidTwitchTokenResultCodec.deserializeUnsafe(value),
+				});
+				return result.map(RedactedValue.fromSensitiveValue);
 			},
 		);
 	}
 
-	/** Marks Twitch token refresh as eligible for an active Stream Session. */
 	onStreamOnline(): Promise<ResultType<void, ProviderAccessTokenError>> {
-		return callTokenLifecycleRpc(
-			this.namespace,
-			"twitch-token",
-			"twitch",
-			"onStreamOnline",
-			this.tracer,
-		);
+		return this.callLifecycle("onStreamOnline");
 	}
 
-	/** Marks Twitch token refresh as unavailable after a Stream Session ends. */
 	onStreamOffline(): Promise<ResultType<void, ProviderAccessTokenError>> {
-		return callTokenLifecycleRpc(
-			this.namespace,
-			"twitch-token",
-			"twitch",
-			"onStreamOffline",
-			this.tracer,
+		return this.callLifecycle("onStreamOffline");
+	}
+
+	setTokens(tokens: TwitchTokenResponse): Promise<ResultType<void, ProviderAccessTokenError>> {
+		return callProviderTokenRpc({
+			namespace: this.namespace,
+			provider: "twitch",
+			operation: "setTokens",
+			invoke: (stub) => stub.setTokens(tokens),
+			deserializeUnsafe: (value) => SetTwitchTokensResultCodec.deserializeUnsafe(value),
+		});
+	}
+
+	private callLifecycle(
+		operation: "onStreamOnline" | "onStreamOffline",
+	): Promise<ResultType<void, ProviderAccessTokenError>> {
+		return this.tracer.span(
+			operation === "onStreamOnline"
+				? "durable_object.twitch_access_tokens.on_stream_online"
+				: "durable_object.twitch_access_tokens.on_stream_offline",
+			{ provider: "twitch", operation },
+			() =>
+				callProviderTokenRpc({
+					namespace: this.namespace,
+					provider: "twitch",
+					operation,
+					invoke: (stub) =>
+						operation === "onStreamOnline" ? stub.onStreamOnline() : stub.onStreamOffline(),
+					deserializeUnsafe: (value) =>
+						operation === "onStreamOnline"
+							? TwitchTokenStreamOnlineResultCodec.deserializeUnsafe(value)
+							: TwitchTokenStreamOfflineResultCodec.deserializeUnsafe(value),
+				}),
 		);
 	}
-
-	/** Persists a parsed Twitch OAuth token response. */
-	async setTokens(
-		tokens: TwitchTokenResponse,
-	): Promise<ResultType<void, ProviderAccessTokenError>> {
-		try {
-			const stub = await initializeDurableObjectAgentStub(
-				this.namespace.getByName("twitch-token"),
-				"twitch-token",
-			);
-			const raw: unknown = await stub.setTokens(tokens);
-			const parsed = SetTokensRpcResultSchema.safeParse(raw);
-			if (parsed.success && parsed.data.status === "ok") return Result.ok(undefined);
-			return Result.err(
-				new ProviderAccessTokenError({
-					provider: "twitch",
-					operation: "setTokens",
-					failureTag:
-						parsed.success && parsed.data.status === "error"
-							? parsed.data.error._tag
-							: "DurableObjectRpcProtocolError",
-				}),
-			);
-		} catch (cause) {
-			return Result.err(
-				new ProviderAccessTokenError({
-					provider: "twitch",
-					operation: "setTokens",
-					failureTag: "DurableObjectUnavailable",
-					cause,
-				}),
-			);
-		}
-	}
-}
-
-interface TokenLifecycleRpcStub extends DurableObjectAgentStub {
-	onStreamOnline(): Promise<unknown>;
-	onStreamOffline(): Promise<unknown>;
-}
-
-type TokenLifecycleNamespace = Readonly<{
-	getByName(name: string): TokenLifecycleRpcStub;
-}>;
-
-function callTokenLifecycleRpc(
-	namespace: TokenLifecycleNamespace,
-	name: "spotify-token" | "twitch-token",
-	provider: "spotify" | "twitch",
-	operation: "onStreamOnline" | "onStreamOffline",
-	tracer: Tracer,
-): Promise<ResultType<void, ProviderAccessTokenError>> {
-	const spanName =
-		operation === "onStreamOnline"
-			? provider === "spotify"
-				? "durable_object.spotify_access_tokens.on_stream_online"
-				: "durable_object.twitch_access_tokens.on_stream_online"
-			: provider === "spotify"
-				? "durable_object.spotify_access_tokens.on_stream_offline"
-				: "durable_object.twitch_access_tokens.on_stream_offline";
-	return tracer.span(spanName, { provider, operation }, async () => {
-		try {
-			const stub = await initializeDurableObjectAgentStub(namespace.getByName(name), name);
-			const raw: unknown =
-				operation === "onStreamOnline" ? await stub.onStreamOnline() : await stub.onStreamOffline();
-			const parsed = SetTokensRpcResultSchema.safeParse(raw);
-			if (parsed.success && parsed.data.status === "ok") return Result.ok(undefined);
-			return Result.err(
-				new ProviderAccessTokenError({
-					provider,
-					operation,
-					failureTag:
-						parsed.success && parsed.data.status === "error"
-							? parsed.data.error._tag
-							: "DurableObjectRpcProtocolError",
-				}),
-			);
-		} catch (cause) {
-			return Result.err(
-				new ProviderAccessTokenError({
-					provider,
-					operation,
-					failureTag: "DurableObjectUnavailable",
-					cause,
-				}),
-			);
-		}
-	});
 }

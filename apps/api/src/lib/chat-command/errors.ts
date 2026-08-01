@@ -20,7 +20,7 @@ export class ChatCommandRenderError extends TaggedError("ChatCommandRenderError"
 	commandName: string;
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: { commandName: string; cause?: unknown; message?: string }) {
 		super({
 			commandName: args.commandName,
@@ -39,7 +39,7 @@ export class ChatCommandRenderError extends TaggedError("ChatCommandRenderError"
 export class ChatCommandSendError extends TaggedError("ChatCommandSendError")<{
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: { cause?: unknown; message?: string }) {
 		super({
 			cause: args.cause,
@@ -58,7 +58,7 @@ export class ChatCommandExecutionError extends TaggedError("ChatCommandExecution
 	commandName: string;
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: { commandName: string; cause?: unknown; message?: string }) {
 		super({
 			commandName: args.commandName,

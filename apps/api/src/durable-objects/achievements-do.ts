@@ -34,6 +34,20 @@ import {
 	type ViewerAchievementProgress,
 } from "../domain/achievement";
 import { EventSchema, EventType, type Event } from "../domain/domain-event";
+import {
+	AchievementStreamOfflineResultCodec,
+	AchievementStreamOnlineResultCodec,
+	GetAchievementDefinitionsResultCodec,
+	GetAchievementLeaderboardResultCodec,
+	GetAchievementTableCountsResultCodec,
+	GetAchievementUserSnapshotResultCodec,
+	GetUnannouncedAchievementsResultCodec,
+	GetUnlockedAchievementsResultCodec,
+	GetViewerAchievementsResultCodec,
+	HandleAchievementEventResultCodec,
+	RecordAchievementEventResultCodec,
+	ResetOneTimeAchievementsResultCodec,
+} from "../lib/achievement-rpc-result-codecs";
 import { writeAchievementUnlockMetric } from "../lib/analytics";
 import { rpc } from "../lib/durable-objects";
 import {
@@ -190,7 +204,7 @@ class _AchievementsDO
 	 * Increments progress for all matching achievements and returns any newly unlocked.
 	 * Uses eventId for idempotency on event-based achievements.
 	 */
-	@rpc
+	@rpc(RecordAchievementEventResultCodec)
 	async recordEvent(
 		input: AchievementEventInput,
 	): Promise<Result<UnlockedAchievement[], AchievementError>> {
@@ -337,7 +351,7 @@ class _AchievementsDO
 	/**
 	 * Get all achievements with user's progress
 	 */
-	@rpc
+	@rpc(GetViewerAchievementsResultCodec)
 	async getUserAchievements(
 		userDisplayName: string,
 	): Promise<Result<ViewerAchievementProgress[], AchievementError>> {
@@ -380,7 +394,7 @@ class _AchievementsDO
 	/**
 	 * Get only unlocked achievements for a user
 	 */
-	@rpc
+	@rpc(GetUnlockedAchievementsResultCodec)
 	async getUnlockedAchievements(
 		userDisplayName: string,
 	): Promise<Result<UnlockedAchievement[], AchievementError>> {
@@ -432,7 +446,7 @@ class _AchievementsDO
 	/**
 	 * Get all achievement definitions
 	 */
-	@rpc
+	@rpc(GetAchievementDefinitionsResultCodec)
 	async getDefinitions(): Promise<Result<AchievementDefinition[], AchievementError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -449,7 +463,7 @@ class _AchievementsDO
 	/**
 	 * Debug endpoint: table-level counts for achievements state.
 	 */
-	@rpc
+	@rpc(GetAchievementTableCountsResultCodec)
 	async getDebugTableCounts(): Promise<Result<AchievementDebugTableCounts, AchievementDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -480,7 +494,7 @@ class _AchievementsDO
 	/**
 	 * Debug endpoint: detailed per-user snapshot with normalization diagnostics.
 	 */
-	@rpc
+	@rpc(GetAchievementUserSnapshotResultCodec)
 	async getDebugUserSnapshot(
 		userDisplayName: string,
 	): Promise<Result<AchievementDebugUserSnapshot, AchievementDbError>> {
@@ -616,7 +630,7 @@ class _AchievementsDO
 	/**
 	 * Get unlocked but unannounced achievements (for chat bot)
 	 */
-	@rpc
+	@rpc(GetUnannouncedAchievementsResultCodec)
 	async getUnannounced(): Promise<Result<UnannouncedAchievement[], AchievementDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -668,7 +682,7 @@ class _AchievementsDO
 	/**
 	 * Get leaderboard of users by achievement unlock count
 	 */
-	@rpc
+	@rpc(GetAchievementLeaderboardResultCodec)
 	async getLeaderboard(
 		options?: LeaderboardOptions,
 	): Promise<Result<AchievementLeaderboardEntry[], AchievementError>> {
@@ -709,7 +723,7 @@ class _AchievementsDO
 	 * @param userDisplayName - If provided, only reset for this user. Otherwise reset for all users.
 	 * @returns Number of rows deleted
 	 */
-	@rpc
+	@rpc(ResetOneTimeAchievementsResultCodec)
 	async resetOneTimeAchievements(
 		userDisplayName?: string,
 	): Promise<Result<{ deleted: number; achievementIds: string[] }, AchievementDbError>> {
@@ -759,7 +773,7 @@ class _AchievementsDO
 	 * Resets session-scoped achievements (e.g., "Stream Opener", streaks)
 	 * and resets all user session streaks to 0.
 	 */
-	@rpc
+	@rpc(AchievementStreamOnlineResultCodec)
 	async onStreamOnline(): Promise<Result<void, AchievementDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -823,7 +837,7 @@ class _AchievementsDO
 	/**
 	 * Lifecycle: Called when stream goes offline
 	 */
-	@rpc
+	@rpc(AchievementStreamOfflineResultCodec)
 	async onStreamOffline(): Promise<Result<void, AchievementDbError>> {
 		return Result.tryPromise({
 			try: async () => {
@@ -995,7 +1009,7 @@ class _AchievementsDO
 	 * Dispatches events to specific handlers, records to event_history for
 	 * "first request of stream" checks and audit trail.
 	 */
-	@rpc
+	@rpc(HandleAchievementEventResultCodec)
 	async handleEvent(event: unknown): Promise<Result<void, AchievementError>> {
 		const parseResult = EventSchema.safeParse(event);
 		if (!parseResult.success) {

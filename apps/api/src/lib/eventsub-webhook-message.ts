@@ -167,7 +167,7 @@ export type ParsedEventSubMessage =
 export class EventSubMessageParseError extends TaggedError("EventSubMessageParseError")<{
 	message: string;
 	parseError: string;
-}>() {
+}> {
 	constructor(parseError: string) {
 		super({
 			message: `EventSub message parse failed: ${parseError}`,

@@ -2,12 +2,12 @@ import { Result } from "better-result";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DurableObjectError, SongQueueDbError } from "../../lib/errors";
-import { fromRpcResult, toRpcResult, type RpcPayloadParser } from "../../lib/rpc-result";
 import { createSongQueueClient } from "../../lib/song-queue-client";
+import { GetUserRequestCountResultCodec } from "../../lib/song-queue-rpc-result-codecs";
 
-describe("toRpcResult", () => {
+describe("Song Queue RPC Result codecs", () => {
 	it("projects typed Errors into plain clone-safe values", () => {
-		const serialized = toRpcResult(
+		const serialized = GetUserRequestCountResultCodec.serializeUnsafe(
 			Result.err(new SongQueueDbError({ operation: "persistRequest(event-1)" })),
 		);
 
@@ -21,38 +21,33 @@ describe("toRpcResult", () => {
 				name: "SongQueueDbError",
 			});
 		}
-		expect(structuredClone(serialized)).toMatchObject({
+		const cloned = structuredClone(serialized);
+		expect(cloned).toMatchObject({
 			status: "error",
 			error: {
 				_tag: "SongQueueDbError",
 				operation: "persistRequest(event-1)",
 			},
 		});
+
+		const deserialized = GetUserRequestCountResultCodec.deserializeUnsafe(cloned);
+		expect(deserialized.status).toBe("error");
+		if (deserialized.status === "error") {
+			expect(deserialized.error).toBeInstanceOf(SongQueueDbError);
+			expect(deserialized.error.operation).toBe("persistRequest(event-1)");
+		}
 	});
 
-	it("rejects malformed success and unknown error payloads at the RPC boundary", () => {
-		const numberParser: RpcPayloadParser<number> = (value) =>
-			typeof value === "number" ? Result.ok(value) : Result.err("expected number");
-		const errorParser: RpcPayloadParser<SongQueueDbError> = (value) =>
-			value instanceof SongQueueDbError
-				? Result.ok(value)
-				: Result.err("expected SongQueueDbError");
-
-		const malformedSuccess = fromRpcResult({ status: "ok", value: {} }, "count", {
-			success: numberParser,
-			error: errorParser,
-		});
-		const unknownError = fromRpcResult(
-			{ status: "error", error: { _tag: "UnknownError" } },
-			"count",
-			{ success: numberParser, error: errorParser },
-		);
-
-		expect(malformedSuccess.status).toBe("error");
-		expect(unknownError.status).toBe("error");
-		if (malformedSuccess.status === "error")
-			expect(malformedSuccess.error._tag).toBe("DurableObjectError");
-		if (unknownError.status === "error") expect(unknownError.error._tag).toBe("DurableObjectError");
+	it("panics on malformed success and unknown error payloads at the owned RPC boundary", () => {
+		expect(() =>
+			GetUserRequestCountResultCodec.deserializeUnsafe({ status: "ok", value: {} }),
+		).toThrow();
+		expect(() =>
+			GetUserRequestCountResultCodec.deserializeUnsafe({
+				status: "error",
+				error: { _tag: "UnknownError" },
+			}),
+		).toThrow();
 	});
 
 	it("returns acquisition failures through every Song Queue client operation", async () => {

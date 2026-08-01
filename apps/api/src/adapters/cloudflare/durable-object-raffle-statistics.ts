@@ -1,5 +1,4 @@
 import { Result } from "better-result";
-import { z } from "zod";
 
 import { KeyboardRaffleRollStoreError } from "../../capabilities/keyboard-raffle-roll-store";
 import {
@@ -10,63 +9,26 @@ import {
 	type RaffleStatisticsOperation,
 } from "../../capabilities/raffle-statistics";
 import {
-	KeyboardRaffleRollSchema,
-	RaffleLeaderboardEntrySchema,
-	RaffleLeaderboardSchema,
-	type RecordKeyboardRaffleRoll,
-	type RaffleLeaderboardEntry,
-	type RaffleLeaderboardQuery,
-} from "../../domain/keyboard-raffle";
-import { DurableObjectError } from "../../lib/errors";
-import { fromRpcResult, type RpcPayloadParser, type RpcResultParsers } from "../../lib/rpc-result";
+	DeleteKeyboardRaffleRollResultCodec,
+	GetKeyboardRaffleDisplayNameStatsResultCodec,
+	GetKeyboardRaffleLeaderboardResultCodec,
+	GetKeyboardRaffleViewerStatsResultCodec,
+	RecordKeyboardRaffleRollResultCodec,
+} from "../../lib/keyboard-raffle-rpc-result-codecs";
 import { initializeDurableObjectAgentStub } from "./durable-object-agent-stub";
 
 import type { KeyboardRaffleRollStore } from "../../capabilities/keyboard-raffle-roll-store";
 import type { Tracer } from "../../capabilities/tracer";
+import type {
+	KeyboardRaffleRoll,
+	RecordKeyboardRaffleRoll,
+	RaffleLeaderboardEntry,
+	RaffleLeaderboardQuery,
+} from "../../domain/keyboard-raffle";
 import type { DurableObjectAgentStub } from "./durable-object-agent-stub";
 import type { Result as ResultType } from "better-result";
 
-const RaffleStatisticsWireErrorSchema = z.discriminatedUnion("_tag", [
-	z
-		.object({
-			_tag: z.literal("KeyboardRaffleInputParseError"),
-			operation: z.string(),
-			issues: z.string(),
-			message: z.string(),
-		})
-		.passthrough(),
-	z
-		.object({
-			_tag: z.literal("KeyboardRaffleDataParseError"),
-			operation: z.string(),
-			issues: z.string(),
-			message: z.string(),
-		})
-		.passthrough(),
-	z
-		.object({
-			_tag: z.literal("KeyboardRaffleDbError"),
-			operation: z.string(),
-			message: z.string(),
-		})
-		.passthrough(),
-	z
-		.object({
-			_tag: z.literal("RollIdempotencyConflictError"),
-			message: z.string(),
-		})
-		.passthrough(),
-	z
-		.object({
-			_tag: z.literal("UserStatsNotFoundError"),
-			userId: z.string(),
-			message: z.string(),
-		})
-		.passthrough(),
-]);
-
-type RaffleStatisticsWireError = z.infer<typeof RaffleStatisticsWireErrorSchema>;
-
+type KeyboardRaffleRemoteError = Readonly<{ _tag: string }>;
 interface RaffleStatisticsRpcStub extends DurableObjectAgentStub {
 	getLeaderboard(options: RaffleLeaderboardQuery): Promise<unknown>;
 	getUserStats(viewerId: string): Promise<unknown>;
@@ -75,90 +37,64 @@ interface RaffleStatisticsRpcStub extends DurableObjectAgentStub {
 	deleteRollById(rollId: string): Promise<unknown>;
 }
 
-function parseRaffleStatisticsPayload<T>(schema: z.ZodType<T>): RpcPayloadParser<T> {
-	return (input) => {
-		const parsed = schema.safeParse(input);
-		return parsed.success ? Result.ok(parsed.data) : Result.err(parsed.error.message);
-	};
-}
-
-const parseRaffleStatisticsWireError: RpcPayloadParser<RaffleStatisticsWireError> = (input) => {
-	const parsed = RaffleStatisticsWireErrorSchema.safeParse(input);
-	return parsed.success ? Result.ok(parsed.data) : Result.err(parsed.error.message);
-};
-
-function raffleStatisticsRpcParsers<T>(
-	schema: z.ZodType<T>,
-): RpcResultParsers<T, RaffleStatisticsWireError> {
-	return {
-		success: parseRaffleStatisticsPayload(schema),
-		error: parseRaffleStatisticsWireError,
-	};
-}
-
-/** Durable Object adapter for runtime-validated Raffle Leaderboard and Viewer-statistics reads. */
+/** Durable Object adapter for validated Raffle Leaderboard and Viewer-statistics RPC. */
 export class DurableObjectRaffleStatistics implements RaffleStatistics, KeyboardRaffleRollStore {
 	constructor(
 		private readonly namespace: Cloudflare.Env["KEYBOARD_RAFFLE_DO"],
 		private readonly tracer: Tracer,
 	) {}
 
-	/** Records and parses one idempotent Keyboard Raffle Roll. */
 	recordRoll(
 		input: RecordKeyboardRaffleRoll,
 	): Promise<
 		ResultType<
-			Readonly<{ roll: z.infer<typeof KeyboardRaffleRollSchema>; isNewRecord: boolean }>,
+			Readonly<{ roll: KeyboardRaffleRoll; isNewRecord: boolean }>,
 			KeyboardRaffleRollStoreError
 		>
 	> {
 		return this.callRollStore(
 			"recordRoll",
 			async () => (await this.acquireRaffleStatisticsStub()).recordRoll(input),
-			z.object({ roll: KeyboardRaffleRollSchema, isNewRecord: z.boolean() }),
+			(value) => RecordKeyboardRaffleRollResultCodec.deserializeUnsafe(value),
 		);
 	}
 
-	/** Deletes one Keyboard Raffle Roll during saga compensation. */
 	deleteRoll(rollId: string): Promise<ResultType<void, KeyboardRaffleRollStoreError>> {
 		return this.callRollStore(
 			"deleteRoll",
 			async () => (await this.acquireRaffleStatisticsStub()).deleteRollById(rollId),
-			z.undefined(),
+			(value) => DeleteKeyboardRaffleRollResultCodec.deserializeUnsafe(value),
 		);
 	}
 
-	/** Reads and parses a bounded Raffle Leaderboard from the singleton durable state. */
 	getLeaderboard(
 		options: RaffleLeaderboardQuery,
 	): Promise<ResultType<readonly RaffleLeaderboardEntry[], RaffleStatisticsError>> {
 		return this.call(
 			"getLeaderboard",
 			async () => (await this.acquireRaffleStatisticsStub()).getLeaderboard(options),
-			raffleStatisticsRpcParsers(RaffleLeaderboardSchema),
+			(value) => GetKeyboardRaffleLeaderboardResultCodec.deserializeUnsafe(value),
 		);
 	}
 
-	/** Reads and parses one Viewer's Keyboard Raffle statistics by stable Viewer ID. */
 	getViewerStats(
 		viewerId: string,
 	): Promise<ResultType<RaffleLeaderboardEntry, RaffleStatisticsError>> {
 		return this.call(
 			"getViewerStats",
 			async () => (await this.acquireRaffleStatisticsStub()).getUserStats(viewerId),
-			raffleStatisticsRpcParsers(RaffleLeaderboardEntrySchema),
+			(value) => GetKeyboardRaffleViewerStatsResultCodec.deserializeUnsafe(value),
 			viewerId,
 		);
 	}
 
-	/** Reads and parses one Viewer's Keyboard Raffle statistics by historical display name. */
 	getViewerStatsByDisplayName(
 		displayName: string,
 	): Promise<ResultType<RaffleLeaderboardEntry, RaffleStatisticsError>> {
 		return this.call(
 			"getViewerStatsByDisplayName",
 			async () => (await this.acquireRaffleStatisticsStub()).getUserStatsByDisplayName(displayName),
-			raffleStatisticsRpcParsers(RaffleLeaderboardEntrySchema),
+			(value) => GetKeyboardRaffleDisplayNameStatsResultCodec.deserializeUnsafe(value),
 			displayName,
 		);
 	}
@@ -173,7 +109,11 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 	private async callRollStore<T>(
 		operation: "recordRoll" | "deleteRoll",
 		invoke: () => Promise<unknown>,
-		schema: z.ZodType<T>,
+		deserializeUnsafe: (
+			value: unknown,
+		) =>
+			| ResultType<T, KeyboardRaffleRemoteError>
+			| Promise<ResultType<T, KeyboardRaffleRemoteError>>,
 	): Promise<ResultType<T, KeyboardRaffleRollStoreError>> {
 		let rawResult: unknown;
 		try {
@@ -183,29 +123,26 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 				new KeyboardRaffleRollStoreError({ operation, failure: "transport", cause }),
 			);
 		}
-		const parsed = fromRpcResult(
-			rawResult,
-			operation === "recordRoll"
-				? "KeyboardRaffleDO.recordRoll"
-				: "KeyboardRaffleDO.deleteRollById",
-			raffleStatisticsRpcParsers(schema),
-		);
-		if (parsed.status === "ok") return Result.ok(parsed.value);
-		return Result.err(
-			new KeyboardRaffleRollStoreError({
-				operation,
-				failure: DurableObjectError.is(parsed.error) ? "protocol" : "remote",
-				...(DurableObjectError.is(parsed.error)
-					? { cause: parsed.error }
-					: { remoteErrorTag: parsed.error._tag }),
-			}),
-		);
+		const result = await deserializeUnsafe(rawResult);
+		return result.status === "ok"
+			? Result.ok(result.value)
+			: Result.err(
+					new KeyboardRaffleRollStoreError({
+						operation,
+						failure: "remote",
+						remoteErrorTag: result.error._tag,
+					}),
+				);
 	}
 
 	private call<T>(
 		operation: RaffleStatisticsOperation,
 		invoke: () => Promise<unknown>,
-		parsers: RpcResultParsers<T, RaffleStatisticsWireError>,
+		deserializeUnsafe: (
+			value: unknown,
+		) =>
+			| ResultType<T, KeyboardRaffleRemoteError>
+			| Promise<ResultType<T, KeyboardRaffleRemoteError>>,
 		viewerReference?: string,
 	): Promise<ResultType<T, RaffleStatisticsError>> {
 		return this.tracer.span(
@@ -220,41 +157,28 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 						new RaffleStatisticsReadError({ operation, failure: "transport", cause }),
 					);
 				}
-
-				const parsed = fromRpcResult(rawResult, `KeyboardRaffleDO.${operation}`, parsers);
-				if (parsed.status === "ok") return Result.ok(parsed.value);
-				if (DurableObjectError.is(parsed.error)) {
+				const result = await deserializeUnsafe(rawResult);
+				if (result.status === "ok") return Result.ok(result.value);
+				if (result.error._tag === "UserStatsNotFoundError") {
 					return Result.err(
-						new RaffleStatisticsReadError({
-							operation,
-							failure: "protocol",
-							cause: parsed.error,
+						new RaffleViewerNotFoundError({
+							operation:
+								operation === "getViewerStatsByDisplayName"
+									? "getViewerStatsByDisplayName"
+									: "getViewerStats",
+							viewerReference: viewerReference ?? "unknown",
 						}),
 					);
 				}
-				return Result.err(this.translateWireError(operation, parsed.error, viewerReference));
+				return Result.err(
+					new RaffleStatisticsReadError({
+						operation,
+						failure:
+							result.error._tag === "KeyboardRaffleInputParseError" ? "query" : "persistence",
+						remoteErrorTag: result.error._tag,
+					}),
+				);
 			},
 		);
-	}
-
-	private translateWireError(
-		operation: RaffleStatisticsOperation,
-		error: RaffleStatisticsWireError,
-		viewerReference?: string,
-	): RaffleStatisticsError {
-		if (error._tag === "UserStatsNotFoundError") {
-			return new RaffleViewerNotFoundError({
-				operation:
-					operation === "getViewerStatsByDisplayName"
-						? "getViewerStatsByDisplayName"
-						: "getViewerStats",
-				viewerReference: viewerReference ?? error.userId,
-			});
-		}
-		return new RaffleStatisticsReadError({
-			operation,
-			failure: error._tag === "KeyboardRaffleInputParseError" ? "query" : "persistence",
-			remoteErrorTag: error._tag,
-		});
 	}
 }

@@ -17,6 +17,7 @@ import {
 	SagaScheduleError,
 } from "./errors";
 import { logger } from "./logger";
+import { GetSagaStatusResultCodec, StartSagaResultCodec } from "./saga-rpc-result-codecs";
 import { SagaRunner, SagaRunnerDbError } from "./saga-runner";
 
 import type { Env } from "../index";
@@ -105,7 +106,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 	}
 
 	/** Parses, initializes, or idempotently resumes a saga from original parameters. */
-	@rpc
+	@rpc(StartSagaResultCodec)
 	async start(input: unknown): Promise<Result<void, SagaHostStartError<E>>> {
 		const parsed = this.sagaDefinition.paramsCodec.parse(input);
 		if (parsed.status === "error") {
@@ -140,7 +141,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 	}
 
 	/** Returns the shared caller-facing status projection for this saga. */
-	@rpc
+	@rpc(GetSagaStatusResultCodec)
 	async getStatus(): Promise<
 		Result<SagaHostStatus | null, SagaRunnerDbError | SagaPersistedDataError>
 	> {

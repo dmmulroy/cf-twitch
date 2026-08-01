@@ -19,7 +19,7 @@ export class EventSubWorkStartError extends TaggedError("EventSubWorkStartError"
 	readonly remoteErrorTag?: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		work: "song-request" | "keyboard-raffle" | "raid-shoutout";
 		operationId: string;

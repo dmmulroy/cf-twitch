@@ -14,7 +14,7 @@ export class OAuthAuthorizationStateError extends TaggedError("OAuthAuthorizatio
 	readonly failure: "transport" | "protocol";
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		operation: "create" | "consume";
 		failure: "transport" | "protocol";

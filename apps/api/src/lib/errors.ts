@@ -13,7 +13,7 @@ import { TaggedError } from "better-result";
 
 export class NoRefreshTokenError extends TaggedError("NoRefreshTokenError")<{
 	message: string;
-}>() {
+}> {
 	constructor() {
 		super({ message: "No refresh token available" });
 	}
@@ -23,7 +23,7 @@ export class NoRefreshTokenError extends TaggedError("NoRefreshTokenError")<{
 export class TokenNotConfiguredError extends TaggedError("TokenNotConfiguredError")<{
 	provider: "spotify" | "twitch";
 	message: string;
-}>() {
+}> {
 	constructor(args: { provider: "spotify" | "twitch" }) {
 		super({
 			...args,
@@ -38,7 +38,7 @@ export class TokenUnavailableWhileStreamOfflineError extends TaggedError(
 )<{
 	provider: "spotify" | "twitch";
 	message: string;
-}>() {
+}> {
 	constructor(args: { provider: "spotify" | "twitch" }) {
 		super({
 			...args,
@@ -50,7 +50,7 @@ export class TokenUnavailableWhileStreamOfflineError extends TaggedError(
 /** @deprecated Use the truthful token configuration or offline-unavailable errors. */
 export class StreamOfflineNoTokenError extends TaggedError("StreamOfflineNoTokenError")<{
 	message: string;
-}>() {
+}> {
 	constructor() {
 		super({ message: "Legacy token unavailable while stream is offline" });
 	}
@@ -61,7 +61,7 @@ export class TokenInputParseError extends TaggedError("TokenInputParseError")<{
 	provider: "spotify" | "twitch";
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { provider: "spotify" | "twitch"; parseError: string }) {
 		super({ ...args, message: `Invalid ${args.provider} token RPC payload` });
 	}
@@ -73,7 +73,7 @@ export class TokenStatePersistenceError extends TaggedError("TokenStatePersisten
 	operation: "parse" | "persist" | "schedule" | "cancel-schedule";
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		provider: "spotify" | "twitch";
 		operation: "parse" | "persist" | "schedule" | "cancel-schedule";
@@ -91,7 +91,7 @@ export class TokenConfigurationError extends TaggedError("TokenConfigurationErro
 	provider: "spotify" | "twitch";
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { provider: "spotify" | "twitch"; parseError: string }) {
 		super({ ...args, message: `Token refresh configuration invalid for ${args.provider}` });
 	}
@@ -101,7 +101,7 @@ export class TokenRefreshNetworkError extends TaggedError("TokenRefreshNetworkEr
 	status: number;
 	provider: "spotify" | "twitch";
 	message: string;
-}>() {
+}> {
 	constructor(args: { status: number; provider: "spotify" | "twitch"; message?: string }) {
 		super({
 			status: args.status,
@@ -115,7 +115,7 @@ export class TokenRefreshParseError extends TaggedError("TokenRefreshParseError"
 	provider: "spotify" | "twitch";
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { provider: "spotify" | "twitch"; parseError: string }) {
 		super({
 			...args,
@@ -128,7 +128,7 @@ export class TokenRefreshParseError extends TaggedError("TokenRefreshParseError"
 export class TokenAuthorizationRevokedError extends TaggedError("TokenAuthorizationRevokedError")<{
 	provider: "spotify" | "twitch";
 	message: string;
-}>() {
+}> {
 	constructor(args: { provider: "spotify" | "twitch" }) {
 		super({
 			...args,
@@ -157,7 +157,7 @@ export type TokenError =
 export class SpotifyRateLimitError extends TaggedError("SpotifyRateLimitError")<{
 	retryAfterMs: number;
 	message: string;
-}>() {
+}> {
 	constructor(args: { retryAfterMs: number }) {
 		super({
 			...args,
@@ -168,7 +168,7 @@ export class SpotifyRateLimitError extends TaggedError("SpotifyRateLimitError")<
 
 export class SpotifyUnauthorizedError extends TaggedError("SpotifyUnauthorizedError")<{
 	message: string;
-}>() {
+}> {
 	constructor() {
 		super({ message: "Spotify token unauthorized or expired" });
 	}
@@ -177,7 +177,7 @@ export class SpotifyUnauthorizedError extends TaggedError("SpotifyUnauthorizedEr
 export class SpotifyTrackNotFoundError extends TaggedError("SpotifyTrackNotFoundError")<{
 	trackId: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { trackId: string }) {
 		super({ ...args, message: `Spotify track not found: ${args.trackId}` });
 	}
@@ -185,7 +185,7 @@ export class SpotifyTrackNotFoundError extends TaggedError("SpotifyTrackNotFound
 
 export class SpotifyNoActiveDeviceError extends TaggedError("SpotifyNoActiveDeviceError")<{
 	message: string;
-}>() {
+}> {
 	constructor() {
 		super({ message: "No active Spotify device found" });
 	}
@@ -195,7 +195,7 @@ export class SpotifyNetworkError extends TaggedError("SpotifyNetworkError")<{
 	status: number;
 	context: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { status: number; context: string }) {
 		super({
 			...args,
@@ -208,7 +208,7 @@ export class SpotifyParseError extends TaggedError("SpotifyParseError")<{
 	context: string;
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { context: string; parseError: string }) {
 		super({
 			...args,
@@ -220,7 +220,7 @@ export class SpotifyParseError extends TaggedError("SpotifyParseError")<{
 export class SpotifyTokenExchangeError extends TaggedError("SpotifyTokenExchangeError")<{
 	status: number;
 	message: string;
-}>() {
+}> {
 	constructor(args: { status: number; message?: string }) {
 		super({
 			status: args.status,
@@ -246,7 +246,7 @@ export type SpotifyApiError =
 export class TwitchRateLimitError extends TaggedError("TwitchRateLimitError")<{
 	retryAfterMs: number;
 	message: string;
-}>() {
+}> {
 	constructor(args: { retryAfterMs: number }) {
 		super({
 			...args,
@@ -257,7 +257,7 @@ export class TwitchRateLimitError extends TaggedError("TwitchRateLimitError")<{
 
 export class TwitchUnauthorizedError extends TaggedError("TwitchUnauthorizedError")<{
 	message: string;
-}>() {
+}> {
 	constructor() {
 		super({ message: "Twitch token unauthorized or expired" });
 	}
@@ -267,7 +267,7 @@ export class TwitchNetworkError extends TaggedError("TwitchNetworkError")<{
 	status: number;
 	context: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { status: number; context: string }) {
 		super({
 			...args,
@@ -280,7 +280,7 @@ export class TwitchParseError extends TaggedError("TwitchParseError")<{
 	context: string;
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { context: string; parseError: string }) {
 		super({
 			...args,
@@ -294,7 +294,7 @@ export class TwitchNoSubscriptionReturnedError extends TaggedError(
 )<{
 	subscriptionType: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { subscriptionType: string }) {
 		super({
 			...args,
@@ -308,7 +308,7 @@ export class TwitchSubscriptionCreateError extends TaggedError("TwitchSubscripti
 	status: number;
 	errorBody: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { subscriptionType: string; status: number; errorBody: string }) {
 		super({
 			...args,
@@ -321,7 +321,7 @@ export class TwitchSubscriptionDeleteError extends TaggedError("TwitchSubscripti
 	subscriptionId: string;
 	status: number;
 	message: string;
-}>() {
+}> {
 	constructor(args: { subscriptionId: string; status: number }) {
 		super({
 			...args,
@@ -333,7 +333,7 @@ export class TwitchSubscriptionDeleteError extends TaggedError("TwitchSubscripti
 export class TwitchChatSendError extends TaggedError("TwitchChatSendError")<{
 	status: number;
 	message: string;
-}>() {
+}> {
 	constructor(args: { status: number; message?: string }) {
 		super({
 			status: args.status,
@@ -346,7 +346,7 @@ export class TwitchChatSendError extends TaggedError("TwitchChatSendError")<{
 export class TwitchChatDroppedError extends TaggedError("TwitchChatDroppedError")<{
 	dropCode: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { dropCode: string }) {
 		super({
 			...args,
@@ -360,7 +360,7 @@ export class TwitchShoutoutCreateError extends TaggedError("TwitchShoutoutCreate
 	toBroadcasterId: string;
 	errorBody: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { status: number; toBroadcasterId: string; errorBody: string }) {
 		super({
 			...args,
@@ -374,7 +374,7 @@ export class TwitchRedemptionUpdateError extends TaggedError("TwitchRedemptionUp
 	redemptionId: string;
 	status: number;
 	message: string;
-}>() {
+}> {
 	constructor(args: { rewardId: string; redemptionId: string; status: number }) {
 		super({
 			...args,
@@ -386,7 +386,7 @@ export class TwitchRedemptionUpdateError extends TaggedError("TwitchRedemptionUp
 export class TwitchTokenExchangeError extends TaggedError("TwitchTokenExchangeError")<{
 	status: number;
 	message: string;
-}>() {
+}> {
 	constructor(args: { status: number; message?: string }) {
 		super({
 			status: args.status,
@@ -420,7 +420,7 @@ export class DurableObjectRpcProtocolError extends TaggedError("DurableObjectRpc
 	payloadPart: "envelope" | "success" | "error";
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: {
 		method: string;
 		payloadPart: "envelope" | "success" | "error";
@@ -437,7 +437,7 @@ export class DurableObjectError extends TaggedError("DurableObjectError")<{
 	method: string;
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: { method: string; message: string; cause?: unknown }) {
 		super({
 			method: args.method,
@@ -454,7 +454,7 @@ export class DurableObjectError extends TaggedError("DurableObjectError")<{
 export class InvalidSpotifyUrlError extends TaggedError("InvalidSpotifyUrlError")<{
 	url: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { url: string }) {
 		super({ ...args, message: `Invalid Spotify URL: ${args.url}` });
 	}
@@ -465,7 +465,7 @@ export class UnknownRewardError extends TaggedError("UnknownRewardError")<{
 	rewardId: string;
 	rewardTitle: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { redemptionId: string; rewardId: string; rewardTitle: string }) {
 		super({
 			...args,
@@ -477,7 +477,7 @@ export class UnknownRewardError extends TaggedError("UnknownRewardError")<{
 export class RewardRoutingConfigError extends TaggedError("RewardRoutingConfigError")<{
 	configKey: "SONG_REQUEST_REWARD_ID" | "KEYBOARD_RAFFLE_REWARD_ID" | "REWARD_ID_CONFLICT";
 	message: string;
-}>() {
+}> {
 	constructor(args: {
 		configKey: "SONG_REQUEST_REWARD_ID" | "KEYBOARD_RAFFLE_REWARD_ID" | "REWARD_ID_CONFLICT";
 	}) {
@@ -493,7 +493,7 @@ export class SongQueueDbError extends TaggedError("SongQueueDbError")<{
 	operation: string;
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: { operation: string; cause?: unknown }) {
 		super({
 			operation: args.operation,
@@ -506,9 +506,67 @@ export class SongQueueDbError extends TaggedError("SongQueueDbError")<{
 export class SongRequestNotFoundError extends TaggedError("SongRequestNotFoundError")<{
 	eventId: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { eventId: string }) {
 		super({ ...args, message: `Song request not found: ${args.eventId}` });
+	}
+}
+
+// =============================================================================
+// Keyboard Raffle Errors
+// =============================================================================
+
+export class KeyboardRaffleDbError extends TaggedError("KeyboardRaffleDbError")<{
+	operation: string;
+	message: string;
+	cause?: unknown;
+}> {
+	constructor(args: { operation: string; cause?: unknown }) {
+		super({ ...args, message: `Keyboard raffle DB error during ${args.operation}` });
+	}
+}
+
+export class KeyboardRaffleInputParseError extends TaggedError("KeyboardRaffleInputParseError")<{
+	operation: string;
+	issues: string;
+	message: string;
+}> {
+	constructor(args: { operation: string; issues: string }) {
+		super({
+			...args,
+			message: `Keyboard Raffle input invalid during ${args.operation}: ${args.issues}`,
+		});
+	}
+}
+
+export class RollIdempotencyConflictError extends TaggedError("RollIdempotencyConflictError")<{
+	rollId: string;
+	message: string;
+}> {
+	constructor(args: { rollId: string }) {
+		super({ ...args, message: `Roll idempotency conflict for ${args.rollId}` });
+	}
+}
+
+export class KeyboardRaffleDataParseError extends TaggedError("KeyboardRaffleDataParseError")<{
+	operation: string;
+	issues: string;
+	message: string;
+}> {
+	constructor(args: { operation: string; issues: string }) {
+		super({
+			...args,
+			message: `Keyboard Raffle persisted data invalid during ${args.operation}: ${args.issues}`,
+		});
+	}
+}
+
+export class UserStatsNotFoundError extends TaggedError("UserStatsNotFoundError")<{
+	userId: string;
+	message: string;
+}> {
+	constructor(args: { userId: string }) {
+		super({ ...args, message: `No stats found for user: ${args.userId}` });
 	}
 }
 
@@ -520,7 +578,7 @@ export class AchievementDbError extends TaggedError("AchievementDbError")<{
 	operation: string;
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: { operation: string; cause?: unknown }) {
 		super({
 			operation: args.operation,
@@ -533,7 +591,7 @@ export class AchievementDbError extends TaggedError("AchievementDbError")<{
 export class AchievementNotFoundError extends TaggedError("AchievementNotFoundError")<{
 	achievementId: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { achievementId: string }) {
 		super({ ...args, message: `Achievement not found: ${args.achievementId}` });
 	}
@@ -544,7 +602,7 @@ export class AchievementEventValidationError extends TaggedError(
 )<{
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { parseError: string }) {
 		super({
 			...args,
@@ -556,7 +614,7 @@ export class AchievementEventValidationError extends TaggedError(
 /** Expected failure for invalid serialized Achievement query options. */
 export class AchievementQueryValidationError extends TaggedError(
 	"AchievementQueryValidationError",
-)<{ parseError: string; message: string }>() {
+)<{ parseError: string; message: string }> {
 	constructor(args: { parseError: string }) {
 		super({ ...args, message: `Invalid Achievement query options: ${args.parseError}` });
 	}
@@ -567,7 +625,7 @@ export class InvalidAchievementRecordError extends TaggedError("InvalidAchieveme
 	recordType: string;
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { recordType: string; parseError: string }) {
 		super({
 			...args,
@@ -592,7 +650,7 @@ export class CommandsDbError extends TaggedError("CommandsDbError")<{
 	operation: string;
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: { operation: string; cause?: unknown }) {
 		super({
 			operation: args.operation,
@@ -607,7 +665,7 @@ export class CommandInputParseError extends TaggedError("CommandInputParseError"
 	operation: string;
 	issues: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { operation: string; issues: string }) {
 		super({ ...args, message: `Command input invalid during ${args.operation}: ${args.issues}` });
 	}
@@ -618,7 +676,7 @@ export class InvalidCommandNameError extends TaggedError("InvalidCommandNameErro
 	commandName: string;
 	operation: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { commandName: string; operation: string }) {
 		super({
 			...args,
@@ -631,7 +689,7 @@ export class InvalidCommandNameError extends TaggedError("InvalidCommandNameErro
 export class CommandAlreadyExistsError extends TaggedError("CommandAlreadyExistsError")<{
 	commandName: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { commandName: string }) {
 		super({ ...args, message: `Command already exists: ${args.commandName}` });
 	}
@@ -642,7 +700,7 @@ export class CommandAliasConflictError extends TaggedError("CommandAliasConflict
 	alias: string;
 	owner: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { alias: string; owner: string }) {
 		super({ ...args, message: `Command alias conflict for ${args.alias}: owned by ${args.owner}` });
 	}
@@ -653,7 +711,7 @@ export class CommandInvalidDefinitionError extends TaggedError("CommandInvalidDe
 	commandName: string;
 	reason: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { commandName: string; reason: string }) {
 		super({
 			...args,
@@ -669,7 +727,7 @@ export class CommandUpdatePermissionDeniedError extends TaggedError(
 	commandName: string;
 	requiredPermission: "everyone" | "vip" | "moderator" | "broadcaster";
 	message: string;
-}>() {
+}> {
 	constructor(args: {
 		commandName: string;
 		requiredPermission: "everyone" | "vip" | "moderator" | "broadcaster";
@@ -685,7 +743,7 @@ export class CommandUpdatePermissionDeniedError extends TaggedError(
 export class CommandsStateParseError extends TaggedError("CommandsStateParseError")<{
 	issues: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { issues: string }) {
 		super({ ...args, message: `Commands state rehydration failed: ${args.issues}` });
 	}
@@ -694,7 +752,7 @@ export class CommandsStateParseError extends TaggedError("CommandsStateParseErro
 export class CommandNotFoundError extends TaggedError("CommandNotFoundError")<{
 	commandName: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { commandName: string }) {
 		super({ ...args, message: `Command not found: ${args.commandName}` });
 	}
@@ -704,7 +762,7 @@ export class CommandNotUpdateableError extends TaggedError("CommandNotUpdateable
 	commandName: string;
 	responseType: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { commandName: string; responseType: string }) {
 		super({
 			...args,
@@ -727,13 +785,40 @@ export type CommandsError =
 	| CommandNotUpdateableError;
 
 // =============================================================================
+// EventSub Receipt Errors
+// =============================================================================
+
+export class EventSubReceiptConflictError extends TaggedError("EventSubReceiptConflictError")<{
+	message: string;
+	messageId: string;
+}> {
+	constructor(messageId: string) {
+		super({
+			message: `EventSub receipt conflict: message ${messageId} already has different content`,
+			messageId,
+		});
+	}
+}
+
+export class EventSubReceiptCorruptError extends TaggedError("EventSubReceiptCorruptError")<{
+	message: string;
+	parseError: string;
+}> {
+	constructor(parseError: string) {
+		super({ message: `EventSub receipt storage parse failed: ${parseError}`, parseError });
+	}
+}
+
+export type EventSubAcceptanceError = EventSubReceiptConflictError | EventSubReceiptCorruptError;
+
+// =============================================================================
 // Event Bus Errors
 // =============================================================================
 
 export class EventBusRoutingError extends TaggedError("EventBusRoutingError")<{
 	eventType: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { eventType: string }) {
 		super({
 			...args,
@@ -747,7 +832,7 @@ export class EventBusHandlerError extends TaggedError("EventBusHandlerError")<{
 	handlerName: string;
 	cause: unknown;
 	message: string;
-}>() {
+}> {
 	constructor(args: { eventType: string; handlerName: string; cause: unknown }) {
 		super({
 			...args,
@@ -759,7 +844,7 @@ export class EventBusHandlerError extends TaggedError("EventBusHandlerError")<{
 export class EventBusValidationError extends TaggedError("EventBusValidationError")<{
 	parseError: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { parseError: string }) {
 		super({
 			...args,
@@ -772,7 +857,7 @@ export class EventBusDbError extends TaggedError("EventBusDbError")<{
 	operation: string;
 	message: string;
 	cause?: unknown;
-}>() {
+}> {
 	constructor(args: { operation: string; cause?: unknown }) {
 		super({
 			operation: args.operation,
@@ -785,7 +870,7 @@ export class EventBusDbError extends TaggedError("EventBusDbError")<{
 export class DLQItemNotFoundError extends TaggedError("DLQItemNotFoundError")<{
 	eventId: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { eventId: string }) {
 		super({ ...args, message: `DLQ item not found: ${args.eventId}` });
 	}
@@ -800,8 +885,20 @@ export type EventBusError =
 	| DLQItemNotFoundError;
 
 // =============================================================================
-// Stream Lifecycle Interface
+// Stream Lifecycle Errors and Interface
 // =============================================================================
+
+/** Expected retry signal when a durable Stream Lifecycle transition has incomplete effects. */
+export class StreamLifecycleEffectsPendingError extends TaggedError(
+	"StreamLifecycleEffectsPendingError",
+)<{
+	message: string;
+	transition: "stream.online" | "stream.offline";
+}> {
+	constructor(transition: "stream.online" | "stream.offline") {
+		super({ message: `Stream Lifecycle effects pending for ${transition}`, transition });
+	}
+}
 
 import type { Result } from "better-result";
 
@@ -827,7 +924,7 @@ export class SagaInputParseError extends TaggedError("SagaInputParseError")<{
 	readonly codecName: string;
 	readonly parseError: string;
 	readonly message: string;
-}>() {
+}> {
 	constructor(args: { readonly codecName: string; readonly parseError: string }) {
 		super({
 			...args,
@@ -844,7 +941,7 @@ export class SagaCodecParseError extends TaggedError("SagaCodecParseError")<{
 	readonly codecName: string;
 	readonly parseError: string;
 	readonly message: string;
-}>() {
+}> {
 	constructor(args: { readonly codecName: string; readonly parseError: string }) {
 		super({
 			...args,
@@ -866,7 +963,7 @@ export class SagaPersistedDataError extends TaggedError("SagaPersistedDataError"
 	readonly codecName: string;
 	readonly parseError: string;
 	readonly message: string;
-}>() {
+}> {
 	constructor(args: {
 		readonly sagaId: string;
 		readonly field: SagaPersistedField;
@@ -890,7 +987,7 @@ export class SagaScheduleError extends TaggedError("SagaScheduleError")<{
 	readonly operation: "inspect" | "schedule" | "cancel";
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		readonly sagaId: string;
 		readonly operation: "inspect" | "schedule" | "cancel";
@@ -907,7 +1004,7 @@ export class SagaStepError extends TaggedError("SagaStepError")<{
 	causeTag: string;
 	error: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { stepName: string; sagaId: string; causeTag: string; error: string }) {
 		super({
 			...args,
@@ -922,7 +1019,7 @@ export class SagaEffectOutcomeUnknown extends TaggedError("SagaEffectOutcomeUnkn
 	readonly sagaId: string;
 	readonly causeTag: string;
 	readonly message: string;
-}>() {
+}> {
 	constructor(args: {
 		readonly stepName: string;
 		readonly sagaId: string;
@@ -941,7 +1038,7 @@ export class SagaStepRetrying extends TaggedError("SagaStepRetrying")<{
 	attempt: number;
 	nextRetryAt: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { stepName: string; sagaId: string; attempt: number; nextRetryAt: string }) {
 		super({
 			...args,
@@ -955,7 +1052,7 @@ export class SagaCompensationError extends TaggedError("SagaCompensationError")<
 	sagaId: string;
 	error: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { stepName: string; sagaId: string; error: string }) {
 		super({
 			...args,
@@ -967,7 +1064,7 @@ export class SagaCompensationError extends TaggedError("SagaCompensationError")<
 export class SagaNotFoundError extends TaggedError("SagaNotFoundError")<{
 	sagaId: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { sagaId: string }) {
 		super({
 			...args,
@@ -979,7 +1076,7 @@ export class SagaNotFoundError extends TaggedError("SagaNotFoundError")<{
 export class SagaAlreadyExistsError extends TaggedError("SagaAlreadyExistsError")<{
 	sagaId: string;
 	message: string;
-}>() {
+}> {
 	constructor(args: { sagaId: string }) {
 		super({
 			...args,

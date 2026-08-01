@@ -44,7 +44,7 @@ export class PersistedStreamLifecycleStateError extends TaggedError(
 )<{
 	message: string;
 	parseError: string;
-}>() {
+}> {
 	constructor(parseError: string) {
 		super({
 			message: `Stream Lifecycle persisted state parse failed: ${parseError}`,

@@ -10,7 +10,7 @@ export class DomainEventHandleError extends TaggedError("DomainEventHandleError"
 	readonly remoteErrorTag?: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		eventId: string;
 		failure: "transport" | "protocol" | "remote";

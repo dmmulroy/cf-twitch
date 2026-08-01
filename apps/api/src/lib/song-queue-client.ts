@@ -1,18 +1,22 @@
 import { Result } from "better-result";
-import { z } from "zod";
 
 import { SongQueueCoordinationError, SongQueueParseError } from "../capabilities/song-queue";
-import {
-	RequestHistoryResultSchema,
-	SpotifyQueueResultSchema as QueueResultSchema,
-	TopRequestedTrackSchema as TopTrackSchema,
-	TopSongRequesterSchema as TopRequesterSchema,
-	type PendingRequestInput,
-} from "../domain/song-request";
-import { NowPlayingSchema } from "../domain/spotify-queue";
 import { DurableObjectError, SongQueueDbError } from "./errors";
-import { callRpcResult, type RpcPayloadParser, type RpcResultParsers } from "./rpc-result";
+import { callRpcResultUnsafe } from "./rpc-result";
+import {
+	DeleteSongRequestResultCodec,
+	GetCurrentlyPlayingResultCodec,
+	GetDisplayNameRequestCountResultCodec,
+	GetRequestHistoryResultCodec,
+	GetSongQueueResultCodec,
+	GetTopRequestersResultCodec,
+	GetTopTracksResultCodec,
+	GetUserRequestCountResultCodec,
+	GetUserTopTracksResultCodec,
+	PersistSongRequestResultCodec,
+} from "./song-queue-rpc-result-codecs";
 
+import type { PendingRequestInput } from "../domain/song-request";
 import type {
 	RequestHistoryResult,
 	SpotifyQueueResult as QueueResult,
@@ -23,59 +27,6 @@ import type { NowPlaying } from "../domain/spotify-queue";
 import type { SongQueueRpcHandleStub } from "../durable-objects/song-queue-do";
 
 type SongQueueError = SongQueueDbError | SongQueueParseError | SongQueueCoordinationError;
-
-const SerializedSongQueueErrorSchema = z.discriminatedUnion("_tag", [
-	z.object({
-		_tag: z.literal("SongQueueDbError"),
-		operation: z.string(),
-		message: z.string(),
-		cause: z.unknown().optional(),
-	}),
-	z.object({
-		_tag: z.literal("SongQueueParseError"),
-		boundary: z.enum(["rpc-input", "persistence"]),
-		operation: z.string(),
-		parseError: z.string(),
-		message: z.string(),
-	}),
-	z.object({
-		_tag: z.literal("SongQueueCoordinationError"),
-		operation: z.string(),
-		message: z.string(),
-		cause: z.unknown().optional(),
-	}),
-]);
-
-function zodRpcParser<T>(schema: z.ZodType<T>): RpcPayloadParser<T> {
-	return (value) => {
-		const parsed = schema.safeParse(value);
-		return parsed.success ? Result.ok(parsed.data) : Result.err(parsed.error.message);
-	};
-}
-
-const parseSongQueueError: RpcPayloadParser<SongQueueError> = (value) => {
-	const parsed = SerializedSongQueueErrorSchema.safeParse(value);
-	if (!parsed.success) return Result.err(parsed.error.message);
-	switch (parsed.data._tag) {
-		case "SongQueueDbError":
-			return Result.ok(
-				new SongQueueDbError({ operation: parsed.data.operation, cause: parsed.data.cause }),
-			);
-		case "SongQueueParseError":
-			return Result.ok(new SongQueueParseError(parsed.data));
-		case "SongQueueCoordinationError":
-			return Result.ok(new SongQueueCoordinationError(parsed.data));
-	}
-};
-
-function rpcParsers<T>(schema: z.ZodType<T>): RpcResultParsers<T, SongQueueError> {
-	return { success: zodRpcParser(schema), error: parseSongQueueError };
-}
-
-const VoidRpcParsers = rpcParsers(z.undefined());
-const NumberRpcParsers = rpcParsers(z.number());
-const TopTracksRpcParsers = rpcParsers(z.array(TopTrackSchema).max(100));
-const TopRequestersRpcParsers = rpcParsers(z.array(TopRequesterSchema).max(100));
 
 type SongQueueHandleAcquisition = Promise<Result<SongQueueRpcHandleStub, DurableObjectError>>;
 
@@ -98,23 +49,33 @@ export class SongQueueClient {
 	private async call<T>(
 		method: string,
 		invoke: (handle: SongQueueRpcHandleStub) => Promise<unknown>,
-		parsers: RpcResultParsers<T, SongQueueError>,
+		deserializeUnsafe: (
+			value: unknown,
+		) => Result<T, SongQueueError> | Promise<Result<T, SongQueueError>>,
 	): Promise<Result<T, SongQueueError | DurableObjectError>> {
 		const acquired = await this.handleAcquisition;
 		if (acquired.status === "error") return Result.err(acquired.error);
-		return callRpcResult(method, invoke(acquired.value), parsers);
+		return callRpcResultUnsafe(method, invoke(acquired.value), deserializeUnsafe);
 	}
 
 	/** Persist a parsed Pending Request and its durable synchronization intent. */
 	persistRequest(
 		request: PendingRequestInput,
 	): Promise<Result<void, SongQueueError | DurableObjectError>> {
-		return this.call("persistRequest", (handle) => handle.persistRequest(request), VoidRpcParsers);
+		return this.call(
+			"persistRequest",
+			(handle) => handle.persistRequest(request),
+			(value) => PersistSongRequestResultCodec.deserializeUnsafe(value),
+		);
 	}
 
 	/** Delete a Pending Request by event identity. */
 	deleteRequest(eventId: string): Promise<Result<void, SongQueueError | DurableObjectError>> {
-		return this.call("deleteRequest", (handle) => handle.deleteRequest(eventId), VoidRpcParsers);
+		return this.call(
+			"deleteRequest",
+			(handle) => handle.deleteRequest(eventId),
+			(value) => DeleteSongRequestResultCodec.deserializeUnsafe(value),
+		);
 	}
 
 	/** Read a bounded upcoming Spotify Queue snapshot. */
@@ -122,7 +83,7 @@ export class SongQueueClient {
 		return this.call(
 			"getSongQueue",
 			(handle) => handle.getSongQueue(limit),
-			rpcParsers(QueueResultSchema),
+			(value) => GetSongQueueResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -131,7 +92,7 @@ export class SongQueueClient {
 		return this.call(
 			"getCurrentlyPlaying",
 			(handle) => handle.getCurrentlyPlaying(),
-			rpcParsers(NowPlayingSchema),
+			(value) => GetCurrentlyPlayingResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -145,7 +106,7 @@ export class SongQueueClient {
 		return this.call(
 			"getRequestHistory",
 			(handle) => handle.getRequestHistory(limit, offset, since, until),
-			rpcParsers(RequestHistoryResultSchema),
+			(value) => GetRequestHistoryResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -156,7 +117,7 @@ export class SongQueueClient {
 		return this.call(
 			"getUserRequestCount",
 			(handle) => handle.getUserRequestCount(userId),
-			NumberRpcParsers,
+			(value) => GetUserRequestCountResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -167,13 +128,17 @@ export class SongQueueClient {
 		return this.call(
 			"getUserRequestCountByDisplayName",
 			(handle) => handle.getUserRequestCountByDisplayName(displayName),
-			NumberRpcParsers,
+			(value) => GetDisplayNameRequestCountResultCodec.deserializeUnsafe(value),
 		);
 	}
 
 	/** Aggregate Spotify Tracks by stable Track ID with decoded artist names. */
 	getTopTracks(limit: number): Promise<Result<TopTrack[], SongQueueError | DurableObjectError>> {
-		return this.call("getTopTracks", (handle) => handle.getTopTracks(limit), TopTracksRpcParsers);
+		return this.call(
+			"getTopTracks",
+			(handle) => handle.getTopTracks(limit),
+			(value) => GetTopTracksResultCodec.deserializeUnsafe(value),
+		);
 	}
 
 	/** Aggregate one Viewer's Spotify Tracks by stable Track ID. */
@@ -184,7 +149,7 @@ export class SongQueueClient {
 		return this.call(
 			"getTopTracksByUser",
 			(handle) => handle.getTopTracksByUser(userId, limit),
-			TopTracksRpcParsers,
+			(value) => GetUserTopTracksResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -195,7 +160,7 @@ export class SongQueueClient {
 		return this.call(
 			"getTopRequesters",
 			(handle) => handle.getTopRequesters(limit),
-			TopRequestersRpcParsers,
+			(value) => GetTopRequestersResultCodec.deserializeUnsafe(value),
 		);
 	}
 }

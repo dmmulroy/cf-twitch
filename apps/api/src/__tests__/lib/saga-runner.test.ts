@@ -346,7 +346,8 @@ describe("SagaRunner typed persistence", () => {
 			);
 			const row = await db.query.sagaSteps.findFirst();
 
-			expect(result).toEqual({ status: "error", error: scheduleError });
+			expect(result.status).toBe("error");
+			if (result.status === "error") expect(result.error).toBe(scheduleError);
 			expect(row).toMatchObject({
 				state: "PENDING",
 				attempt: 1,

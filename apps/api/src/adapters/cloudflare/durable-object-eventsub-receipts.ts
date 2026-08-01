@@ -1,9 +1,7 @@
 import { Result } from "better-result";
-import { z } from "zod";
 
 import { EventSubReceiptAcceptanceError } from "../../capabilities/eventsub-receipts";
-import { DurableObjectError } from "../../lib/errors";
-import { fromRpcResult, type RpcPayloadParser } from "../../lib/rpc-result";
+import { AcceptEventSubReceiptResultCodec } from "../../lib/eventsub-receipt-rpc-result-codecs";
 
 import type {
 	AcceptedEventSubReceipt,
@@ -12,23 +10,9 @@ import type {
 import type { Tracer } from "../../capabilities/tracer";
 import type { Result as ResultType } from "better-result";
 
-const EventSubAcceptanceWireErrorSchema = z.discriminatedUnion("_tag", [
-	z.object({ _tag: z.literal("EventSubReceiptConflictError"), message: z.string() }).passthrough(),
-	z.object({ _tag: z.literal("EventSubReceiptCorruptError"), message: z.string() }).passthrough(),
-]);
-
-type EventSubAcceptanceWireError = z.infer<typeof EventSubAcceptanceWireErrorSchema>;
-
 interface EventSubReceiptRpcStub {
 	accept(receipt: AcceptedEventSubReceipt): Promise<unknown>;
 }
-
-const parseVoidPayload: RpcPayloadParser<void> = (input) =>
-	input === undefined ? Result.ok(undefined) : Result.err("Expected an undefined success value");
-const parseAcceptanceWireError: RpcPayloadParser<EventSubAcceptanceWireError> = (input) => {
-	const parsed = EventSubAcceptanceWireErrorSchema.safeParse(input);
-	return parsed.success ? Result.ok(parsed.data) : Result.err(parsed.error.message);
-};
 
 /** Durable Object adapter for accepting parsed EventSub receipts by Twitch message ID. */
 export class DurableObjectEventSubReceiptAcceptor implements EventSubReceiptAcceptor {
@@ -54,20 +38,8 @@ export class DurableObjectEventSubReceiptAcceptor implements EventSubReceiptAcce
 						new EventSubReceiptAcceptanceError({ messageId, failure: "transport", cause }),
 					);
 				}
-				const parsed = fromRpcResult(rawResult, "EventSubWebhookDO.accept", {
-					success: parseVoidPayload,
-					error: parseAcceptanceWireError,
-				});
+				const parsed = await AcceptEventSubReceiptResultCodec.deserializeUnsafe(rawResult);
 				if (parsed.status === "ok") return Result.ok(undefined);
-				if (DurableObjectError.is(parsed.error)) {
-					return Result.err(
-						new EventSubReceiptAcceptanceError({
-							messageId,
-							failure: "protocol",
-							cause: parsed.error,
-						}),
-					);
-				}
 				return Result.err(
 					new EventSubReceiptAcceptanceError({
 						messageId,

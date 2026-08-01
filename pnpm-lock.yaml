@@ -40,8 +40,8 @@ importers:
         specifier: ^0.9.0
         version: 0.9.0(@babel/core@7.29.7)(@babel/runtime@7.29.2)(@cloudflare/workers-types@4.20260702.1)(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.21.0)(typescript@5.9.3))(ai@6.0.146(zod@4.3.5))(react@19.2.4)(rolldown@1.0.0-rc.13)(zod@4.3.5)
       better-result:
-        specifier: ^2.5.2
-        version: 2.5.2
+        specifier: 3.0.0-rc.5
+        version: 3.0.0-rc.5
       drizzle-orm:
         specifier: ^0.45.1
         version: 0.45.1(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)
@@ -278,12 +278,6 @@ packages:
 
   '@cfworker/json-schema@4.1.1':
     resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
-
-  '@clack/core@0.5.0':
-    resolution: {integrity: sha512-p3y0FIOwaYRUPRcMO7+dlmLh8PSRcrjuTndsiA0WAFbWES0mLZlrjVoBRZ9DzkPFJZG6KGkJmoEAY0ZcVWTkow==}
-
-  '@clack/prompts@0.11.0':
-    resolution: {integrity: sha512-pMN5FcrEw9hUkZA4f+zLlzivQSeQf5dRGJjSUbvVYDLvpKCdQx5OaknvKzgbtXOizhP+SJJJjqEbOe55uKKfAw==}
 
   '@cloudflare/kv-asset-handler@0.4.2':
     resolution: {integrity: sha512-SIOD2DxrRRwQ+jgzlXCqoEFiKOFqaPjhnNTGKXSRLvp1HiOvapLaFG2kEr9dYQTYe8rKrd9uvDUzmAITeNyaHQ==}
@@ -2072,9 +2066,8 @@ packages:
     engines: {node: '>=6.0.0'}
     hasBin: true
 
-  better-result@2.5.2:
-    resolution: {integrity: sha512-gHG++1y+GvCrGvSi1WVwyM3slsl1yeE68rNCuTXfwcCx041I3f1z2d99oaC6QSuP+XB70Vda3Dc+EitE5KfGqg==}
-    hasBin: true
+  better-result@3.0.0-rc.5:
+    resolution: {integrity: sha512-31E7QznE1NqOw4fYKGwz9QEDZQ7HfEeIEz7rBOtUWn0A14/EtQdFehoNtsYES3aT0UjqwTbH2afC1z2W2DLpBw==}
 
   blake3-wasm@2.1.5:
     resolution: {integrity: sha512-F1+K8EbfOZE49dtoPtmxUQrpXaBIl3ICvasLh+nJta0xkz+9kF/7uet9fLnwKqhDrmj6g+6K3Tw9yQPUg2ka5g==}
@@ -2901,9 +2894,6 @@ packages:
     resolution: {integrity: sha512-2wcC/oGxHis/BoHkkPwldgiPSYcpZK3JU28WoMVv55yHJgcZ8rlXvuG9iZggz+sU1d4bRgIGASwyWqjxu3FM0g==}
     engines: {node: '>=18'}
 
-  sisteransi@1.0.5:
-    resolution: {integrity: sha512-bLGGlR1QxBcynn2d5YmDX4MGjlZvy2MRBDRNHLJ8VI6l6+9FUiyTFNJ0IveOSP0bcXgVDPRcfGqA0pjaqUpfVg==}
-
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
@@ -3411,17 +3401,6 @@ snapshots:
   '@blazediff/core@1.9.1': {}
 
   '@cfworker/json-schema@4.1.1': {}
-
-  '@clack/core@0.5.0':
-    dependencies:
-      picocolors: 1.1.1
-      sisteransi: 1.0.5
-
-  '@clack/prompts@0.11.0':
-    dependencies:
-      '@clack/core': 0.5.0
-      picocolors: 1.1.1
-      sisteransi: 1.0.5
 
   '@cloudflare/kv-asset-handler@0.4.2': {}
 
@@ -4510,9 +4489,7 @@ snapshots:
 
   baseline-browser-mapping@2.10.42: {}
 
-  better-result@2.5.2:
-    dependencies:
-      '@clack/prompts': 0.11.0
+  better-result@3.0.0-rc.5: {}
 
   blake3-wasm@2.1.5: {}
 
@@ -5389,8 +5366,6 @@ snapshots:
       '@polka/url': 1.0.0-next.29
       mrmime: 2.0.1
       totalist: 3.0.1
-
-  sisteransi@1.0.5: {}
 
   source-map-js@1.2.1: {}
 

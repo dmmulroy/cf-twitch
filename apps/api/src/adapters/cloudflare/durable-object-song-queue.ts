@@ -1,57 +1,35 @@
 import { Result } from "better-result";
-import { z } from "zod";
 
 import {
-	SongQueueCoordinationError,
-	SongQueueParseError,
 	SongQueueUnavailableError,
 	type SongQueue,
 	type SongQueueFailure,
 	type SongQueueOperation,
 } from "../../capabilities/song-queue";
 import {
-	RequestHistoryResultSchema,
-	SpotifyQueueResultSchema,
-	TopRequestedTrackSchema,
-	TopSongRequesterSchema,
 	type PendingRequestInput,
 	type RequestHistoryResult,
 	type SpotifyQueueResult,
 	type TopRequestedTrack,
 	type TopSongRequester,
 } from "../../domain/song-request";
-import { NowPlayingSchema } from "../../domain/spotify-queue";
 import { SONG_QUEUE_DO_NAME } from "../../durable-objects/song-queue-do";
-import { DurableObjectError, SongQueueDbError } from "../../lib/errors";
-import { fromRpcResult, type RpcPayloadParser, type RpcResultParsers } from "../../lib/rpc-result";
+import {
+	DeleteSongRequestResultCodec,
+	GetCurrentlyPlayingResultCodec,
+	GetDisplayNameRequestCountResultCodec,
+	GetRequestHistoryResultCodec,
+	GetSongQueueResultCodec,
+	GetTopRequestersResultCodec,
+	GetTopTracksResultCodec,
+	GetUserRequestCountResultCodec,
+	GetUserTopTracksResultCodec,
+	PersistSongRequestResultCodec,
+} from "../../lib/song-queue-rpc-result-codecs";
 
 import type { Tracer } from "../../capabilities/tracer";
 import type { NowPlaying } from "../../domain/spotify-queue";
 import type { Result as ResultType } from "better-result";
-
-const SerializedSongQueueErrorSchema = z.discriminatedUnion("_tag", [
-	z.object({
-		_tag: z.literal("SongQueueDbError"),
-		operation: z.string(),
-		message: z.string(),
-		cause: z.unknown().optional(),
-	}),
-	z.object({
-		_tag: z.literal("SongQueueParseError"),
-		boundary: z.enum(["rpc-input", "persistence"]),
-		operation: z.string(),
-		parseError: z.string(),
-		message: z.string(),
-	}),
-	z.object({
-		_tag: z.literal("SongQueueCoordinationError"),
-		operation: z.string(),
-		message: z.string(),
-		cause: z.unknown().optional(),
-	}),
-]);
-
-type SongQueueWireError = z.infer<typeof SerializedSongQueueErrorSchema>;
 
 const SongQueueSpanNames: Readonly<Record<SongQueueOperation, string>> = {
 	persistPendingRequest: "durable_object.song_queue.persist_pending_request",
@@ -86,38 +64,6 @@ interface SongQueueRpcHandle {
 	[Symbol.dispose]?(): void;
 }
 
-function parseZodPayload<T>(schema: z.ZodType<T>): RpcPayloadParser<T> {
-	return (input) => {
-		const parsed = schema.safeParse(input);
-		return parsed.success ? Result.ok(parsed.data) : Result.err(parsed.error.message);
-	};
-}
-
-const parseSongQueueWireError: RpcPayloadParser<SongQueueFailure> = (input) => {
-	const parsed = SerializedSongQueueErrorSchema.safeParse(input);
-	if (!parsed.success) return Result.err(parsed.error.message);
-	return Result.ok(translateSongQueueWireError(parsed.data));
-};
-
-function translateSongQueueWireError(error: SongQueueWireError): SongQueueFailure {
-	switch (error._tag) {
-		case "SongQueueDbError":
-			return new SongQueueDbError({ operation: error.operation, cause: error.cause });
-		case "SongQueueParseError":
-			return new SongQueueParseError({
-				boundary: error.boundary,
-				operation: error.operation,
-				parseError: error.parseError,
-			});
-		case "SongQueueCoordinationError":
-			return new SongQueueCoordinationError({ operation: error.operation, cause: error.cause });
-	}
-}
-
-function songQueueRpcParsers<T>(schema: z.ZodType<T>): RpcResultParsers<T, SongQueueFailure> {
-	return { success: parseZodPayload(schema), error: parseSongQueueWireError };
-}
-
 /** Durable Object adapter that owns Song Queue acquisition, RPC transport, parsing, and translation. */
 export class DurableObjectSongQueue implements SongQueue {
 	constructor(
@@ -131,7 +77,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"persistPendingRequest",
 			"persistRequest",
 			(handle) => handle.persistRequest(request),
-			songQueueRpcParsers(z.undefined()),
+			(value) => PersistSongRequestResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -141,7 +87,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"deletePendingRequest",
 			"deleteRequest",
 			(handle) => handle.deleteRequest(eventId),
-			songQueueRpcParsers(z.undefined()),
+			(value) => DeleteSongRequestResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -151,7 +97,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"getNowPlaying",
 			"getCurrentlyPlaying",
 			(handle) => handle.getCurrentlyPlaying(),
-			songQueueRpcParsers(NowPlayingSchema),
+			(value) => GetCurrentlyPlayingResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -161,7 +107,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"getSpotifyQueue",
 			"getSongQueue",
 			(handle) => handle.getSongQueue(limit),
-			songQueueRpcParsers(SpotifyQueueResultSchema),
+			(value) => GetSongQueueResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -176,7 +122,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"getRequestHistory",
 			"getRequestHistory",
 			(handle) => handle.getRequestHistory(limit, offset, since, until),
-			songQueueRpcParsers(RequestHistoryResultSchema),
+			(value) => GetRequestHistoryResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -186,7 +132,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"getViewerRequestCount",
 			"getUserRequestCount",
 			(handle) => handle.getUserRequestCount(userId),
-			songQueueRpcParsers(z.number().int().nonnegative()),
+			(value) => GetUserRequestCountResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -198,7 +144,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"getViewerRequestCountByDisplayName",
 			"getUserRequestCountByDisplayName",
 			(handle) => handle.getUserRequestCountByDisplayName(displayName),
-			songQueueRpcParsers(z.number().int().nonnegative()),
+			(value) => GetDisplayNameRequestCountResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -208,7 +154,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"getTopTracks",
 			"getTopTracks",
 			(handle) => handle.getTopTracks(limit),
-			songQueueRpcParsers(z.array(TopRequestedTrackSchema).max(100)),
+			(value) => GetTopTracksResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -221,7 +167,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"getViewerTopTracks",
 			"getTopTracksByUser",
 			(handle) => handle.getTopTracksByUser(userId, limit),
-			songQueueRpcParsers(z.array(TopRequestedTrackSchema).max(100)),
+			(value) => GetUserTopTracksResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -231,7 +177,7 @@ export class DurableObjectSongQueue implements SongQueue {
 			"getTopRequesters",
 			"getTopRequesters",
 			(handle) => handle.getTopRequesters(limit),
-			songQueueRpcParsers(z.array(TopSongRequesterSchema).max(100)),
+			(value) => GetTopRequestersResultCodec.deserializeUnsafe(value),
 		);
 	}
 
@@ -239,7 +185,9 @@ export class DurableObjectSongQueue implements SongQueue {
 		operation: SongQueueOperation,
 		rpcMethod: string,
 		invoke: (handle: SongQueueRpcHandle) => Promise<unknown>,
-		parsers: RpcResultParsers<T, SongQueueFailure>,
+		deserializeUnsafe: (
+			value: unknown,
+		) => ResultType<T, SongQueueFailure> | Promise<ResultType<T, SongQueueFailure>>,
 	): Promise<ResultType<T, SongQueueFailure>> {
 		return this.tracer.span(
 			SongQueueSpanNames[operation],
@@ -274,16 +222,7 @@ export class DurableObjectSongQueue implements SongQueue {
 					handle[Symbol.dispose]?.();
 				}
 
-				const parsed = fromRpcResult(rawResult, `SongQueueDO.${rpcMethod}`, parsers);
-				if (parsed.status === "ok") return Result.ok(parsed.value);
-				if (!DurableObjectError.is(parsed.error)) return Result.err(parsed.error);
-				return Result.err(
-					new SongQueueParseError({
-						boundary: "rpc-result",
-						operation: rpcMethod,
-						parseError: parsed.error.message,
-					}),
-				);
+				return await deserializeUnsafe(rawResult);
 			},
 		);
 	}

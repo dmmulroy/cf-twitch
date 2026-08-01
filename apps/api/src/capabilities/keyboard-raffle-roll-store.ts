@@ -10,7 +10,7 @@ export class KeyboardRaffleRollStoreError extends TaggedError("KeyboardRaffleRol
 	readonly remoteErrorTag?: string;
 	readonly message: string;
 	readonly cause?: unknown;
-}>() {
+}> {
 	constructor(args: {
 		operation: "recordRoll" | "deleteRoll";
 		failure: "transport" | "protocol" | "remote";

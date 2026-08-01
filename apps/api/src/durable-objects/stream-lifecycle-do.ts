@@ -3,7 +3,7 @@
  */
 
 import { Agent, type AgentContext } from "agents";
-import { Result, TaggedError } from "better-result";
+import { Result } from "better-result";
 import { and, gte, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
@@ -25,8 +25,13 @@ import {
 	SystemClock,
 } from "../lib/clock";
 import { rpc } from "../lib/durable-objects";
-import { DurableObjectError } from "../lib/errors";
+import { DurableObjectError, StreamLifecycleEffectsPendingError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import {
+	GetStreamLifecycleStateResultCodec,
+	StreamOfflineResultCodec,
+	StreamOnlineResultCodec,
+} from "../lib/stream-lifecycle-rpc-result-codecs";
 import { TwitchService } from "../services/twitch-service";
 import * as schema from "./stream-lifecycle-do.schema";
 import { type ViewerSnapshot, viewerSnapshots } from "./stream-lifecycle-do.schema";
@@ -45,21 +50,6 @@ import type { StreamLifecycleState } from "../domain/stream-lifecycle";
 import type { Env } from "../index";
 
 const VIEWER_POLL_INTERVAL_SECONDS = 60;
-
-/** Expected retry signal when a durable Stream Lifecycle transition still has incomplete effects. */
-export class StreamLifecycleEffectsPendingError extends TaggedError(
-	"StreamLifecycleEffectsPendingError",
-)<{
-	message: string;
-	transition: "stream.online" | "stream.offline";
-}>() {
-	constructor(transition: "stream.online" | "stream.offline") {
-		super({
-			message: `Stream Lifecycle effects pending for ${transition}`,
-			transition,
-		});
-	}
-}
 
 const RecordViewerCountBodySchema = z.object({
 	count: z.number(),
@@ -119,7 +109,7 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	}
 
 	/** Accept an online transition using source time and resume every durable side-effect intent. */
-	@rpc
+	@rpc(StreamOnlineResultCodec)
 	async onStreamOnline(
 		eventTimestamp?: string,
 	): Promise<Result<void, InvalidIsoTimestampError | StreamLifecycleEffectsPendingError>> {
@@ -164,7 +154,7 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	}
 
 	/** Accept an offline transition using explicit ordering evidence and resume durable effects. */
-	@rpc
+	@rpc(StreamOfflineResultCodec)
 	async onStreamOffline(
 		eventTimestamp?: string,
 	): Promise<Result<void, InvalidIsoTimestampError | StreamLifecycleEffectsPendingError>> {
@@ -229,7 +219,7 @@ class _StreamLifecycleDO extends Agent<Env, StreamLifecycleAgentState> {
 	/**
 	 * Get current stream state
 	 */
-	@rpc
+	@rpc(GetStreamLifecycleStateResultCodec)
 	async getStreamState(): Promise<Result<StreamLifecycleState, DurableObjectError>> {
 		return Result.ok(this.toStreamState());
 	}

@@ -6,7 +6,7 @@
  */
 
 import { Agent, type AgentContext } from "agents";
-import { Result, TaggedError } from "better-result";
+import { Result } from "better-result";
 import { desc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
@@ -21,78 +21,26 @@ import {
 	type RaffleLeaderboardEntry as LeaderboardEntry,
 } from "../domain/keyboard-raffle";
 import { rpc } from "../lib/durable-objects";
+import {
+	KeyboardRaffleDataParseError,
+	KeyboardRaffleDbError,
+	KeyboardRaffleInputParseError,
+	RollIdempotencyConflictError,
+	UserStatsNotFoundError,
+} from "../lib/errors";
+import {
+	DeleteKeyboardRaffleRollResultCodec,
+	GetClosestKeyboardRaffleRecordResultCodec,
+	GetKeyboardRaffleDisplayNameStatsResultCodec,
+	GetKeyboardRaffleLeaderboardResultCodec,
+	GetKeyboardRaffleViewerStatsResultCodec,
+	RecordKeyboardRaffleRollResultCodec,
+} from "../lib/keyboard-raffle-rpc-result-codecs";
 import { logger } from "../lib/logger";
 import * as schema from "./schemas/keyboard-raffle-do.schema";
 import { raffleLeaderboard, rolls } from "./schemas/keyboard-raffle-do.schema";
 
 import type { Env } from "../index";
-
-/**
- * Database error for keyboard raffle operations
- */
-export class KeyboardRaffleDbError extends TaggedError("KeyboardRaffleDbError")<{
-	operation: string;
-	message: string;
-	cause?: unknown;
-}>() {
-	constructor(args: { operation: string; cause?: unknown }) {
-		super({
-			operation: args.operation,
-			message: `Keyboard raffle DB error during ${args.operation}`,
-			cause: args.cause,
-		});
-	}
-}
-
-/** RPC or query input failed Keyboard Raffle boundary parsing. */
-export class KeyboardRaffleInputParseError extends TaggedError("KeyboardRaffleInputParseError")<{
-	operation: string;
-	issues: string;
-	message: string;
-}>() {
-	constructor(args: { operation: string; issues: string }) {
-		super({
-			...args,
-			message: `Keyboard Raffle input invalid during ${args.operation}: ${args.issues}`,
-		});
-	}
-}
-
-/** A stable Roll id was replayed with different immutable Roll evidence. */
-export class RollIdempotencyConflictError extends TaggedError("RollIdempotencyConflictError")<{
-	rollId: string;
-	message: string;
-}>() {
-	constructor(args: { rollId: string }) {
-		super({ ...args, message: `Roll idempotency conflict for ${args.rollId}` });
-	}
-}
-
-/** Serialized Keyboard Raffle data failed runtime parsing after a SQLite read. */
-export class KeyboardRaffleDataParseError extends TaggedError("KeyboardRaffleDataParseError")<{
-	operation: string;
-	issues: string;
-	message: string;
-}>() {
-	constructor(args: { operation: string; issues: string }) {
-		super({
-			...args,
-			message: `Keyboard Raffle persisted data invalid during ${args.operation}: ${args.issues}`,
-		});
-	}
-}
-
-/**
- * User stats not found error
- */
-export class UserStatsNotFoundError extends TaggedError("UserStatsNotFoundError")<{
-	userId: string;
-	message: string;
-}>() {
-	constructor(args: { userId: string }) {
-		super({ ...args, message: `No stats found for user: ${args.userId}` });
-	}
-}
 
 /**
  * Leaderboard query options
@@ -131,7 +79,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 * Leaderboard stats are computed automatically via the view.
 	 * Returns the roll and whether it set a new closest record (for non-winners only).
 	 */
-	@rpc
+	@rpc(RecordKeyboardRaffleRollResultCodec)
 	async recordRoll(
 		rawInput: unknown,
 	): Promise<
@@ -228,7 +176,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 *
 	 * Leaderboard stats update automatically via the view.
 	 */
-	@rpc
+	@rpc(DeleteKeyboardRaffleRollResultCodec)
 	async deleteRollById(
 		rollId: string,
 	): Promise<Result<void, KeyboardRaffleDbError | KeyboardRaffleDataParseError>> {
@@ -269,7 +217,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	/**
 	 * Get leaderboard entries sorted by specified criteria
 	 */
-	@rpc
+	@rpc(GetKeyboardRaffleLeaderboardResultCodec)
 	async getLeaderboard(
 		rawOptions: unknown,
 	): Promise<
@@ -336,7 +284,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 *
 	 * Returns aggregated stats from the leaderboard view.
 	 */
-	@rpc
+	@rpc(GetKeyboardRaffleViewerStatsResultCodec)
 	async getUserStats(
 		userId: string,
 	): Promise<
@@ -383,7 +331,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 *
 	 * Used for !stats <user> command where we only have the display name.
 	 */
-	@rpc
+	@rpc(GetKeyboardRaffleDisplayNameStatsResultCodec)
 	async getUserStatsByDisplayName(
 		displayName: string,
 	): Promise<
@@ -433,7 +381,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 *
 	 * Returns the user with the smallest non-zero distance (closest without winning).
 	 */
-	@rpc
+	@rpc(GetClosestKeyboardRaffleRecordResultCodec)
 	async getClosestRecord(): Promise<
 		Result<
 			{ userId: string; displayName: string; distance: number } | null,
