@@ -6,6 +6,7 @@ export default defineConfig({
 		jsPlugins: [
 			{ name: "local", specifier: "./tools/oxlint-rules/no-dynamic-import.cjs" },
 			{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" },
+			{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop-plugin.ts" },
 		],
 		env: {
 			browser: true,
@@ -29,6 +30,14 @@ export default defineConfig({
 		},
 		rules: {
 			"no-console": "warn",
+			"anti-slop/no-chained-type-assertions": "error",
+			"anti-slop/no-conditional-empty-object-spread": "error",
+			"anti-slop/no-known-value-widening": "error",
+			"anti-slop/no-record-type": "error",
+			"anti-slop/no-runtime-typeof": "error",
+			"anti-slop/no-shape-in-symbol-names": "error",
+			"anti-slop/no-unknown-parameters": "error",
+			"anti-slop/no-widen-then-assert": "error",
 			"typescript/no-explicit-any": "error",
 			"typescript/no-non-null-assertion": "error",
 			"import/no-cycle": "error",

@@ -18,6 +18,9 @@ importers:
 
   .:
     devDependencies:
+      '@oxlint/plugins':
+        specifier: 1.76.0
+        version: 1.76.0
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
@@ -1653,6 +1656,10 @@ packages:
 
   '@oxlint/plugins@1.68.0':
     resolution: {integrity: sha512-titLmukUt/h8ho7Svlf0xSBjoy2ccZKrXjpXpZCj+v6V4CJccC2KyP45BLSCMx8YIpifMyiDyUptM4+5sruKbQ==}
+    engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
+
+  '@oxlint/plugins@1.76.0':
+    resolution: {integrity: sha512-twmbsVrYAjkaOw6I2pDiYSAxVLNOV8kcqMzajJ599SpqXzea+GjDCZVad1VUqNR/4thWjM4PER5n+3/TQtTkZQ==}
     engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
 
   '@polka/url@1.0.0-next.29':
@@ -4184,6 +4191,8 @@ snapshots:
     optional: true
 
   '@oxlint/plugins@1.68.0': {}
+
+  '@oxlint/plugins@1.76.0': {}
 
   '@polka/url@1.0.0-next.29': {}
 
