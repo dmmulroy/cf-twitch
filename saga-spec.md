@@ -354,9 +354,7 @@ Concrete saga files no longer need to import from `agents`.
 export type JsonPrimitive = string | number | boolean | null;
 
 export type JsonValue =
-	| JsonPrimitive
-	| readonly JsonValue[]
-	| { readonly [key: string]: JsonValue };
+	JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 ```
 
 Codecs must explicitly project canonical values to `JsonValue`. This prevents arbitrary class instances, functions, symbols, or `undefined` from being handed to `JSON.stringify`.

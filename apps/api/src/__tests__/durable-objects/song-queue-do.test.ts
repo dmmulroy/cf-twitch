@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { z } from "zod";
 
 import {
 	pendingRequests,
@@ -817,23 +818,29 @@ describe("SongQueueDO", () => {
 			expect(result.status).toBe("ok");
 
 			const syncFallbackLog = errorSpy.mock.calls
-				.map((call) => call[0])
+				.map((call) => z.string().safeParse(call[0]))
 				.find(
-					(entry): entry is string =>
-						typeof entry === "string" && entry.includes("Sync failed, using stale data"),
-				);
+					(entry) => entry.success && entry.data.includes("Sync failed, using stale data"),
+				)?.data;
 
 			expect(syncFallbackLog).toBeDefined();
 			if (syncFallbackLog) {
-				const parsed = JSON.parse(syncFallbackLog);
+				const parsed = z
+					.object({
+						error_tag: z.string(),
+						cause: z.object({
+							error_tag: z.string(),
+							error_message: z.string(),
+						}),
+					})
+					.parse(JSON.parse(syncFallbackLog) as unknown);
 				expect(parsed).toMatchObject({
 					error_tag: "SongQueueDbError",
 					cause: {
 						error_tag: "SpotifyNetworkError",
 					},
 				});
-				expect(typeof parsed.cause?.error_message).toBe("string");
-				expect(parsed.cause?.error_message).toContain("getQueue");
+				expect(parsed.cause.error_message).toContain("getQueue");
 			}
 
 			errorSpy.mockRestore();

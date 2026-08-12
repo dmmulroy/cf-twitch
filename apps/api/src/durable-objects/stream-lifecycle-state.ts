@@ -2,6 +2,7 @@ import { Result, TaggedError } from "better-result";
 import { z } from "zod";
 
 import type { Clock, IsoTimestamp } from "../lib/clock";
+import type { JsonObject } from "../lib/codecs";
 
 /** Durable completion evidence for every side effect of one stream transition. */
 export interface StreamLifecycleTransitionIntent {
@@ -184,9 +185,12 @@ export function goOffline(
 	};
 }
 
+/** Persisted state candidate accepted from the Agent store before runtime validation. */
+export type PersistedStreamLifecycleStateInput = StreamLifecycleAgentState | JsonObject;
+
 /** Parse current or legacy serialized Stream Lifecycle State without manufacturing evidence. */
 export function parsePersistedStreamLifecycleState(
-	raw: unknown,
+	raw: PersistedStreamLifecycleStateInput,
 	clock: Clock,
 ): Result<StreamLifecycleAgentState, PersistedStreamLifecycleStateError> {
 	const current = CurrentPersistedStreamLifecycleStateSchema.safeParse(raw);

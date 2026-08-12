@@ -26,14 +26,14 @@ Scope this migration branch to boundaries that relied on the removed Result help
 import { Result, ResultDeserializationError } from "better-result";
 
 const UserResultCodec = Result.codec({
-  serialize: {
-    ok: UserToWireSchema,
-    err: ValidationErrorToWireSchema,
-  },
-  deserialize: {
-    ok: UserFromWireSchema,
-    err: ValidationErrorFromWireSchema,
-  },
+	serialize: {
+		ok: UserToWireSchema,
+		err: ValidationErrorToWireSchema,
+	},
+	deserialize: {
+		ok: UserFromWireSchema,
+		err: ValidationErrorFromWireSchema,
+	},
 });
 ```
 
@@ -61,8 +61,8 @@ const encoded = await UserResultCodec.serialize(result);
 
 ```ts
 if (Result.isError(encoded)) {
-  reportInvalidOutboundPayload(encoded.error.value, encoded.error.issues);
-  throw encoded.error; // Preserve this RPC producer's rejected-transport behavior.
+	reportInvalidOutboundPayload(encoded.error.value, encoded.error.issues);
+	throw encoded.error; // Preserve this RPC producer's rejected-transport behavior.
 }
 
 await transport.send(encoded.value);
@@ -93,11 +93,11 @@ Remove explicit payload type arguments; the schemas infer them. Invalid envelope
 
 ```ts
 if (Result.isError(decoded)) {
-  if (ResultDeserializationError.is(decoded.error)) {
-    reportInvalidInboundPayload(decoded.error.value, decoded.error.issues);
-  } else {
-    handleRemoteValidationError(decoded.error);
-  }
+	if (ResultDeserializationError.is(decoded.error)) {
+		reportInvalidInboundPayload(decoded.error.value, decoded.error.issues);
+	} else {
+		handleRemoteValidationError(decoded.error);
+	}
 }
 ```
 
@@ -107,7 +107,7 @@ Import `ResultDeserializationError` where the boundary distinguishes malformed i
 const decoded = await GetQueueResultCodec.deserialize(input);
 
 if (Result.isError(decoded) && ResultDeserializationError.is(decoded.error)) {
-  return Result.err(new SongQueueParseError({ cause: decoded.error }));
+	return Result.err(new SongQueueParseError({ cause: decoded.error }));
 }
 return decoded; // Ok payload or reconstructed remote domain Err.
 ```

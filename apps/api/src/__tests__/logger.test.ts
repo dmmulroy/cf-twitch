@@ -1,6 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { z } from "zod";
 
 import { Logger, withLogContext } from "../lib/logger";
+
+const LoggerPayloadSchema = z.object({
+	event: z.string(),
+	access_token: z.string().optional(),
+	refresh_token: z.string().optional(),
+	authorization: z.string().optional(),
+	code: z.unknown().optional(),
+	input_length: z.number().optional(),
+	body_size_bytes: z.number().optional(),
+	error_message: z.string().optional(),
+	request_id: z.string().optional(),
+	trace_id: z.string().optional(),
+	route: z.string().optional(),
+	status_code: z.number().optional(),
+});
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -24,7 +40,8 @@ describe("structured logger", () => {
 		});
 
 		expect(infoSpy).toHaveBeenCalledTimes(1);
-		const payload = JSON.parse(infoSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+		const serialized = z.string().parse(infoSpy.mock.calls[0]?.[0]);
+		const payload = LoggerPayloadSchema.parse(JSON.parse(serialized));
 
 		expect(payload.event).toBe("test.redaction");
 		expect(payload.access_token).toBe("[REDACTED]");
@@ -54,7 +71,8 @@ describe("structured logger", () => {
 		);
 
 		expect(infoSpy).toHaveBeenCalledTimes(1);
-		const payload = JSON.parse(infoSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+		const serialized = z.string().parse(infoSpy.mock.calls[0]?.[0]);
+		const payload = LoggerPayloadSchema.parse(JSON.parse(serialized));
 
 		expect(payload.request_id).toBe("req-123");
 		expect(payload.trace_id).toBe("trace-123");

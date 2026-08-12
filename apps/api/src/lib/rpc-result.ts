@@ -6,7 +6,10 @@ import { DurableObjectError } from "./errors";
 export type RpcResult<T, E> = SerializedResult<T, E>;
 
 /** Normalize a Durable Object transport rejection into an expected infrastructure error. */
-export function rpcInfraError(method: string, error: unknown): Result<never, DurableObjectError> {
+export function rpcInfraError<Cause>(
+	method: string,
+	error: Cause,
+): Result<never, DurableObjectError> {
 	return Result.err(
 		new DurableObjectError({
 			method,
@@ -17,12 +20,12 @@ export function rpcInfraError(method: string, error: unknown): Result<never, Dur
 }
 
 /** Execute an owned Durable Object RPC and decode its named Result contract. */
-export async function callRpcResultUnsafe<T, E>(
+export async function callRpcResultUnsafe<T, E, WireValue>(
 	method: string,
-	call: Promise<unknown>,
-	deserializeUnsafe: (value: unknown) => Result<T, E> | Promise<Result<T, E>>,
+	call: Promise<WireValue>,
+	deserializeUnsafe: (value: WireValue) => Result<T, E> | Promise<Result<T, E>>,
 ): Promise<Result<T, E | DurableObjectError>> {
-	let value: unknown;
+	let value: WireValue;
 	try {
 		value = await call;
 	} catch (error) {

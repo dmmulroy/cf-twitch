@@ -18,17 +18,17 @@ Keep context structured instead of embedding everything in the message. Exclude 
 import { TaggedError } from "better-result";
 
 class LoadCustomerProfileError extends TaggedError("LoadCustomerProfileError")<{
-  customerId: string;
-  provider: string;
-  message: string;
-  cause: unknown;
+	customerId: string;
+	provider: string;
+	message: string;
+	cause: unknown;
 }> {
-  constructor(args: { customerId: string; provider: string; cause: unknown }) {
-    super({
-      ...args,
-      message: `Unable to load customer profile ${args.customerId} from ${args.provider}; the provider request failed. Retry the request or inspect the attached cause.`,
-    });
-  }
+	constructor(args: { customerId: string; provider: string; cause: unknown }) {
+		super({
+			...args,
+			message: `Unable to load customer profile ${args.customerId} from ${args.provider}; the provider request failed. Retry the request or inspect the attached cause.`,
+		});
+	}
 }
 ```
 
@@ -67,12 +67,12 @@ Use discriminated error unions and exhaustive matching at decision boundaries. P
 
 ```ts
 const response = result.match({
-  ok: (user) => ({ status: 200, body: user }),
-  err: (error) =>
-    error.match({
-      UserNotFound: () => ({ status: 404, body: null }),
-      UserStoreUnavailable: () => ({ status: 503, body: null }),
-    }),
+	ok: (user) => ({ status: 200, body: user }),
+	err: (error) =>
+		error.match({
+			UserNotFound: () => ({ status: 404, body: null }),
+			UserStoreUnavailable: () => ({ status: 503, body: null }),
+		}),
 });
 ```
 

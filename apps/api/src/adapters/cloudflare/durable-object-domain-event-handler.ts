@@ -7,7 +7,6 @@ import { initializeDurableObjectAgentStub } from "./durable-object-agent-stub";
 import type { DomainEventHandler } from "../../capabilities/domain-event-handler";
 import type { Tracer } from "../../capabilities/tracer";
 import type { Event } from "../../domain/domain-event";
-import type { Result as ResultType } from "better-result";
 
 /** Durable Object adapter that applies domain events to Achievement rules and state. */
 export class DurableObjectAchievementEventHandler implements DomainEventHandler {
@@ -17,7 +16,7 @@ export class DurableObjectAchievementEventHandler implements DomainEventHandler 
 	) {}
 
 	/** Handles one event through the runtime-validated Achievements RPC contract. */
-	handleEvent(event: Event): Promise<ResultType<void, DomainEventHandleError>> {
+	handleEvent(event: Event): Promise<Result<void, DomainEventHandleError>> {
 		return this.tracer.span(
 			"durable_object.achievements.handle_event",
 			{ event_id: event.id, event_type: event.type },

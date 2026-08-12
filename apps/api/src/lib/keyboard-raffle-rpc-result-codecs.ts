@@ -48,9 +48,7 @@ const KeyboardRaffleWireErrorSchema = z.discriminatedUnion("_tag", [
 ]);
 type KeyboardRaffleWireError = z.infer<typeof KeyboardRaffleWireErrorSchema>;
 const KeyboardRaffleErrorToWireSchema = z
-	.custom<KeyboardRaffleError>(
-		(value) => typeof value === "object" && value !== null && "_tag" in value,
-	)
+	.custom<KeyboardRaffleError>((value) => KeyboardRaffleWireErrorSchema.safeParse(value).success)
 	.transform((error): KeyboardRaffleWireError => ({ ...error, message: error.message }))
 	.pipe(KeyboardRaffleWireErrorSchema);
 const KeyboardRaffleErrorFromWireSchema = KeyboardRaffleWireErrorSchema.transform(

@@ -16,7 +16,11 @@ import {
 	noHandlers,
 } from "./fakes";
 
-import type { ChatCommandInput, ComputedCommandHandler } from "../../../lib/chat-command";
+import type {
+	ChatCommandInput,
+	ComputedCommandHandler,
+	ComputedCommandHandlers,
+} from "../../../lib/chat-command";
 
 function makeInput(
 	text: string,
@@ -38,7 +42,7 @@ function makeEngine(options?: {
 	catalog?: FakeCommandCatalog;
 	sender?: FakeChatSender;
 	metrics?: FakeMetrics;
-	handlers?: Record<string, ComputedCommandHandler>;
+	handlers?: ComputedCommandHandlers;
 }) {
 	const catalog = options?.catalog ?? new FakeCommandCatalog();
 	const sender = options?.sender ?? new FakeChatSender();

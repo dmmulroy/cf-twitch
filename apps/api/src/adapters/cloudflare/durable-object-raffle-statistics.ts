@@ -26,7 +26,6 @@ import type {
 	RaffleLeaderboardQuery,
 } from "../../domain/keyboard-raffle";
 import type { DurableObjectAgentStub } from "./durable-object-agent-stub";
-import type { Result as ResultType } from "better-result";
 
 type KeyboardRaffleRemoteError = Readonly<{ _tag: string }>;
 interface RaffleStatisticsRpcStub extends DurableObjectAgentStub {
@@ -47,7 +46,7 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 	recordRoll(
 		input: RecordKeyboardRaffleRoll,
 	): Promise<
-		ResultType<
+		Result<
 			Readonly<{ roll: KeyboardRaffleRoll; isNewRecord: boolean }>,
 			KeyboardRaffleRollStoreError
 		>
@@ -59,7 +58,7 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 		);
 	}
 
-	deleteRoll(rollId: string): Promise<ResultType<void, KeyboardRaffleRollStoreError>> {
+	deleteRoll(rollId: string): Promise<Result<void, KeyboardRaffleRollStoreError>> {
 		return this.callRollStore(
 			"deleteRoll",
 			async () => (await this.acquireRaffleStatisticsStub()).deleteRollById(rollId),
@@ -69,7 +68,7 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 
 	getLeaderboard(
 		options: RaffleLeaderboardQuery,
-	): Promise<ResultType<readonly RaffleLeaderboardEntry[], RaffleStatisticsError>> {
+	): Promise<Result<readonly RaffleLeaderboardEntry[], RaffleStatisticsError>> {
 		return this.call(
 			"getLeaderboard",
 			async () => (await this.acquireRaffleStatisticsStub()).getLeaderboard(options),
@@ -77,9 +76,7 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 		);
 	}
 
-	getViewerStats(
-		viewerId: string,
-	): Promise<ResultType<RaffleLeaderboardEntry, RaffleStatisticsError>> {
+	getViewerStats(viewerId: string): Promise<Result<RaffleLeaderboardEntry, RaffleStatisticsError>> {
 		return this.call(
 			"getViewerStats",
 			async () => (await this.acquireRaffleStatisticsStub()).getUserStats(viewerId),
@@ -90,7 +87,7 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 
 	getViewerStatsByDisplayName(
 		displayName: string,
-	): Promise<ResultType<RaffleLeaderboardEntry, RaffleStatisticsError>> {
+	): Promise<Result<RaffleLeaderboardEntry, RaffleStatisticsError>> {
 		return this.call(
 			"getViewerStatsByDisplayName",
 			async () => (await this.acquireRaffleStatisticsStub()).getUserStatsByDisplayName(displayName),
@@ -106,16 +103,14 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 		);
 	}
 
-	private async callRollStore<T>(
+	private async callRollStore<T, WireValue>(
 		operation: "recordRoll" | "deleteRoll",
-		invoke: () => Promise<unknown>,
+		invoke: () => Promise<WireValue>,
 		deserializeUnsafe: (
-			value: unknown,
-		) =>
-			| ResultType<T, KeyboardRaffleRemoteError>
-			| Promise<ResultType<T, KeyboardRaffleRemoteError>>,
-	): Promise<ResultType<T, KeyboardRaffleRollStoreError>> {
-		let rawResult: unknown;
+			value: WireValue,
+		) => Result<T, KeyboardRaffleRemoteError> | Promise<Result<T, KeyboardRaffleRemoteError>>,
+	): Promise<Result<T, KeyboardRaffleRollStoreError>> {
+		let rawResult: WireValue;
 		try {
 			rawResult = await invoke();
 		} catch (cause) {
@@ -135,21 +130,19 @@ export class DurableObjectRaffleStatistics implements RaffleStatistics, Keyboard
 				);
 	}
 
-	private call<T>(
+	private call<T, WireValue>(
 		operation: RaffleStatisticsOperation,
-		invoke: () => Promise<unknown>,
+		invoke: () => Promise<WireValue>,
 		deserializeUnsafe: (
-			value: unknown,
-		) =>
-			| ResultType<T, KeyboardRaffleRemoteError>
-			| Promise<ResultType<T, KeyboardRaffleRemoteError>>,
+			value: WireValue,
+		) => Result<T, KeyboardRaffleRemoteError> | Promise<Result<T, KeyboardRaffleRemoteError>>,
 		viewerReference?: string,
-	): Promise<ResultType<T, RaffleStatisticsError>> {
+	): Promise<Result<T, RaffleStatisticsError>> {
 		return this.tracer.span(
 			`durable_object.keyboard_raffle.${operation}`,
 			{ operation },
 			async () => {
-				let rawResult: unknown;
+				let rawResult: WireValue;
 				try {
 					rawResult = await invoke();
 				} catch (cause) {

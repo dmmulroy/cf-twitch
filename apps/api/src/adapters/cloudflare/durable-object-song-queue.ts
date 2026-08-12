@@ -29,9 +29,12 @@ import {
 
 import type { Tracer } from "../../capabilities/tracer";
 import type { NowPlaying } from "../../domain/spotify-queue";
-import type { Result as ResultType } from "better-result";
 
-const SongQueueSpanNames: Readonly<Record<SongQueueOperation, string>> = {
+type SongQueueSpanNameMap = {
+	readonly [Operation in SongQueueOperation]: string;
+};
+
+const SongQueueSpanNames: SongQueueSpanNameMap = {
 	persistPendingRequest: "durable_object.song_queue.persist_pending_request",
 	deletePendingRequest: "durable_object.song_queue.delete_pending_request",
 	getSpotifyQueue: "durable_object.song_queue.get_spotify_queue",
@@ -45,7 +48,7 @@ const SongQueueSpanNames: Readonly<Record<SongQueueOperation, string>> = {
 	getTopRequesters: "durable_object.song_queue.get_top_requesters",
 };
 
-interface SongQueueRpcHandle {
+export interface SongQueueRpcHandle {
 	persistRequest(request: PendingRequestInput): Promise<unknown>;
 	deleteRequest(eventId: string): Promise<unknown>;
 	getSongQueue(limit: number): Promise<unknown>;
@@ -64,15 +67,21 @@ interface SongQueueRpcHandle {
 	[Symbol.dispose]?(): void;
 }
 
+/** Minimal namespace contract required to acquire one Song Queue RPC connection. */
+export interface SongQueueRpcNamespace<NamespaceId> {
+	idFromName(name: string): NamespaceId;
+	get(id: NamespaceId): Readonly<{ connectRpc(): Promise<SongQueueRpcHandle> }>;
+}
+
 /** Durable Object adapter that owns Song Queue acquisition, RPC transport, parsing, and translation. */
-export class DurableObjectSongQueue implements SongQueue {
+export class DurableObjectSongQueue<NamespaceId = DurableObjectId> implements SongQueue {
 	constructor(
-		private readonly namespace: Cloudflare.Env["SONG_QUEUE_DO"],
+		private readonly namespace: SongQueueRpcNamespace<NamespaceId>,
 		private readonly tracer: Tracer,
 	) {}
 
 	/** Persists a Pending Request through the runtime-validated Song Queue RPC contract. */
-	persistPendingRequest(request: PendingRequestInput): Promise<ResultType<void, SongQueueFailure>> {
+	persistPendingRequest(request: PendingRequestInput): Promise<Result<void, SongQueueFailure>> {
 		return this.call(
 			"persistPendingRequest",
 			"persistRequest",
@@ -82,7 +91,7 @@ export class DurableObjectSongQueue implements SongQueue {
 	}
 
 	/** Deletes a Pending Request through the runtime-validated Song Queue RPC contract. */
-	deletePendingRequest(eventId: string): Promise<ResultType<void, SongQueueFailure>> {
+	deletePendingRequest(eventId: string): Promise<Result<void, SongQueueFailure>> {
 		return this.call(
 			"deletePendingRequest",
 			"deleteRequest",
@@ -92,7 +101,7 @@ export class DurableObjectSongQueue implements SongQueue {
 	}
 
 	/** Reads and runtime-validates the complete Now Playing RPC result. */
-	getNowPlaying(): Promise<ResultType<NowPlaying, SongQueueFailure>> {
+	getNowPlaying(): Promise<Result<NowPlaying, SongQueueFailure>> {
 		return this.call(
 			"getNowPlaying",
 			"getCurrentlyPlaying",
@@ -102,7 +111,7 @@ export class DurableObjectSongQueue implements SongQueue {
 	}
 
 	/** Reads and runtime-validates a bounded upcoming Spotify Queue snapshot. */
-	getSpotifyQueue(limit: number): Promise<ResultType<SpotifyQueueResult, SongQueueFailure>> {
+	getSpotifyQueue(limit: number): Promise<Result<SpotifyQueueResult, SongQueueFailure>> {
 		return this.call(
 			"getSpotifyQueue",
 			"getSongQueue",
@@ -117,7 +126,7 @@ export class DurableObjectSongQueue implements SongQueue {
 		offset = 0,
 		since?: string,
 		until?: string,
-	): Promise<ResultType<RequestHistoryResult, SongQueueFailure>> {
+	): Promise<Result<RequestHistoryResult, SongQueueFailure>> {
 		return this.call(
 			"getRequestHistory",
 			"getRequestHistory",
@@ -127,7 +136,7 @@ export class DurableObjectSongQueue implements SongQueue {
 	}
 
 	/** Counts fulfilled Song Requests for one stable Viewer ID. */
-	getViewerRequestCount(userId: string): Promise<ResultType<number, SongQueueFailure>> {
+	getViewerRequestCount(userId: string): Promise<Result<number, SongQueueFailure>> {
 		return this.call(
 			"getViewerRequestCount",
 			"getUserRequestCount",
@@ -139,7 +148,7 @@ export class DurableObjectSongQueue implements SongQueue {
 	/** Counts fulfilled Song Requests for one historical Viewer display name. */
 	getViewerRequestCountByDisplayName(
 		displayName: string,
-	): Promise<ResultType<number, SongQueueFailure>> {
+	): Promise<Result<number, SongQueueFailure>> {
 		return this.call(
 			"getViewerRequestCountByDisplayName",
 			"getUserRequestCountByDisplayName",
@@ -149,7 +158,7 @@ export class DurableObjectSongQueue implements SongQueue {
 	}
 
 	/** Aggregates Spotify Tracks across fulfilled Song Requests. */
-	getTopTracks(limit: number): Promise<ResultType<TopRequestedTrack[], SongQueueFailure>> {
+	getTopTracks(limit: number): Promise<Result<TopRequestedTrack[], SongQueueFailure>> {
 		return this.call(
 			"getTopTracks",
 			"getTopTracks",
@@ -162,7 +171,7 @@ export class DurableObjectSongQueue implements SongQueue {
 	getViewerTopTracks(
 		userId: string,
 		limit: number,
-	): Promise<ResultType<TopRequestedTrack[], SongQueueFailure>> {
+	): Promise<Result<TopRequestedTrack[], SongQueueFailure>> {
 		return this.call(
 			"getViewerTopTracks",
 			"getTopTracksByUser",
@@ -172,7 +181,7 @@ export class DurableObjectSongQueue implements SongQueue {
 	}
 
 	/** Aggregates Viewers by fulfilled Song Request count. */
-	getTopRequesters(limit: number): Promise<ResultType<TopSongRequester[], SongQueueFailure>> {
+	getTopRequesters(limit: number): Promise<Result<TopSongRequester[], SongQueueFailure>> {
 		return this.call(
 			"getTopRequesters",
 			"getTopRequesters",
@@ -181,19 +190,19 @@ export class DurableObjectSongQueue implements SongQueue {
 		);
 	}
 
-	private call<T>(
+	private call<T, WireValue>(
 		operation: SongQueueOperation,
 		rpcMethod: string,
-		invoke: (handle: SongQueueRpcHandle) => Promise<unknown>,
+		invoke: (handle: SongQueueRpcHandle) => Promise<WireValue>,
 		deserializeUnsafe: (
-			value: unknown,
-		) => ResultType<T, SongQueueFailure> | Promise<ResultType<T, SongQueueFailure>>,
-	): Promise<ResultType<T, SongQueueFailure>> {
+			value: WireValue,
+		) => Result<T, SongQueueFailure> | Promise<Result<T, SongQueueFailure>>,
+	): Promise<Result<T, SongQueueFailure>> {
 		return this.tracer.span(
 			SongQueueSpanNames[operation],
 			{ operation, rpc_method: rpcMethod },
 			async () => {
-				let stub: ReturnType<Cloudflare.Env["SONG_QUEUE_DO"]["get"]>;
+				let stub: ReturnType<SongQueueRpcNamespace<NamespaceId>["get"]>;
 				try {
 					stub = this.namespace.get(this.namespace.idFromName(SONG_QUEUE_DO_NAME));
 				} catch (cause) {
@@ -211,7 +220,7 @@ export class DurableObjectSongQueue implements SongQueue {
 					);
 				}
 
-				let rawResult: unknown;
+				let rawResult: WireValue;
 				try {
 					rawResult = await invoke(handle);
 				} catch (cause) {

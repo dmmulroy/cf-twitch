@@ -1,5 +1,3 @@
-import type { LogContext } from "./logger";
-
 /**
  * Structural logger seam for modules that need contextual logs without depending on a concrete logger.
  *
@@ -8,9 +6,9 @@ import type { LogContext } from "./logger";
  * @returns Nothing for log methods, or a child logger for child.
  */
 export interface Logger {
-	debug(message: string, context?: LogContext): void;
-	info(message: string, context?: LogContext): void;
-	warn(message: string, context?: LogContext): void;
-	error(message: string, context?: LogContext): void;
-	child(context: LogContext): Logger;
+	debug<Context extends object>(message: string, context?: Context): void;
+	info<Context extends object>(message: string, context?: Context): void;
+	warn<Context extends object>(message: string, context?: Context): void;
+	error<Context extends object>(message: string, context?: Context): void;
+	child<Context extends object>(context: Context): Logger;
 }

@@ -64,7 +64,7 @@ export class WorkerConfigurationError extends TaggedError("WorkerConfigurationEr
 
 /** Parses raw Worker bindings into typed, redacted application configuration. */
 export function parseWorkerConfiguration(
-	bindings: unknown,
+	bindings: z.input<typeof WorkerBindingsConfigurationSchema>,
 ): Result<WorkerConfiguration, WorkerConfigurationError> {
 	const parsed = WorkerBindingsConfigurationSchema.safeParse(bindings);
 	if (!parsed.success) return Result.err(new WorkerConfigurationError(parsed.error.message));

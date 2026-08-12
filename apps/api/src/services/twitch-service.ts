@@ -41,11 +41,8 @@ function parseTwitchRetryAfterMs(response: Response): number {
 	return Math.min(Math.ceil(seconds * 1_000), MAXIMUM_TWITCH_RETRY_AFTER_MS);
 }
 
-function isRetryableTwitchTechnicalError(error: unknown): boolean {
-	const parsed = z
-		.object({ _tag: z.literal("TwitchNetworkError"), status: z.number() })
-		.safeParse(error);
-	return parsed.success && (parsed.data.status === 0 || parsed.data.status >= 500);
+function isRetryableTwitchTechnicalError(error: TwitchNetworkError): boolean {
+	return error.status === 0 || error.status >= 500;
 }
 
 // Zod schema for Twitch OAuth token response
@@ -140,6 +137,8 @@ const EventSubSubscriptionStatusSchema = z.enum([
 ]);
 
 // Zod schema for EventSub subscription response
+const EventSubConditionSchema = z.object({}).catchall(NonEmptyProviderStringSchema);
+
 const EventSubSubscriptionResponseSchema = z.object({
 	data: z.array(
 		z.object({
@@ -148,7 +147,7 @@ const EventSubSubscriptionResponseSchema = z.object({
 			type: NonEmptyProviderStringSchema,
 			version: NonEmptyProviderStringSchema,
 			cost: z.number(),
-			condition: z.record(z.string(), z.unknown()),
+			condition: EventSubConditionSchema,
 			transport: z.object({
 				method: z.string(),
 				callback: z.string().optional(),
@@ -172,13 +171,16 @@ export type EventSubSubscriptionType =
 /** Parsed Twitch EventSub lifecycle status, including callback verification pending. */
 export type EventSubSubscriptionStatus = z.infer<typeof EventSubSubscriptionStatusSchema>;
 
+/** String-valued matching fields in an EventSub subscription condition. */
+export type EventSubCondition = z.infer<typeof EventSubConditionSchema>;
+
 /** Provider subscription evidence returned after complete EventSub pagination. */
 export interface EventSubSubscription {
 	id: string;
 	status: EventSubSubscriptionStatus;
 	type: string;
 	version: string;
-	condition: Record<string, unknown>;
+	condition: EventSubCondition;
 	transport: {
 		method: string;
 		callback?: string;
@@ -412,7 +414,7 @@ export class TwitchService {
 	async createEventSubSubscription(
 		type: EventSubSubscriptionType,
 		version: string,
-		condition: Record<string, string>,
+		condition: EventSubCondition,
 		callbackUrl: string,
 		secret: RedactedValue<string>,
 	) {
@@ -715,7 +717,7 @@ export class TwitchService {
 						throw new TwitchNetworkError({ status: response.status, context: "sendChatMessage" });
 					}
 
-					const responseJson = await response.json().catch((cause: unknown) => {
+					const responseJson = await response.json().catch((cause) => {
 						throw new TwitchParseError({
 							context: "chat message delivery JSON",
 							parseError: String(cause),
@@ -767,7 +769,9 @@ export class TwitchService {
 					delayMs: 1000,
 					backoff: "exponential",
 					shouldRetry: (error) =>
-						options.signal?.aborted !== true && isRetryableTwitchTechnicalError(error),
+						options.signal?.aborted !== true &&
+						TwitchNetworkError.is(error) &&
+						isRetryableTwitchTechnicalError(error),
 				},
 			},
 		);
@@ -840,7 +844,9 @@ export class TwitchService {
 					delayMs: 1000,
 					backoff: "exponential",
 					shouldRetry: (error) =>
-						options.signal?.aborted !== true && isRetryableTwitchTechnicalError(error),
+						options.signal?.aborted !== true &&
+						TwitchNetworkError.is(error) &&
+						isRetryableTwitchTechnicalError(error),
 				},
 			},
 		);
@@ -874,7 +880,7 @@ export class TwitchService {
 					);
 
 					if (response.ok) {
-						const responseJson = await response.json().catch((cause: unknown) => {
+						const responseJson = await response.json().catch((cause) => {
 							throw new TwitchParseError({
 								context: "redemption status update JSON",
 								parseError: String(cause),
@@ -935,7 +941,9 @@ export class TwitchService {
 					delayMs: 1000,
 					backoff: "exponential",
 					shouldRetry: (error) =>
-						options.signal?.aborted !== true && isRetryableTwitchTechnicalError(error),
+						options.signal?.aborted !== true &&
+						TwitchNetworkError.is(error) &&
+						isRetryableTwitchTechnicalError(error),
 				},
 			},
 		);

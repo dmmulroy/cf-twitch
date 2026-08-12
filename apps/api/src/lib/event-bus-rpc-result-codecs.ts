@@ -39,7 +39,14 @@ const EventBusWireErrorSchema = z.discriminatedUnion("_tag", [
 ]);
 type EventBusWireError = z.infer<typeof EventBusWireErrorSchema>;
 const EventBusErrorToWireSchema = z
-	.custom<EventBusError>((value) => typeof value === "object" && value !== null && "_tag" in value)
+	.custom<EventBusError>(
+		(value) =>
+			EventBusRoutingError.is(value) ||
+			EventBusHandlerError.is(value) ||
+			EventBusValidationError.is(value) ||
+			EventBusDbError.is(value) ||
+			DLQItemNotFoundError.is(value),
+	)
 	.transform((error): EventBusWireError => ({ ...error, message: error.message }))
 	.pipe(EventBusWireErrorSchema);
 const EventBusErrorFromWireSchema = EventBusWireErrorSchema.transform((error): EventBusError => {

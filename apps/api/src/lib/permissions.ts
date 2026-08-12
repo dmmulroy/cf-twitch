@@ -9,6 +9,20 @@
  */
 export type Permission = "broadcaster" | "moderator" | "vip" | "everyone";
 
+type PermissionLevels = { readonly [Level in Permission]: number };
+
+const PermissionLevelByName: PermissionLevels = {
+	broadcaster: 3,
+	moderator: 2,
+	vip: 1,
+	everyone: 0,
+};
+
+/** Returns the stable rank used to order chat-command permissions. */
+export function permissionLevel(permission: Permission): number {
+	return PermissionLevelByName[permission];
+}
+
 /**
  * Twitch EventSub chat badge format.
  * Only `set_id` is needed for permission checks.
@@ -40,11 +54,5 @@ export function getUserPermission(badges: Badge[]): Permission {
  * @returns true if user has sufficient permission
  */
 export function hasPermission(userPermission: Permission, required: Permission): boolean {
-	const levels: Record<Permission, number> = {
-		broadcaster: 3,
-		moderator: 2,
-		vip: 1,
-		everyone: 0,
-	};
-	return levels[userPermission] >= levels[required];
+	return permissionLevel(userPermission) >= permissionLevel(required);
 }

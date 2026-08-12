@@ -3,6 +3,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { z } from "zod";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogComponent =
@@ -15,15 +16,46 @@ export type LogComponent =
 	| "cache"
 	| "analytics";
 
-export interface LogContext {
-	[key: string]: unknown;
-}
+export type LogContextValue = SanitizedValue;
+
+export interface LogContext extends SanitizedObject {}
 
 export interface LogError {
 	error_tag?: string;
 	error_message?: string;
 	error_stack?: string;
 }
+
+interface SanitizedObject {
+	[key: string]: SanitizedValue;
+}
+
+type SanitizedValue =
+	| string
+	| number
+	| boolean
+	| null
+	| undefined
+	| SanitizedValue[]
+	| SanitizedObject
+	| LogError;
+
+const StringValueSchema = z.string();
+const NumberValueSchema = z.union([
+	z.number(),
+	z.nan(),
+	z.literal(Number.POSITIVE_INFINITY),
+	z.literal(Number.NEGATIVE_INFINITY),
+]);
+const BooleanValueSchema = z.boolean();
+const BigIntValueSchema = z.bigint();
+const ObjectValueSchema = z.object({});
+const ErrorProjectionSchema = z.object({
+	_tag: z.string().optional(),
+	name: z.string().optional(),
+	message: z.string().optional(),
+	stack: z.string().optional(),
+});
 
 const REDACTED = "[REDACTED]";
 const MAX_STRING_LENGTH = 1000;
@@ -54,6 +86,22 @@ function camelToSnake(key: string): string {
 		.toLowerCase();
 }
 
+function isString<Value>(value: Value): value is Value & string {
+	return StringValueSchema.safeParse(value).success;
+}
+
+function isNumber<Value>(value: Value): value is Value & number {
+	return NumberValueSchema.safeParse(value).success;
+}
+
+function isBoolean<Value>(value: Value): value is Value & boolean {
+	return BooleanValueSchema.safeParse(value).success;
+}
+
+function isBigInt<Value>(value: Value): value is Value & bigint {
+	return BigIntValueSchema.safeParse(value).success;
+}
+
 function inferComponent(context: LogContext): LogComponent {
 	const component = context.component;
 	if (
@@ -69,42 +117,42 @@ function inferComponent(context: LogContext): LogComponent {
 		return component;
 	}
 
-	if (typeof context.cache_key === "string" || typeof context.ttl_seconds === "number") {
+	if (isString(context.cache_key) || isNumber(context.ttl_seconds)) {
 		return "cache";
 	}
 
-	if (typeof context.metric_name === "string") {
+	if (isString(context.metric_name)) {
 		return "analytics";
 	}
 
 	if (
-		typeof context.provider === "string" ||
-		typeof context.external_url === "string" ||
-		typeof context.request_kind === "string"
+		isString(context.provider) ||
+		isString(context.external_url) ||
+		isString(context.request_kind)
 	) {
 		return "service";
 	}
 
 	if (
-		typeof context.do_name === "string" ||
-		typeof context.do_id === "string" ||
-		typeof context.rpc_method === "string" ||
-		typeof context.saga_id === "string" ||
-		typeof context.stream_session_id === "string"
+		isString(context.do_name) ||
+		isString(context.do_id) ||
+		isString(context.rpc_method) ||
+		isString(context.saga_id) ||
+		isString(context.stream_session_id)
 	) {
 		return "durable_object";
 	}
 
 	if (
-		typeof context.route === "string" ||
-		typeof context.path === "string" ||
-		typeof context.method === "string" ||
-		typeof context.request_id === "string"
+		isString(context.route) ||
+		isString(context.path) ||
+		isString(context.method) ||
+		isString(context.request_id)
 	) {
 		return "route";
 	}
 
-	if (typeof context.script_name === "string") {
+	if (isString(context.script_name)) {
 		return "tail";
 	}
 
@@ -128,38 +176,35 @@ function truncateString(value: string): string {
 	return `${value.slice(0, MAX_STRING_LENGTH)}…`;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+function isTraversableObject<Value>(value: Value): value is Value & object {
 	return (
-		typeof value === "object" &&
-		value !== null &&
-		!Array.isArray(value) &&
-		!(value instanceof Error)
+		ObjectValueSchema.safeParse(value).success && !Array.isArray(value) && !(value instanceof Error)
 	);
 }
 
-export function normalizeError(error: unknown): LogError {
+export function normalizeError<ErrorValue>(error: ErrorValue): LogError {
 	if (error instanceof Error) {
 		const tagged = error as Error & { _tag?: unknown };
 		return {
-			error_tag: typeof tagged._tag === "string" ? tagged._tag : error.name || "Error",
+			error_tag: isString(tagged._tag) ? tagged._tag : error.name || "Error",
 			error_message: error.message,
 			error_stack: error.stack,
 		};
 	}
 
-	if (typeof error === "object" && error !== null) {
-		const tagged = error as { _tag?: unknown; message?: unknown; stack?: unknown; name?: unknown };
-		return {
-			error_tag:
-				typeof tagged._tag === "string"
-					? tagged._tag
-					: typeof tagged.name === "string"
-						? tagged.name
-						: "UnknownError",
-			error_message:
-				typeof tagged.message === "string" ? truncateString(tagged.message) : String(error),
-			error_stack: typeof tagged.stack === "string" ? truncateString(tagged.stack) : undefined,
-		};
+	if (isTraversableObject(error)) {
+		const projection = ErrorProjectionSchema.safeParse(Object.fromEntries(Object.entries(error)));
+		if (projection.success) {
+			return {
+				error_tag: projection.data._tag ?? projection.data.name ?? "UnknownError",
+				error_message:
+					projection.data.message === undefined
+						? String(error)
+						: truncateString(projection.data.message),
+				error_stack:
+					projection.data.stack === undefined ? undefined : truncateString(projection.data.stack),
+			};
+		}
 	}
 
 	return {
@@ -168,7 +213,7 @@ export function normalizeError(error: unknown): LogError {
 	};
 }
 
-function sanitizeValue(key: string, value: unknown, depth = 0): unknown {
+function sanitizeValue<Value>(key: string, value: Value, depth = 0): SanitizedValue {
 	if (depth > 4) {
 		return "[Truncated]";
 	}
@@ -176,7 +221,7 @@ function sanitizeValue(key: string, value: unknown, depth = 0): unknown {
 	const normalizedKey = camelToSnake(key);
 
 	if (SENSITIVE_KEYS.has(normalizedKey)) {
-		if (typeof value === "string") {
+		if (isString(value)) {
 			if (normalizedKey === "code") {
 				return undefined;
 			}
@@ -189,24 +234,31 @@ function sanitizeValue(key: string, value: unknown, depth = 0): unknown {
 		return normalizeError(value);
 	}
 
-	if (typeof value === "string") {
+	if (isString(value)) {
 		return truncateString(value);
 	}
 
-	if (
-		typeof value === "number" ||
-		typeof value === "boolean" ||
-		value === null ||
-		value === undefined
-	) {
+	if (isNumber(value)) {
 		return value;
+	}
+
+	if (isBoolean(value)) {
+		return value;
+	}
+
+	if (value === null) {
+		return null;
+	}
+
+	if (value === undefined) {
+		return undefined;
 	}
 
 	if (Array.isArray(value)) {
 		return value.map((item) => sanitizeValue(key, item, depth + 1));
 	}
 
-	if (typeof value === "bigint") {
+	if (isBigInt(value)) {
 		return value.toString();
 	}
 
@@ -214,8 +266,8 @@ function sanitizeValue(key: string, value: unknown, depth = 0): unknown {
 		return value.toString();
 	}
 
-	if (isPlainObject(value)) {
-		const nested: Record<string, unknown> = {};
+	if (isTraversableObject(value)) {
+		const nested: SanitizedObject = {};
 		for (const [nestedKey, nestedValue] of Object.entries(value)) {
 			const normalizedNestedKey = camelToSnake(nestedKey);
 
@@ -229,12 +281,12 @@ function sanitizeValue(key: string, value: unknown, depth = 0): unknown {
 				continue;
 			}
 
-			if (normalizedNestedKey === "user_input" && typeof nestedValue === "string") {
+			if (normalizedNestedKey === "user_input" && isString(nestedValue)) {
 				nested.input_length = nestedValue.length;
 				continue;
 			}
 
-			if (normalizedNestedKey === "raw_body" && typeof nestedValue === "string") {
+			if (normalizedNestedKey === "raw_body" && isString(nestedValue)) {
 				nested.body_size_bytes = nestedValue.length;
 				continue;
 			}
@@ -251,7 +303,7 @@ function sanitizeValue(key: string, value: unknown, depth = 0): unknown {
 	return String(value);
 }
 
-function normalizeContext(context?: LogContext): LogContext {
+function normalizeContext<Context extends object>(context?: Context): LogContext {
 	if (!context) {
 		return {};
 	}
@@ -266,12 +318,12 @@ function normalizeContext(context?: LogContext): LogContext {
 			continue;
 		}
 
-		if (normalizedKey === "user_input" && typeof rawValue === "string") {
+		if (normalizedKey === "user_input" && isString(rawValue)) {
 			normalized.input_length = rawValue.length;
 			continue;
 		}
 
-		if (normalizedKey === "raw_body" && typeof rawValue === "string") {
+		if (normalizedKey === "raw_body" && isString(rawValue)) {
 			normalized.body_size_bytes = rawValue.length;
 			continue;
 		}
@@ -289,7 +341,7 @@ export function getLogContext(): LogContext {
 	return asyncLogContext.getStore() ?? {};
 }
 
-export function withLogContext<T>(context: LogContext, callback: () => T): T {
+export function withLogContext<T, Context extends object>(context: Context, callback: () => T): T {
 	const merged = { ...getLogContext(), ...normalizeContext(context) };
 	return asyncLogContext.run(merged, callback);
 }
@@ -309,34 +361,34 @@ export function startTimer(): () => number {
 export class Logger {
 	constructor(private readonly baseContext: LogContext = {}) {}
 
-	child(context: LogContext): Logger {
+	child<Context extends object>(context: Context): Logger {
 		return new Logger({ ...this.baseContext, ...normalizeContext(context) });
 	}
 
-	debug(message: string, context?: LogContext): void {
+	debug<Context extends object>(message: string, context?: Context): void {
 		this.log("debug", message, context);
 	}
 
-	info(message: string, context?: LogContext): void {
+	info<Context extends object>(message: string, context?: Context): void {
 		this.log("info", message, context);
 	}
 
-	warn(message: string, context?: LogContext): void {
+	warn<Context extends object>(message: string, context?: Context): void {
 		this.log("warn", message, context);
 	}
 
-	error(message: string, context?: LogContext): void {
+	error<Context extends object>(message: string, context?: Context): void {
 		this.log("error", message, context);
 	}
 
-	private log(level: LogLevel, message: string, context?: LogContext): void {
-		const mergedContext = {
+	private log<Context extends object>(level: LogLevel, message: string, context?: Context): void {
+		const mergedContext: LogContext = {
 			...getLogContext(),
 			...this.baseContext,
 			...normalizeContext(context),
 		};
 		const event =
-			typeof mergedContext.event === "string" && mergedContext.event.length > 0
+			isString(mergedContext.event) && mergedContext.event.length > 0
 				? mergedContext.event
 				: fallbackEvent(level, message);
 		const component = inferComponent(mergedContext);

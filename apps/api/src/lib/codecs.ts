@@ -11,21 +11,32 @@ export type JsonPrimitive = string | number | boolean | null;
  *
  * Functions, symbols, `undefined`, and arbitrary class instances are excluded.
  */
-export type JsonValue =
-	| JsonPrimitive
-	| readonly JsonValue[]
-	| { readonly [key: string]: JsonValue };
+export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;
+
+/** JSON object with recursively JSON-safe property values. */
+export interface JsonObject {
+	readonly [key: string]: JsonValue;
+}
+
+/** Runtime parser for the shared JSON-safe value contract. */
+export const JsonValueSchema: z.ZodType<JsonValue> = z.json();
+
+/** Values accepted by JSON.stringify, including its no-output top-level input. */
+export const JsonStringifiableValueSchema: z.ZodType<JsonValue | undefined> = z.union([
+	JsonValueSchema,
+	z.undefined(),
+]);
 
 /**
  * A named, Zod-backed boundary between canonical values and JSON-safe DTOs.
  * Decode and encode failures are returned as expected values.
  */
-export interface SagaCodec<T> {
+export interface SagaCodec<T, Input = T> {
 	readonly name: string;
 	readonly codec: z.ZodCodec<z.ZodType<JsonValue, JsonValue>, z.ZodType<T>>;
 
-	/** Decodes unknown input into the canonical value that flows inward. */
-	parse(raw: unknown): Result<T, SagaCodecParseError>;
+	/** Decodes boundary input into the canonical value that flows inward. */
+	parse(raw: Input | JsonValue): Result<T, SagaCodecParseError>;
 
 	/** Encodes a canonical value into its JSON-safe representation. */
 	encode(value: T): Result<JsonValue, SagaCodecParseError>;
@@ -37,10 +48,10 @@ export interface SagaCodec<T> {
  * Unknown decode input is first parsed by the persistence schema. Encoding uses
  * Zod's reverse path, so both directions return typed expected failures.
  */
-export function zodSagaCodec<T>(args: {
+export function zodSagaCodec<T, Input = T>(args: {
 	readonly name: string;
 	readonly codec: z.ZodCodec<z.ZodType<JsonValue, JsonValue>, z.ZodType<T>>;
-}): SagaCodec<T> {
+}): SagaCodec<T, Input> {
 	const parseError = (error: z.ZodError): SagaCodecParseError =>
 		new SagaCodecParseError({
 			codecName: args.name,

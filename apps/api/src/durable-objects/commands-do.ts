@@ -49,7 +49,7 @@ import {
 	InvalidCommandNameError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
-import { hasPermission } from "../lib/permissions";
+import { hasPermission, permissionLevel } from "../lib/permissions";
 
 import type { Env } from "../index";
 import type { Permission } from "../lib/permissions";
@@ -59,13 +59,6 @@ const CounterIncrementSchema = z.number().int().min(1).max(100);
 const DynamicCommandEmptyResponse = "No topic set for today.";
 const DynamicCommandOutputTemplate = "Working on: {value}";
 const GenericStoredOutputTemplate = "{value}";
-
-const PermissionLevels: Record<Permission, number> = {
-	everyone: 0,
-	vip: 1,
-	moderator: 2,
-	broadcaster: 3,
-};
 
 const CommandValueStateSchema = z.object({
 	value: CommandValueSchema,
@@ -115,6 +108,9 @@ export const CommandsAgentStateSchema = CurrentCommandsAgentStateSchema.extend({
 
 /** Parsed, rehydrated Commands Agent state. */
 export type CommandsAgentState = z.infer<typeof CommandsAgentStateSchema>;
+type CommandsByName = CommandsAgentState["commandsByName"];
+type CommandValuesByName = CommandsAgentState["valuesByName"];
+type CommandCountersByName = CommandsAgentState["countersByName"];
 
 const CommandUpdateActorSchema = z.strictObject({
 	displayName: z.string().min(1).max(100),
@@ -125,9 +121,6 @@ const CommandUpdateActorSchema = z.strictObject({
 export type CommandUpdateActor = z.infer<typeof CommandUpdateActorSchema>;
 
 type CommandDefinitionError = CommandAliasConflictError | CommandInvalidDefinitionError;
-
-type CommandValueState = z.infer<typeof CommandValueStateSchema>;
-type CommandCounterState = z.infer<typeof CommandCounterStateSchema>;
 
 function createPlanCommandInput(now: string): CreateCommandInput {
 	return {
@@ -576,7 +569,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	}
 
 	private parseRehydratedCommandsState(
-		rawState: unknown,
+		rawState: CommandsAgentState,
 	): Result<CommandsAgentState, CommandsStateParseError | CommandDefinitionError> {
 		const parsed = CommandsAgentStateSchema.safeParse(rawState);
 		if (!parsed.success) {
@@ -740,9 +733,9 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 
 		return Result.try({
 			try: () => {
-				const level = PermissionLevels[parseResult.data];
+				const level = permissionLevel(parseResult.data);
 				return Object.values(this.state.commandsByName).filter(
-					(command) => command.enabled && PermissionLevels[command.permission] <= level,
+					(command) => command.enabled && permissionLevel(command.permission) <= level,
 				);
 			},
 			catch: (cause) => new CommandsDbError({ operation: "getEnabledCommandsByPermission", cause }),
@@ -773,8 +766,8 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	async updateCommandValue(
 		name: string,
 		value: string,
-		actor: unknown,
-		operationId?: unknown,
+		actor: CommandUpdateActor,
+		operationId?: string,
 	): Promise<
 		Result<
 			void,
@@ -908,7 +901,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	async incrementCommandCounter(
 		name: string,
 		increment = 1,
-		operationId?: unknown,
+		operationId?: string,
 	): Promise<
 		Result<
 			number,
@@ -1029,7 +1022,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 
 	@rpc(CreateChatCommandResultCodec)
 	async createCommand(
-		input: unknown,
+		input: CreateCommandInput,
 	): Promise<
 		Result<
 			Command,
@@ -1080,7 +1073,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	@rpc(UpdateChatCommandResultCodec)
 	async updateCommand(
 		name: string,
-		patch: unknown,
+		patch: UpdateCommandInput,
 	): Promise<
 		Result<
 			Command,
@@ -1154,7 +1147,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 			}
 
 			const namesToDelete = this.collectCommandsToDelete(commandName);
-			const nextCommandsByName: Record<string, Command> = {};
+			const nextCommandsByName: CommandsByName = {};
 			for (const [nextCommandName, command] of Object.entries(this.state.commandsByName)) {
 				if (!namesToDelete.has(nextCommandName)) {
 					nextCommandsByName[nextCommandName] = command;
@@ -1369,7 +1362,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	}
 
 	private parseCreateCommandInput(
-		input: unknown,
+		input: CreateCommandInput,
 	): Result<CreateCommandInput, CommandInputParseError> {
 		const parseResult = CreateCommandInputSchema.safeParse(input);
 		if (!parseResult.success) {
@@ -1384,7 +1377,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	}
 
 	private parseUpdateCommandPatch(
-		patch: unknown,
+		patch: UpdateCommandInput,
 	): Result<UpdateCommandInput, CommandInputParseError> {
 		const parseResult = UpdateCommandInputSchema.safeParse(patch);
 		if (!parseResult.success) {
@@ -1543,7 +1536,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	private buildNextValuesForCreate(
 		command: Command,
 		initialValue: string | null,
-	): Record<string, CommandValueState> {
+	): CommandValuesByName {
 		if (command.valueSourceName === null || initialValue === null) {
 			return { ...this.state.valuesByName };
 		}
@@ -1561,7 +1554,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	private buildNextCountersForCreate(
 		command: Command,
 		initialCounter: number | null,
-	): Record<string, CommandCounterState> {
+	): CommandCountersByName {
 		const counterSourceName = command.counterSourceName;
 		if (counterSourceName === null || initialCounter === null) {
 			return { ...this.state.countersByName };
@@ -1577,9 +1570,9 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	}
 
 	private pruneValues(
-		commandsByName: Record<string, Command>,
-		valuesByName: Record<string, CommandValueState>,
-	): Record<string, CommandValueState> {
+		commandsByName: CommandsByName,
+		valuesByName: CommandValuesByName,
+	): CommandValuesByName {
 		const referencedNames = new Set<string>();
 		for (const command of Object.values(commandsByName)) {
 			if (command.valueSourceName !== null) {
@@ -1587,7 +1580,7 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 			}
 		}
 
-		const nextValues: Record<string, CommandValueState> = {};
+		const nextValues: CommandValuesByName = {};
 		for (const [valueName, valueState] of Object.entries(valuesByName)) {
 			if (referencedNames.has(valueName)) {
 				nextValues[valueName] = valueState;
@@ -1598,15 +1591,15 @@ class _CommandsDO extends Agent<Env, CommandsAgentState> {
 	}
 
 	private pruneCounters(
-		commandsByName: Record<string, Command>,
-		countersByName: Record<string, CommandCounterState>,
-	): Record<string, CommandCounterState> {
+		commandsByName: CommandsByName,
+		countersByName: CommandCountersByName,
+	): CommandCountersByName {
 		const referencedNames = new Set<string>();
 		for (const command of Object.values(commandsByName)) {
 			referencedNames.add(this.getCounterStorageName(command));
 		}
 
-		const nextCounters: Record<string, CommandCounterState> = {};
+		const nextCounters: CommandCountersByName = {};
 		for (const [counterName, counterState] of Object.entries(countersByName)) {
 			if (referencedNames.has(counterName)) {
 				nextCounters[counterName] = counterState;

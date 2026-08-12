@@ -52,7 +52,12 @@ const AchievementWireErrorSchema = z.discriminatedUnion("_tag", [
 type AchievementWireError = z.infer<typeof AchievementWireErrorSchema>;
 const AchievementErrorToWireSchema = z
 	.custom<AchievementError>(
-		(value) => typeof value === "object" && value !== null && "_tag" in value,
+		(value) =>
+			AchievementDbError.is(value) ||
+			AchievementNotFoundError.is(value) ||
+			AchievementEventValidationError.is(value) ||
+			AchievementQueryValidationError.is(value) ||
+			InvalidAchievementRecordError.is(value),
 	)
 	.transform((error): AchievementWireError => ({ ...error, message: error.message }))
 	.pipe(AchievementWireErrorSchema);

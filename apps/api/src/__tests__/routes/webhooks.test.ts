@@ -72,17 +72,19 @@ async function postSignedEventSub(input: {
 	});
 }
 
-function eventSubSubscription(type: string, overrides: Record<string, unknown> = {}): object {
+function eventSubSubscription(
+	type: string,
+	status: "enabled" | "webhook_callback_verification_pending" | "authorization_revoked" = "enabled",
+) {
 	return {
 		id: "subscription-id",
 		type,
 		version: "1",
-		status: "enabled",
+		status,
 		cost: 0,
 		condition: {},
 		transport: { method: "webhook", callback: "http://localhost/webhooks/twitch" },
 		created_at: "2026-05-25T00:00:00Z",
-		...overrides,
 	};
 }
 
@@ -230,9 +232,7 @@ describe("Twitch webhooks", () => {
 	it("returns a plain-text callback challenge only after complete signed parsing", async () => {
 		const challenge = `challenge-${crypto.randomUUID()}`;
 		const body = JSON.stringify({
-			subscription: eventSubSubscription("stream.online", {
-				status: "webhook_callback_verification_pending",
-			}),
+			subscription: eventSubSubscription("stream.online", "webhook_callback_verification_pending"),
 			challenge,
 		});
 		const response = await postSignedEventSub({
@@ -381,7 +381,7 @@ describe("Twitch webhooks", () => {
 
 	it("durably accepts a completely parsed revocation", async () => {
 		const body = JSON.stringify({
-			subscription: eventSubSubscription("channel.raid", { status: "authorization_revoked" }),
+			subscription: eventSubSubscription("channel.raid", "authorization_revoked"),
 		});
 		const response = await postSignedEventSub({
 			messageType: "revocation",

@@ -7,7 +7,6 @@ import type {
 	OAuthAuthorizationStateStore,
 	OAuthProvider,
 } from "../../capabilities/oauth-authorization-state";
-import type { Result as ResultType } from "better-result";
 
 const CreateOAuthStateResultSchema = z.object({ status: z.enum(["ok", "invalid"]) }).strict();
 const ConsumeOAuthStateResultSchema = z
@@ -43,7 +42,7 @@ export class DurableObjectOAuthAuthorizationState implements OAuthAuthorizationS
 	async create(
 		provider: OAuthProvider,
 		redirectUri: string,
-	): Promise<ResultType<string, OAuthAuthorizationStateError>> {
+	): Promise<Result<string, OAuthAuthorizationStateError>> {
 		const state = this.createStateValue();
 		const createdAtMs = this.nowMilliseconds();
 		try {
@@ -78,7 +77,7 @@ export class DurableObjectOAuthAuthorizationState implements OAuthAuthorizationS
 		redirectUri: string,
 		state: string,
 	): Promise<
-		ResultType<"ok" | "invalid" | "expired" | "consumed" | "mismatch", OAuthAuthorizationStateError>
+		Result<"ok" | "invalid" | "expired" | "consumed" | "mismatch", OAuthAuthorizationStateError>
 	> {
 		try {
 			const raw: unknown = await this.acquireStateStub(state).consumeOAuthAuthorizationAttempt({

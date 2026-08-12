@@ -1,10 +1,17 @@
 import { Result } from "better-result";
 
-import { hasPermission, type Permission } from "../../permissions";
+import { hasPermission } from "../../permissions";
 import { chatTextResponse } from "../types";
 
 import type { ChatCommandDefinition as Command } from "../../../domain/chat-command-definition";
 import type { CommandCatalog, ComputedCommandContext, ComputedCommandHandler } from "../types";
+
+interface CommandsGroupedByPermission {
+	everyone: Command[];
+	vip: Command[];
+	moderator: Command[];
+	broadcaster: Command[];
+}
 
 /**
  * Computed chat command handler for listing available commands.
@@ -29,7 +36,7 @@ export class CommandsCommandHandler implements ComputedCommandHandler {
 			return Result.ok(chatTextResponse("No commands available."));
 		}
 
-		const commandsByPermission: Record<Permission, Command[]> = {
+		const commandsByPermission: CommandsGroupedByPermission = {
 			everyone: [],
 			vip: [],
 			moderator: [],

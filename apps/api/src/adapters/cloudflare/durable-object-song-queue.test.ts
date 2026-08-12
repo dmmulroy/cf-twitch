@@ -1,39 +1,59 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { DurableObjectSongQueue } from "./durable-object-song-queue";
+import {
+	DurableObjectSongQueue,
+	type SongQueueRpcHandle,
+	type SongQueueRpcNamespace,
+} from "./durable-object-song-queue";
 
 import type { SongQueueOperation } from "../../capabilities/song-queue";
-import type { TraceAttribute, Tracer } from "../../capabilities/tracer";
+import type { TraceAttributes, Tracer } from "../../capabilities/tracer";
+import type { JsonValue } from "../../lib/codecs";
 
 class RecordingTracer implements Tracer {
 	readonly spans: Array<{
 		readonly name: string;
-		readonly attributes: Readonly<Record<string, TraceAttribute>>;
+		readonly attributes: TraceAttributes;
 	}> = [];
 
-	async span<T>(
-		name: string,
-		attributes: Readonly<Record<string, TraceAttribute>>,
-		run: () => Promise<T>,
-	): Promise<T> {
+	async span<T>(name: string, attributes: TraceAttributes, run: () => Promise<T>): Promise<T> {
 		this.spans.push({ name, attributes });
 		return run();
 	}
 }
 
-function songQueueNamespaceReturning(rawResult: unknown): Cloudflare.Env["SONG_QUEUE_DO"] {
-	const namespace = {
-		idFromName: () => ({ toString: () => "song-queue-id" }),
-		get: () => ({
-			connectRpc: () =>
-				Promise.resolve({
-					getCurrentlyPlaying: () => Promise.resolve(rawResult),
-				}),
-		}),
+function unsupportedSongQueueRpc(): Promise<never> {
+	return Promise.reject(new Error("Unexpected Song Queue RPC method"));
+}
+
+function songQueueRpcHandleReturning(rawResult: JsonValue | undefined): SongQueueRpcHandle {
+	return {
+		persistRequest: unsupportedSongQueueRpc,
+		deleteRequest: unsupportedSongQueueRpc,
+		getSongQueue: unsupportedSongQueueRpc,
+		getCurrentlyPlaying: () => Promise.resolve(rawResult),
+		getRequestHistory: unsupportedSongQueueRpc,
+		getUserRequestCount: unsupportedSongQueueRpc,
+		getUserRequestCountByDisplayName: unsupportedSongQueueRpc,
+		getTopTracks: unsupportedSongQueueRpc,
+		getTopTracksByUser: unsupportedSongQueueRpc,
+		getTopRequesters: unsupportedSongQueueRpc,
 	};
-	// SAFETY: This faithful adapter test double implements only the namespace and RPC methods
-	// exercised through the SongQueueReader interface; omitted Cloudflare methods are unreachable.
-	return namespace as unknown as Cloudflare.Env["SONG_QUEUE_DO"];
+}
+
+function songQueueNamespace(
+	connectRpc: () => Promise<SongQueueRpcHandle>,
+): SongQueueRpcNamespace<string> {
+	return {
+		idFromName: (name) => name,
+		get: () => ({ connectRpc }),
+	};
+}
+
+function songQueueNamespaceReturning(
+	rawResult: JsonValue | undefined,
+): SongQueueRpcNamespace<string> {
+	return songQueueNamespace(() => Promise.resolve(songQueueRpcHandleReturning(rawResult)));
 }
 
 describe("Durable Object Song Queue adapter", () => {
@@ -59,30 +79,27 @@ describe("Durable Object Song Queue adapter", () => {
 		]);
 	});
 
-	it.each([
+	const malformedNowPlayingResults: readonly (JsonValue | undefined)[] = [
 		undefined,
 		{ status: "ok", value: { track: null, position: 1 } },
 		{ status: "error", error: { _tag: "UnknownSongQueueError", message: "bad wire" } },
-	])("panics on a malformed owned Now Playing wire contract", async (rawResult) => {
-		const songQueue = new DurableObjectSongQueue(
-			songQueueNamespaceReturning(rawResult),
-			new RecordingTracer(),
-		);
+	];
 
-		await expect(songQueue.getNowPlaying()).rejects.toThrow();
-	});
+	it.each(malformedNowPlayingResults)(
+		"panics on a malformed owned Now Playing wire contract",
+		async (rawResult) => {
+			const songQueue = new DurableObjectSongQueue(
+				songQueueNamespaceReturning(rawResult),
+				new RecordingTracer(),
+			);
+
+			await expect(songQueue.getNowPlaying()).rejects.toThrow();
+		},
+	);
 
 	it("preserves the operation and transport stage when RPC connection fails", async () => {
-		const namespace = {
-			idFromName: () => ({ toString: () => "song-queue-id" }),
-			get: () => ({ connectRpc: () => Promise.reject(new Error("cold start failed")) }),
-		};
-		// SAFETY: The test double reaches the adapter's connection-failure path before any omitted
-		// Cloudflare namespace or Song Queue RPC method can be observed.
-		const songQueue = new DurableObjectSongQueue(
-			namespace as unknown as Cloudflare.Env["SONG_QUEUE_DO"],
-			new RecordingTracer(),
-		);
+		const namespace = songQueueNamespace(() => Promise.reject(new Error("cold start failed")));
+		const songQueue = new DurableObjectSongQueue(namespace, new RecordingTracer());
 
 		const result = await songQueue.getNowPlaying();
 

@@ -1105,7 +1105,7 @@ export type SagaError =
 /**
  * Check if an error is retryable (rate limit or transient network issue)
  */
-export function isRetryableError(error: unknown): boolean {
+export function isRetryableError(error: Error): boolean {
 	if (SpotifyRateLimitError.is(error) || TwitchRateLimitError.is(error)) {
 		return true;
 	}
@@ -1118,7 +1118,7 @@ export function isRetryableError(error: unknown): boolean {
 /**
  * Extract retry delay from a rate limit error, or return default
  */
-export function getRetryDelayMs(error: unknown, defaultMs = 1000): number {
+export function getRetryDelayMs(error: Error, defaultMs = 1000): number {
 	if (SpotifyRateLimitError.is(error) || TwitchRateLimitError.is(error)) {
 		return Math.min(30 * 60 * 1000, Math.max(1000, error.retryAfterMs));
 	}
@@ -1126,6 +1126,6 @@ export function getRetryDelayMs(error: unknown, defaultMs = 1000): number {
 }
 
 /** Reports transport failures whose provider-side commit outcome cannot be known safely. */
-export function isAmbiguousExternalEffectError(error: unknown): boolean {
+export function isAmbiguousExternalEffectError(error: Error): boolean {
 	return (SpotifyNetworkError.is(error) || TwitchNetworkError.is(error)) && error.status === 0;
 }

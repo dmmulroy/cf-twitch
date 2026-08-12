@@ -4,7 +4,6 @@ import { z } from "zod";
 import { normalizeError } from "../../lib/logger";
 
 import type { Logger } from "../../lib/logging";
-import type { Result as ResultType } from "better-result";
 
 /** Expected failure when fresh data violates a route's edge-response contract. */
 export class EdgeCacheValueError extends TaggedError("EdgeCacheValueError")<{
@@ -37,7 +36,7 @@ export type ReadThroughEdgeResponseOptions<T, E> = Readonly<{
 	key: string;
 	maxAgeSeconds: number;
 	schema: z.ZodType<T>;
-	load: () => Promise<ResultType<T, E>>;
+	load: () => Promise<Result<T, E>>;
 }>;
 
 /** Owns validated read-through edge caching and best-effort detached writes. */
@@ -51,7 +50,7 @@ export class CloudflareEdgeResponseCache {
 	/** Reads a validated cached value or loads, validates, and schedules storage of a fresh value. */
 	async readThrough<T, E>(
 		options: ReadThroughEdgeResponseOptions<T, E>,
-	): Promise<ResultType<T, E | EdgeCacheValueError | EdgeCacheLoadError>> {
+	): Promise<Result<T, E | EdgeCacheValueError | EdgeCacheLoadError>> {
 		const request = new Request(options.key, { method: "GET" });
 		const cacheLogger = this.logger.child({
 			component: "cache",
@@ -82,7 +81,7 @@ export class CloudflareEdgeResponseCache {
 		}
 
 		cacheLogger.info("Edge cache miss", { event: "cache.miss" });
-		let loaded: ResultType<T, E>;
+		let loaded: Result<T, E>;
 		try {
 			loaded = await options.load();
 		} catch (cause) {
@@ -101,7 +100,7 @@ export class CloudflareEdgeResponseCache {
 	private async parseCachedResponse<T>(
 		response: Response,
 		schema: z.ZodType<T>,
-	): Promise<ResultType<T, EdgeCacheValueError>> {
+	): Promise<Result<T, EdgeCacheValueError>> {
 		try {
 			const parsed = schema.safeParse(await response.json());
 			return parsed.success

@@ -30,12 +30,14 @@ const ConsumeOAuthAuthorizationAttemptSchema = z.object({
 });
 
 type OAuthAuthorizationAttempt = z.infer<typeof OAuthAuthorizationAttemptSchema>;
+type CreateOAuthAuthorizationAttempt = z.infer<typeof CreateOAuthAuthorizationAttemptSchema>;
+type ConsumeOAuthAuthorizationAttempt = z.infer<typeof ConsumeOAuthAuthorizationAttemptSchema>;
 
 /** Durable one-time store that atomically validates and consumes an OAuth state value. */
 export class OAuthStateDO extends DurableObject {
 	/** Persists one expiring provider authorization attempt before redirecting the operator. */
 	async createOAuthAuthorizationAttempt(
-		input: unknown,
+		input: CreateOAuthAuthorizationAttempt,
 	): Promise<{ readonly status: "ok" | "invalid" }> {
 		const parsed = CreateOAuthAuthorizationAttemptSchema.safeParse(input);
 		if (!parsed.success || parsed.data.expiresAtMs <= parsed.data.createdAtMs) {
@@ -49,7 +51,7 @@ export class OAuthStateDO extends DurableObject {
 	}
 
 	/** Consumes matching OAuth state exactly once and rejects malformed, expired, or replayed attempts. */
-	async consumeOAuthAuthorizationAttempt(input: unknown): Promise<{
+	async consumeOAuthAuthorizationAttempt(input: ConsumeOAuthAuthorizationAttempt): Promise<{
 		readonly status: "ok" | "invalid" | "expired" | "consumed" | "mismatch";
 	}> {
 		const parsedInput = ConsumeOAuthAuthorizationAttemptSchema.safeParse(input);

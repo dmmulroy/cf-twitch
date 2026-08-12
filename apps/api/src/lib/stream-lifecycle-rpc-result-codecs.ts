@@ -36,14 +36,12 @@ const DurableObjectWireErrorSchema = z.object({
 });
 const DurableObjectErrorToWireSchema = z
 	.custom<DurableObjectError>((value) => DurableObjectError.is(value))
-	.transform(
-		(error): z.infer<typeof DurableObjectWireErrorSchema> => ({
-			_tag: error._tag,
-			method: error.method,
-			message: error.message,
-			cause: error.cause,
-		}),
-	)
+	.transform((error): z.infer<typeof DurableObjectWireErrorSchema> => ({
+		_tag: error._tag,
+		method: error.method,
+		message: error.message,
+		cause: error.cause,
+	}))
 	.pipe(DurableObjectWireErrorSchema);
 const DurableObjectErrorFromWireSchema = DurableObjectWireErrorSchema.transform(
 	(error) =>

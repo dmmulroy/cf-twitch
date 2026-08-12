@@ -62,6 +62,7 @@ import {
 	TwitchRateLimitError,
 	type AchievementError,
 	type StreamLifecycleHandler,
+	type TwitchApiError,
 } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { TwitchService } from "../services/twitch-service";
@@ -78,6 +79,7 @@ import {
 	eventHistory,
 	userAchievements,
 	userStreaks,
+	type AchievementDefinition as PersistedAchievementDefinition,
 } from "./schemas/achievements-do.schema";
 
 import type { Env } from "../index";
@@ -86,14 +88,22 @@ import type { Env } from "../index";
 // Types
 // =============================================================================
 
+interface AchievementEventUserInfo {
+	readonly userId: string;
+	readonly userDisplayName: string;
+}
+
 /** Input schema for recordEvent - validated with Zod */
+const AchievementEventMetadataSchema = z.record(z.string(), z.unknown());
+const AchievementStreakCountSchema = z.number();
+
 export const AchievementEventInputSchema = z.object({
 	userId: z.string().min(1),
 	userDisplayName: z.string().min(1),
 	event: AchievementTriggerEventSchema,
 	eventId: z.string().min(1), // idempotency key
 	increment: z.number().int().positive().optional().default(1),
-	metadata: z.record(z.string(), z.unknown()).optional(),
+	metadata: AchievementEventMetadataSchema.optional(),
 });
 
 export type AchievementEventInput = z.infer<typeof AchievementEventInputSchema>;
@@ -103,6 +113,15 @@ const ANNOUNCEMENT_RETRY_DELAYS_SECONDS = [3, 5, 10] as const;
 const AchievementUnlockEffectPayloadSchema = z.object({
 	effectId: z.string().min(1),
 });
+
+type AchievementUnlockEffectPayload = z.infer<typeof AchievementUnlockEffectPayloadSchema>;
+type AchievementEventMetadata = z.infer<typeof AchievementEventMetadataSchema>;
+type AchievementAnnouncementError =
+	| ProviderAccessTokenError
+	| TwitchApiError
+	| DurableObjectError
+	| TokenUnavailableWhileStreamOfflineError
+	| TokenRefreshNetworkError;
 
 const AchievementDefinitionRecordSchema = AchievementDefinitionSchema;
 
@@ -862,7 +881,7 @@ class _AchievementsDO
 	}
 
 	/** Dispatches one persisted Achievement unlock outbox effect with guarded side effects. */
-	async processAchievementUnlockEffects(payload: unknown): Promise<void> {
+	async processAchievementUnlockEffects(payload: AchievementUnlockEffectPayload): Promise<void> {
 		const parseResult = AchievementUnlockEffectPayloadSchema.safeParse(payload);
 		if (!parseResult.success) {
 			logger.warn("AchievementsDO: Invalid unlock effect payload", {
@@ -965,7 +984,7 @@ class _AchievementsDO
 	private async retryOrAbandonAchievementAnnouncement(
 		effectId: string,
 		attempts: number,
-		error: unknown,
+		error: AchievementAnnouncementError,
 	): Promise<void> {
 		const delayInSeconds = ANNOUNCEMENT_RETRY_DELAYS_SECONDS[attempts] ?? null;
 		const retryable =
@@ -1010,7 +1029,7 @@ class _AchievementsDO
 	 * "first request of stream" checks and audit trail.
 	 */
 	@rpc(HandleAchievementEventResultCodec)
-	async handleEvent(event: unknown): Promise<Result<void, AchievementError>> {
+	async handleEvent(event: Event): Promise<Result<void, AchievementError>> {
 		const parseResult = EventSchema.safeParse(event);
 		if (!parseResult.success) {
 			return Result.err(
@@ -1304,7 +1323,9 @@ class _AchievementsDO
 		return Result.ok();
 	}
 
-	private parseAchievementDefinitionRecord(input: unknown): AchievementDefinition {
+	private parseAchievementDefinitionRecord(
+		input: PersistedAchievementDefinition,
+	): AchievementDefinition {
 		const result = AchievementDefinitionRecordSchema.safeParse(input);
 		if (!result.success) {
 			throw new InvalidAchievementRecordError({
@@ -1324,7 +1345,7 @@ class _AchievementsDO
 	/**
 	 * Extract user info from event based on type
 	 */
-	private extractUserInfo(event: Event): { userId: string; userDisplayName: string } {
+	private extractUserInfo(event: Event): AchievementEventUserInfo {
 		switch (event.type) {
 			case EventType.SongRequestSuccess:
 			case EventType.RaffleRoll:
@@ -1340,7 +1361,7 @@ class _AchievementsDO
 	/**
 	 * Extract relevant metadata from event for storage
 	 */
-	private extractMetadata(event: Event): Record<string, unknown> {
+	private extractMetadata(event: Event) {
 		switch (event.type) {
 			case EventType.SongRequestSuccess:
 				return { trackId: event.trackId, sagaId: event.sagaId };
@@ -1372,14 +1393,16 @@ class _AchievementsDO
 	private calculateIncrement(
 		definition: AchievementDefinition,
 		baseIncrement: number,
-		metadata?: Record<string, unknown>,
+		metadata?: AchievementEventMetadata,
 	): number {
-		// For streak achievements, use the streak count from metadata
-		if (definition.triggerEvent === "request_streak" && metadata?.streakCount) {
-			const streakCount = metadata.streakCount;
-			if (typeof streakCount === "number") {
-				return streakCount;
-			}
+		// For streak achievements, use the validated streak count from metadata
+		const streakCountResult = AchievementStreakCountSchema.safeParse(metadata?.streakCount);
+		if (
+			definition.triggerEvent === "request_streak" &&
+			streakCountResult.success &&
+			streakCountResult.data
+		) {
+			return streakCountResult.data;
 		}
 
 		return baseIncrement;
@@ -1398,7 +1421,7 @@ class _AchievementsDO
 		return progress >= definition.threshold;
 	}
 
-	private isRetryableAnnouncementPreflightError(error: unknown): boolean {
+	private isRetryableAnnouncementPreflightError(error: AchievementAnnouncementError): boolean {
 		return (
 			(ProviderAccessTokenError.is(error) &&
 				[

@@ -8,7 +8,6 @@ import type {
 	EventSubReceiptAcceptor,
 } from "../../capabilities/eventsub-receipts";
 import type { Tracer } from "../../capabilities/tracer";
-import type { Result as ResultType } from "better-result";
 
 interface EventSubReceiptRpcStub {
 	accept(receipt: AcceptedEventSubReceipt): Promise<unknown>;
@@ -25,7 +24,7 @@ export class DurableObjectEventSubReceiptAcceptor implements EventSubReceiptAcce
 	accept(
 		messageId: string,
 		receipt: AcceptedEventSubReceipt,
-	): Promise<ResultType<void, EventSubReceiptAcceptanceError>> {
+	): Promise<Result<void, EventSubReceiptAcceptanceError>> {
 		return this.tracer.span(
 			"durable_object.eventsub_receipts.accept",
 			{ message_id: messageId },

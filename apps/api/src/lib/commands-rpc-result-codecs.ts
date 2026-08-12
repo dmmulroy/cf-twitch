@@ -71,13 +71,7 @@ const CommandsWireErrorSchema = z.discriminatedUnion("_tag", [
 type CommandsWireError = z.infer<typeof CommandsWireErrorSchema>;
 
 const CommandsErrorToWireSchema = z
-	.custom<CommandsError>(
-		(value) =>
-			typeof value === "object" &&
-			value !== null &&
-			"_tag" in value &&
-			CommandsWireErrorSchema.options.some((schema) => schema.shape._tag.value === value._tag),
-	)
+	.custom<CommandsError>((value) => CommandsWireErrorSchema.safeParse(value).success)
 	.transform((error): CommandsWireError => ({ ...error, message: error.message }))
 	.pipe(CommandsWireErrorSchema);
 

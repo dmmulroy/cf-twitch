@@ -42,12 +42,9 @@ export type SongQueueWireError = z.infer<typeof SongQueueWireErrorSchema>;
 const SongQueueErrorToWireSchema = z
 	.custom<SongQueueRpcError>(
 		(value) =>
-			typeof value === "object" &&
-			value !== null &&
-			"_tag" in value &&
-			(value._tag === "SongQueueDbError" ||
-				value._tag === "SongQueueParseError" ||
-				value._tag === "SongQueueCoordinationError"),
+			SongQueueDbError.is(value) ||
+			SongQueueParseError.is(value) ||
+			SongQueueCoordinationError.is(value),
 	)
 	.transform((error): SongQueueWireError => {
 		switch (error._tag) {

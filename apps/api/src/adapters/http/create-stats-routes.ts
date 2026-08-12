@@ -16,8 +16,8 @@ import {
 	EdgeCacheValueError,
 } from "../cloudflare/cloudflare-edge-response-cache";
 
-import type { RaffleStatistics } from "../../capabilities/raffle-statistics";
-import type { SongRequestStatistics } from "../../capabilities/song-queue";
+import type { RaffleStatistics, RaffleStatisticsError } from "../../capabilities/raffle-statistics";
+import type { SongQueueFailure, SongRequestStatistics } from "../../capabilities/song-queue";
 import type { Logger } from "../../lib/logging";
 import type { CloudflareEdgeResponseCache } from "../cloudflare/cloudflare-edge-response-cache";
 import type { Context } from "hono";
@@ -32,14 +32,23 @@ const ViewerIdSchema = z
 	.regex(/^\d{1,20}$/u, "Viewer ID must be 1 to 20 digits")
 	.brand<"ViewerId">();
 
-const ArtistNamesSchema = z.preprocess((input) => {
-	if (typeof input !== "string") return input;
-	try {
-		return JSON.parse(input);
-	} catch {
-		return input;
-	}
-}, z.array(z.string()));
+const ArtistNameListSchema = z.array(z.string());
+const ArtistNamesSchema = z.union([
+	ArtistNameListSchema,
+	z.string().transform((value, context) => {
+		try {
+			const parsed = ArtistNameListSchema.safeParse(JSON.parse(value));
+			if (parsed.success) return parsed.data;
+			context.addIssue({
+				code: "custom",
+				message: `Invalid artist names: ${parsed.error.message}`,
+			});
+		} catch (cause) {
+			context.addIssue({ code: "custom", message: `Invalid artist names JSON: ${String(cause)}` });
+		}
+		return z.NEVER;
+	}),
+]);
 const TopTracksResponseSchema = z.array(
 	TopRequestedTrackSchema.extend({ artists: ArtistNamesSchema }).strict(),
 );
@@ -61,7 +70,18 @@ export type StatsRouteDependencies = Readonly<{
 	logger: Logger;
 }>;
 
-function makeStatsCacheKey(canonicalPath: string, parameters: Record<string, string>): string {
+type StatsCacheKeyParameters = Readonly<{
+	limit?: string;
+	sortBy?: "rolls" | "wins" | "closest";
+}>;
+
+type StatsReadFailure =
+	| EdgeCacheLoadError
+	| EdgeCacheValueError
+	| RaffleStatisticsError
+	| SongQueueFailure;
+
+function makeStatsCacheKey(canonicalPath: string, parameters: StatsCacheKeyParameters): string {
 	const url = new URL(canonicalPath, "https://stats.internal");
 	for (const [key, value] of Object.entries(parameters).sort(([left], [right]) =>
 		left.localeCompare(right),
@@ -168,7 +188,7 @@ export function createStatsRoutes(dependencies: StatsRouteDependencies): Hono {
 
 function projectStatsFailure(
 	context: Context,
-	error: unknown,
+	error: StatsReadFailure,
 	logger: Logger,
 	operation: string,
 ): Response {

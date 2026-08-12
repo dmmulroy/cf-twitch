@@ -126,16 +126,18 @@ const DEFAULT_STEP_OPTIONS: Required<StepOptions> = {
 	retryAllErrors: false,
 };
 
-function errorTag(error: unknown): string {
-	if (typeof error !== "object" || error === null || !("_tag" in error)) return "UnknownError";
-	return typeof error._tag === "string" ? error._tag : "UnknownError";
+const TaggedErrorSchema = z.object({ _tag: z.string() });
+
+function errorTag(error: Error): string {
+	const parsed = TaggedErrorSchema.safeParse(error);
+	return parsed.success ? parsed.data._tag : "UnknownError";
 }
 
 /** Construction dependencies for a typed saga runner. */
-export interface SagaRunnerArgs<P> {
+export interface SagaRunnerArgs<P, Input = P> {
 	readonly sagaId: string;
 	readonly db: DrizzleSqliteDODatabase<SagaSchema>;
-	readonly paramsCodec: SagaCodec<P>;
+	readonly paramsCodec: SagaCodec<P, Input>;
 	readonly retryScheduler: SagaRetryScheduler;
 	readonly analytics?: AnalyticsEngineDataset;
 	readonly sagaType?: SagaType;
@@ -147,18 +149,18 @@ export interface SagaRunnerArgs<P> {
  * Successful rows are authoritative: replay decoding failures are returned and
  * their handlers are never invoked again.
  */
-export class SagaRunner<P> {
+export class SagaRunner<P, Input = P> {
 	private readonly compensations: RegisteredCompensation[] = [];
 	private retryCallbackExecution = false;
 	private readonly db: DrizzleSqliteDODatabase<SagaSchema>;
 	private readonly stepStartTimes = new Map<string, number>();
 	private readonly sagaId: string;
-	private readonly paramsCodec: SagaCodec<P>;
+	private readonly paramsCodec: SagaCodec<P, Input>;
 	private readonly retryScheduler: SagaRetryScheduler;
 	private readonly analytics: AnalyticsEngineDataset | undefined;
 	private readonly sagaType: SagaType | undefined;
 
-	constructor(args: SagaRunnerArgs<P>) {
+	constructor(args: SagaRunnerArgs<P, Input>) {
 		this.sagaId = args.sagaId;
 		this.db = args.db;
 		this.paramsCodec = args.paramsCodec;
@@ -783,8 +785,8 @@ export class SagaRunner<P> {
 		return successResult;
 	}
 
-	private encodePersisted<T>(
-		codec: SagaCodec<T>,
+	private encodePersisted<T, CodecInput>(
+		codec: SagaCodec<T, CodecInput>,
 		value: T,
 		context: PersistedValueContext,
 	): Result<string, SagaPersistedDataError> {
@@ -804,8 +806,8 @@ export class SagaRunner<P> {
 		});
 	}
 
-	private decodePersisted<T>(
-		codec: SagaCodec<T>,
+	private decodePersisted<T, CodecInput>(
+		codec: SagaCodec<T, CodecInput>,
 		json: string,
 		context: PersistedValueContext,
 	): Result<T, SagaPersistedDataError> {
@@ -826,8 +828,8 @@ export class SagaRunner<P> {
 			: Result.ok(decoded.value);
 	}
 
-	private persistedDataError<T>(
-		codec: SagaCodec<T>,
+	private persistedDataError<T, CodecInput>(
+		codec: SagaCodec<T, CodecInput>,
 		field: SagaPersistedField,
 		parseError: string,
 		stepName?: string,

@@ -23,30 +23,32 @@ import type { Tracer } from "../../capabilities/tracer";
 import type { SpotifyTokenResponse } from "../../services/spotify-service";
 import type { TwitchTokenResponse } from "../../services/twitch-service";
 import type { DurableObjectAgentStub } from "./durable-object-agent-stub";
-import type { Result as ResultType } from "better-result";
+import type { SerializedResult } from "better-result";
 
 type TokenProvider = "spotify" | "twitch";
 type TokenRpcOperation = "getValidAccessToken" | "setTokens" | "onStreamOnline" | "onStreamOffline";
-interface TokenRpcStub extends DurableObjectAgentStub {
-	getValidToken(): Promise<unknown>;
-	setTokens(tokens: unknown): Promise<unknown>;
-	onStreamOnline(): Promise<unknown>;
-	onStreamOffline(): Promise<unknown>;
+export type TokenRpcWireError = Readonly<{ _tag: string }>;
+export type TokenRpcWireResult<T> = SerializedResult<T, TokenRpcWireError>;
+export interface TokenRpcStub<Tokens> extends DurableObjectAgentStub {
+	getValidToken(): Promise<TokenRpcWireResult<string>>;
+	setTokens(tokens: Tokens): Promise<TokenRpcWireResult<void>>;
+	onStreamOnline(): Promise<TokenRpcWireResult<void>>;
+	onStreamOffline(): Promise<TokenRpcWireResult<void>>;
 }
-type TokenRpcNamespace = Readonly<{ getByName(name: string): TokenRpcStub }>;
+export type TokenRpcNamespace<Tokens> = Readonly<{
+	getByName(name: string): TokenRpcStub<Tokens>;
+}>;
 
-async function callProviderTokenRpc<T>(args: {
-	readonly namespace: TokenRpcNamespace;
+async function callProviderTokenRpc<T, Tokens>(args: {
+	readonly namespace: TokenRpcNamespace<Tokens>;
 	readonly provider: TokenProvider;
 	readonly operation: TokenRpcOperation;
-	readonly invoke: (stub: TokenRpcStub) => Promise<unknown>;
+	readonly invoke: (stub: TokenRpcStub<Tokens>) => Promise<TokenRpcWireResult<T>>;
 	readonly deserializeUnsafe: (
-		value: unknown,
-	) =>
-		| ResultType<T, Readonly<{ _tag: string }>>
-		| Promise<ResultType<T, Readonly<{ _tag: string }>>>;
-}): Promise<ResultType<T, ProviderAccessTokenError>> {
-	let rawResult: unknown;
+		value: TokenRpcWireResult<T>,
+	) => Result<T, Readonly<{ _tag: string }>> | Promise<Result<T, Readonly<{ _tag: string }>>>;
+}): Promise<Result<T, ProviderAccessTokenError>> {
+	let rawResult: TokenRpcWireResult<T>;
 	try {
 		const name = args.provider === "spotify" ? "spotify-token" : "twitch-token";
 		const stub = await initializeDurableObjectAgentStub(args.namespace.getByName(name), name);
@@ -78,12 +80,12 @@ export class DurableObjectSpotifyAccessTokens
 	implements SpotifyAccessTokens, ProviderTokenLifecycle
 {
 	constructor(
-		private readonly namespace: Cloudflare.Env["SPOTIFY_TOKEN_DO"],
+		private readonly namespace: TokenRpcNamespace<SpotifyTokenResponse>,
 		private readonly tracer: Tracer,
 	) {}
 
 	/** Returns a validated, redacted Spotify user access token. */
-	getValidAccessToken(): Promise<ResultType<RedactedValue<string>, ProviderAccessTokenError>> {
+	getValidAccessToken(): Promise<Result<RedactedValue<string>, ProviderAccessTokenError>> {
 		return this.tracer.span(
 			"durable_object.spotify_access_tokens.get_valid_access_token",
 			{},
@@ -100,15 +102,15 @@ export class DurableObjectSpotifyAccessTokens
 		);
 	}
 
-	onStreamOnline(): Promise<ResultType<void, ProviderAccessTokenError>> {
+	onStreamOnline(): Promise<Result<void, ProviderAccessTokenError>> {
 		return this.callLifecycle("onStreamOnline");
 	}
 
-	onStreamOffline(): Promise<ResultType<void, ProviderAccessTokenError>> {
+	onStreamOffline(): Promise<Result<void, ProviderAccessTokenError>> {
 		return this.callLifecycle("onStreamOffline");
 	}
 
-	setTokens(tokens: SpotifyTokenResponse): Promise<ResultType<void, ProviderAccessTokenError>> {
+	setTokens(tokens: SpotifyTokenResponse): Promise<Result<void, ProviderAccessTokenError>> {
 		return callProviderTokenRpc({
 			namespace: this.namespace,
 			provider: "spotify",
@@ -120,7 +122,7 @@ export class DurableObjectSpotifyAccessTokens
 
 	private callLifecycle(
 		operation: "onStreamOnline" | "onStreamOffline",
-	): Promise<ResultType<void, ProviderAccessTokenError>> {
+	): Promise<Result<void, ProviderAccessTokenError>> {
 		return this.tracer.span(
 			operation === "onStreamOnline"
 				? "durable_object.spotify_access_tokens.on_stream_online"
@@ -145,12 +147,12 @@ export class DurableObjectSpotifyAccessTokens
 /** Durable Object adapter for Twitch access-token lifecycle operations. */
 export class DurableObjectTwitchAccessTokens implements TwitchAccessTokens, ProviderTokenLifecycle {
 	constructor(
-		private readonly namespace: Cloudflare.Env["TWITCH_TOKEN_DO"],
+		private readonly namespace: TokenRpcNamespace<TwitchTokenResponse>,
 		private readonly tracer: Tracer,
 	) {}
 
 	/** Returns a validated, redacted Twitch broadcaster access token. */
-	getValidAccessToken(): Promise<ResultType<RedactedValue<string>, ProviderAccessTokenError>> {
+	getValidAccessToken(): Promise<Result<RedactedValue<string>, ProviderAccessTokenError>> {
 		return this.tracer.span(
 			"durable_object.twitch_access_tokens.get_valid_access_token",
 			{},
@@ -167,15 +169,15 @@ export class DurableObjectTwitchAccessTokens implements TwitchAccessTokens, Prov
 		);
 	}
 
-	onStreamOnline(): Promise<ResultType<void, ProviderAccessTokenError>> {
+	onStreamOnline(): Promise<Result<void, ProviderAccessTokenError>> {
 		return this.callLifecycle("onStreamOnline");
 	}
 
-	onStreamOffline(): Promise<ResultType<void, ProviderAccessTokenError>> {
+	onStreamOffline(): Promise<Result<void, ProviderAccessTokenError>> {
 		return this.callLifecycle("onStreamOffline");
 	}
 
-	setTokens(tokens: TwitchTokenResponse): Promise<ResultType<void, ProviderAccessTokenError>> {
+	setTokens(tokens: TwitchTokenResponse): Promise<Result<void, ProviderAccessTokenError>> {
 		return callProviderTokenRpc({
 			namespace: this.namespace,
 			provider: "twitch",
@@ -187,7 +189,7 @@ export class DurableObjectTwitchAccessTokens implements TwitchAccessTokens, Prov
 
 	private callLifecycle(
 		operation: "onStreamOnline" | "onStreamOffline",
-	): Promise<ResultType<void, ProviderAccessTokenError>> {
+	): Promise<Result<void, ProviderAccessTokenError>> {
 		return this.tracer.span(
 			operation === "onStreamOnline"
 				? "durable_object.twitch_access_tokens.on_stream_online"

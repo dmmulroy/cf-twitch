@@ -78,6 +78,9 @@ const TwitchLegacyPersistedStateSchema = z.object({
 });
 
 type TwitchPersistedState = z.infer<typeof TwitchPersistedStateV1Schema>;
+type TwitchPersistedStateInput =
+	| z.input<typeof TwitchPersistedStateV1Schema>
+	| z.input<typeof TwitchLegacyPersistedStateSchema>;
 type TwitchAuthorizationStatus = TwitchPersistedState["authorizationStatus"];
 
 interface TwitchRuntimeToken {
@@ -475,7 +478,7 @@ class _TwitchTokenDO
 }
 
 function parseTwitchPersistedState(
-	input: unknown,
+	input: TwitchPersistedStateInput,
 ): Result<TwitchPersistedState, TokenStatePersistenceError> {
 	const current = TwitchPersistedStateV1Schema.safeParse(input);
 	if (current.success) return Result.ok(current.data);

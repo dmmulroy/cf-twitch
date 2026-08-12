@@ -21,7 +21,7 @@ export const ChatCommandTemplateSchema = z.string().min(1).max(2000);
 /** Runtime parser for timestamps persisted with Chat Command definitions. */
 export const ChatCommandInstantSchema = z.iso.datetime({ offset: true });
 
-const ChatCommandDefinitionBaseShape = {
+const ChatCommandDefinitionBaseFields = {
 	name: ChatCommandNameSchema,
 	description: z.string().min(1).max(200),
 	category: ChatCommandCategorySchema,
@@ -34,7 +34,7 @@ const ChatCommandDefinitionBaseShape = {
 /** Runtime parser for a response-type-specific Chat Command definition. */
 export const ChatCommandDefinitionSchema = z.discriminatedUnion("responseType", [
 	z.strictObject({
-		...ChatCommandDefinitionBaseShape,
+		...ChatCommandDefinitionBaseFields,
 		responseType: z.literal("static"),
 		valueSourceName: ChatCommandNameSchema,
 		counterSourceName: z.null(),
@@ -44,7 +44,7 @@ export const ChatCommandDefinitionSchema = z.discriminatedUnion("responseType", 
 		writePermission: z.null(),
 	}),
 	z.strictObject({
-		...ChatCommandDefinitionBaseShape,
+		...ChatCommandDefinitionBaseFields,
 		responseType: z.literal("dynamic"),
 		valueSourceName: ChatCommandNameSchema,
 		counterSourceName: z.null(),
@@ -54,7 +54,7 @@ export const ChatCommandDefinitionSchema = z.discriminatedUnion("responseType", 
 		writePermission: ChatCommandPermissionSchema,
 	}),
 	z.strictObject({
-		...ChatCommandDefinitionBaseShape,
+		...ChatCommandDefinitionBaseFields,
 		responseType: z.literal("computed"),
 		valueSourceName: z.null(),
 		counterSourceName: ChatCommandNameSchema.nullable(),
@@ -68,7 +68,7 @@ export const ChatCommandDefinitionSchema = z.discriminatedUnion("responseType", 
 /** Parsed persisted Chat Command definition. */
 export type ChatCommandDefinition = z.infer<typeof ChatCommandDefinitionSchema>;
 
-const CreateChatCommandBaseShape = {
+const CreateChatCommandBaseFields = {
 	name: ChatCommandNameSchema,
 	description: z.string().min(1).max(200),
 	category: ChatCommandCategorySchema,
@@ -81,7 +81,7 @@ const CreateChatCommandBaseShape = {
 /** Runtime parser for a response-type-specific Chat Command create input. */
 export const CreateChatCommandInputSchema = z.discriminatedUnion("responseType", [
 	z.strictObject({
-		...CreateChatCommandBaseShape,
+		...CreateChatCommandBaseFields,
 		responseType: z.literal("static"),
 		valueSourceName: ChatCommandNameSchema.optional(),
 		outputTemplate: ChatCommandTemplateSchema.optional(),
@@ -89,7 +89,7 @@ export const CreateChatCommandInputSchema = z.discriminatedUnion("responseType",
 		initialValue: ChatCommandValueSchema.optional(),
 	}),
 	z.strictObject({
-		...CreateChatCommandBaseShape,
+		...CreateChatCommandBaseFields,
 		responseType: z.literal("dynamic"),
 		valueSourceName: ChatCommandNameSchema.optional(),
 		outputTemplate: ChatCommandTemplateSchema.optional(),
@@ -98,7 +98,7 @@ export const CreateChatCommandInputSchema = z.discriminatedUnion("responseType",
 		initialValue: ChatCommandValueSchema.optional(),
 	}),
 	z.strictObject({
-		...CreateChatCommandBaseShape,
+		...CreateChatCommandBaseFields,
 		responseType: z.literal("computed"),
 		handlerKey: ChatCommandHandlerKeySchema,
 		counterSourceName: ChatCommandNameSchema.optional(),

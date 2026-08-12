@@ -40,6 +40,7 @@ import { TwitchService } from "../services/twitch-service";
 import type { DomainEventPublisher } from "../capabilities/domain-event-publisher";
 import type { SongQueue } from "../capabilities/song-queue";
 import type { Env } from "../index";
+import type { TwitchRedemption } from "../lib/channel-point-redemptions";
 import type { AgentContext } from "agents";
 
 /** Boundary schema for canonical Song Request redemption parameters. */
@@ -66,7 +67,7 @@ export const SongRequestParamsSchema = z.object({
 export type SongRequestParams = z.infer<typeof SongRequestParamsSchema>;
 
 /** Named persistence codec for canonical Song Request parameters. */
-export const SongRequestParamsCodec = zodSagaCodec({
+export const SongRequestParamsCodec = zodSagaCodec<SongRequestParams, TwitchRedemption>({
 	name: "song-request-params",
 	codec: z.codec(SongRequestParamsSchema, SongRequestParamsSchema, {
 		decode: (value) => value,
@@ -99,10 +100,6 @@ const SongRequestSpotifyTrackCodec = zodSagaCodec({
 
 const SPOTIFY_TRACK_ID_PATTERN = /^[a-zA-Z0-9]+$/;
 
-function isPersistedSpotifyTrackId(value: unknown): value is SpotifyTrackId {
-	return typeof value === "string" && SPOTIFY_TRACK_ID_PATTERN.test(value);
-}
-
 function parsePersistedSpotifyTrackId(value: string): SpotifyTrackId {
 	const parsed = parseSpotifyTrackInput(`spotify:track:${value}`);
 	if (parsed.status === "error") {
@@ -112,7 +109,8 @@ function parsePersistedSpotifyTrackId(value: string): SpotifyTrackId {
 }
 
 const SpotifyTrackIdSchema = z.string().regex(SPOTIFY_TRACK_ID_PATTERN);
-const CanonicalSpotifyTrackIdSchema = z.custom<SpotifyTrackId>(isPersistedSpotifyTrackId);
+// Attach compile-time SpotifyTrackId evidence after validating the persisted invariant.
+const CanonicalSpotifyTrackIdSchema = SpotifyTrackIdSchema.pipe(z.custom<SpotifyTrackId>());
 
 const SpotifyTrackIdCodec = zodSagaCodec({
 	name: "spotify-track-id",
@@ -186,13 +184,17 @@ const PublishEventStep: SagaStepDefinition<void> = {
 	options: { timeout: 10000, maxRetries: 5, retryAllErrors: true },
 };
 
-const SONG_REQUEST_SAGA: SagaHostDefinition<SongRequestParams> = {
+const SONG_REQUEST_SAGA: SagaHostDefinition<SongRequestParams, TwitchRedemption> = {
 	sagaType: "song-request-saga",
 	paramsCodec: SongRequestParamsCodec,
 };
 
 /** Song Request orchestration hosted by the shared saga lifecycle. */
-class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaError> {
+class _SongRequestSagaDO extends SagaHost<
+	SongRequestParams,
+	SongRequestSagaError,
+	TwitchRedemption
+> {
 	private readonly domainEvents: DomainEventPublisher;
 	private readonly songQueue: SongQueue;
 	private readonly spotifyService: SpotifyService;
@@ -217,13 +219,13 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 		});
 	}
 
-	protected get sagaDefinition(): SagaHostDefinition<SongRequestParams> {
+	protected get sagaDefinition(): SagaHostDefinition<SongRequestParams, TwitchRedemption> {
 		return SONG_REQUEST_SAGA;
 	}
 
 	protected async runSaga(
 		params: SongRequestParams,
-		runner: SagaRunner<SongRequestParams>,
+		runner: SagaRunner<SongRequestParams, TwitchRedemption>,
 	): Promise<Result<void, SongRequestSagaError>> {
 		const sagaId = this.ctx.id.toString();
 
@@ -401,7 +403,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 	private async handleStepError(
 		error: SagaStepExecutionError,
 		params: SongRequestParams,
-		runner: SagaRunner<SongRequestParams>,
+		runner: SagaRunner<SongRequestParams, TwitchRedemption>,
 	): Promise<Result<void, SagaStepExecutionError>> {
 		const sagaId = this.ctx.id.toString();
 		if (SagaPersistedDataError.is(error)) return Result.err(error);
@@ -454,7 +456,7 @@ class _SongRequestSagaDO extends SagaHost<SongRequestParams, SongRequestSagaErro
 
 	private async refundRedemption(
 		params: SongRequestParams,
-		runner: SagaRunner<SongRequestParams>,
+		runner: SagaRunner<SongRequestParams, TwitchRedemption>,
 	): Promise<Result<void, SagaStepExecutionError>> {
 		return runner.executeCompensationStep(
 			"refund-redemption",

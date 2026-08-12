@@ -31,6 +31,7 @@ import { CryptoRaffleRandom, type RaffleRandom } from "./raffle-random";
 import type { DomainEventPublisher } from "../capabilities/domain-event-publisher";
 import type { KeyboardRaffleRollStore } from "../capabilities/keyboard-raffle-roll-store";
 import type { Env } from "../index";
+import type { TwitchRedemption } from "../lib/channel-point-redemptions";
 
 /** Boundary schema for canonical Keyboard Raffle redemption parameters. */
 export const KeyboardRaffleParamsSchema = z.object({
@@ -56,7 +57,7 @@ export const KeyboardRaffleParamsSchema = z.object({
 export type KeyboardRaffleParams = z.infer<typeof KeyboardRaffleParamsSchema>;
 
 /** Named persistence codec for canonical Keyboard Raffle parameters. */
-export const KeyboardRaffleParamsCodec = zodSagaCodec({
+export const KeyboardRaffleParamsCodec = zodSagaCodec<KeyboardRaffleParams, TwitchRedemption>({
 	name: "keyboard-raffle-params",
 	codec: z.codec(KeyboardRaffleParamsSchema, KeyboardRaffleParamsSchema, {
 		decode: (value) => value,
@@ -139,13 +140,17 @@ const SendChatMessageStep: SagaStepDefinition<void> = {
 	options: { timeout: 10000, maxRetries: 2 },
 };
 
-const KEYBOARD_RAFFLE_SAGA: SagaHostDefinition<KeyboardRaffleParams> = {
+const KEYBOARD_RAFFLE_SAGA: SagaHostDefinition<KeyboardRaffleParams, TwitchRedemption> = {
 	sagaType: "keyboard-raffle-saga",
 	paramsCodec: KeyboardRaffleParamsCodec,
 };
 
 /** Keyboard Raffle orchestration hosted by the shared saga lifecycle. */
-class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffleSagaError> {
+class _KeyboardRaffleSagaDO extends SagaHost<
+	KeyboardRaffleParams,
+	KeyboardRaffleSagaError,
+	TwitchRedemption
+> {
 	private readonly analytics: Cloudflare.Env["ANALYTICS"];
 	private readonly domainEvents: DomainEventPublisher;
 	private readonly raffleRolls: KeyboardRaffleRollStore;
@@ -170,13 +175,13 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 			accessTokens: new DurableObjectTwitchAccessTokens(env.TWITCH_TOKEN_DO, tracer),
 		});
 	}
-	protected get sagaDefinition(): SagaHostDefinition<KeyboardRaffleParams> {
+	protected get sagaDefinition(): SagaHostDefinition<KeyboardRaffleParams, TwitchRedemption> {
 		return KEYBOARD_RAFFLE_SAGA;
 	}
 
 	protected async runSaga(
 		params: KeyboardRaffleParams,
-		runner: SagaRunner<KeyboardRaffleParams>,
+		runner: SagaRunner<KeyboardRaffleParams, TwitchRedemption>,
 	): Promise<Result<void, KeyboardRaffleSagaError>> {
 		const sagaId = this.ctx.id.toString();
 
@@ -347,7 +352,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 	private async handleStepError(
 		error: SagaStepExecutionError,
 		params: KeyboardRaffleParams,
-		runner: SagaRunner<KeyboardRaffleParams>,
+		runner: SagaRunner<KeyboardRaffleParams, TwitchRedemption>,
 	): Promise<Result<void, SagaStepExecutionError>> {
 		const sagaId = this.ctx.id.toString();
 		if (SagaPersistedDataError.is(error)) return Result.err(error);
@@ -402,7 +407,7 @@ class _KeyboardRaffleSagaDO extends SagaHost<KeyboardRaffleParams, KeyboardRaffl
 
 	private async refundRedemption(
 		params: KeyboardRaffleParams,
-		runner: SagaRunner<KeyboardRaffleParams>,
+		runner: SagaRunner<KeyboardRaffleParams, TwitchRedemption>,
 	): Promise<Result<void, SagaStepExecutionError>> {
 		return runner.executeCompensationStep(
 			"refund-redemption",

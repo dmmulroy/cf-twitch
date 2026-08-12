@@ -29,6 +29,8 @@ import { rpc } from "../lib/durable-objects";
 import {
 	EventSubReceiptConflictError,
 	EventSubReceiptCorruptError,
+	TwitchNetworkError,
+	TwitchParseError,
 	UnknownRewardError,
 	type EventSubAcceptanceError,
 } from "../lib/errors";
@@ -45,6 +47,7 @@ import type { AcceptedEventSubReceipt } from "../capabilities/eventsub-receipts"
 import type { EventSubWorkStarters } from "../capabilities/eventsub-work-starters";
 import type { StreamLifecycle } from "../capabilities/http-state-readers";
 import type { Env } from "../index";
+import type { ChatCommandError } from "../lib/chat-command";
 
 const EVENTSUB_RECEIPT_STORAGE_KEY = "eventsub-receipt";
 const MAX_EVENTSUB_PROCESSING_ATTEMPTS = 20;
@@ -73,11 +76,9 @@ const PersistedEventSubReceiptSchema = AcceptedEventSubReceiptSchema.omit({
 
 type PersistedEventSubReceipt = z.infer<typeof PersistedEventSubReceiptSchema>;
 
-function isAmbiguousChatSendFailure(error: unknown): boolean {
-	if (typeof error !== "object" || error === null || !("cause" in error)) return false;
-	const cause = error.cause;
-	if (typeof cause !== "object" || cause === null || !("_tag" in cause)) return false;
-	return cause._tag === "TwitchNetworkError" || cause._tag === "TwitchParseError";
+function isAmbiguousChatSendFailure(error: ChatCommandError): boolean {
+	if (!("cause" in error)) return false;
+	return TwitchNetworkError.is(error.cause) || TwitchParseError.is(error.cause);
 }
 
 /** Operational projection of one durably accepted EventSub inbox receipt. */
@@ -148,7 +149,7 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 
 	/** Durably accepts one fully parsed EventSub receipt and idempotently resumes its work. */
 	@rpc(AcceptEventSubReceiptResultCodec)
-	async accept(input: unknown): Promise<Result<void, EventSubAcceptanceError>> {
+	async accept(input: AcceptedEventSubReceipt): Promise<Result<void, EventSubAcceptanceError>> {
 		const accepted = AcceptedEventSubReceiptSchema.safeParse(input);
 		if (!accepted.success) {
 			return Result.err(new EventSubReceiptCorruptError(accepted.error.message));
@@ -193,13 +194,15 @@ class _EventSubWebhookDO extends DurableObject<Env> {
 		const receipt = await this.readReceipt();
 		if (receipt.status === "error") return receipt;
 		if (receipt.value === null) return Result.ok(null);
-		const delivery = receipt.value.chatCommandDelivery;
-		return Result.ok({
+		const status: EventSubReceiptStatus = {
 			status: receipt.value.status,
 			attempts: receipt.value.attempts,
 			lastError: receipt.value.lastError,
-			...(delivery === undefined ? {} : { chatCommandDelivery: delivery.status }),
-		});
+		};
+		const delivery = receipt.value.chatCommandDelivery;
+		return delivery === undefined
+			? Result.ok(status)
+			: Result.ok({ ...status, chatCommandDelivery: delivery.status });
 	}
 
 	/** Runtime alarm callback that resumes a previously accepted EventSub receipt. */

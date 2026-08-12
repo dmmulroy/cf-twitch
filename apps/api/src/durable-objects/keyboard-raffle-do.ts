@@ -19,6 +19,7 @@ import {
 	RecordKeyboardRaffleRollSchema as RecordRaffleRollInputSchema,
 	type KeyboardRaffleRoll as Roll,
 	type RaffleLeaderboardEntry as LeaderboardEntry,
+	type RecordKeyboardRaffleRoll as RecordRaffleRollInput,
 } from "../domain/keyboard-raffle";
 import { rpc } from "../lib/durable-objects";
 import {
@@ -81,7 +82,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 */
 	@rpc(RecordKeyboardRaffleRollResultCodec)
 	async recordRoll(
-		rawInput: unknown,
+		rawInput: RecordRaffleRollInput,
 	): Promise<
 		Result<
 			{ roll: Roll; isNewRecord: boolean },
@@ -219,7 +220,7 @@ class _KeyboardRaffleDO extends Agent<Env> {
 	 */
 	@rpc(GetKeyboardRaffleLeaderboardResultCodec)
 	async getLeaderboard(
-		rawOptions: unknown,
+		rawOptions: LeaderboardOptions,
 	): Promise<
 		Result<
 			LeaderboardEntry[],

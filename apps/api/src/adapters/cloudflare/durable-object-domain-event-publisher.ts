@@ -7,7 +7,6 @@ import { initializeDurableObjectAgentStub } from "./durable-object-agent-stub";
 import type { DomainEventPublisher } from "../../capabilities/domain-event-publisher";
 import type { Tracer } from "../../capabilities/tracer";
 import type { Event } from "../../domain/domain-event";
-import type { Result as ResultType } from "better-result";
 
 /** Durable Object adapter for runtime-validated domain event publication. */
 export class DurableObjectDomainEventPublisher implements DomainEventPublisher {
@@ -17,7 +16,7 @@ export class DurableObjectDomainEventPublisher implements DomainEventPublisher {
 	) {}
 
 	/** Publishes one event through the singleton Event Bus RPC contract. */
-	publish(event: Event): Promise<ResultType<void, DomainEventPublishError>> {
+	publish(event: Event): Promise<Result<void, DomainEventPublishError>> {
 		return this.tracer.span(
 			"durable_object.event_bus.publish",
 			{ event_id: event.id, event_type: event.type },

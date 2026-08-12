@@ -210,4 +210,6 @@ export interface ComputedCommandHandler {
  * @param key - Command handler key from command metadata.
  * @returns A handler lookup table used by the executor.
  */
-export type ComputedCommandHandlers = Record<string, ComputedCommandHandler>;
+export interface ComputedCommandHandlers {
+	readonly [handlerKey: string]: ComputedCommandHandler | undefined;
+}

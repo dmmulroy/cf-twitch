@@ -1,6 +1,8 @@
 import { Result, TaggedError } from "better-result";
 import { z } from "zod";
 
+import { JsonValueSchema, type JsonValue } from "./codecs";
+
 const rfc3339Timestamp = z
 	.string()
 	.refine(
@@ -35,7 +37,7 @@ const EventSubRevocationBodySchema = z.object({
 
 const EventSubNotificationBodySchema = z.object({
 	subscription: EventSubSubscriptionSchema,
-	event: z.record(z.string(), z.unknown()),
+	event: z.record(z.string(), JsonValueSchema),
 });
 
 const StreamOnlineEventSchema = z.object({
@@ -160,7 +162,7 @@ export type ParsedEventSubMessage =
 	| {
 			readonly _tag: "UnhandledEventSubNotification";
 			readonly subscription: z.infer<typeof EventSubSubscriptionSchema>;
-			readonly event: Readonly<Record<string, unknown>>;
+			readonly event: z.infer<typeof EventSubNotificationBodySchema>["event"];
 	  };
 
 /** Expected error when a signed EventSub body violates its message-specific contract. */
@@ -178,7 +180,7 @@ export class EventSubMessageParseError extends TaggedError("EventSubMessageParse
 
 function parseSchema<T>(
 	schema: z.ZodType<T>,
-	input: unknown,
+	input: JsonValue,
 ): Result<T, EventSubMessageParseError> {
 	const parsed = schema.safeParse(input);
 	return parsed.success
@@ -206,7 +208,7 @@ function requireMatchingSubscription(
 /** Parse a signed JSON value into its complete message-specific EventSub contract. */
 export function parseEventSubMessage(
 	headers: EventSubHeaders,
-	body: unknown,
+	body: JsonValue,
 ): Result<ParsedEventSubMessage, EventSubMessageParseError> {
 	const messageType = headers["twitch-eventsub-message-type"];
 	if (messageType === "webhook_callback_verification") {

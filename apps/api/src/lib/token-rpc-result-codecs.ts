@@ -68,10 +68,22 @@ const TokenWireErrorSchema = z.discriminatedUnion("_tag", [
 ]);
 type TokenWireError = z.infer<typeof TokenWireErrorSchema>;
 
-const TokenErrorToWireSchema = z
-	.custom<TokenError>((value) => typeof value === "object" && value !== null && "_tag" in value)
-	.transform((error): TokenWireError => ({ ...error, message: error.message }))
-	.pipe(TokenWireErrorSchema);
+const TokenErrorSchema = z.union([
+	z.instanceof(NoRefreshTokenError),
+	z.instanceof(TokenNotConfiguredError),
+	z.instanceof(TokenUnavailableWhileStreamOfflineError),
+	z.instanceof(StreamOfflineNoTokenError),
+	z.instanceof(TokenAuthorizationRevokedError),
+	z.instanceof(TokenConfigurationError),
+	z.instanceof(TokenInputParseError),
+	z.instanceof(TokenStatePersistenceError),
+	z.instanceof(TokenRefreshNetworkError),
+	z.instanceof(TokenRefreshParseError),
+]);
+const TokenErrorToWireSchema = TokenErrorSchema.transform((error): TokenWireError => ({
+	...error,
+	message: error.message,
+})).pipe(TokenWireErrorSchema);
 const TokenErrorFromWireSchema = TokenWireErrorSchema.transform((error): TokenError => {
 	switch (error._tag) {
 		case "NoRefreshTokenError":

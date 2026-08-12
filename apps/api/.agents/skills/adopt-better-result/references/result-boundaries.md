@@ -29,14 +29,14 @@ Expose only stable public codes and safe fields in public wire errors. Define an
 
 ```ts
 const CustomerResultCodec = Result.codec({
-  serialize: {
-    ok: CustomerToWireSchema,
-    err: CustomerErrorToWireSchema,
-  },
-  deserialize: {
-    ok: CustomerFromWireSchema,
-    err: CustomerErrorFromWireSchema,
-  },
+	serialize: {
+		ok: CustomerToWireSchema,
+		err: CustomerErrorToWireSchema,
+	},
+	deserialize: {
+		ok: CustomerFromWireSchema,
+		err: CustomerErrorFromWireSchema,
+	},
 });
 ```
 

@@ -22,7 +22,6 @@ import type {
 	PendingEventList,
 } from "../../capabilities/event-bus-administration";
 import type { Tracer } from "../../capabilities/tracer";
-import type { Result as ResultType } from "better-result";
 
 type EventBusAdministrationOperation = "getPending" | "getDLQ" | "replayDLQ" | "deleteDLQ";
 
@@ -36,7 +35,7 @@ export class DurableObjectEventBusAdministration implements EventBusAdministrati
 	getPending(options: {
 		readonly limit: number;
 		readonly offset: number;
-	}): Promise<ResultType<PendingEventList, EventBusAdministrationError>> {
+	}): Promise<Result<PendingEventList, EventBusAdministrationError>> {
 		return this.call(
 			"getPending",
 			(stub) => stub.getPending(options),
@@ -47,7 +46,7 @@ export class DurableObjectEventBusAdministration implements EventBusAdministrati
 	getDeadLetters(options: {
 		readonly limit: number;
 		readonly offset: number;
-	}): Promise<ResultType<DeadLetterList, EventBusAdministrationError>> {
+	}): Promise<Result<DeadLetterList, EventBusAdministrationError>> {
 		return this.call(
 			"getDLQ",
 			(stub) => stub.getDLQ(options),
@@ -57,7 +56,7 @@ export class DurableObjectEventBusAdministration implements EventBusAdministrati
 
 	replayDeadLetter(
 		id: string,
-	): Promise<ResultType<DeadLetterReplayResult, EventBusAdministrationError>> {
+	): Promise<Result<DeadLetterReplayResult, EventBusAdministrationError>> {
 		return this.call(
 			"replayDLQ",
 			(stub) => stub.replayDLQ(id),
@@ -65,7 +64,7 @@ export class DurableObjectEventBusAdministration implements EventBusAdministrati
 		);
 	}
 
-	deleteDeadLetter(id: string): Promise<ResultType<void, EventBusAdministrationError>> {
+	deleteDeadLetter(id: string): Promise<Result<void, EventBusAdministrationError>> {
 		return this.call(
 			"deleteDLQ",
 			(stub) => stub.deleteDLQ(id),
@@ -73,17 +72,17 @@ export class DurableObjectEventBusAdministration implements EventBusAdministrati
 		);
 	}
 
-	private call<T>(
+	private call<T, WireValue>(
 		operation: EventBusAdministrationOperation,
 		invoke: (
 			stub: Awaited<ReturnType<DurableObjectEventBusAdministration["acquireStub"]>>,
-		) => Promise<unknown>,
+		) => Promise<WireValue>,
 		deserializeUnsafe: (
-			value: unknown,
-		) => ResultType<T, EventBusError> | Promise<ResultType<T, EventBusError>>,
-	): Promise<ResultType<T, EventBusAdministrationError>> {
+			value: WireValue,
+		) => Result<T, EventBusError> | Promise<Result<T, EventBusError>>,
+	): Promise<Result<T, EventBusAdministrationError>> {
 		return this.tracer.span(`durable_object.event_bus.${operation}`, { operation }, async () => {
-			let rawResult: unknown;
+			let rawResult: WireValue;
 			try {
 				rawResult = await invoke(await this.acquireStub());
 			} catch (cause) {

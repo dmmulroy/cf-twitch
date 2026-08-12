@@ -34,7 +34,7 @@ import {
 	PublishDomainEventResultCodec,
 	ReplayDeadLetterEventResultCodec,
 } from "../lib/event-bus-rpc-result-codecs";
-import { logger } from "../lib/logger";
+import { logger, normalizeError } from "../lib/logger";
 import * as schema from "./schemas/event-bus-do.schema";
 import {
 	deadLetterQueue,
@@ -61,12 +61,16 @@ function getBackoffDelayMs(attempt: number): number {
 	return BACKOFF_DELAYS_MS[index] ?? BACKOFF_DELAYS_MS[0];
 }
 
+type EventRoutes = {
+	[eventType in EventType]: "ACHIEVEMENTS_DO";
+};
+
 const EVENT_ROUTES = {
 	[EventType.SongRequestSuccess]: "ACHIEVEMENTS_DO",
 	[EventType.RaffleRoll]: "ACHIEVEMENTS_DO",
 	[EventType.StreamOnline]: "ACHIEVEMENTS_DO",
 	[EventType.StreamOffline]: "ACHIEVEMENTS_DO",
-} satisfies Record<EventType, "ACHIEVEMENTS_DO">;
+} satisfies EventRoutes;
 
 interface EventBusAgentState {
 	retrySweepScheduleId: string | null;
@@ -105,7 +109,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 	}
 
 	@rpc(PublishDomainEventResultCodec)
-	async publish(event: unknown): Promise<Result<void, EventBusError>> {
+	async publish(event: Event): Promise<Result<void, EventBusError>> {
 		const parseResult = EventSchema.safeParse(event);
 		if (!parseResult.success) {
 			logger.warn("EventBusDO: Invalid event format", {
@@ -526,11 +530,10 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 					eventId: event.id,
 					eventType: event.type,
 					handler: handlerKey,
-					errorTag:
-						cause && typeof cause === "object" && "_tag" in cause ? cause._tag : "UnknownError",
-					errorMessage: cause instanceof Error ? cause.message : String(cause),
-					errorStack: cause instanceof Error ? cause.stack : undefined,
-					cause: cause && typeof cause === "object" ? JSON.stringify(cause) : cause,
+					errorTag: cause._tag,
+					errorMessage: cause.message,
+					errorStack: cause.stack,
+					cause: JSON.stringify(cause),
 				});
 				return Result.err(
 					new EventBusHandlerError({
@@ -547,9 +550,7 @@ class _EventBusDO extends Agent<Env, EventBusAgentState> {
 				eventId: event.id,
 				eventType: event.type,
 				handler: handlerKey,
-				errorMessage: error instanceof Error ? error.message : String(error),
-				errorStack: error instanceof Error ? error.stack : undefined,
-				error: error && typeof error === "object" ? JSON.stringify(error) : error,
+				...normalizeError(error),
 			});
 			return Result.err(
 				new EventBusHandlerError({

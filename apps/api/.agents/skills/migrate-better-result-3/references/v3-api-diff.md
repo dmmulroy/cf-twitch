@@ -11,14 +11,14 @@ The empty call after the props type is removed.
 ```ts
 // 2.x
 class ApiError extends TaggedError("ApiError")<{
-  status: number;
-  message: string;
+	status: number;
+	message: string;
 }>() {}
 
 // 3.0
 class ApiError extends TaggedError("ApiError")<{
-  status: number;
-  message: string;
+	status: number;
+	message: string;
 }> {}
 ```
 
@@ -54,8 +54,8 @@ Assert the Result branch first, then compare tagged errors by identity or select
 ```ts
 expect(result.status).toBe("error");
 if (Result.isError(result)) {
-  expect(result.error).toBe(expectedError);
-  expect(result.error._tag).toBe("UserNotFoundError");
+	expect(result.error).toBe(expectedError);
+	expect(result.error._tag).toBe("UserNotFoundError");
 }
 ```
 
@@ -82,7 +82,7 @@ On an `Ok`, the callback remains uncalled and the original `A` survives. On a co
 
 ```ts
 const output = matchErrorPartial(error, {
-  NotFoundError: () => "missing" as const,
+	NotFoundError: () => "missing" as const,
 });
 // "missing" | remaining error variants
 ```
@@ -91,8 +91,8 @@ In pipeable recovery code, pass `Result.err` when unhandled variants must remain
 
 ```ts
 const recoverNotFound = matchErrorPartial(
-  { NotFoundError: (error: NotFoundError) => Result.ok(error.cachedValue) },
-  Result.err,
+	{ NotFoundError: (error: NotFoundError) => Result.ok(error.cachedValue) },
+	Result.err,
 );
 ```
 
@@ -112,12 +112,12 @@ Every `TaggedError` instance exposes exhaustive `.match(handlers)` with the same
 
 ```ts
 const response = result.match({
-  ok: (user) => ({ status: 200, body: user }),
-  err: (error) =>
-    error.match({
-      UserNotFound: () => ({ status: 404, body: null }),
-      DatabaseUnavailable: () => ({ status: 503, body: null }),
-    }),
+	ok: (user) => ({ status: 200, body: user }),
+	err: (error) =>
+		error.match({
+			UserNotFound: () => ({ status: 404, body: null }),
+			DatabaseUnavailable: () => ({ status: 503, body: null }),
+		}),
 });
 ```
 

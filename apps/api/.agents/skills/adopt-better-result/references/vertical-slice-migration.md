@@ -30,17 +30,17 @@ Use this order of preference for `Promise<Result<...>>` application code:
 
 ```ts
 const dashboard = await Result.gen(async function* () {
-  const session = yield* Result.await(readSession());
-  const user = yield* Result.await(fetchUser(session.userId));
-  const posts = yield* Result.await(fetchPosts(user.id));
-  return Result.ok({ user, posts });
+	const session = yield* Result.await(readSession());
+	const user = yield* Result.await(fetchUser(session.userId));
+	const posts = yield* Result.await(fetchPosts(user.id));
+	return Result.ok({ user, posts });
 });
 ```
 
 ```ts
 const postCount = await fetchUser(userId)
-  .then(Result.andThenAsync((user: User) => fetchPosts(user.id)))
-  .then(Result.map((posts: ReadonlyArray<Post>) => posts.length));
+	.then(Result.andThenAsync((user: User) => fetchPosts(user.id)))
+	.then(Result.map((posts: ReadonlyArray<Post>) => posts.length));
 ```
 
 Keep expected Promise rejection inside a Result-producing boundary such as `Result.tryPromise`; a raw rejection from an async combinator callback is a defect and becomes `Panic`.

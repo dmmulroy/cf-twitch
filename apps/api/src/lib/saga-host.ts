@@ -44,9 +44,9 @@ export interface SagaHostStatus {
 }
 
 /** Concrete saga metadata required by the shared host lifecycle. */
-export interface SagaHostDefinition<P> {
+export interface SagaHostDefinition<P, Input = P> {
 	readonly sagaType: SagaType;
-	readonly paramsCodec: SagaCodec<P>;
+	readonly paramsCodec: SagaCodec<P, Input>;
 }
 
 /** Infrastructure failures owned by the shared saga host lifecycle. */
@@ -62,10 +62,13 @@ export type SagaHostStartError<E> = SagaInputParseError | SagaHostLifecycleError
  * SQLite initialization, RPC parsing, replay, status, and runtime scheduling
  * remain hidden here.
  */
-export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
+export abstract class SagaHost<P, E extends { readonly _tag: string }, Input = P> extends Agent<
+	Env,
+	SagaHostState
+> {
 	private readonly db: ReturnType<typeof drizzle<typeof sagaSchema>>;
 	private readonly sagaAnalytics: AnalyticsEngineDataset;
-	private runner: SagaRunner<P> | null = null;
+	private runner: SagaRunner<P, Input> | null = null;
 
 	/** Empty retry coordination state; SQLite remains the lifecycle source of truth. */
 	initialState: SagaHostState = {
@@ -81,10 +84,10 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 	}
 
 	/** The parameter codec and analytics identity supplied by a concrete saga. */
-	protected abstract get sagaDefinition(): SagaHostDefinition<P>;
+	protected abstract get sagaDefinition(): SagaHostDefinition<P, Input>;
 
 	/** Runs concrete business orchestration with canonical persisted parameters. */
-	protected abstract runSaga(params: P, runner: SagaRunner<P>): Promise<Result<void, E>>;
+	protected abstract runSaga(params: P, runner: SagaRunner<P, Input>): Promise<Result<void, E>>;
 
 	/** Migrates saga storage and restores runtime retry coordination from SQLite. */
 	async onStart(): Promise<void> {
@@ -107,7 +110,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 
 	/** Parses, initializes, or idempotently resumes a saga from original parameters. */
 	@rpc(StartSagaResultCodec)
-	async start(input: unknown): Promise<Result<void, SagaHostStartError<E>>> {
+	async start(input: Input): Promise<Result<void, SagaHostStartError<E>>> {
 		const parsed = this.sagaDefinition.paramsCodec.parse(input);
 		if (parsed.status === "error") {
 			logger.info("Saga input rejected", {
@@ -184,7 +187,7 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 				event: "saga_host.retry_callback.failed",
 				saga_id: this.sagaId,
 				saga_type: this.sagaDefinition.sagaType,
-				error_tag: errorTag(resumed.error),
+				error_tag: resumed.error._tag,
 			});
 		}
 	}
@@ -193,9 +196,9 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 		return this.ctx.id.toString();
 	}
 
-	private getRunner(): SagaRunner<P> {
+	private getRunner(): SagaRunner<P, Input> {
 		if (this.runner === null) {
-			this.runner = new SagaRunner({
+			this.runner = new SagaRunner<P, Input>({
 				sagaId: this.sagaId,
 				db: this.db,
 				paramsCodec: this.sagaDefinition.paramsCodec,
@@ -416,9 +419,4 @@ export abstract class SagaHost<P, E> extends Agent<Env, SagaHostState> {
 			retryDueAt: null,
 		});
 	}
-}
-
-function errorTag(error: unknown): string {
-	if (typeof error !== "object" || error === null || !("_tag" in error)) return "UnknownError";
-	return typeof error._tag === "string" ? error._tag : "UnknownError";
 }

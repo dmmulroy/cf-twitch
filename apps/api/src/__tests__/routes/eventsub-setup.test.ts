@@ -3,10 +3,27 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { fetchMock } from "../helpers/fetch-mock";
 
+import type {
+	EventSubSubscription,
+	EventSubSubscriptionStatus,
+	EventSubSubscriptionType,
+} from "../../services/twitch-service";
+
 const adminHeaders = { Authorization: `Bearer ${env.ADMIN_SECRET}` };
 
+interface AppTokenResponseFixture {
+	access_token: string;
+	token_type?: string;
+	expires_in?: number;
+}
+
+interface EventSubSubscriptionFixture extends EventSubSubscription {
+	cost: number;
+	created_at: string;
+}
+
 function mockAppToken(
-	body: unknown = {
+	body: AppTokenResponseFixture = {
 		access_token: "test-app-token",
 		token_type: "bearer",
 		expires_in: 3600,
@@ -20,9 +37,9 @@ function mockAppToken(
 
 function eventSubSubscription(
 	id: string,
-	type: string,
-	status: "enabled" | "webhook_callback_verification_pending" = "enabled",
-): Record<string, unknown> {
+	type: EventSubSubscriptionType,
+	status: EventSubSubscriptionStatus = "enabled",
+): EventSubSubscriptionFixture {
 	const condition =
 		type === "channel.raid"
 			? { to_broadcaster_user_id: env.TWITCH_BROADCASTER_ID }
@@ -44,7 +61,7 @@ function eventSubSubscription(
 	};
 }
 
-function mockEventSubPage(data: unknown[], cursor?: string): void {
+function mockEventSubPage(data: EventSubSubscriptionFixture[], cursor?: string): void {
 	fetchMock
 		.get("https://api.twitch.tv")
 		.intercept({

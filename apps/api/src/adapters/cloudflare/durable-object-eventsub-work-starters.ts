@@ -10,7 +10,6 @@ import type {
 } from "../../capabilities/eventsub-work-starters";
 import type { Tracer } from "../../capabilities/tracer";
 import type { KnownRewardRedemption } from "../../lib/channel-point-redemptions";
-import type { Result as ResultType } from "better-result";
 
 /** Durable Object adapter for downstream work started by accepted EventSub notifications. */
 export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
@@ -24,7 +23,7 @@ export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
 	/** Starts one Song Request saga keyed by Channel Point Redemption ID. */
 	startSongRequest(
 		redemption: KnownRewardRedemption,
-	): Promise<ResultType<void, EventSubWorkStartError>> {
+	): Promise<Result<void, EventSubWorkStartError>> {
 		return this.start("song-request", redemption.id, async () => {
 			const stub = await initializeDurableObjectAgentStub(
 				this.songRequests.getByName(redemption.id),
@@ -37,7 +36,7 @@ export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
 	/** Starts one Keyboard Raffle saga keyed by Channel Point Redemption ID. */
 	startKeyboardRaffle(
 		redemption: KnownRewardRedemption,
-	): Promise<ResultType<void, EventSubWorkStartError>> {
+	): Promise<Result<void, EventSubWorkStartError>> {
 		return this.start("keyboard-raffle", redemption.id, async () => {
 			const stub = await initializeDurableObjectAgentStub(
 				this.keyboardRaffles.getByName(redemption.id),
@@ -48,7 +47,7 @@ export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
 	}
 
 	/** Starts one Raid Shoutout saga keyed by Twitch EventSub message ID. */
-	startRaidShoutout(input: RaidShoutoutInput): Promise<ResultType<void, EventSubWorkStartError>> {
+	startRaidShoutout(input: RaidShoutoutInput): Promise<Result<void, EventSubWorkStartError>> {
 		return this.start("raid-shoutout", input.messageId, async () => {
 			const stub = await initializeDurableObjectAgentStub(
 				this.raidShoutouts.getByName(input.messageId),
@@ -62,7 +61,7 @@ export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
 		work: "song-request" | "keyboard-raffle" | "raid-shoutout",
 		operationId: string,
 		invoke: () => Promise<unknown>,
-	): Promise<ResultType<void, EventSubWorkStartError>> {
+	): Promise<Result<void, EventSubWorkStartError>> {
 		const spanName =
 			work === "song-request"
 				? "durable_object.song_request_saga.start"

@@ -7,7 +7,7 @@
 /**
  * Stringify a value for error messages, handling objects specially
  */
-function valueToString(value: unknown): string {
+function valueToString(value: never): string {
 	const str = String(value);
 	if (str !== "[object Object]") return str;
 

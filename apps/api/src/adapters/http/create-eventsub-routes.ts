@@ -11,11 +11,7 @@ import { constantTimeEquals } from "../../lib/crypto";
 import { type AppRouteEnv, getRequestLogger } from "../../lib/request-context";
 
 import type { RedactedValue } from "../../lib/redacted";
-import type {
-	EventSubSubscription,
-	EventSubSubscriptionType,
-	TwitchService,
-} from "../../services/twitch-service";
+import type { EventSubSubscription, TwitchService } from "../../services/twitch-service";
 
 /** Exact dependencies required by EventSub management routes. */
 export type EventSubRouteDependencies = Readonly<{
@@ -50,11 +46,25 @@ export function createEventSubRoutes(
 		await next();
 	});
 
-	interface SubscriptionConfig {
-		type: EventSubSubscriptionType;
-		version: string;
-		condition: Record<string, string>;
-	}
+	type SubscriptionConfig =
+		| Readonly<{
+				type:
+					| "stream.online"
+					| "stream.offline"
+					| "channel.channel_points_custom_reward_redemption.add";
+				version: "1";
+				condition: Readonly<{ broadcaster_user_id: string }>;
+		  }>
+		| Readonly<{
+				type: "channel.chat.message";
+				version: "1";
+				condition: Readonly<{ broadcaster_user_id: string; user_id: string }>;
+		  }>
+		| Readonly<{
+				type: "channel.raid";
+				version: "1";
+				condition: Readonly<{ to_broadcaster_user_id: string }>;
+		  }>;
 
 	function hasMatchingSubscription(
 		existing: EventSubSubscription[],

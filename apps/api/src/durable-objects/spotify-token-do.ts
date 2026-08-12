@@ -78,6 +78,9 @@ const SpotifyLegacyPersistedStateSchema = z.object({
 });
 
 type SpotifyPersistedState = z.infer<typeof SpotifyPersistedStateV1Schema>;
+type SpotifyPersistedStateInput =
+	| z.input<typeof SpotifyPersistedStateV1Schema>
+	| z.input<typeof SpotifyLegacyPersistedStateSchema>;
 type SpotifyAuthorizationStatus = SpotifyPersistedState["authorizationStatus"];
 
 interface SpotifyRuntimeToken {
@@ -476,7 +479,7 @@ class _SpotifyTokenDO
 }
 
 function parseSpotifyPersistedState(
-	input: unknown,
+	input: SpotifyPersistedStateInput,
 ): Result<SpotifyPersistedState, TokenStatePersistenceError> {
 	const current = SpotifyPersistedStateV1Schema.safeParse(input);
 	if (current.success) return Result.ok(current.data);

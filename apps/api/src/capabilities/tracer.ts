@@ -3,14 +3,15 @@ import type { Logger } from "../lib/logging";
 /** Bounded scalar value permitted on tracing spans. */
 export type TraceAttribute = string | number | boolean | null | undefined;
 
+/** Named scalar attributes attached to a tracing span. */
+export interface TraceAttributes {
+	readonly [name: string]: TraceAttribute;
+}
+
 /** Runs asynchronous work inside one named tracing span. */
 export interface Tracer {
 	/** Records one operation without requiring tracing arguments on domain methods. */
-	span<T>(
-		name: string,
-		attributes: Readonly<Record<string, TraceAttribute>>,
-		run: () => Promise<T>,
-	): Promise<T>;
+	span<T>(name: string, attributes: TraceAttributes, run: () => Promise<T>): Promise<T>;
 }
 
 /** Logger-backed tracer used until a distributed tracing exporter is configured. */
@@ -18,11 +19,7 @@ export class LoggingTracer implements Tracer {
 	constructor(private readonly logger: Logger) {}
 
 	/** Records span start, completion, duration, and safe failure classification. */
-	async span<T>(
-		name: string,
-		attributes: Readonly<Record<string, TraceAttribute>>,
-		run: () => Promise<T>,
-	): Promise<T> {
+	async span<T>(name: string, attributes: TraceAttributes, run: () => Promise<T>): Promise<T> {
 		const startedAt = Date.now();
 		this.logger.debug("Tracing span started", {
 			event: "trace.span.started",

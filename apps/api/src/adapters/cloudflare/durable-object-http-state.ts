@@ -35,11 +35,10 @@ import { initializeDurableObjectAgentStub } from "./durable-object-agent-stub";
 import type { Tracer } from "../../capabilities/tracer";
 import type { StreamLifecycleState } from "../../domain/stream-lifecycle";
 import type { DurableObjectAgentStub } from "./durable-object-agent-stub";
-import type { Result as ResultType } from "better-result";
 
 type StateRpcError = Readonly<{ _tag: string }>;
 
-const ApplicationStateSpanNames: Readonly<Record<ApplicationStateOperation, string>> = {
+const ApplicationStateSpanNames = {
 	getStreamState: "durable_object.stream_lifecycle.get_stream_state",
 	markStreamOnline: "durable_object.stream_lifecycle.mark_stream_online",
 	markStreamOffline: "durable_object.stream_lifecycle.mark_stream_offline",
@@ -50,7 +49,9 @@ const ApplicationStateSpanNames: Readonly<Record<ApplicationStateOperation, stri
 	resetOneTimeAchievements: "durable_object.achievements.reset_one_time_achievements",
 	getAchievementDebugTableCounts: "durable_object.achievements.get_debug_table_counts",
 	getAchievementDebugUserSnapshot: "durable_object.achievements.get_debug_user_snapshot",
-};
+} as const satisfies Readonly<{
+	[Operation in ApplicationStateOperation]: string;
+}>;
 
 interface StreamLifecycleRpcStub extends DurableObjectAgentStub {
 	getStreamState(): Promise<unknown>;
@@ -76,7 +77,7 @@ export class DurableObjectStreamLifecycle implements StreamLifecycle {
 	) {}
 
 	/** Reads and parses the current Stream Lifecycle State. */
-	getStreamState(): Promise<ResultType<StreamLifecycleState, ApplicationStateError>> {
+	getStreamState(): Promise<Result<StreamLifecycleState, ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "stream-lifecycle",
 			operation: "getStreamState",
@@ -87,7 +88,7 @@ export class DurableObjectStreamLifecycle implements StreamLifecycle {
 	}
 
 	/** Marks a Stream Session online at its authoritative Twitch timestamp. */
-	markStreamOnline(startedAt: string): Promise<ResultType<void, ApplicationStateError>> {
+	markStreamOnline(startedAt: string): Promise<Result<void, ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "stream-lifecycle",
 			operation: "markStreamOnline",
@@ -98,7 +99,7 @@ export class DurableObjectStreamLifecycle implements StreamLifecycle {
 	}
 
 	/** Marks the active Stream Session offline. */
-	markStreamOffline(endedAt?: string): Promise<ResultType<void, ApplicationStateError>> {
+	markStreamOffline(endedAt?: string): Promise<Result<void, ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "stream-lifecycle",
 			operation: "markStreamOffline",
@@ -128,7 +129,7 @@ export class DurableObjectAchievementReader
 	/** Resets one-time cumulative Achievements for one Viewer or all Viewers. */
 	resetOneTimeAchievements(
 		viewer?: string,
-	): Promise<ResultType<AchievementResetResult, ApplicationStateError>> {
+	): Promise<Result<AchievementResetResult, ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "achievements",
 			operation: "resetOneTimeAchievements",
@@ -140,7 +141,7 @@ export class DurableObjectAchievementReader
 	}
 
 	/** Reads Achievement persistence table counts for administrators. */
-	getDebugTableCounts(): Promise<ResultType<AchievementDebugTableCounts, ApplicationStateError>> {
+	getDebugTableCounts(): Promise<Result<AchievementDebugTableCounts, ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "achievements",
 			operation: "getAchievementDebugTableCounts",
@@ -153,7 +154,7 @@ export class DurableObjectAchievementReader
 	/** Reads one Viewer's Achievement persistence diagnostics. */
 	getDebugUserSnapshot(
 		viewer: string,
-	): Promise<ResultType<AchievementDebugUserSnapshot, ApplicationStateError>> {
+	): Promise<Result<AchievementDebugUserSnapshot, ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "achievements",
 			operation: "getAchievementDebugUserSnapshot",
@@ -164,7 +165,7 @@ export class DurableObjectAchievementReader
 	}
 
 	/** Reads and parses all persisted Achievement Definitions. */
-	getDefinitions(): Promise<ResultType<readonly AchievementDefinition[], ApplicationStateError>> {
+	getDefinitions(): Promise<Result<readonly AchievementDefinition[], ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "achievements",
 			operation: "getAchievementDefinitions",
@@ -177,7 +178,7 @@ export class DurableObjectAchievementReader
 	/** Reads and parses the Achievement ranking with a bounded result count. */
 	getLeaderboard(options: {
 		readonly limit: number;
-	}): Promise<ResultType<readonly AchievementLeaderboardEntry[], ApplicationStateError>> {
+	}): Promise<Result<readonly AchievementLeaderboardEntry[], ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "achievements",
 			operation: "getAchievementLeaderboard",
@@ -190,7 +191,7 @@ export class DurableObjectAchievementReader
 	/** Reads and parses one Viewer's complete Achievement Progress. */
 	getViewerAchievements(
 		viewer: string,
-	): Promise<ResultType<readonly ViewerAchievementProgress[], ApplicationStateError>> {
+	): Promise<Result<readonly ViewerAchievementProgress[], ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "achievements",
 			operation: "getViewerAchievements",
@@ -203,7 +204,7 @@ export class DurableObjectAchievementReader
 	/** Reads and parses one Viewer's unlocked Achievements. */
 	getViewerUnlockedAchievements(
 		viewer: string,
-	): Promise<ResultType<readonly UnlockedAchievement[], ApplicationStateError>> {
+	): Promise<Result<readonly UnlockedAchievement[], ApplicationStateError>> {
 		return callApplicationStateRpc({
 			resource: "achievements",
 			operation: "getViewerUnlockedAchievements",
@@ -222,22 +223,22 @@ export class DurableObjectAchievementReader
 	}
 }
 
-type ApplicationStateRpcCall<T, E extends StateRpcError> = Readonly<{
+type ApplicationStateRpcCall<T, E extends StateRpcError, WireValue> = Readonly<{
 	resource: "stream-lifecycle" | "achievements";
 	operation: ApplicationStateOperation;
 	tracer: Tracer;
-	invoke: () => Promise<unknown>;
-	deserializeUnsafe: (value: unknown) => ResultType<T, E> | Promise<ResultType<T, E>>;
+	invoke: () => Promise<WireValue>;
+	deserializeUnsafe: (value: WireValue) => Result<T, E> | Promise<Result<T, E>>;
 }>;
 
-async function callApplicationStateRpc<T, E extends StateRpcError>(
-	call: ApplicationStateRpcCall<T, E>,
-): Promise<ResultType<T, ApplicationStateError>> {
+async function callApplicationStateRpc<T, E extends StateRpcError, WireValue>(
+	call: ApplicationStateRpcCall<T, E, WireValue>,
+): Promise<Result<T, ApplicationStateError>> {
 	return call.tracer.span(
 		ApplicationStateSpanNames[call.operation],
 		{ operation: call.operation, resource: call.resource },
 		async () => {
-			let rawResult: unknown;
+			let rawResult: WireValue;
 			try {
 				rawResult = await call.invoke();
 			} catch (cause) {

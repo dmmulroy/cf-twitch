@@ -1,6 +1,6 @@
 import { Result } from "better-result";
 
-import { type JsonValue } from "./codecs";
+import { JsonStringifiableValueSchema, JsonValueSchema, type JsonValue } from "./codecs";
 import { SagaPersistedDataError, type SagaPersistedField } from "./errors";
 
 /** Context identifying one serialized value at the saga persistence boundary. */
@@ -22,14 +22,14 @@ export interface StringifyPersistedJsonArgs extends SagaPersistedDataContext {
 }
 
 /**
- * Parses JSON text from saga persistence into unknown boundary input.
+ * Parses JSON text from saga persistence into a validated JSON-safe value.
  * Malformed text is not retained in the safe error projection.
  */
 export function parsePersistedJson(
 	args: ParsePersistedJsonArgs,
-): Result<unknown, SagaPersistedDataError> {
+): Result<JsonValue, SagaPersistedDataError> {
 	try {
-		const parsed: unknown = JSON.parse(args.json);
+		const parsed = JsonValueSchema.parse(JSON.parse(args.json));
 		return Result.ok(parsed);
 	} catch {
 		return Result.err(
@@ -53,12 +53,8 @@ export function stringifyPersistedJson(
 ): Result<string, SagaPersistedDataError> {
 	let json: string | undefined;
 	try {
-		json = JSON.stringify(args.value, (_key: string, value: unknown): unknown => {
-			if (typeof value === "number" && !Number.isFinite(value)) {
-				throw new Error("Non-finite numbers are not JSON-safe");
-			}
-			return value;
-		});
+		const value = JsonStringifiableValueSchema.parse(args.value);
+		json = JSON.stringify(value);
 	} catch {
 		return Result.err(
 			new SagaPersistedDataError({

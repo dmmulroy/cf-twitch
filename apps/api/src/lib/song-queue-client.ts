@@ -2,7 +2,7 @@ import { Result } from "better-result";
 
 import { SongQueueCoordinationError, SongQueueParseError } from "../capabilities/song-queue";
 import { DurableObjectError, SongQueueDbError } from "./errors";
-import { callRpcResultUnsafe } from "./rpc-result";
+import { rpcInfraError } from "./rpc-result";
 import {
 	DeleteSongRequestResultCodec,
 	GetCurrentlyPlayingResultCodec,
@@ -46,16 +46,23 @@ export class SongQueueClient {
 		});
 	}
 
-	private async call<T>(
+	private async call<T, WireResult>(
 		method: string,
-		invoke: (handle: SongQueueRpcHandleStub) => Promise<unknown>,
+		invoke: (handle: SongQueueRpcHandleStub) => Promise<WireResult>,
 		deserializeUnsafe: (
-			value: unknown,
+			value: WireResult,
 		) => Result<T, SongQueueError> | Promise<Result<T, SongQueueError>>,
 	): Promise<Result<T, SongQueueError | DurableObjectError>> {
 		const acquired = await this.handleAcquisition;
 		if (acquired.status === "error") return Result.err(acquired.error);
-		return callRpcResultUnsafe(method, invoke(acquired.value), deserializeUnsafe);
+
+		let wireResult: WireResult;
+		try {
+			wireResult = await invoke(acquired.value);
+		} catch (error) {
+			return rpcInfraError(method, error);
+		}
+		return await deserializeUnsafe(wireResult);
 	}
 
 	/** Persist a parsed Pending Request and its durable synchronization intent. */

@@ -5,12 +5,14 @@ import {
 	goOnline,
 	initialOfflineState,
 	parsePersistedStreamLifecycleState,
+	type PersistedStreamLifecycleStateInput,
+	type StreamLifecycleAgentState,
 } from "../../durable-objects/stream-lifecycle-state";
 import { SystemClock } from "../../lib/clock";
 
 const clock = new SystemClock(() => new Date("2026-01-22T14:00:00.000Z"));
 
-function expectParsedState(input: unknown): unknown {
+function expectParsedState(input: PersistedStreamLifecycleStateInput): StreamLifecycleAgentState {
 	const result = parsePersistedStreamLifecycleState(input, clock);
 	expect(result.status).toBe("ok");
 	if (result.status === "error") throw result.error;

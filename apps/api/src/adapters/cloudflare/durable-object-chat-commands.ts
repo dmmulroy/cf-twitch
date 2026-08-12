@@ -27,7 +27,6 @@ import type {
 } from "../../domain/chat-command-definition";
 import type { CommandCatalog, CommandCounterStore } from "../../lib/chat-command/types";
 import type { Permission } from "../../lib/permissions";
-import type { Result as ResultType } from "better-result";
 
 type CommandsOperation =
 	| "getCommand"
@@ -50,7 +49,7 @@ export class DurableObjectChatCommands
 		private readonly tracer: Tracer,
 	) {}
 
-	getCommand(name: string): Promise<ResultType<ChatCommandDefinition, CommandsError>> {
+	getCommand(name: string): Promise<Result<ChatCommandDefinition, CommandsError>> {
 		return this.call(
 			"getCommand",
 			(stub) => stub.getCommand(name),
@@ -58,7 +57,7 @@ export class DurableObjectChatCommands
 		);
 	}
 
-	getCommandValue(name: string): Promise<ResultType<string | null, CommandsError>> {
+	getCommandValue(name: string): Promise<Result<string | null, CommandsError>> {
 		return this.call(
 			"getCommandValue",
 			(stub) => stub.getCommandValue(name),
@@ -71,7 +70,7 @@ export class DurableObjectChatCommands
 		value: string,
 		actor: { readonly displayName: string; readonly permission: Permission },
 		operationId: string,
-	): Promise<ResultType<void, CommandsError>> {
+	): Promise<Result<void, CommandsError>> {
 		return this.call(
 			"updateCommandValue",
 			(stub) => stub.updateCommandValue(name, value, actor, operationId),
@@ -81,7 +80,7 @@ export class DurableObjectChatCommands
 
 	getEnabledCommandsByPermission(
 		permission: Permission,
-	): Promise<ResultType<ChatCommandDefinition[], CommandsError>> {
+	): Promise<Result<ChatCommandDefinition[], CommandsError>> {
 		return this.call(
 			"getEnabledCommandsByPermission",
 			(stub) => stub.getEnabledCommandsByPermission(permission),
@@ -89,7 +88,7 @@ export class DurableObjectChatCommands
 		);
 	}
 
-	incrementCounter(name: string, operationId: string): Promise<ResultType<number, CommandsError>> {
+	incrementCounter(name: string, operationId: string): Promise<Result<number, CommandsError>> {
 		return this.call(
 			"incrementCommandCounter",
 			(stub) => stub.incrementCommandCounter(name, 1, operationId),
@@ -97,7 +96,7 @@ export class DurableObjectChatCommands
 		);
 	}
 
-	getAllCommands(): Promise<ResultType<readonly ChatCommandDefinition[], CommandsError>> {
+	getAllCommands(): Promise<Result<readonly ChatCommandDefinition[], CommandsError>> {
 		return this.call(
 			"getAllCommands",
 			(stub) => stub.getAllCommands(),
@@ -107,7 +106,7 @@ export class DurableObjectChatCommands
 
 	createCommand(
 		input: CreateChatCommandInput,
-	): Promise<ResultType<ChatCommandDefinition, CommandsError>> {
+	): Promise<Result<ChatCommandDefinition, CommandsError>> {
 		return this.call(
 			"createCommand",
 			(stub) => stub.createCommand(input),
@@ -118,7 +117,7 @@ export class DurableObjectChatCommands
 	updateCommand(
 		name: string,
 		patch: UpdateChatCommandInput,
-	): Promise<ResultType<ChatCommandDefinition, CommandsError>> {
+	): Promise<Result<ChatCommandDefinition, CommandsError>> {
 		return this.call(
 			"updateCommand",
 			(stub) => stub.updateCommand(name, patch),
@@ -126,7 +125,7 @@ export class DurableObjectChatCommands
 		);
 	}
 
-	deleteCommand(name: string): Promise<ResultType<void, CommandsError>> {
+	deleteCommand(name: string): Promise<Result<void, CommandsError>> {
 		return this.call(
 			"deleteCommand",
 			(stub) => stub.deleteCommand(name),
@@ -134,7 +133,7 @@ export class DurableObjectChatCommands
 		);
 	}
 
-	getDebugSnapshot(): Promise<ResultType<ChatCommandDebugSnapshot, CommandsError>> {
+	getDebugSnapshot(): Promise<Result<ChatCommandDebugSnapshot, CommandsError>> {
 		return this.call(
 			"getDebugSnapshot",
 			(stub) => stub.getDebugSnapshot(),
@@ -142,17 +141,17 @@ export class DurableObjectChatCommands
 		);
 	}
 
-	private call<T>(
+	private call<T, WireValue>(
 		operation: CommandsOperation,
 		invoke: (
 			stub: Awaited<ReturnType<DurableObjectChatCommands["acquireStub"]>>,
-		) => Promise<unknown>,
+		) => Promise<WireValue>,
 		deserializeUnsafe: (
-			value: unknown,
-		) => ResultType<T, CommandsError> | Promise<ResultType<T, CommandsError>>,
-	): Promise<ResultType<T, CommandsError>> {
+			value: WireValue,
+		) => Result<T, CommandsError> | Promise<Result<T, CommandsError>>,
+	): Promise<Result<T, CommandsError>> {
 		return this.tracer.span(`durable_object.commands.${operation}`, { operation }, async () => {
-			let rawResult: unknown;
+			let rawResult: WireValue;
 			try {
 				rawResult = await invoke(await this.acquireStub());
 			} catch (cause) {

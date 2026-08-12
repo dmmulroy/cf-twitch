@@ -1,4 +1,7 @@
 import { vi } from "vite-plus/test";
+import { z } from "zod";
+
+const RequestBodySchema = z.string();
 
 interface InterceptOptions {
 	readonly path: string | RegExp;
@@ -105,10 +108,11 @@ export class FetchMock {
 
 	private dispatch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
 		const request = input instanceof Request ? input : new Request(input, init);
+		const parsedBody = RequestBodySchema.safeParse(init?.body);
 		this.received.push({
 			url: request.url,
 			method: request.method,
-			body: typeof init?.body === "string" ? init.body : null,
+			body: parsedBody.success ? parsedBody.data : null,
 		});
 		const url = new URL(request.url);
 		const method = request.method.toUpperCase();
@@ -117,7 +121,7 @@ export class FetchMock {
 			(reply) =>
 				reply.origin === url.origin &&
 				reply.method === method &&
-				(typeof reply.path === "string" ? reply.path === path : reply.path.test(path)),
+				(reply.path instanceof RegExp ? reply.path.test(path) : reply.path === path),
 		);
 
 		if (index === -1) {

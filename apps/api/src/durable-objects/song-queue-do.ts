@@ -12,6 +12,7 @@ import { RpcTarget } from "cloudflare:workers";
 import { and, asc, count, desc, eq, gt, gte, isNull, lt, lte, max } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
+import { type ZodType } from "zod";
 
 import migrations from "../../drizzle/song-queue-do/migrations";
 import { DurableObjectSpotifyAccessTokens } from "../adapters/cloudflare/durable-object-access-tokens";
@@ -66,6 +67,8 @@ import {
 	RequestHistoryRecordSchema,
 	SpotifyQueueSnapshotRecordSchema,
 	type PendingRequest,
+	type RequestHistory,
+	type SpotifyQueueSnapshotItem,
 	type SpotifyQueueSnapshotRecord,
 	type TrackSource,
 	pendingRequests,
@@ -121,13 +124,9 @@ interface SongQueueAgentState {
 	consecutiveSyncFailures: number;
 }
 
-function parseRpcInput<T>(
-	schemaParser: {
-		safeParse(
-			value: unknown,
-		): { success: true; data: T } | { success: false; error: { message: string } };
-	},
-	value: unknown,
+function parseRpcInput<T, Input>(
+	schemaParser: ZodType<T, Input>,
+	value: Input,
 	operation: string,
 ): Result<T, SongQueueParseError> {
 	const parsed = schemaParser.safeParse(value);
@@ -185,7 +184,7 @@ function toQueuedTrack(snapshot: SpotifyQueueSnapshotRecord, artists: string[]):
 }
 
 function parseSnapshotRecord(
-	record: unknown,
+	record: SpotifyQueueSnapshotItem,
 	operation: string,
 ): Result<SpotifyQueueSnapshotRecord, SongQueueParseError> {
 	const parsed = SpotifyQueueSnapshotRecordSchema.safeParse(record);
@@ -201,7 +200,7 @@ function parseSnapshotRecord(
 }
 
 function parseHistoryRecord(
-	record: unknown,
+	record: RequestHistory,
 	operation: string,
 ): Result<RequestHistoryItem, SongQueueParseError> {
 	const parsed = RequestHistoryRecordSchema.safeParse(record);
@@ -360,27 +359,19 @@ class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
 	}
 
 	persistRequest(request: PendingRequestInput): Promise<RpcResult<void, SongQueueWireError>> {
-		return this.queue.persistRequest(request) as unknown as Promise<
-			RpcResult<void, SongQueueWireError>
-		>;
+		return this.queue.persistRequest(request) as Promise<RpcResult<void, SongQueueWireError>>;
 	}
 
 	deleteRequest(eventId: string): Promise<RpcResult<void, SongQueueWireError>> {
-		return this.queue.deleteRequest(eventId) as unknown as Promise<
-			RpcResult<void, SongQueueWireError>
-		>;
+		return this.queue.deleteRequest(eventId) as Promise<RpcResult<void, SongQueueWireError>>;
 	}
 
 	getSongQueue(limit: number): Promise<RpcResult<QueueResult, SongQueueWireError>> {
-		return this.queue.getSongQueue(limit) as unknown as Promise<
-			RpcResult<QueueResult, SongQueueWireError>
-		>;
+		return this.queue.getSongQueue(limit) as Promise<RpcResult<QueueResult, SongQueueWireError>>;
 	}
 
 	getCurrentlyPlaying(): Promise<RpcResult<NowPlaying, SongQueueWireError>> {
-		return this.queue.getCurrentlyPlaying() as unknown as Promise<
-			RpcResult<NowPlaying, SongQueueWireError>
-		>;
+		return this.queue.getCurrentlyPlaying() as Promise<RpcResult<NowPlaying, SongQueueWireError>>;
 	}
 
 	getRequestHistory(
@@ -389,42 +380,38 @@ class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
 		since?: string,
 		until?: string,
 	): Promise<RpcResult<RequestHistoryResult, SongQueueWireError>> {
-		return this.queue.getRequestHistory(limit, offset, since, until) as unknown as Promise<
+		return this.queue.getRequestHistory(limit, offset, since, until) as Promise<
 			RpcResult<RequestHistoryResult, SongQueueWireError>
 		>;
 	}
 
 	getUserRequestCount(userId: string): Promise<RpcResult<number, SongQueueWireError>> {
-		return this.queue.getUserRequestCount(userId) as unknown as Promise<
-			RpcResult<number, SongQueueWireError>
-		>;
+		return this.queue.getUserRequestCount(userId) as Promise<RpcResult<number, SongQueueWireError>>;
 	}
 
 	getUserRequestCountByDisplayName(
 		displayName: string,
 	): Promise<RpcResult<number, SongQueueWireError>> {
-		return this.queue.getUserRequestCountByDisplayName(displayName) as unknown as Promise<
+		return this.queue.getUserRequestCountByDisplayName(displayName) as Promise<
 			RpcResult<number, SongQueueWireError>
 		>;
 	}
 
 	getTopTracks(limit: number): Promise<RpcResult<TopTrack[], SongQueueWireError>> {
-		return this.queue.getTopTracks(limit) as unknown as Promise<
-			RpcResult<TopTrack[], SongQueueWireError>
-		>;
+		return this.queue.getTopTracks(limit) as Promise<RpcResult<TopTrack[], SongQueueWireError>>;
 	}
 
 	getTopTracksByUser(
 		userId: string,
 		limit: number,
 	): Promise<RpcResult<TopTrack[], SongQueueWireError>> {
-		return this.queue.getTopTracksByUser(userId, limit) as unknown as Promise<
+		return this.queue.getTopTracksByUser(userId, limit) as Promise<
 			RpcResult<TopTrack[], SongQueueWireError>
 		>;
 	}
 
 	getTopRequesters(limit: number): Promise<RpcResult<TopRequester[], SongQueueWireError>> {
-		return this.queue.getTopRequesters(limit) as unknown as Promise<
+		return this.queue.getTopRequesters(limit) as Promise<
 			RpcResult<TopRequester[], SongQueueWireError>
 		>;
 	}
@@ -1043,7 +1030,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 		}
 
 		if (this.syncLock) {
-			await this.syncLock.catch((cause: unknown) =>
+			await this.syncLock.catch((cause) =>
 				logger.error("Song Queue sync lock rejected, using stale data", { cause }),
 			);
 			return Result.ok();
@@ -1214,7 +1201,7 @@ class _SongQueueDO extends Agent<Env, SongQueueAgentState> implements SongQueue 
 					});
 				});
 			},
-			catch: (cause: unknown) =>
+			catch: (cause) =>
 				cause instanceof SongQueueParseError
 					? cause
 					: new SongQueueDbError({ operation: "syncFromSpotify.transaction", cause }),
