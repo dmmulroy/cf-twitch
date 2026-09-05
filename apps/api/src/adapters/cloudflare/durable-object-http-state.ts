@@ -34,6 +34,7 @@ import { initializeDurableObjectAgentStub } from "./durable-object-agent-stub";
 
 import type { Tracer } from "../../capabilities/tracer";
 import type { StreamLifecycleState } from "../../domain/stream-lifecycle";
+import type { RpcWireValue } from "../../lib/rpc-result";
 import type { DurableObjectAgentStub } from "./durable-object-agent-stub";
 
 type StateRpcError = Readonly<{ _tag: string }>;
@@ -54,19 +55,19 @@ const ApplicationStateSpanNames = {
 }>;
 
 interface StreamLifecycleRpcStub extends DurableObjectAgentStub {
-	getStreamState(): Promise<unknown>;
-	onStreamOnline(startedAt: string): Promise<unknown>;
-	onStreamOffline(endedAt?: string): Promise<unknown>;
+	getStreamState(): Promise<RpcWireValue>;
+	onStreamOnline(startedAt: string): Promise<RpcWireValue>;
+	onStreamOffline(endedAt?: string): Promise<RpcWireValue>;
 }
 
 interface AchievementReaderRpcStub extends DurableObjectAgentStub {
-	getDefinitions(): Promise<unknown>;
-	getLeaderboard(options: { readonly limit: number }): Promise<unknown>;
-	getUserAchievements(viewer: string): Promise<unknown>;
-	getUnlockedAchievements(viewer: string): Promise<unknown>;
-	resetOneTimeAchievements(viewer?: string): Promise<unknown>;
-	getDebugTableCounts(): Promise<unknown>;
-	getDebugUserSnapshot(viewer: string): Promise<unknown>;
+	getDefinitions(): Promise<RpcWireValue>;
+	getLeaderboard(options: { readonly limit: number }): Promise<RpcWireValue>;
+	getUserAchievements(viewer: string): Promise<RpcWireValue>;
+	getUnlockedAchievements(viewer: string): Promise<RpcWireValue>;
+	resetOneTimeAchievements(viewer?: string): Promise<RpcWireValue>;
+	getDebugTableCounts(): Promise<RpcWireValue>;
+	getDebugUserSnapshot(viewer: string): Promise<RpcWireValue>;
 }
 
 /** Durable Object adapter for runtime-validated Stream Lifecycle reads and transitions. */

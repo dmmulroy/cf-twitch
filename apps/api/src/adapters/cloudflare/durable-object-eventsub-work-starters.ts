@@ -10,6 +10,7 @@ import type {
 } from "../../capabilities/eventsub-work-starters";
 import type { Tracer } from "../../capabilities/tracer";
 import type { KnownRewardRedemption } from "../../lib/channel-point-redemptions";
+import type { RpcWireValue } from "../../lib/rpc-result";
 
 /** Durable Object adapter for downstream work started by accepted EventSub notifications. */
 export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
@@ -60,7 +61,7 @@ export class DurableObjectEventSubWorkStarters implements EventSubWorkStarters {
 	private start(
 		work: "song-request" | "keyboard-raffle" | "raid-shoutout",
 		operationId: string,
-		invoke: () => Promise<unknown>,
+		invoke: () => Promise<RpcWireValue>,
 	): Promise<Result<void, EventSubWorkStartError>> {
 		const spanName =
 			work === "song-request"

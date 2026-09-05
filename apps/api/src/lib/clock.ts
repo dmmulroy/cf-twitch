@@ -14,6 +14,7 @@ export class InvalidIsoTimestampError extends TaggedError("InvalidIsoTimestampEr
 }
 
 export function isoTimestampFromDate(date: Date): IsoTimestamp {
+	// SAFETY: Date.toISOString establishes the ISO timestamp invariant before branding.
 	return date.toISOString() as IsoTimestamp;
 }
 

@@ -353,25 +353,32 @@ export interface SongQueueRpcHandleStub {
 	[Symbol.dispose]?(): void;
 }
 
+function serializedSongQueueResult<Value>(
+	result: Promise<Result<Value, SongQueueError>>,
+): Promise<RpcResult<Value, SongQueueWireError>> {
+	// SAFETY: SongQueueClient wraps the decorated SongQueueDO; each RPC decorator serializes SongQueueError into SongQueueWireError before the client observes the result.
+	return result as Promise<RpcResult<Value, SongQueueWireError>>;
+}
+
 class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
 	constructor(private readonly queue: SongQueue) {
 		super();
 	}
 
 	persistRequest(request: PendingRequestInput): Promise<RpcResult<void, SongQueueWireError>> {
-		return this.queue.persistRequest(request) as Promise<RpcResult<void, SongQueueWireError>>;
+		return serializedSongQueueResult(this.queue.persistRequest(request));
 	}
 
 	deleteRequest(eventId: string): Promise<RpcResult<void, SongQueueWireError>> {
-		return this.queue.deleteRequest(eventId) as Promise<RpcResult<void, SongQueueWireError>>;
+		return serializedSongQueueResult(this.queue.deleteRequest(eventId));
 	}
 
 	getSongQueue(limit: number): Promise<RpcResult<QueueResult, SongQueueWireError>> {
-		return this.queue.getSongQueue(limit) as Promise<RpcResult<QueueResult, SongQueueWireError>>;
+		return serializedSongQueueResult(this.queue.getSongQueue(limit));
 	}
 
 	getCurrentlyPlaying(): Promise<RpcResult<NowPlaying, SongQueueWireError>> {
-		return this.queue.getCurrentlyPlaying() as Promise<RpcResult<NowPlaying, SongQueueWireError>>;
+		return serializedSongQueueResult(this.queue.getCurrentlyPlaying());
 	}
 
 	getRequestHistory(
@@ -380,40 +387,32 @@ class SongQueueClient extends RpcTarget implements SongQueueRpcHandleStub {
 		since?: string,
 		until?: string,
 	): Promise<RpcResult<RequestHistoryResult, SongQueueWireError>> {
-		return this.queue.getRequestHistory(limit, offset, since, until) as Promise<
-			RpcResult<RequestHistoryResult, SongQueueWireError>
-		>;
+		return serializedSongQueueResult(this.queue.getRequestHistory(limit, offset, since, until));
 	}
 
 	getUserRequestCount(userId: string): Promise<RpcResult<number, SongQueueWireError>> {
-		return this.queue.getUserRequestCount(userId) as Promise<RpcResult<number, SongQueueWireError>>;
+		return serializedSongQueueResult(this.queue.getUserRequestCount(userId));
 	}
 
 	getUserRequestCountByDisplayName(
 		displayName: string,
 	): Promise<RpcResult<number, SongQueueWireError>> {
-		return this.queue.getUserRequestCountByDisplayName(displayName) as Promise<
-			RpcResult<number, SongQueueWireError>
-		>;
+		return serializedSongQueueResult(this.queue.getUserRequestCountByDisplayName(displayName));
 	}
 
 	getTopTracks(limit: number): Promise<RpcResult<TopTrack[], SongQueueWireError>> {
-		return this.queue.getTopTracks(limit) as Promise<RpcResult<TopTrack[], SongQueueWireError>>;
+		return serializedSongQueueResult(this.queue.getTopTracks(limit));
 	}
 
 	getTopTracksByUser(
 		userId: string,
 		limit: number,
 	): Promise<RpcResult<TopTrack[], SongQueueWireError>> {
-		return this.queue.getTopTracksByUser(userId, limit) as Promise<
-			RpcResult<TopTrack[], SongQueueWireError>
-		>;
+		return serializedSongQueueResult(this.queue.getTopTracksByUser(userId, limit));
 	}
 
 	getTopRequesters(limit: number): Promise<RpcResult<TopRequester[], SongQueueWireError>> {
-		return this.queue.getTopRequesters(limit) as Promise<
-			RpcResult<TopRequester[], SongQueueWireError>
-		>;
+		return serializedSongQueueResult(this.queue.getTopRequesters(limit));
 	}
 }
 

@@ -20,13 +20,13 @@ interface OAuthAuthorizationStateRpcStub {
 		readonly redirectUri: string;
 		readonly createdAtMs: number;
 		readonly expiresAtMs: number;
-	}): Promise<unknown>;
+	}): Promise<z.output<typeof CreateOAuthStateResultSchema>>;
 	consumeOAuthAuthorizationAttempt(input: {
 		readonly state: string;
 		readonly provider: OAuthProvider;
 		readonly redirectUri: string;
 		readonly consumedAtMs: number;
-	}): Promise<unknown>;
+	}): Promise<z.output<typeof ConsumeOAuthStateResultSchema>>;
 }
 
 /** Durable Object adapter for expiring, one-time OAuth authorization state. */

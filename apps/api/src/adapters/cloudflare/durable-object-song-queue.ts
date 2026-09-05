@@ -29,6 +29,7 @@ import {
 
 import type { Tracer } from "../../capabilities/tracer";
 import type { NowPlaying } from "../../domain/spotify-queue";
+import type { RpcWireValue } from "../../lib/rpc-result";
 
 type SongQueueSpanNameMap = {
 	readonly [Operation in SongQueueOperation]: string;
@@ -49,21 +50,21 @@ const SongQueueSpanNames: SongQueueSpanNameMap = {
 };
 
 export interface SongQueueRpcHandle {
-	persistRequest(request: PendingRequestInput): Promise<unknown>;
-	deleteRequest(eventId: string): Promise<unknown>;
-	getSongQueue(limit: number): Promise<unknown>;
-	getCurrentlyPlaying(): Promise<unknown>;
+	persistRequest(request: PendingRequestInput): Promise<RpcWireValue>;
+	deleteRequest(eventId: string): Promise<RpcWireValue>;
+	getSongQueue(limit: number): Promise<RpcWireValue>;
+	getCurrentlyPlaying(): Promise<RpcWireValue>;
 	getRequestHistory(
 		limit: number,
 		offset: number,
 		since?: string,
 		until?: string,
-	): Promise<unknown>;
-	getUserRequestCount(userId: string): Promise<unknown>;
-	getUserRequestCountByDisplayName(displayName: string): Promise<unknown>;
-	getTopTracks(limit: number): Promise<unknown>;
-	getTopTracksByUser(userId: string, limit: number): Promise<unknown>;
-	getTopRequesters(limit: number): Promise<unknown>;
+	): Promise<RpcWireValue>;
+	getUserRequestCount(userId: string): Promise<RpcWireValue>;
+	getUserRequestCountByDisplayName(displayName: string): Promise<RpcWireValue>;
+	getTopTracks(limit: number): Promise<RpcWireValue>;
+	getTopTracksByUser(userId: string, limit: number): Promise<RpcWireValue>;
+	getTopRequesters(limit: number): Promise<RpcWireValue>;
 	[Symbol.dispose]?(): void;
 }
 

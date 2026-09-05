@@ -97,5 +97,6 @@ export function assertTag<TObj extends { _tag: string }, TTag extends TObj["_tag
 		throw new Error(`Expected tag "${tag}" but got "${obj._tag}"`);
 	}
 
+	// SAFETY: The runtime tag check above establishes the matching Extract branch.
 	return obj as Extract<TObj, { _tag: TTag }>;
 }

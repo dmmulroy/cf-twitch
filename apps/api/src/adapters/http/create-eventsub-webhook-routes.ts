@@ -174,7 +174,7 @@ export function createEventSubWebhookRoutes(
 
 				let body: unknown;
 				try {
-					body = JSON.parse(rawBody) as unknown;
+					body = JSON.parse(rawBody);
 				} catch (cause) {
 					routeLogger.warn("EventSub JSON body rejected", {
 						event: "webhook.twitch.body_parse_failed",

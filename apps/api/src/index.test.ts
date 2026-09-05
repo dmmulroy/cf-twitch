@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
+import { z } from "zod";
 
 import { fetchMock } from "./__tests__/helpers/fetch-mock";
 
@@ -147,10 +148,9 @@ describe("Worker HTTP entrypoint", () => {
 			"http://localhost/api/debug/reconcile-stream-state",
 			{ method: "POST", headers: adminAuthorization },
 		);
-		const body = (await response.json()) as {
-			action: string;
-			after: { startedAt: string | null };
-		};
+		const body = z
+			.object({ action: z.string(), after: z.object({ startedAt: z.string().nullable() }) })
+			.parse(await response.json());
 		expect(response.status).toBe(200);
 		expect(body.action).toBe("set_online");
 		expect(body.after.startedAt).toBe(twitchStartedAt);

@@ -25,15 +25,16 @@ import type {
 	RaffleLeaderboardEntry,
 	RaffleLeaderboardQuery,
 } from "../../domain/keyboard-raffle";
+import type { RpcWireValue } from "../../lib/rpc-result";
 import type { DurableObjectAgentStub } from "./durable-object-agent-stub";
 
 type KeyboardRaffleRemoteError = Readonly<{ _tag: string }>;
 interface RaffleStatisticsRpcStub extends DurableObjectAgentStub {
-	getLeaderboard(options: RaffleLeaderboardQuery): Promise<unknown>;
-	getUserStats(viewerId: string): Promise<unknown>;
-	getUserStatsByDisplayName(displayName: string): Promise<unknown>;
-	recordRoll(input: RecordKeyboardRaffleRoll): Promise<unknown>;
-	deleteRollById(rollId: string): Promise<unknown>;
+	getLeaderboard(options: RaffleLeaderboardQuery): Promise<RpcWireValue>;
+	getUserStats(viewerId: string): Promise<RpcWireValue>;
+	getUserStatsByDisplayName(displayName: string): Promise<RpcWireValue>;
+	recordRoll(input: RecordKeyboardRaffleRoll): Promise<RpcWireValue>;
+	deleteRollById(rollId: string): Promise<RpcWireValue>;
 }
 
 /** Durable Object adapter for validated Raffle Leaderboard and Viewer-statistics RPC. */

@@ -1,7 +1,7 @@
 /** RPC stub shape exposed by Agent-based Durable Objects before their name is initialized. */
 export type DurableObjectAgentStub = Readonly<{
 	fetch?: (request: Request) => Promise<Response>;
-	setName?: (name: string) => Promise<unknown>;
+	setName?: (name: string) => Promise<void>;
 }>;
 
 /** Initializes an Agent through PartyServer's bootstrap route with an RPC fallback. */

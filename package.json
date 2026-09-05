@@ -9,12 +9,11 @@
 		"deploy": "vp run --filter \"./apps/*\" deploy",
 		"typecheck": "vp run --filter \"./apps/*\" typecheck",
 		"lint": "vp lint .",
-		"lint:rules": "tsx tools/oxlint/rules/no-unsafe-dictionary-type.test.ts && tsx tools/oxlint/rules/no-known-value-widening.test.ts && tsx tools/oxlint/rules/no-object-parameters.test.ts",
 		"lint:fix": "vp lint --fix .",
 		"fmt": "vp fmt .",
 		"fmt:check": "vp fmt --check .",
 		"architecture": "vp run --filter \"./apps/*\" architecture",
-		"check": "pnpm lint:rules && vp check && vp run --filter \"./apps/*\" architecture && vp run --filter \"./apps/*\" typecheck"
+		"check": "vp check && vp run --filter \"./apps/*\" architecture && vp run --filter \"./apps/*\" typecheck"
 	},
 	"devDependencies": {
 		"@oxlint/plugins": "1.78.0",

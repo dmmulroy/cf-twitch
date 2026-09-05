@@ -8,9 +8,10 @@ import type {
 	EventSubReceiptAcceptor,
 } from "../../capabilities/eventsub-receipts";
 import type { Tracer } from "../../capabilities/tracer";
+import type { RpcWireValue } from "../../lib/rpc-result";
 
 interface EventSubReceiptRpcStub {
-	accept(receipt: AcceptedEventSubReceipt): Promise<unknown>;
+	accept(receipt: AcceptedEventSubReceipt): Promise<RpcWireValue>;
 }
 
 /** Durable Object adapter for accepting parsed EventSub receipts by Twitch message ID. */

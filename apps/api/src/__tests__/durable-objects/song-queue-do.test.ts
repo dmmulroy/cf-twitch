@@ -833,7 +833,7 @@ describe("SongQueueDO", () => {
 							error_message: z.string(),
 						}),
 					})
-					.parse(JSON.parse(syncFallbackLog) as unknown);
+					.parse(JSON.parse(syncFallbackLog));
 				expect(parsed).toMatchObject({
 					error_tag: "SongQueueDbError",
 					cause: {

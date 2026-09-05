@@ -184,9 +184,9 @@ function isTraversableObject<Value>(value: Value): value is Value & object {
 
 export function normalizeError<ErrorValue>(error: ErrorValue): LogError {
 	if (error instanceof Error) {
-		const tagged = error as Error & { _tag?: unknown };
+		const tag = "_tag" in error ? error._tag : undefined;
 		return {
-			error_tag: isString(tagged._tag) ? tagged._tag : error.name || "Error",
+			error_tag: isString(tag) ? tag : error.name || "Error",
 			error_message: error.message,
 			error_stack: error.stack,
 		};
