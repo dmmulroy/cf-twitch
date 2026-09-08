@@ -245,7 +245,7 @@ const fullWorkerScenarioImplementation = Effect.gen(function* () {
 export const fullWorkerScenarioLayer = TwitchApiWorker.make(
   {
     main: import.meta.url,
-    compatibility: { date: "2026-01-13", flags: ["nodejs_compat"] },
+    compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
     dev: { host: "127.0.0.1", port: 8798, strictPort: true },
     workersDev: true,
   },

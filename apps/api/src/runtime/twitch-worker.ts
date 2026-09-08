@@ -146,7 +146,7 @@ export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDepen
   Effect.provide(twitchApplicationLayer),
   Effect.provide(twitchConfigurationLayer),
   Effect.provide(twitchTelemetryLayer),
-  // node:crypto is supported by nodejs_compat; the aggregate NodeServices layer is not.
+  // Provide the application's crypto requirement without acquiring unrelated Node services.
   Effect.provide(NodeCrypto.layer),
   Effect.orDie,
 );
@@ -155,7 +155,7 @@ export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDepen
 export const twitchApiWorkerLayer = TwitchApiWorker.make(
   {
     main: import.meta.url,
-    compatibility: { date: "2026-01-13", flags: ["nodejs_compat"] },
+    compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
     dev: { port: 8787, strictPort: true },
     workersDev: true,
     observability: { enabled: true },

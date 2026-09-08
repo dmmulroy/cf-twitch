@@ -225,9 +225,6 @@ overrides:
   vite: npm:@voidzero-dev/vite-plus-core@0.3.0
   vite-plus: 0.3.0
 
-patchedDependencies:
-  alchemy@2.0.0-beta.76: e9d6bc5e1a17f687dc82b25dd51284fe62b650a73094111a1f0a3a235dfe4d9a
-
 importers:
 
   .:
@@ -295,7 +292,7 @@ importers:
         version: 26.3.0
       alchemy:
         specifier: 'catalog:'
-        version: 2.0.0-beta.76(patch_hash=e9d6bc5e1a17f687dc82b25dd51284fe62b650a73094111a1f0a3a235dfe4d9a)(@effect/platform-node@4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0)))(@types/node@26.3.0)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0))(effect@4.0.0-rc.112)(typescript@7.0.2)(vitest@4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/browser-preview@4.1.11)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0)))(ws@8.21.3)
+        version: 2.0.0-beta.76(@effect/platform-node@4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0)))(@types/node@26.3.0)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0))(effect@4.0.0-rc.112)(typescript@7.0.2)(vitest@4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/browser-preview@4.1.11)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0)))(ws@8.21.3)
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -323,7 +320,7 @@ importers:
     dependencies:
       alchemy:
         specifier: 'catalog:'
-        version: 2.0.0-beta.76(patch_hash=e9d6bc5e1a17f687dc82b25dd51284fe62b650a73094111a1f0a3a235dfe4d9a)(@effect/platform-node@4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0)))(@types/node@26.3.0)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0))(effect@4.0.0-rc.112)(typescript@7.0.2)(vitest@4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/browser-preview@4.1.11)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0)))(ws@8.21.3)
+        version: 2.0.0-beta.76(@effect/platform-node@4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0)))(@types/node@26.3.0)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0))(effect@4.0.0-rc.112)(typescript@7.0.2)(vitest@4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/browser-preview@4.1.11)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0)))(ws@8.21.3)
       effect:
         specifier: 4.0.0-rc.112
         version: 4.0.0-rc.112
@@ -4778,7 +4775,7 @@ snapshots:
 
   '@yuku-toolchain/types@0.5.43': {}
 
-  alchemy@2.0.0-beta.76(patch_hash=e9d6bc5e1a17f687dc82b25dd51284fe62b650a73094111a1f0a3a235dfe4d9a)(@effect/platform-node@4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0)))(@types/node@26.3.0)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0))(effect@4.0.0-rc.112)(typescript@7.0.2)(vitest@4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/browser-preview@4.1.11)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0)))(ws@8.21.3):
+  alchemy@2.0.0-beta.76(@effect/platform-node@4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0)))(@types/node@26.3.0)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0))(effect@4.0.0-rc.112)(typescript@7.0.2)(vitest@4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/browser-preview@4.1.11)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0)))(ws@8.21.3):
     dependencies:
       '@alchemy.run/cloudflare-runtime': 2.0.0-beta.76(@distilled.cloud/cloudflare@1.0.0-rc.8(effect@4.0.0-rc.112))(@effect/platform-node@4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0)))(@types/node@26.3.0)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@26.3.0)(esbuild@0.28.1)(tsx@4.21.0)(typescript@7.0.2)(yaml@2.9.0))(effect@4.0.0-rc.112)(rolldown@1.2.5)(typescript@7.0.2)
       '@alchemy.run/floci': 2.0.0-beta.76(effect@4.0.0-rc.112)

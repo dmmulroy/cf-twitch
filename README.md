@@ -16,7 +16,7 @@ Public compatibility expectations are recorded in the [acceptance ledger](docs/c
 
 ## Work locally
 
-Use the Node and package-manager requirements in [package.json](package.json). Install with `pnpm install --frozen-lockfile`; this applies the checked-in [Alchemy patch](patches/README.md).
+Use the Node and package-manager requirements in [package.json](package.json). Install with `pnpm install --frozen-lockfile`. Dependencies are used without local patches.
 
 For tests and verification, follow [verification](docs/verification.md). Those suites use controlled providers and require no live Twitch/Spotify credentials.
 

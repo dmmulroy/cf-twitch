@@ -6,7 +6,7 @@ This document owns check selection, local harness operation, and recorded verifi
 
 1. Install from the lockfile with `pnpm install --frozen-lockfile` when preparing a checkout or changing dependencies.
 
-   **Complete when:** installation succeeds with the checked-in patches applied and any dependency/lockfile changes accounted for.
+   **Complete when:** installation succeeds and any dependency/lockfile changes are accounted for.
 
 2. Run `pnpm verify` from the repository root after implementation changes. The runner and its order are defined in [run-cf-twitch-verification.ts](../tools/verification/run-cf-twitch-verification.ts); root `package.json` lists focused commands.
 
@@ -65,6 +65,8 @@ For a new native fault journey, record request/trace correlation, controlled mut
 [HTTP request-correlation tests](../apps/api/src/features/http/http-request-correlation.test.ts) capture successful/failed spans and error reports, including the pinned `Cause.prettyErrors({ includeCauseInStack: true })` conversion used by OTLP. They assert secret exclusion while preserving correlation, Redacted causes, and interruption. This is not a live collector test or a claim of native process-eviction coverage. The outer telemetry placement constraint is documented in [observability](architecture.md#observability-and-configuration).
 
 ## Recorded verification
+
+Patch-removal regression: the published `alchemy@2.0.0-beta.76` Worker bridge with `effect@4.0.0-rc.112` fails all three native tests at compatibility date `2026-01-13` with `TypeError: t.once is not a function`. Changing all four Worker declarations to Alchemy's default date, `2026-03-17`, makes all three pass without a dependency patch. Verify installed source against the npm tarball when testing patch removal: reinstalling after removing patch registration left patched source behind in the local installation during diagnosis. The snapshot below predates this compatibility correction.
 
 Snapshot date: **2026-09-05**, after the data-flow/complexity cleanup. `pnpm verify` passed formatting, root lint, architecture, OpenAPI inspection, strict root/workspace types, and:
 

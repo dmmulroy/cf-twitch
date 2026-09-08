@@ -97,4 +97,4 @@ Inspect the installed Effect/Alchemy source when changing dependencies. These co
 - Worker/DO HTTP handler contracts are type aliases. Explicit `.make<never>` may be necessary for dependency-free DO constructors to avoid state-requirement inference leaks.
 - `HttpRouter.toHttpEffect` requires an invocation Scope; outer Worker initialization does not provide it.
 - Use `compatibility: { date, flags }` for Worker properties.
-- The checked-in [Alchemy patch](../patches/README.md) removes an eager Node terminal dependency from workerd. The root provides only the compatible `NodeCrypto.layer`, not the aggregate `NodeServices.layer`.
+- Worker compatibility is pinned to `2026-03-17`, matching Alchemy's default. With unpatched Alchemy, the older `2026-01-13` date causes native startup to fail with `TypeError: t.once is not a function` while acquiring Node terminal services. All three local workerd journeys pass with the newer date; no dependency patch or Effect/Alchemy upgrade is required. Keep scenario Workers aligned with the application Worker.
