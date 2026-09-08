@@ -155,7 +155,7 @@ export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDepen
 export const twitchApiWorkerLayer = TwitchApiWorker.make(
   {
     main: import.meta.url,
-    compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
+    compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
     dev: { port: 8787, strictPort: true },
     workersDev: true,
     observability: { enabled: true },

@@ -29,6 +29,7 @@ overrides:
   effect: 4.0.0-rc.112
   oxlint: 1.80.0
   typescript: 7.0.2
+  workerd: 1.20260908.1
   vite: "catalog:"
   vite-plus: 0.3.0
 
@@ -58,3 +59,9 @@ minimumReleaseAgeExclude:
   - "effect@4.0.0-rc.112"
   - "oxlint@1.80.0"
   - "vite-plus@0.3.0"
+  - "@cloudflare/workerd-darwin-64@1.20260908.1"
+  - "@cloudflare/workerd-darwin-arm64@1.20260908.1"
+  - "@cloudflare/workerd-linux-64@1.20260908.1"
+  - "@cloudflare/workerd-linux-arm64@1.20260908.1"
+  - "@cloudflare/workerd-windows-64@1.20260908.1"
+  - workerd@1.20260908.1

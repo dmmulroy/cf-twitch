@@ -39,7 +39,7 @@ const oauthScenarioHttpHandlersLayer = HttpApiBuilder.group(
 export const oauthScenarioWorkerLayerWithoutDependencies = OAuthScenarioWorker.make(
   {
     main: import.meta.url,
-    compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
+    compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
     dev: { host: "127.0.0.1", port: 8787, strictPort: true },
   },
   Effect.gen(function* () {
