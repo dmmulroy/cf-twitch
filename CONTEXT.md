@@ -1,127 +1,111 @@
 # CF Twitch
 
-CF Twitch is a Twitch stream integration for channel-point interactions, Spotify-backed song requests, keyboard raffles, stream lifecycle tracking, and viewer achievements.
+CF Twitch connects a Twitch stream's channel-point interactions, chat, Spotify playback, keyboard raffles, and viewer achievements.
 
-## Language
+## Viewers and redemptions
 
 **Viewer**:
-A Twitch user participating in the stream through chat, channel-point redemptions, song requests, raffles, or achievements.
+A Twitch user participating through chat, channel-point redemptions, or stream activities. Their Twitch identity stays the same when their display name changes.
 _Avoid_: Customer, requester as a general user term
 
 **Channel Point Redemption**:
-A Twitch reward redemption submitted by a **Viewer** that starts a domain flow such as a **Song Request** or **Keyboard Raffle**.
+A Viewer spending Twitch channel points on a configured reward. Recognized rewards start a Song Request or Keyboard Raffle; unrelated rewards do not.
 _Avoid_: Purchase, payment, transaction
 
+**Redemption Fulfillment**:
+Confirmation to Twitch that a Channel Point Redemption's reward has been delivered. Song Request fulfillment does not mean its Spotify Track has played.
+_Avoid_: Playback confirmation
+
+**Refund**:
+Confirmed cancellation of a Channel Point Redemption that returns its channel points. An attempted cancellation or unresolved outcome is not a refund.
+_Avoid_: Compensation when referring only to the returned points
+
+**Chat Command**:
+A Twitch chat instruction that reads stream information or changes a permitted command value or counter.
+_Avoid_: Slash command
+
+## Song requests and playback
+
 **Song Request**:
-A channel-point redemption where a **Viewer** submits a Spotify track URL to be added to the stream's playback queue.
+A Channel Point Redemption in which a Viewer submits a Spotify track link or URI for stream playback.
 _Avoid_: Music request, track submission
 
 **Spotify Track**:
-The specific Spotify song identified by a **Song Request**, including its track id, title, artists, album, and artwork.
-_Avoid_: Song when referring to the Spotify entity
+The Spotify song identified by a stable track ID, with title, artists, album, and artwork.
+_Avoid_: Song when referring to the provider entity
 
 **Spotify Queue**:
-The playback queue managed by Spotify for the stream, including the currently playing track and upcoming tracks.
-_Avoid_: Request queue when referring to Spotify playback state
+Spotify's current playback and upcoming tracks, including requested tracks and autoplay.
+_Avoid_: Request queue when referring to provider playback
+
+**Queue Occurrence**:
+One appearance of a Spotify Track in playback or the upcoming Spotify Queue. Two appearances of the same track are different occurrences and may belong to different Viewers.
+_Avoid_: Track ID when distinguishing repeated appearances
 
 **Pending Request**:
-A **Song Request** that has been accepted and attributed to a **Viewer** but has not yet been confirmed as played or removed.
-_Avoid_: Pending song, unplayed history item
+An accepted Song Request not yet confirmed as played or removed. It can survive temporary absence from the observed Spotify Queue.
+_Avoid_: Unplayed history item
 
 **Request History**:
-The permanent record of **Song Requests** that were fulfilled by being confirmed as played.
-_Avoid_: Audit log when referring specifically to fulfilled song requests
+The record of attributed Song Requests confirmed as played when their Queue Occurrence leaves current playback.
+_Avoid_: Redemption history, fulfilled redemptions
 
 **Now Playing**:
-The **Spotify Track** currently playing on stream.
-_Avoid_: Current song if Spotify attribution matters
+The currently playing Queue Occurrence, with Viewer attribution when known.
+_Avoid_: Pending request when referring to all accepted requests
 
-**Chat Command**:
-A Twitch chat message that asks the integration to respond with stream state such as **Now Playing** or the upcoming **Spotify Queue**.
-_Avoid_: Slash command, bot command when the trigger is Twitch chat text
+## Keyboard raffle
 
 **Keyboard Raffle**:
-A channel-point redemption where a **Viewer** rolls a number for a chance to exactly match a generated winning number.
-_Avoid_: Lottery unless explaining informally
+A Channel Point Redemption giving a Viewer one Roll whose number must exactly match its own Winning Number.
+_Avoid_: Lottery, shared stream-wide draw
 
 **Roll**:
-A single **Keyboard Raffle** attempt by a **Viewer**, with a viewer number, winning number, distance, and win status.
+One Keyboard Raffle attempt, containing the Viewer's number, Winning Number, Distance, and whether it won.
 _Avoid_: Ticket, entry
 
 **Winning Number**:
-The target number for a **Roll** that must be matched exactly for the **Viewer** to win.
+The target generated separately for a particular Roll.
 _Avoid_: Jackpot number
 
 **Distance**:
-The absolute difference between a **Roll**'s viewer number and its **Winning Number**.
-_Avoid_: Score when referring to raffle closeness
+The absolute difference between a Roll's Viewer number and Winning Number. Zero, and only zero, means a win.
+_Avoid_: Score
 
 **Raffle Leaderboard**:
-A ranking of **Viewers** by raffle participation, wins, and closest rolls.
-_Avoid_: Scoreboard when referring to persisted raffle standings
+Viewer rankings by participation, wins, or closest rolls. Being closest does not make a non-winning Roll a win.
+_Avoid_: Winners when referring to closest non-winning rolls
+
+## Streams and achievements
+
+**Stream Session**:
+One period between a stream going online and offline, establishing the boundary for session-scoped achievements and streaks.
+_Avoid_: Broadcast when its session boundary matters
+
+**Stream Lifecycle State**:
+The integration's evidence of the active or most recent Stream Session, its source start/end times, and peak viewer count.
+_Avoid_: Stream status when ordering evidence matters
 
 **Achievement**:
-A named milestone a **Viewer** can unlock through song requests, raffles, stream-session behavior, or engagement streaks.
-_Avoid_: Badge unless referring only to presentation
+A named milestone a Viewer can unlock through song requests, raffle results, or Stream Session activity.
+_Avoid_: Badge except for presentation
 
 **Achievement Definition**:
-The persisted metadata for an **Achievement**, including its id, name, threshold, trigger event, category, and scope.
-_Avoid_: Rule when referring only to stored milestone metadata
+An Achievement's identity, name, trigger, threshold, category, and cumulative or session scope.
+_Avoid_: Rule when referring only to milestone metadata
 
 **Achievement Rule**:
-Logic that interprets domain evidence and current achievement facts to decide **Achievement Progress**, unlocks, **Request Streak** changes, session resets, and side-effect intents.
+The interpretation of domain evidence that determines progress, unlocks, streak changes, and session resets.
 _Avoid_: Definition when referring to behavior
 
 **Achievement Progress**:
-A **Viewer**'s accumulated or session-scoped progress toward unlocking an **Achievement**.
+A Viewer's cumulative or session-scoped progress toward a particular Achievement.
 _Avoid_: Points, XP
 
 **Request Streak**:
-A session-scoped count of consecutive successful **Song Requests** by a **Viewer**.
-_Avoid_: Song streak without specifying requests
-
-**Stream Session**:
-The period between the stream going online and offline, used to reset session-scoped achievements and streaks.
-_Avoid_: Broadcast if the lifecycle boundary matters
-
-**Stream Lifecycle State**:
-The integration's current evidence about whether a **Stream Session** is active, when it started or ended, and its peak viewer count.
-_Avoid_: Stream status when lifecycle evidence or session boundaries matter
+The count of consecutive successful Song Requests by a Viewer within a Stream Session.
+_Avoid_: Song streak
 
 **Stream Opener**:
-The **Viewer** whose **Song Request** is first in a **Stream Session**.
-_Avoid_: First requester unless the stream-session achievement is not relevant
-
-## Relationships
-
-- A **Viewer** creates zero or more **Channel Point Redemptions**.
-- A **Channel Point Redemption** starts exactly one **Song Request** or one **Keyboard Raffle** flow.
-- A **Song Request** belongs to exactly one **Viewer** and targets exactly one **Spotify Track**.
-- A **Pending Request** is created from one **Song Request** and eventually becomes part of **Request History** when confirmed as played.
-- The **Spotify Queue** may contain **Spotify Tracks** from **Pending Requests** and tracks from Spotify autoplay.
-- **Now Playing** is position zero of the current **Spotify Queue** view.
-- A **Keyboard Raffle** produces exactly one **Roll** per redemption.
-- A **Roll** belongs to exactly one **Viewer** and has exactly one **Winning Number**.
-- A **Distance** of zero means the **Roll** is a win.
-- A **Raffle Leaderboard** is computed from many **Rolls**.
-- An **Achievement** can be cumulative across all time or scoped to a single **Stream Session**.
-- **Achievement Progress** belongs to one **Viewer** and one **Achievement**.
-- **Stream Lifecycle State** records whether there is an active **Stream Session**.
-- A **Stream Session** can have at most one **Stream Opener**.
-
-## Example dialogue
-
-> **Dev:** "When a **Viewer** submits a **Song Request**, do we put it straight into **Request History**?"
-> **Domain expert:** "No — it starts as a **Pending Request**. It only becomes **Request History** once the **Spotify Track** is confirmed as played."
->
-> **Dev:** "For a **Keyboard Raffle**, is there one stream-wide **Winning Number**?"
-> **Domain expert:** "No — each **Roll** has its own **Winning Number**. A win requires that roll's viewer number to match exactly, giving a **Distance** of zero."
->
-> **Dev:** "Does **Stream Opener** mean the first chatter?"
-> **Domain expert:** "No — it means the **Viewer** with the first **Song Request** in the current **Stream Session**."
-
-## Flagged ambiguities
-
-- "Queue" can mean **Spotify Queue** or **Pending Request** storage; use **Spotify Queue** for playback state and **Pending Request** for accepted-but-unplayed song requests.
-- "Song" is acceptable in user-facing copy, but use **Spotify Track** when referring to the Spotify entity stored or sent to Spotify APIs.
-- "Winner" in the raffle means a **Roll** with **Distance** zero, not merely the closest roll on the **Raffle Leaderboard**.
+The Viewer making the first successful Song Request strictly after the accepted Stream Session start.
+_Avoid_: First chatter, first redemption regardless of outcome

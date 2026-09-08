@@ -1,19 +1,63 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+catalogMode: prefer
+
 catalog:
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.9
-  vitest: 4.1.10
-  vite-plus: 0.2.9
+  "@cloudflare/workers-types": 5.20260825.1
+  "@effect/platform-node": 4.0.0-rc.112
+  "@effect/sql-sqlite-do": 4.0.0-rc.112
+  "@effect/sql-sqlite-node": 4.0.0-rc.112
+  "@effect/vitest": 4.0.0-rc.112
+  "@oxlint/plugins": 1.80.0
+  "@types/node": 26.3.0
+  alchemy: 2.0.0-beta.76
+  effect: 4.0.0-rc.112
+  oxlint: 1.80.0
+  typescript: 7.0.2
+  vite: npm:@voidzero-dev/vite-plus-core@0.3.0
+  vite-plus: 0.3.0
+
 overrides:
-  "@oxlint/plugins": "1.78.0"
-  oxlint: "1.78.0"
+  "@cloudflare/workers-types": 5.20260825.1
+  "@effect/platform-node": 4.0.0-rc.112
+  "@effect/sql-sqlite-do": 4.0.0-rc.112
+  "@effect/sql-sqlite-node": 4.0.0-rc.112
+  "@effect/vitest": 4.0.0-rc.112
+  "@oxlint/plugins": 1.80.0
+  effect: 4.0.0-rc.112
+  oxlint: 1.80.0
+  typescript: 7.0.2
   vite: "catalog:"
-  vitest: "catalog:"
+  vite-plus: 0.3.0
+
 peerDependencyRules:
-  allowAny:
-    - vite
-    - vitest
   allowedVersions:
-    vite: "*"
-    vitest: "*"
+    typescript: "7.0.2"
+    vite: "0.3.0"
+
+allowBuilds:
+  esbuild: false
+  msgpackr-extract: false
+  sharp: false
+  workerd: true
+
+minimumReleaseAgeExclude:
+  - "@alchemy.run/cloudflare-runtime@2.0.0-beta.76"
+  - "@alchemy.run/floci@2.0.0-beta.76"
+  - "@alchemy.run/node-utils@2.0.0-beta.76"
+  - "@cloudflare/workers-types@5.20260825.1"
+  - "@effect/platform-node@4.0.0-rc.112"
+  - "@effect/sql-sqlite-do@4.0.0-rc.112"
+  - "@effect/sql-sqlite-node@4.0.0-rc.112"
+  - "@effect/vitest@4.0.0-rc.112"
+  - "@oxlint/plugins@1.80.0"
+  - "@voidzero-dev/vite-plus-core@0.3.0"
+  - "alchemy@2.0.0-beta.76"
+  - "effect@4.0.0-rc.112"
+  - "oxlint@1.80.0"
+  - "vite-plus@0.3.0"
+
+patchedDependencies:
+  alchemy@2.0.0-beta.76: patches/alchemy@2.0.0-beta.76.patch

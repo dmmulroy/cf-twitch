@@ -1,107 +1,50 @@
 ---
 name: install-anti-slop
-description: Install and configure the generic and optional Effect anti-slop Oxlint plugins in a local TypeScript or JavaScript repository. Use whenever a user asks to add anti-slop lint rules, copy the anti-slop plugin, configure opinionated Oxlint rules, or migrate an existing local anti-slop setup.
+description: Install anti-slop Oxlint rules in a JavaScript or TypeScript repository. Use for first-time setup, rule configuration, or migration of an existing local plugin; include Effect rules when the repository directly uses Effect.
 ---
 
 # Install anti-slop
 
-Install the bundled Oxlint plugin into the current repository and integrate it with the repository's existing lint setup. Preserve unrelated work and adapt to the project's package manager and configuration style.
+Integrate the bundled plugin with the repository's package manager and root lint policy. Preserve unrelated work. Choose installation or migration before copying files.
 
-## Procedure
+## 1. Establish the target
 
-1. Inspect the repository before changing it:
-   - Read its agent instructions.
-   - Check `git status` and preserve unrelated changes.
-   - Identify the package manager from `packageManager` and lockfiles.
-   - Find Oxlint configuration (`oxlint.config.*`, `.oxlintrc*`, or a Vite+ config).
-   - Check whether anti-slop files or rules already exist. Do not overwrite them without reviewing the diff.
+Read repository instructions, Git status, package-manager declarations/lockfiles, root lint/format configuration, and any existing anti-slop sources. Package-manager metadata may live in `packageManager` or `devEngines.packageManager`.
 
-2. Copy the bundled plugin from this skill. Run from the target repository:
+Choose one branch:
 
-   ```bash
-   node <skill-directory>/scripts/install.mjs
-   ```
+- **Install:** the intended plugin directory is absent.
+- **Configure:** existing sources already match the intended distribution; retain them.
+- **Migrate:** compare existing sources with this skill's `assets/anti-slop/`, identify local customizations and obsolete files, and back up the existing directory before replacement. Keep project-specific rules under their own plugin owner.
 
-   This creates `tools/oxlint/anti-slop/`. Pass another relative destination as the first argument when the repository has an established tooling layout. The script refuses to replace an existing destination; only use `--force` after backing up and reviewing existing files.
+**Complete when:** the destination, configuration owner, package manager, branch, and preservation/replacement decisions are explicit. An unexplained local customization blocks replacement.
 
-3. Install current compatible dependencies rather than trusting versions remembered by the agent:
-   - If the repository already depends on `oxlint`, read its installed version from the package manager or lockfile and install `@oxlint/plugins` at exactly that version. Pin it exactly rather than by range so future upgrades move both packages together.
-   - Only when the repository has no `oxlint` dependency, query `npm view oxlint version` and `npm view @oxlint/plugins version`, then install the same current version of both packages.
-   - `oxlint` is a development dependency. The copied source imports `@oxlint/plugins`, so install it as a development dependency for a local-only plugin.
-   - Do not replace the package manager or rewrite unrelated dependency ranges.
+## 2. Establish compatible dependencies
 
-4. Register the generic plugin, configure ignores, and enable all generic rules. For `oxlint.config.ts` or `.oxlintrc.json`, merge these fields with the existing configuration:
+If the repository depends on Oxlint, inspect its installed version and use exactly the same version of `@oxlint/plugins`. If neither is present, query current published versions and select a matching compatible pair. Pin both as development dependencies; use the existing package manager and preserve unrelated dependency ranges.
 
-   ```ts
-   ignorePatterns: [
-     ".agent/**",
-     ".agents/**",
-     ".claude/**",
-     ".codex/**",
-     ".continue/**",
-     ".cursor/**",
-     ".gemini/**",
-     ".opencode/**",
-     ".pi/**",
-     ".roo/**",
-     ".windsurf/**",
-     "tools/oxlint/anti-slop/**",
-   ],
-   jsPlugins: [
-     { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
-   ],
-   ```
+**Complete when:** package metadata and the lockfile resolve a matching `oxlint`/`@oxlint/plugins` pair, or the compatibility failure is reported as a blocker.
 
-   Keep every existing ignore. Adjust the final pattern when the plugin was copied elsewhere. Inspect the repository for other project-local agent tooling directories and add them rather than linting installed skills, hooks, or generated agent configuration as application source. Do not broadly ignore all dot-directories, because some repositories keep owned source or checks in them.
+## 3. Copy or retain the sources
 
-   For Vite+, add these fields to `lint.ignorePatterns` and `lint.jsPlugins`. Also merge the same patterns into `fmt.ignorePatterns` so `vp check` does not reformat installed agent assets or the vendored plugin. Merge existing entries instead of replacing them.
+For installation, run from the target repository:
 
-   Enable these rules at `"error"`:
+```sh
+node <skill-directory>/scripts/install.mjs
+```
 
-   ```json
-   {
-     "anti-slop/no-chained-type-assertions": "error",
-     "anti-slop/no-conditional-empty-object-spread": "error",
-     "anti-slop/no-known-value-widening": "error",
-     "anti-slop/no-module-mocking": "error",
-     "anti-slop/no-object-parameters": "error",
-     "anti-slop/no-reflect-apply": "error",
-     "anti-slop/no-reflect-get": "error",
-     "anti-slop/no-runtime-typeof": "error",
-     "anti-slop/no-shape-in-symbol-names": "error",
-     "anti-slop/no-unknown-parameters": "error",
-     "anti-slop/no-unknown-returns": "error",
-     "anti-slop/no-unknown-type-aliases": "error",
-     "anti-slop/no-unsafe-dictionary-type": "error",
-     "anti-slop/no-widen-then-assert": "error",
-     "anti-slop/require-safety-comment-for-type-assertion": "error"
-   }
-   ```
+The default destination is `tools/oxlint/anti-slop/`; pass another relative destination when the repository has an established layout. For reviewed migration, add `--force` only after the comparison and backup in step 1. The script copies over existing files; separately account for obsolete files rather than assuming copying removes them. Configuration-only work skips copying.
 
-   If the repository declares `effect` in a package manifest, or the user explicitly requests Effect rules, also register the opt-in Effect plugin:
+**Complete when:** intended shipped files match the distribution, local customizations have an explicit home, and every removed or retained obsolete file is accounted for.
 
-   ```ts
-   jsPlugins: [
-     {
-       name: "anti-slop-effect",
-       specifier: "./tools/oxlint/anti-slop/effect/index.ts",
-     },
-   ],
-   rules: {
-     "anti-slop-effect/no-service-constructor-imports": "error",
-   },
-   ```
+## 4. Configure the active policy
 
-   Merge these entries with the generic plugin configuration rather than replacing it. Do not enable the Effect plugin merely because Effect appears transitively in a lockfile; require a direct package-manifest dependency or an explicit user request. The rule covers relative project imports. Report package-alias imports as a current limitation rather than pretending they are enforced.
+Read [configuration reference](references/oxlint-configuration.md) for the repository's native Oxlint or Vite+ branch. Register the generic plugin, enable its exported rules, and protect installed tooling from ordinary application lint/format passes. Add the Effect branch only for a direct Effect dependency or explicit user request.
 
-5. Run the repository's lint command and typecheck. For Vite+, run the repository's full `vp check` command after adding both lint and format ignores. If findings appear in owned project source, report them and fix them only when the user asked for migration/cleanup. Do not suppress rules, weaken rule severity, add unsafe casts, or mechanically launder types to make lint pass.
+**Complete when:** the active root configuration registers the intended plugins, enables every applicable exported rule at error severity, preserves existing policy, and applies the appropriate lint/format ignores.
 
-6. Review the final diff and clearly report:
-   - copied path,
-   - dependency versions installed,
-   - configuration changed,
-   - checks run and any remaining findings.
+## 5. Verify and report
 
-## Migration guidance
+Run root lint and typecheck; for Vite+, also run its complete check command. Fix owned violations when cleanup/migration was requested. Preserve rule strength while correcting types and boundaries; otherwise report the findings without claiming a passing installation.
 
-When replacing an older local copy, compare its rules and diagnostics before overwriting. Keep project-specific rules in their own plugin. The default anti-slop plugin is intentionally generic; framework-specific policy belongs in an explicit opt-in group such as `anti-slop-effect`. Prefer inference, `as const`, `satisfies`, named owner contracts, and boundary parsing when resolving findings.
+**Complete when:** required checks pass, or each failure is reported with its command and blocked scope. Report the installed path, resolved versions, configuration changes, and any remaining limitations. Review the final diff for unrelated changes before finishing.

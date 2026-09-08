@@ -1,0 +1,16 @@
+diff --git a/src/Cloudflare/Workers/WorkerBridge.ts b/src/Cloudflare/Workers/WorkerBridge.ts
+index 21ee2e9b15afe1096473990848806702f6da97a3..8d781b048fbff721435561e7aa5964e7355fbdf7 100644
+--- a/src/Cloudflare/Workers/WorkerBridge.ts
++++ b/src/Cloudflare/Workers/WorkerBridge.ts
+@@ -1,5 +1,4 @@
+ import type * as cf from "@cloudflare/workers-types";
+-import * as NodeServices from "@effect/platform-node/NodeServices";
+ import type { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+ import * as Cause from "effect/Cause";
+ import * as ConfigProvider from "effect/ConfigProvider";
+@@ -264,5 +263,4 @@ const getSharedBuild = (
+   const platform = Layer.mergeAll(
+-    NodeServices.layer,
+     FetchHttpClient.layer,
+     // TODO(sam): wire this up to telemetry more directly
+     Logger.layer([Logger.consolePretty()]),

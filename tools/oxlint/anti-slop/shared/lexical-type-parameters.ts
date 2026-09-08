@@ -1,32 +1,19 @@
 import type { ESTree } from "@oxlint/plugins";
 
-type VisitorKeys = Readonly<Record<string, readonly string[]>>;
+import type { TypeAliasEnvironment } from "./type-alias-resolution.ts";
 
-function isNode(value: unknown): value is ESTree.Node {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"type" in value &&
-		typeof value.type === "string"
-	);
-}
-
-function collectInferTypeParameterNames(
-	node: ESTree.Node,
-	visitorKeys: VisitorKeys,
+function collectConditionalInferNames(
+	conditional: ESTree.TSConditionalType,
+	environment: TypeAliasEnvironment,
 	names: Set<string>,
 ): void {
-	if (node.type === "TSInferType") names.add(node.typeParameter.name.name);
-	const record = node as unknown as Readonly<Record<string, unknown>>;
-	for (const key of visitorKeys[node.type] ?? []) {
-		const value = record[key];
-		if (isNode(value)) {
-			collectInferTypeParameterNames(value, visitorKeys, names);
-			continue;
+	for (const inferred of environment.inferredTypes) {
+		let current: ESTree.Node | null = inferred;
+		while (current !== null && current !== conditional.extendsType) {
+			current = current.parent;
 		}
-		if (!Array.isArray(value)) continue;
-		for (const child of value) {
-			if (isNode(child)) collectInferTypeParameterNames(child, visitorKeys, names);
+		if (current === conditional.extendsType) {
+			names.add(inferred.typeParameter.name.name);
 		}
 	}
 }
@@ -34,7 +21,7 @@ function collectInferTypeParameterNames(
 /** Collect type binders that are in scope at a node and can shadow module aliases. */
 export function lexicalTypeParameterNames(
 	node: ESTree.Node,
-	visitorKeys: VisitorKeys,
+	environment: TypeAliasEnvironment,
 ): ReadonlySet<string> {
 	const names = new Set<string>();
 	let descendant: ESTree.Node = node;
@@ -52,7 +39,7 @@ export function lexicalTypeParameterNames(
 			names.add(current.key.name);
 		}
 		if (current.type === "TSConditionalType" && descendant === current.trueType) {
-			collectInferTypeParameterNames(current.extendsType, visitorKeys, names);
+			collectConditionalInferNames(current, environment, names);
 		}
 		descendant = current;
 		current = current.parent;
