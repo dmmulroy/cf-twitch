@@ -39,18 +39,16 @@ export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderReq
       provider: input.provider,
       operation: input.operation,
       status: response.status,
-      kind:
-        response.status === 429
-          ? "rate-limited"
-          : response.status === 401
-            ? "unauthorized"
-            : response.status === 404
-              ? input.notFound
-              : response.status >= 500
-                ? input.mutation
-                  ? "outcome-unknown"
-                  : "network"
-                : "rejected",
+      kind: HttpClientResponse.matchStatus(response, {
+        429: () => "rate-limited" as const,
+        401: () => "unauthorized" as const,
+        404: () => input.notFound,
+        orElse: (response): ProviderError["kind"] => {
+          if (response.status >= 500) return input.mutation ? "outcome-unknown" : "network";
+
+          return "rejected";
+        },
+      }),
       retryAfterMs: response.status === 429 ? Option.some(retryAfterMs) : Option.none(),
     }),
   );
