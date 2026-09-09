@@ -16,6 +16,7 @@ export interface IEventSubReceipts {
     messageId: EventSubMessageId,
   ) => Effect.Effect<Option.Option<EventSubReceiptStatus>, EventSubReceiptError>;
 }
+
 /** EventSub receipt clients route every operation by the authenticated message ID. */
 export class EventSubReceipts extends Context.Service<EventSubReceipts, IEventSubReceipts>()(
   "@cf-twitch/EventSubReceipts",

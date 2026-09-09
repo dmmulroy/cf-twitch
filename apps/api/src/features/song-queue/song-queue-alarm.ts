@@ -6,6 +6,7 @@ import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 export interface ISongQueueAlarm {
   readonly scheduleAlarm: (dueAt: number) => Effect.Effect<void, SongQueueError>;
 }
+
 /** One physical alarm wakes both durable refresh and pending cleanup intent. */
 export class SongQueueAlarm extends Context.Service<SongQueueAlarm, ISongQueueAlarm>()(
   "@cf-twitch/SongQueueAlarm",
@@ -14,6 +15,7 @@ export class SongQueueAlarm extends Context.Service<SongQueueAlarm, ISongQueueAl
 /** Construct the song queue alarm only inside the Durable Object runtime phase. */
 export const makeSongQueueAlarm = Effect.gen(function* () {
   const state = yield* Cloudflare.DurableObjectState;
+
   return SongQueueAlarm.of({
     scheduleAlarm: Effect.fn("SongQueueAlarm.scheduleAlarm")((dueAt) =>
       Effect.tryPromise({
@@ -24,5 +26,6 @@ export const makeSongQueueAlarm = Effect.gen(function* () {
     ),
   });
 });
+
 /** Song queue platform alarm Layer retains its instance-local state requirement. */
 export const songQueueAlarmLayer = Layer.effect(SongQueueAlarm, makeSongQueueAlarm);

@@ -105,6 +105,7 @@ export class CommandsHttpApiGroup extends HttpApiGroup.make("commands")
       error: CommandsError,
     }),
   ) {}
+
 /** Shared internal HTTP contract for the physical CommandsDO singleton. */
 export class CommandsHttpApi extends HttpApi.make("CommandsHttpApi")
   .add(CommandsHttpApiGroup)

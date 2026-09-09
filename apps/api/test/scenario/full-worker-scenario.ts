@@ -56,10 +56,13 @@ import { twitchHttpTelemetrySafetyLayer } from "../../src/runtime/twitch-telemet
 import { recordingTwitchAnalyticsLayer } from "../support/recording-twitch-analytics.ts";
 
 const parseScenarioEventSubMessageId = Schema.decodeUnknownEffect(EventSubMessageId);
+
 const ScenarioEventSubReceiptStatus = Schema.OptionFromNullOr(EventSubReceiptStatus);
+
 const encodeScenarioEventSubReceiptStatus = Schema.encodeEffect(ScenarioEventSubReceiptStatus);
 
 const configurationLayer = Layer.succeed(TwitchConfiguration, httpTestConfiguration);
+
 const controlledPlatformLayer = Layer.mergeAll(
   configurationLayer,
   providerScenarioTransportLayer,
@@ -70,16 +73,20 @@ const controlledPlatformLayer = Layer.mergeAll(
 const providerTokenExchangeLayer = providerTokenExchangeLayerWithoutDependencies.pipe(
   Layer.provide(controlledPlatformLayer),
 );
+
 const providerTokenServersLayer = Layer.mergeAll(
   spotifyTokenServerLayerWithoutDependencies,
   twitchTokenServerLayerWithoutDependencies,
 ).pipe(Layer.provide(providerTokenExchangeLayer));
+
 const providerAccessTokensLayer = providerAccessTokensLayerWithoutDependencies.pipe(
   Layer.provide(providerTokenServersLayer),
 );
+
 const spotifyServiceLayer = spotifyServiceLayerWithoutDependencies.pipe(
   Layer.provide([controlledPlatformLayer, providerAccessTokensLayer]),
 );
+
 const twitchServiceLayer = twitchServiceLayerWithoutDependencies.pipe(
   Layer.provide([controlledPlatformLayer, providerAccessTokensLayer, providerTokenExchangeLayer]),
 );
@@ -87,16 +94,21 @@ const twitchServiceLayer = twitchServiceLayerWithoutDependencies.pipe(
 const achievementsServerLayer = achievementsServerLayerWithoutDependencies.pipe(
   Layer.provide([twitchServiceLayer, recordingTwitchAnalyticsLayer]),
 );
+
 const achievementsLayer = achievementsClientLayerWithoutDependencies.pipe(
   Layer.provide(achievementsServerLayer),
 );
+
 const commandsLayer = commandsClientLayerWithoutDependencies.pipe(
   Layer.provide(commandsServerLayerWithoutDependencies),
 );
+
 const raffleLayer = raffleClientLayerWithoutDependencies.pipe(Layer.provide(raffleServerLayer));
+
 const songQueueServerLayer = songQueueServerLayerWithoutDependencies.pipe(
   Layer.provide(spotifyServiceLayer),
 );
+
 const songQueueLayer = songQueueClientLayerWithoutDependencies.pipe(
   Layer.provide(songQueueServerLayer),
 );
@@ -104,12 +116,15 @@ const songQueueLayer = songQueueClientLayerWithoutDependencies.pipe(
 const eventBusServerLayer = eventBusServerLayerWithoutDependencies.pipe(
   Layer.provide(achievementsLayer),
 );
+
 const eventPublisherLayer = eventPublisherLayerWithoutDependencies.pipe(
   Layer.provide(eventBusServerLayer),
 );
+
 const eventBusAdministrationLayer = eventBusAdministrationLayerWithoutDependencies.pipe(
   Layer.provide(eventBusServerLayer),
 );
+
 const streamServerLayer = streamLifecycleServerLayerWithoutDependencies.pipe(
   Layer.provide([
     providerAccessTokensLayer,
@@ -118,6 +133,7 @@ const streamServerLayer = streamLifecycleServerLayerWithoutDependencies.pipe(
     configurationLayer,
   ]),
 );
+
 const streamLayer = streamLifecycleClientLayerWithoutDependencies.pipe(
   Layer.provide(streamServerLayer),
 );
@@ -131,20 +147,25 @@ const workflowDependenciesLayer = Layer.mergeAll(
   recordingTwitchAnalyticsLayer,
   NodeCrypto.layer,
 );
+
 const workflowServersLayer = Layer.mergeAll(
   songRequestSagaServerLayerWithoutDependencies,
   keyboardRaffleSagaServerLayerWithoutDependencies,
   raidShoutoutSagaServerLayerWithoutDependencies,
 ).pipe(Layer.provide(workflowDependenciesLayer));
+
 const workflowStartersLayer = workflowStartersLayerWithoutDependencies.pipe(
   Layer.provide(workflowServersLayer),
 );
+
 const computedCommandsLayer = computedChatCommandsLayerWithoutDependencies.pipe(
   Layer.provide([commandsLayer, songQueueLayer, raffleLayer, achievementsLayer]),
 );
+
 const commandExecutorLayer = executorLayerWithoutDependencies.pipe(
   Layer.provide([commandsLayer, computedCommandsLayer, recordingTwitchAnalyticsLayer]),
 );
+
 const eventSubServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
   Layer.provide([
     workflowStartersLayer,
@@ -155,6 +176,7 @@ const eventSubServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
     recordingTwitchAnalyticsLayer,
   ]),
 );
+
 const eventSubReceiptsLayer = eventSubReceiptsLayerWithoutDependencies.pipe(
   Layer.provide(eventSubServerLayer),
 );
@@ -162,6 +184,7 @@ const eventSubReceiptsLayer = eventSubReceiptsLayerWithoutDependencies.pipe(
 const oauthStateLayer = oauthStateClientLayerWithoutDependencies.pipe(
   Layer.provide(oauthStateServerLayer),
 );
+
 const oauthAuthorizationLayer = oauthAuthorizationLayerWithoutDependencies.pipe(
   Layer.provide([
     oauthStateLayer,
@@ -192,19 +215,25 @@ const fullWorkerScenarioImplementation = Effect.gen(function* () {
   const accessTokens = yield* ProviderAccessTokens;
   const eventSubReceipts = yield* EventSubReceipts;
   const transcript = yield* ProviderScenarioTranscript;
+
   const fetch = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const pathname = new URL(request.originalUrl).pathname;
+
     if (pathname === "/__scenario/provider-transcript")
       return HttpServerResponse.jsonUnsafe({ requests: yield* transcript.readRequests() });
+
     if (pathname === "/__scenario/eventsub-receipt-status") {
       const messageId = yield* parseScenarioEventSubMessageId(
         new URL(request.originalUrl).searchParams.get("messageId"),
       );
+
       const status = yield* eventSubReceipts.getReceiptStatus(messageId);
       const encodedStatus = yield* encodeScenarioEventSubReceiptStatus(status);
+
       return HttpServerResponse.jsonUnsafe(encodedStatus);
     }
+
     if (pathname !== "/__scenario/provider-token/concurrent-refresh")
       return yield* application.fetch;
 
@@ -221,12 +250,15 @@ const fullWorkerScenarioImplementation = Effect.gen(function* () {
     });
     yield* accessTokens.onStreamOnline("spotify");
     yield* Effect.sleep("300 millis");
+
     const concurrent = yield* Effect.all(
       [accessTokens.getValidAccessToken("spotify"), accessTokens.getValidAccessToken("spotify")],
       { concurrency: "unbounded" },
     );
+
     const committed = yield* accessTokens.getValidAccessToken("spotify");
     const values = concurrent.map(Redacted.value);
+
     return HttpServerResponse.jsonUnsafe({
       concurrentCallersConverged: values[0] === values[1],
       callersReturnedCommittedToken: values.every((value) => value === Redacted.value(committed)),
@@ -238,6 +270,7 @@ const fullWorkerScenarioImplementation = Effect.gen(function* () {
       SchemaError: Effect.die,
     }),
   );
+
   return { fetch };
 });
 
@@ -259,7 +292,9 @@ export const fullWorkerScenarioLayer = TwitchApiWorker.make(
 /** Deployable full-graph scenario output contains only its isolated local URL. */
 export const fullWorkerScenarioStack = Effect.gen(function* () {
   const worker = yield* TwitchApiWorker;
+
   if (worker.url === undefined) return yield* Effect.die("Full Worker scenario URL is unavailable");
+
   return { url: worker.url };
 }).pipe(Effect.provide(fullWorkerScenarioLayer));
 

@@ -20,9 +20,13 @@ import {
 } from "./song-queue-database.ts";
 
 const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
 const songQueueLimit = (value: number): SongQueueLimit => SongQueueLimit.make(value);
+
 const databaseLayer = songQueueDatabaseLayerWithoutDependencies.pipe(Layer.provideMerge(sqlLayer));
+
 const instant = (seconds: number) => IsoTimestamp.make(new Date(seconds * 1000).toISOString());
+
 const track = (id: string, name = id): SpotifyTrack => ({
   id: SpotifyTrackId.make(id),
   name,
@@ -30,6 +34,7 @@ const track = (id: string, name = id): SpotifyTrack => ({
   album: "Album",
   albumCoverUrl: Option.none(),
 });
+
 const request = (
   id: string,
   song = track("repeat"),
@@ -44,17 +49,20 @@ const request = (
     requesterUserId: ViewerId.make(viewer),
     requesterDisplayName: displayName,
   });
+
 const historyQuery = RequestHistoryQuery.make({
   limit: songQueueLimit(100),
   offset: 0,
   since: Option.none<IsoTimestamp>(),
   until: Option.none<IsoTimestamp>(),
 });
+
 const snapshot = (
   current: Option.Option<SpotifyTrack>,
   upcoming: readonly SpotifyTrack[],
   seconds: number,
 ) => ({ currentlyPlaying: current, upcoming, syncedAt: instant(seconds) });
+
 const playRequest = Effect.fn("SongQueueTest.playRequest")(function* (
   pending: PendingSongRequest,
   seconds: number,
@@ -274,6 +282,7 @@ describe("Song queue real SQLite persistence", () => {
           1,
         );
         expect(yield* database.getSessionRequestCount({ since: instant(22) })).toBe(2);
+
         const filtered = yield* database.getRequestHistory(
           RequestHistoryQuery.make({
             ...historyQuery,
@@ -283,6 +292,7 @@ describe("Song queue real SQLite persistence", () => {
             offset: 1,
           }),
         );
+
         expect(filtered.totalCount).toBe(2);
         expect(filtered.requests[0]?.eventId).toBe("new");
       }).pipe(Effect.provide(databaseLayer)),
@@ -299,9 +309,11 @@ describe("Song queue real SQLite persistence", () => {
         yield* database.reconcilePlayback(snapshot(Option.none(), [pending.track], 1));
         yield* database.reconcilePlayback(snapshot(Option.some(pending.track), [], 2));
         yield* sql`CREATE TRIGGER fail_snapshot BEFORE INSERT ON spotify_queue_snapshot BEGIN SELECT RAISE(FAIL, 'snapshot insert failed'); END`;
+
         const result = yield* database
           .reconcilePlayback(snapshot(Option.some(track("next")), [], 3))
           .pipe(Effect.result);
+
         expect(result).toMatchObject({
           _tag: "Failure",
           failure: { reason: "storage_unavailable" },
@@ -341,6 +353,7 @@ const legacySeedLayer = Layer.effectDiscard(
     yield* sql`INSERT INTO cf_agents_state VALUES ('cf_state_row_id', ${JSON.stringify({ lastSyncAt: "1970-01-01T00:00:05.000Z", refreshScheduleId: "opaque-old-id", refreshDueAt: "1970-01-01T00:00:20.000Z", cleanupScheduleId: null, cleanupDueAt: null, consecutiveSyncFailures: 3 })})`;
   }),
 );
+
 const adoptedLayer = songQueueDatabaseLayerWithoutDependencies.pipe(
   Layer.provide(legacySeedLayer),
   Layer.provideMerge(sqlLayer),
@@ -358,6 +371,7 @@ const legacyPlaybackLayer = Layer.effectDiscard(
     yield* sql`INSERT INTO request_history VALUES ('earlier-play', 'earliertrack', 'Earlier title', '["Artist"]', 'Album', NULL, 'viewer', 'Viewer', '1969-12-31T23:58:00.000Z', '1969-12-31T23:59:00.000Z')`;
   }),
 ).pipe(Layer.provide(legacySeedLayer));
+
 const adoptedPlaybackLayer = songQueueDatabaseLayerWithoutDependencies.pipe(
   Layer.provide(legacyPlaybackLayer),
   Layer.provideMerge(sqlLayer),
@@ -376,10 +390,13 @@ describe("Song queue historical adoption", () => {
         expect(
           (yield* database.getRequestHistory(historyQuery)).requests.map((row) => row.eventId),
         ).toEqual(["earlier-play"]);
+
         const restarted = yield* Effect.gen(function* () {
           const rebuilt = yield* SongQueueDatabase;
+
           return yield* rebuilt.getCoordination();
         }).pipe(Effect.provide(songQueueDatabaseLayerWithoutDependencies));
+
         expect(restarted).toEqual(yield* database.getCoordination());
         yield* database.reconcilePlayback(snapshot(Option.none(), [], 6));
         expect(
@@ -393,9 +410,11 @@ describe("Song queue historical adoption", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE cf_agents_state (id TEXT PRIMARY KEY, state TEXT)`;
       yield* sql`INSERT INTO cf_agents_state VALUES ('cf_state_row_id', 'not-json')`;
+
       const result = yield* Effect.gen(function* () {
         yield* SongQueueDatabase;
       }).pipe(Effect.provide(songQueueDatabaseLayerWithoutDependencies), Effect.exit);
+
       expect(result._tag).toBe("Failure");
       expect(yield* sql`SELECT state FROM cf_agents_state`).toEqual([{ state: "not-json" }]);
       expect(

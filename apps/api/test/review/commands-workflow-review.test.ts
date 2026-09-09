@@ -33,6 +33,7 @@ const redemption = Schema.decodeSync(ChannelPointRedemption)({
   reward: { id: "reward", title: "Song", cost: 100, prompt: "" },
   redeemedAt: "2026-01-01T00:00:00Z",
 });
+
 const track = Schema.decodeSync(SpotifyTrack)({
   id: "abc",
   name: "Track",
@@ -40,12 +41,15 @@ const track = Schema.decodeSync(SpotifyTrack)({
   album: "Album",
   albumCoverUrl: null,
 });
+
 const sqlite = SqliteClient.layer({ filename: ":memory:" });
+
 const reviewServices = Effect.gen(function* () {
   const remoteRecordExists = yield* Ref.make(false);
   const refunded = yield* Ref.make(false);
   const messages = yield* Ref.make<readonly string[]>([]);
   const recordWithoutReceipt = Ref.set(remoteRecordExists, true);
+
   const dependencies = Layer.mergeAll(
     recordingTwitchAnalyticsLayer,
     NodeCrypto.layer,
@@ -84,22 +88,28 @@ const reviewServices = Effect.gen(function* () {
     }),
     Layer.succeed(EventPublisher, { publish: () => Effect.void }),
   );
+
   const layer = workflowExecutionLayerWithoutDependencies.pipe(
     Layer.provide(workflowJournalLayerWithoutDependencies),
     Layer.provide(dependencies),
   );
+
   const start = (input: WorkflowInput) =>
     Effect.gen(function* () {
       const workflow = yield* WorkflowExecution;
       yield* workflow.start(input);
+
       return yield* workflow.getStatus();
     }).pipe(Effect.provide(layer, { local: true }));
+
   const resume = () =>
     Effect.gen(function* () {
       const workflow = yield* WorkflowExecution;
       yield* workflow.resume();
+
       return yield* workflow.getStatus();
     }).pipe(Effect.provide(layer, { local: true }));
+
   return { start, resume, remoteRecordExists, refunded, messages };
 });
 

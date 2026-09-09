@@ -15,6 +15,7 @@ import providerTokenServerLayer, {
 export const makeProviderAccessTokens = Effect.gen(function* () {
   const spotifyNamespace = yield* SpotifyTokenServer;
   const twitchNamespace = yield* TwitchTokenServer;
+
   const spotifyClient = yield* makeExecutionMemo(
     Effect.suspend(() =>
       HttpApiClient.makeWith(ProviderTokenHttpApi, {
@@ -23,6 +24,7 @@ export const makeProviderAccessTokens = Effect.gen(function* () {
       }),
     ),
   );
+
   const twitchClient = yield* makeExecutionMemo(
     Effect.suspend(() =>
       HttpApiClient.makeWith(ProviderTokenHttpApi, {
@@ -31,8 +33,10 @@ export const makeProviderAccessTokens = Effect.gen(function* () {
       }),
     ),
   );
+
   const clientFor = (provider: OAuthProvider) =>
     provider === "spotify" ? spotifyClient : twitchClient;
+
   const boundaryError =
     (provider: OAuthProvider, operation: string) =>
     <A, R>(
@@ -67,6 +71,7 @@ export const makeProviderAccessTokens = Effect.gen(function* () {
             ),
         }),
       );
+
   return ProviderAccessTokens.of({
     getValidAccessToken: Effect.fn("ProviderAccessTokens.getValidAccessToken")((provider) =>
       clientFor(provider).pipe(
@@ -94,11 +99,13 @@ export const makeProviderAccessTokens = Effect.gen(function* () {
     ),
   });
 });
+
 /** Provider token clients preserve their real Alchemy namespace requirements. */
 export const providerAccessTokensLayerWithoutDependencies = Layer.effect(
   ProviderAccessTokens,
   makeProviderAccessTokens,
 );
+
 /** Provider token clients select HTTP-only Durable Object servers. */
 export const providerAccessTokensLayer = providerAccessTokensLayerWithoutDependencies.pipe(
   Layer.provide(providerTokenServerLayer),

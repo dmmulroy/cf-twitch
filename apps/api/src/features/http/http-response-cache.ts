@@ -17,6 +17,7 @@ export class HttpResponseCache extends Context.Service<HttpResponseCache, IHttpR
 
 const cacheFailure = () =>
   new HttpBoundaryError({ status: 502, error: "Invalid service response" });
+
 const ignoreCacheFailure = <A, E>(effect: Effect.Effect<A, E>) =>
   effect.pipe(Effect.catch(() => Effect.void));
 
@@ -33,12 +34,15 @@ export const httpResponseCacheLayer = (
         readonly load: Effect.Effect<A, E, R>;
       }) {
         const request = new Request(input.key);
+
         const cached = yield* Effect.tryPromise({
           try: () => cache.match(request),
           catch: cacheFailure,
         }).pipe(Effect.option);
+
         if (Option.isSome(cached) && cached.value !== undefined) {
           const response = cached.value;
+
           const decoded = yield* Effect.tryPromise({
             try: () => response.json(),
             catch: cacheFailure,
@@ -46,15 +50,19 @@ export const httpResponseCacheLayer = (
             Effect.flatMap(Schema.decodeUnknownEffect(input.schema, { onExcessProperty: "error" })),
             Effect.option,
           );
+
           if (Option.isSome(decoded)) return decoded.value;
           yield* ignoreCacheFailure(
             Effect.tryPromise({ try: () => cache.delete(request), catch: cacheFailure }),
           );
         }
+
         const value = yield* input.load;
+
         const encoded = yield* Schema.encodeEffect(input.schema)(value).pipe(
           Effect.mapError(cacheFailure),
         );
+
         // Await the bounded Cache API write so it survives request completion without a detached fiber.
         yield* ignoreCacheFailure(
           Effect.tryPromise({
@@ -68,6 +76,7 @@ export const httpResponseCacheLayer = (
             catch: cacheFailure,
           }),
         );
+
         return value;
       }),
     }),

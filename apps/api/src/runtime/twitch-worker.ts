@@ -112,6 +112,7 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
   const stream = yield* StreamLifecycleClient;
   const configuration = yield* TwitchConfiguration;
   const errorReporters = yield* ErrorReporter.CurrentErrorReporters;
+
   const runtimeServices = Layer.mergeAll(
     Layer.succeed(Achievements, achievements),
     Layer.succeed(Commands, commands),
@@ -124,6 +125,7 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
     Layer.succeed(StreamLifecycleClient, stream),
     Layer.succeed(TwitchConfiguration, configuration),
   );
+
   // Router acquisition is scoped in Effect rc.112; never attach it to workerd's unclosed isolate scope.
   const requestRouter = yield* makeExecutionMemo(
     HttpRouter.toHttpEffect(
@@ -135,9 +137,11 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
       ),
     ),
   );
+
   const fetch: HttpEffect = Effect.gen(function* () {
     return yield* yield* requestRouter;
   });
+
   return { fetch };
 });
 

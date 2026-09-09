@@ -11,6 +11,7 @@ export interface ISongQueueCoordinator extends ISongQueue {
   readonly startPolling: () => Effect.Effect<void, SongQueueError>;
   readonly runAlarm: () => Effect.Effect<void, SongQueueError>;
 }
+
 /** Song queue coordinator serializes provider observations with request mutations. */
 export class SongQueueCoordinator extends Context.Service<
   SongQueueCoordinator,
@@ -32,6 +33,7 @@ export const makeSongQueue = Effect.gen(function* () {
       Math.max(now + 1_000, Math.min(coordination.refreshDueAt, coordination.cleanupDueAt)),
     );
   });
+
   const syncPlayback = Effect.fn("SongQueue.syncPlayback")(function* () {
     const observed = yield* spotify.getPlayback().pipe(
       Effect.tapError((error) =>
@@ -48,6 +50,7 @@ export const makeSongQueue = Effect.gen(function* () {
         () => new SongQueueError({ operation: "refreshQueue", reason: "provider_unavailable" }),
       ),
     );
+
     const now = yield* Clock.currentTimeMillis;
     yield* database.reconcilePlayback({
       currentlyPlaying: observed.currentlyPlaying,
@@ -55,10 +58,12 @@ export const makeSongQueue = Effect.gen(function* () {
       syncedAt: IsoTimestamp.make(new Date(now).toISOString()),
     });
   });
+
   const refreshCycle = Effect.fn("SongQueue.refreshCycle")(function* () {
     const result = yield* syncPlayback().pipe(Effect.result);
     const now = yield* Clock.currentTimeMillis;
     const coordination = yield* database.getCoordination();
+
     if (result._tag === "Success") {
       yield* database.setCoordination({
         cleanupDueAt: coordination.cleanupDueAt,
@@ -84,12 +89,16 @@ export const makeSongQueue = Effect.gen(function* () {
         }),
       );
     }
+
     yield* armPolling();
+
     if (result._tag === "Failure") return yield* result.failure;
   });
+
   const ensureFresh = Effect.fn("SongQueue.ensureFresh")(function* () {
     const now = yield* Clock.currentTimeMillis;
     const coordination = yield* database.getCoordination();
+
     if (Option.isSome(coordination.lastSyncAt) && now - coordination.lastSyncAt.value < 15_000)
       return;
     yield* refreshCycle().pipe(
@@ -100,6 +109,7 @@ export const makeSongQueue = Effect.gen(function* () {
       ),
     );
   }, withSongQueueLock);
+
   const startPolling = Effect.fn("SongQueue.startPolling")(function* () {
     const now = yield* Clock.currentTimeMillis;
     const coordination = yield* database.getCoordination();
@@ -120,9 +130,11 @@ export const makeSongQueue = Effect.gen(function* () {
     });
     yield* armPolling();
   }, withSongQueueLock);
+
   const runAlarm = Effect.fn("SongQueue.runAlarm")(function* () {
     const now = yield* Clock.currentTimeMillis;
     let coordination = yield* database.getCoordination();
+
     if (coordination.cleanupDueAt <= now) {
       yield* database.cleanupPending(IsoTimestamp.make(new Date(now - 3_600_000).toISOString()));
       coordination = {
@@ -133,6 +145,7 @@ export const makeSongQueue = Effect.gen(function* () {
       };
       yield* database.setCoordination(coordination);
     }
+
     if (coordination.refreshDueAt <= now) {
       // Typed provider failure has already persisted backoff and installed the next alarm.
       yield* refreshCycle().pipe(
@@ -166,10 +179,12 @@ export const makeSongQueue = Effect.gen(function* () {
     ),
     getSongQueue: Effect.fn("SongQueue.getSongQueue")(function* (input) {
       yield* ensureFresh();
+
       return yield* database.getSongQueue(input);
     }),
     getCurrentlyPlaying: Effect.fn("SongQueue.getCurrentlyPlaying")(function* () {
       yield* ensureFresh();
+
       return yield* database.getCurrentlyPlaying();
     }),
     getRequestHistory: Effect.fn("SongQueue.getRequestHistory")((input) =>
@@ -201,6 +216,7 @@ export const makeSongQueue = Effect.gen(function* () {
 export const songQueueLayerWithoutDependencies = Layer.effectContext(
   Effect.gen(function* () {
     const queue = yield* makeSongQueue;
+
     return Context.make(SongQueue, queue).pipe(Context.add(SongQueueCoordinator, queue));
   }),
 );

@@ -51,6 +51,7 @@ import { songQueueHttpHandlersLayer } from "./song-queue-http-handlers.ts";
 import { SongQueueCoordinator, songQueueLayerWithoutDependencies } from "./song-queue-service.ts";
 
 const songQueueLimit = (value: number): SongQueueLimit => SongQueueLimit.make(value);
+
 const testTrack = {
   id: SpotifyTrackId.make("repeated"),
   name: "Repeated",
@@ -58,6 +59,7 @@ const testTrack = {
   album: "Album",
   albumCoverUrl: Option.none<string>(),
 };
+
 const pending = (id: string) =>
   PendingSongRequest.make({
     eventId: RedemptionId.make(id),
@@ -66,29 +68,34 @@ const pending = (id: string) =>
     requesterDisplayName: "Viewer",
     requestedAt: IsoTimestamp.make("1970-01-01T00:00:00.000Z"),
   });
+
 const historyQuery = RequestHistoryQuery.make({
   limit: songQueueLimit(100),
   offset: 0,
   since: Option.none<IsoTimestamp>(),
   until: Option.none<IsoTimestamp>(),
 });
+
 const providerTrack = {
   id: testTrack.id,
   name: testTrack.name,
   artists: [{ name: "Artist" }],
   album: { name: "Album", images: [] },
 };
+
 const PlaybackControl = Schema.Struct({
   current: Schema.Boolean,
   queueSize: Schema.Int,
   queueStatus: Schema.Int,
   currentStatus: Schema.Int,
 });
+
 type SongQueueObservationGate = {
   readonly queueStarted: Deferred.Deferred<void>;
   readonly currentStarted: Deferred.Deferred<void>;
   readonly releaseQueue: Deferred.Deferred<void>;
 };
+
 class SongQueueTestControl extends Context.Service<
   SongQueueTestControl,
   {
@@ -99,6 +106,7 @@ class SongQueueTestControl extends Context.Service<
     readonly observationGate: Ref.Ref<Option.Option<SongQueueObservationGate>>;
   }
 >()("SongQueueTestControl") {}
+
 const configurationLayer = Layer.succeed(TwitchConfiguration, {
   twitch: {
     clientId: "local",
@@ -125,11 +133,13 @@ const testLayer = Layer.unwrap(
       queueStatus: 200,
       currentStatus: 200,
     });
+
     const requests = yield* Ref.make<readonly string[]>([]);
     const alarms = yield* Ref.make<readonly number[]>([]);
     const alarmFailure = yield* Ref.make(false);
     const observationGate = yield* Ref.make<Option.Option<SongQueueObservationGate>>(Option.none());
     const tokenAlarm = yield* Ref.make<Option.Option<number>>(Option.none());
+
     const transport = HttpClient.make((request, url) =>
       Effect.gen(function* () {
         yield* Ref.update(requests, (previous) => [
@@ -138,13 +148,16 @@ const testLayer = Layer.unwrap(
         ]);
         const state = yield* Ref.get(playback);
         const gate = yield* Ref.get(observationGate);
+
         if (Option.isSome(gate) && url.pathname === "/v1/me/player/queue") {
           yield* Deferred.succeed(gate.value.queueStarted, undefined);
           yield* Deferred.await(gate.value.releaseQueue);
         }
+
         if (Option.isSome(gate) && url.pathname === "/v1/me/player/currently-playing")
           yield* Deferred.succeed(gate.value.currentStarted, undefined);
         const current = state.current ? providerTrack : null;
+
         if (url.pathname === "/v1/me/player/queue")
           return HttpClientResponse.fromWeb(
             request,
@@ -156,6 +169,7 @@ const testLayer = Layer.unwrap(
               { status: state.queueStatus },
             ),
           );
+
         if (url.pathname === "/v1/me/player/currently-playing")
           return HttpClientResponse.fromWeb(
             request,
@@ -164,14 +178,17 @@ const testLayer = Layer.unwrap(
               { status: state.currentStatus },
             ),
           );
+
         return HttpClientResponse.fromWeb(
           request,
           new Response("Unconfigured controlled provider route", { status: 404 }),
         );
       }),
     );
+
     const httpLayer = Layer.succeed(HttpClient.HttpClient, transport);
     const sqliteLayer = SqliteClient.layer({ filename: ":memory:" });
+
     const tokenLifecycleLayer = providerTokenLifecycleLayerWithoutDependencies.pipe(
       Layer.provide([
         providerTokenDatabaseLayerWithoutDependencies,
@@ -184,6 +201,7 @@ const testLayer = Layer.unwrap(
       Layer.provide(Layer.succeed(TokenProviderIdentity, "spotify")),
       Layer.provide(sqliteLayer),
     );
+
     const accessTokensLayer = Layer.effect(
       ProviderAccessTokens,
       Effect.gen(function* () {
@@ -195,6 +213,7 @@ const testLayer = Layer.unwrap(
           expiresIn: 86_400,
           scopes: [],
         });
+
         const selected = <A>(
           provider: "spotify" | "twitch",
           operation: Effect.Effect<A, ProviderError>,
@@ -210,6 +229,7 @@ const testLayer = Layer.unwrap(
                   retryAfterMs: Option.none(),
                 }),
               );
+
         return ProviderAccessTokens.of({
           getValidAccessToken: (provider) => selected(provider, lifecycle.getValidToken()),
           setTokens: (input) => selected(input.provider, lifecycle.setTokens(input.tokens)),
@@ -218,9 +238,11 @@ const testLayer = Layer.unwrap(
         });
       }),
     ).pipe(Layer.provide(tokenLifecycleLayer));
+
     const providerLayer = spotifyServiceLayerWithoutDependencies.pipe(
       Layer.provide([httpLayer, configurationLayer, accessTokensLayer, NodeCrypto.layer]),
     );
+
     const alarmLayer = Layer.succeed(SongQueueAlarm, {
       scheduleAlarm: (at) =>
         Effect.gen(function* () {
@@ -232,9 +254,11 @@ const testLayer = Layer.unwrap(
           yield* Ref.update(alarms, (previous) => [...previous, at]);
         }),
     });
+
     const databaseLayer = songQueueDatabaseLayerWithoutDependencies.pipe(
       Layer.provideMerge(sqliteLayer),
     );
+
     return songQueueLayerWithoutDependencies.pipe(
       Layer.provide([providerLayer, alarmLayer]),
       Layer.provideMerge(databaseLayer),
@@ -293,11 +317,13 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
         yield* queue.persistRequest(pending("second"));
         yield* Ref.update(control.playback, (state) => ({ ...state, queueSize: 2 }));
         yield* queue.refreshQueue();
+
         const gate = {
           queueStarted: yield* Deferred.make<void>(),
           currentStarted: yield* Deferred.make<void>(),
           releaseQueue: yield* Deferred.make<void>(),
         };
+
         yield* Ref.set(control.observationGate, Option.some(gate));
         yield* Ref.update(control.playback, (state) => ({ ...state, current: true, queueSize: 1 }));
         const refreshing = yield* queue.refreshQueue().pipe(Effect.forkScoped);
@@ -476,26 +502,32 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
       Effect.gen(function* () {
         const queue = yield* SongQueue;
         const control = yield* SongQueueTestControl;
+
         const httpLayer = HttpApiBuilder.layer(SongQueueHttpApi).pipe(
           Layer.provide(songQueueHttpHandlersLayer),
           Layer.provide(Layer.succeed(SongQueue, queue)),
           Layer.provide(cloudflareHttpServerLayer),
         );
+
         const web = yield* Effect.acquireRelease(
           Effect.sync(() => HttpRouter.toWebHandler(httpLayer, { disableLogger: true })),
           (server) => Effect.promise(() => server.dispose()),
         );
+
         const requestContext = yield* Effect.context<never>();
+
         const client = yield* HttpApiClient.makeWith(SongQueueHttpApi, {
           baseUrl: "http://song-queue.internal",
           httpClient: HttpClient.make((request) =>
             Effect.gen(function* () {
               const outgoing = yield* HttpClientRequest.toWeb(request).pipe(Effect.orDie);
               const response = yield* Effect.promise(() => web.handler(outgoing, requestContext));
+
               return HttpClientResponse.fromWeb(request, response);
             }),
           ),
         });
+
         const invalidLimitResponse = yield* Effect.promise(() =>
           web.handler(
             new Request("http://song-queue.internal/v1/queue", {
@@ -506,6 +538,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
             requestContext,
           ),
         );
+
         const invalidHistoryResponse = yield* Effect.promise(() =>
           web.handler(
             new Request("http://song-queue.internal/v1/history", {
@@ -521,6 +554,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
             requestContext,
           ),
         );
+
         expect(invalidLimitResponse.status).toBe(400);
         expect(invalidHistoryResponse.status).toBe(400);
         expect(yield* Ref.get(control.requests)).toEqual([]);

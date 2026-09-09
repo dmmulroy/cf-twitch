@@ -47,6 +47,7 @@ export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
       const request = yield* HttpServerRequest.HttpServerRequest;
       const url = new URL(request.originalUrl, "https://http.internal");
       const startedAt = yield* Clock.currentTimeMillis;
+
       return yield* Effect.gen(function* () {
         const span = yield* Effect.currentSpan.pipe(Effect.orDie);
         const requestId = yield* Effect.sync(() => crypto.randomUUID());
@@ -71,6 +72,7 @@ export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
             }),
           ),
         );
+
         const completeRequest = (status: number) =>
           Effect.gen(function* () {
             yield* Effect.annotateCurrentSpan("http.response.status_code", status);
@@ -83,6 +85,7 @@ export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
               }),
             );
           });
+
         const failHttpTrace = <E>(
           response: HttpServerResponse.HttpServerResponse,
           classification: "defect" | "expected_http_failure",
@@ -95,15 +98,18 @@ export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
             response,
             traceId: span.traceId,
           });
+
           const safeCause = Cause.fromReasons([
             Cause.makeFailReason(failure),
             ...cause.reasons.filter(Cause.isInterruptReason),
           ]);
+
           return Effect.annotateCurrentSpan("http.failure.classification", classification).pipe(
             Effect.andThen(completeRequest(response.status)),
             Effect.andThen(Effect.failCause(safeCause)),
           );
         };
+
         return yield* httpEffect.pipe(
           Effect.provideService(HttpRequestCorrelation, correlation),
           Effect.catchCauseIf(Cause.hasDies, (cause) =>
@@ -115,6 +121,7 @@ export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
           ),
           Effect.catchTag("HttpServerError", (error) => {
             const cause = Cause.fail(error);
+
             return HttpServerError.causeResponse(cause).pipe(
               Effect.flatMap(([response]) =>
                 failHttpTrace(response, "expected_http_failure", cause),
@@ -135,6 +142,7 @@ export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
           const interrupts = Redacted.value(failure.redactedCause).reasons.filter(
             Cause.isInterruptReason,
           );
+
           return interrupts.length > 0
             ? Effect.failCause(
                 Cause.fromReasons<never>([Cause.makeDieReason(failure), ...interrupts]),

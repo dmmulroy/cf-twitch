@@ -19,6 +19,7 @@ const CfTwitchApiStack = Alchemy.Stack(
       ),
     );
     const worker = yield* TwitchApiWorker;
+
     return { url: worker.url };
   }).pipe(Effect.provide(twitchApiWorkerLayer)),
 );

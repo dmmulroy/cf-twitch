@@ -31,6 +31,7 @@ it("unknown chat outcomes never retry regardless of attempts or advertised provi
     { numRuns: 200, seed: 122 },
   );
 });
+
 it("definite refusals retain the three-delay retry budget and respect longer Retry-After", () => {
   for (const [attempts, delay] of [3_000, 5_000, 10_000].entries()) {
     expect(
@@ -41,6 +42,7 @@ it("definite refusals retain the three-delay retry budget and respect longer Ret
       }),
     ).toEqual({ state: "pending", attempts: attempts + 1, nextAttemptAt: 1_000 + delay });
   }
+
   FastCheck.assert(
     FastCheck.property(
       FastCheck.integer({ min: 0, max: 2 }),
@@ -65,6 +67,7 @@ it("definite refusals retain the three-delay retry budget and respect longer Ret
     }),
   ).toEqual({ state: "abandoned", attempts: 3 });
 });
+
 it("terminal rejected or dropped chat cannot become an automated duplicate attempt", () => {
   for (const kind of [
     "rejected",

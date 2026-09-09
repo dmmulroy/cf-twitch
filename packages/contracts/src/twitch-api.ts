@@ -38,25 +38,30 @@ export const TwitchHttpError = Schema.Struct({
   code: Schema.optionalKey(Schema.String),
   details: Schema.optionalKey(Schema.Json),
 });
+
 const errors = [400, 401, 403, 404, 409, 413, 500, 502, 503].map((status) =>
   TwitchHttpError.pipe(HttpApiSchema.status(status)),
 );
+
 const limitParameter = {
   name: "limit",
   in: "query",
   required: false,
   schema: { type: "integer", minimum: 1, maximum: 100, default: 10 },
 } satisfies OpenApi.OpenAPISpecParameter;
+
 const userPathParameter = {
   name: "user",
   in: "path",
   required: true,
   schema: { type: "string" },
 } satisfies OpenApi.OpenAPISpecParameter;
+
 const limitQuery = OpenApi.annotations({
   description: "Rejects unknown query keys and repeated scalar values. The default limit is 10.",
   override: { parameters: [limitParameter] },
 });
+
 const leaderboardQuery = OpenApi.annotations({
   description: "Rejects unknown query keys and repeated scalar values.",
   override: {
@@ -71,6 +76,7 @@ const leaderboardQuery = OpenApi.annotations({
     ],
   },
 });
+
 const pageQuery = OpenApi.annotations({
   description:
     "Administrator pagination ignores unknown query keys and selects the first repeated value.",
@@ -86,9 +92,11 @@ const pageQuery = OpenApi.annotations({
     ],
   },
 });
+
 const viewerTopTracksQuery = OpenApi.annotations({
   override: { parameters: [userPathParameter, limitParameter] },
 });
+
 const callbackQuery = OpenApi.annotations({
   description:
     "Consumes a durable one-use state bound to the provider and exact redirect URI before checking provider denial or code. No setup secret or cookie is required on callbacks.",
@@ -101,6 +109,7 @@ const callbackQuery = OpenApi.annotations({
     })),
   },
 });
+
 const webhookHeaders = OpenApi.annotations({
   description:
     "Raw body is bounded to 1 MiB and decoded with fatal UTF-8. Require timestamp within ±10 minutes and HMAC-SHA256(messageId + timestamp + exact body bytes) before JSON parsing. Header/body subscription type and version must agree. Conflicting message content returns 503.",
@@ -116,45 +125,61 @@ const webhookHeaders = OpenApi.annotations({
     ].map((name) => ({ name, in: "header", required: true, schema: { type: "string" } })),
   },
 });
+
 const administratorSecurityRequirements = [{ AdministratorBearer: [] }];
+
 const administratorSecurity = OpenApi.annotations({
   override: { security: administratorSecurityRequirements },
 });
+
 const setupSecurity = OpenApi.annotations({ override: { security: [{ OAuthSetupHeader: [] }] } });
+
 const json = { success: Schema.Json, error: errors };
+
 /** External now playing absence encodes as null rather than an Effect Option object. */
 export const TwitchNowPlayingResponse = Schema.Struct({
   track: Schema.OptionFromNullOr(QueuedTrack),
   position: Schema.Literal(0),
 });
+
 /** Public stats viewer IDs retain the historical numeric-only boundary. */
 export const TwitchStatsViewerId = ViewerId.check(Schema.isPattern(/^\d{1,20}$/u));
+
 /** Stats response encoding also validates numeric viewer identities before caching. */
 export const TwitchTopRequestersResponse = Schema.Array(
   Schema.Struct({ ...TopSongRequester.fields, userId: TwitchStatsViewerId }),
 );
+
 /** Public raffle stats reject invalid service viewer identities before returning cacheable data. */
 export const TwitchRaffleViewerResponse = Schema.Struct({
   ...RaffleLeaderboardEntry.fields,
   userId: TwitchStatsViewerId,
 });
+
 const user = { user: Schema.String };
+
 const id = { id: Schema.String };
+
 const name = { name: Schema.String };
+
 const messageResponse = Schema.Struct({ message: Schema.String });
+
 const eventMessageResponse = Schema.Struct({
   ...messageResponse.fields,
   eventId: Schema.String,
   error: Schema.optionalKey(Schema.String),
 });
+
 const redirectResponse = HttpApiSchema.WithHeaders(Schema.Void.pipe(HttpApiSchema.status(302)), {
   location: Schema.String,
 });
+
 const oauthResponse = Schema.Struct({
   success: Schema.Literal(true),
   message: Schema.String,
   scopes: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
 });
+
 /** Public subscription evidence omits absent callback keys, as Twitch management clients expect. */
 export const TwitchSubscriptionResponse = Schema.Struct({
   ...ProviderEventSubSubscription.fields,
@@ -163,27 +188,32 @@ export const TwitchSubscriptionResponse = Schema.Struct({
     callback: Schema.OptionFromOptionalKey(Schema.String),
   }),
 });
+
 const subscriptionConfig = Schema.Struct({
   type: Schema.String,
   version: Schema.String,
   condition: Schema.Record(Schema.String, Schema.String),
 });
+
 const subscriptionSetup = Schema.Struct({
   success: Schema.Literal(true),
   message: Schema.String,
   subscriptions: Schema.Array(TwitchSubscriptionResponse),
   skipped: Schema.Array(subscriptionConfig),
 });
+
 const subscriptionList = Schema.Struct({
   subscriptions: Schema.Array(TwitchSubscriptionResponse),
   total: Schema.Int,
 });
+
 const subscriptionCleanup = Schema.Struct({
   success: Schema.Boolean,
   message: Schema.String,
   deleted: Schema.Int,
   failed: Schema.Int,
 });
+
 const commandSnapshot = Schema.Struct({
   ...ChatCommandDebugSnapshot.fields,
   commands: Schema.Array(
@@ -198,6 +228,7 @@ const commandSnapshot = Schema.Struct({
     ),
   ),
 });
+
 const reconciliationResponse = Schema.Struct({
   action: Schema.Literals(["noop", "set_online", "set_offline"]),
   queueWarmup: Schema.Literals(["not_needed", "ok", "error"]),
@@ -211,6 +242,7 @@ const reconciliationResponse = Schema.Struct({
     gameName: Schema.NullOr(Schema.String),
   }),
 });
+
 const statusResponse = Schema.Struct({
   timestamp: Schema.String,
   stream: Schema.Struct({
@@ -233,6 +265,7 @@ const statusResponse = Schema.Struct({
     error: Schema.NullOr(Schema.String),
   }),
 });
+
 const viewerStatsResponse = Schema.Struct({
   targetUser: Schema.String,
   noStatsForTargetUser: Schema.Boolean,
@@ -568,8 +601,10 @@ const openApiMethodNames = [
 const addAdministratorOpenApiSecurity = (openApi: OpenApi.OpenAPISpec): void => {
   for (const [path, pathItem] of Object.entries(openApi.paths)) {
     if (!path.startsWith("/api/admin/") && !path.startsWith("/api/debug/")) continue;
+
     for (const method of openApiMethodNames) {
       const operation = pathItem[method];
+
       if (operation !== undefined) operation.security = administratorSecurityRequirements;
     }
   }
@@ -579,6 +614,7 @@ const addAdministratorOpenApiSecurity = (openApi: OpenApi.OpenAPISpec): void => 
 export const generateTwitchOpenApi = (): OpenApi.OpenAPISpec => {
   const openApi = OpenApi.fromApi(TwitchHttpApi);
   addAdministratorOpenApiSecurity(openApi);
+
   return {
     ...openApi,
     components: {

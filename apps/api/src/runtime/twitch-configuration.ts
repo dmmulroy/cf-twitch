@@ -2,6 +2,7 @@ import { BroadcasterId, RewardId } from "@cf-twitch/contracts/identity";
 import { Config, Context, Effect, Layer, Schema } from "effect";
 
 const providerClientId = Schema.String.check(Schema.isMinLength(1), Schema.isTrimmed());
+
 const configurationSecret = Schema.Redacted(Schema.NonEmptyString);
 
 /** Runtime settings shared by Twitch integration capabilities, excluding deployment credentials. */
@@ -61,6 +62,7 @@ export const makeTwitchConfiguration = Effect.gen(function* () {
       keyboardRaffleRewardId: Config.schema(RewardId, "KEYBOARD_RAFFLE_REWARD_ID"),
     }),
   });
+
   return TwitchConfiguration.of(settings);
 }).pipe(Effect.catchTag("ConfigError", () => Effect.fail(new TwitchConfigurationError())));
 

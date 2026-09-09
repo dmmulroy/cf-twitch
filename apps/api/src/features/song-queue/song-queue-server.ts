@@ -31,10 +31,12 @@ export const songQueueServerLayerWithoutDependencies = SongQueueServer.make(
   Effect.gen(function* () {
     const spotify = yield* SpotifyService;
     const state = yield* Cloudflare.DurableObjectState;
+
     return Effect.gen(function* () {
       const databaseLayer = songQueueDatabaseLayerWithoutDependencies.pipe(
         Layer.provide(SqliteClient.layer({ storage: state.raw.storage })),
       );
+
       const applicationLayer = songQueueLayerWithoutDependencies.pipe(
         Layer.provide([
           databaseLayer,
@@ -44,14 +46,18 @@ export const songQueueServerLayerWithoutDependencies = SongQueueServer.make(
           ),
         ]),
       );
+
       return yield* Effect.gen(function* () {
         const coordinator = yield* SongQueueCoordinator;
         yield* coordinator.startPolling();
+
         const httpLayer = HttpApiBuilder.layer(SongQueueHttpApi).pipe(
           Layer.provide(songQueueHttpHandlersLayer),
           Layer.provide(cloudflareHttpServerLayer),
         );
+
         const fetch = yield* HttpRouter.toHttpEffect(httpLayer);
+
         return { fetch, alarm: () => coordinator.runAlarm().pipe(Effect.orDie) };
       }).pipe(Effect.provide(applicationLayer));
     }).pipe(Effect.orDie);
@@ -62,4 +68,5 @@ export const songQueueServerLayerWithoutDependencies = SongQueueServer.make(
 const songQueueServerLayer = songQueueServerLayerWithoutDependencies.pipe(
   Layer.provide(spotifyServiceLayer),
 );
+
 export default songQueueServerLayer;

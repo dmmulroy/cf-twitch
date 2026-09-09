@@ -29,15 +29,21 @@ import { AchievementsHttpApi } from "./achievements-http-api.ts";
 import { achievementsHttpHandlersLayer } from "./achievements-http-handlers.ts";
 
 const AchievementHttpTestPayload = Schema.Json;
+
 type AchievementHttpTestPayload = typeof AchievementHttpTestPayload.Type;
+
 const parseAchievementHttpTestPayload = Schema.decodeUnknownEffect(AchievementHttpTestPayload);
 
 const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
 const database = achievementsLayer.pipe(Layer.provideMerge(sqlLayer));
+
 const instant = (seconds: number) =>
   IsoTimestamp.make(new Date(Date.UTC(2026, 3, 7, 14, 0, seconds)).toISOString());
+
 const eventId = (index: number) =>
   EventId.make(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+
 const request = (index: number, seconds = index, viewer = "viewer", name = "Viewer") =>
   SongRequestSuccessEvent.make({
     id: eventId(index),
@@ -51,6 +57,7 @@ const request = (index: number, seconds = index, viewer = "viewer", name = "View
     sagaId: RedemptionId.make(`redemption-${index}`),
     trackId: SpotifyTrackId.make("abc123"),
   });
+
 const online = (index: number, seconds: number, stream = "stream") =>
   StreamOnlineEvent.make({
     id: eventId(index),
@@ -62,6 +69,7 @@ const online = (index: number, seconds: number, stream = "stream") =>
     streamId: StreamId.make(stream),
     startedAt: instant(seconds),
   });
+
 const offline = (index: number, seconds: number, stream = "stream") =>
   StreamOfflineEvent.make({
     id: eventId(index),
@@ -73,6 +81,7 @@ const offline = (index: number, seconds: number, stream = "stream") =>
     streamId: StreamId.make(stream),
     endedAt: instant(seconds),
   });
+
 const raffle = (index: number, roll: number, winningNumber: number, isNewRecord = false) =>
   RaffleRollEvent.make({
     id: eventId(index),
@@ -90,6 +99,7 @@ const raffle = (index: number, roll: number, winningNumber: number, isNewRecord 
     isWinner: roll === winningNumber,
     isNewRecord,
   });
+
 const parseOutbox = Schema.decodeUnknownEffect(
   Schema.Array(
     Schema.Struct({
@@ -106,6 +116,7 @@ describe("Achievements real SQLite authority", () => {
     () =>
       Effect.gen(function* () {
         const service = yield* Achievements;
+
         const input = AchievementEventInput.make({
           userId: ViewerId.make("viewer"),
           userDisplayName: "Viewer",
@@ -114,6 +125,7 @@ describe("Achievements real SQLite authority", () => {
           increment: 1,
           metadata: Option.some({ streakCount: -1 }),
         });
+
         expect((yield* service.recordEvent(input).pipe(Effect.flip)).reason).toBe("invalid_input");
         expect(yield* service.getDebugTableCounts()).toMatchObject({
           eventHistory: 0,
@@ -174,9 +186,11 @@ describe("Achievements real SQLite authority", () => {
           userStreaks: 1,
           unlockedAchievements: 1,
         });
+
         const outbox = yield* parseOutbox(
           yield* sql`SELECT effect_id,announcement_state,metric_state FROM achievement_unlock_outbox`,
         );
+
         expect(outbox).toEqual([
           {
             effect_id: `${eventId(1)}:first_request`,
@@ -196,6 +210,7 @@ describe("Achievements real SQLite authority", () => {
         yield* service.handleEvent(request(2, 10, "equal", "Equal"));
         yield* service.handleEvent(request(3, 11, "first", "First"));
         yield* service.handleEvent(request(4, 12, "second", "Second"));
+
         for (const name of ["Early", "Equal", "Second"])
           expect(
             (yield* service.getUnlockedAchievements({ userDisplayName: name })).map(
@@ -215,6 +230,7 @@ describe("Achievements real SQLite authority", () => {
       Effect.gen(function* () {
         const service = yield* Achievements;
         yield* service.handleEvent(online(100, 0, "first"));
+
         for (let index = 1; index <= 5; index++) yield* service.handleEvent(request(index));
         yield* service.handleEvent(offline(101, 20, "wrong"));
         yield* service.handleEvent(online(102, 30, "first"));
@@ -262,7 +278,9 @@ describe("Achievements real SQLite authority", () => {
       Effect.gen(function* () {
         const service = yield* Achievements;
         yield* service.handleEvent(online(1000, 0));
+
         for (let index = 1; index <= 100; index++) yield* service.handleEvent(request(index));
+
         for (let index = 101; index <= 199; index++)
           yield* service.handleEvent(raffle(index, 9_900, 10_000, index === 101));
         yield* service.handleEvent(raffle(200, 10_000, 10_000));
@@ -372,6 +390,7 @@ describe("Achievements real SQLite authority", () => {
     () =>
       Effect.gen(function* () {
         const service = yield* Achievements;
+
         const input = AchievementEventInput.make({
           userId: ViewerId.make("viewer"),
           userDisplayName: "Viewer",
@@ -380,6 +399,7 @@ describe("Achievements real SQLite authority", () => {
           increment: 1,
           metadata: Option.some({ streakCount: 3 }),
         });
+
         expect((yield* service.recordEvent(input)).map((row) => row.id)).toEqual(["streak_3"]);
         expect(yield* service.recordEvent(input)).toEqual([]);
         yield* service.recordEvent({
@@ -412,10 +432,12 @@ describe("Achievements real SQLite authority", () => {
   it.effect("generated redelivery permutations advance each event once", () =>
     Effect.gen(function* () {
       const service = yield* Achievements;
+
       const ids = FastCheck.sample(FastCheck.integer({ min: 1, max: 20 }), {
         seed: 871,
         numRuns: 100,
       });
+
       for (const id of ids) yield* service.handleEvent(request(id));
       const unique = new Set(ids).size;
       expect(
@@ -443,6 +465,7 @@ describe("Achievements real SQLite authority", () => {
         const original = yield* Achievements;
         const sql = yield* SqlClient.SqlClient;
         yield* original.handleEvent(online(100, 0));
+
         for (let index = 1; index <= 3; index++) yield* original.handleEvent(request(index));
         yield* sql`UPDATE achievement_unlock_outbox SET announcement_state='sending',metric_state='claimed' WHERE effect_id=${`${eventId(1)}:first_request`}`;
         const before = yield* original.getDebugTableCounts();
@@ -487,11 +510,13 @@ describe("Achievements real SQLite authority", () => {
           ),
           (web) => Effect.promise(() => web.dispose()),
         );
+
         const send = Effect.fn("AchievementsTest.send")(function* (
           operation: string,
           payload: AchievementHttpTestPayload,
         ) {
           const body = yield* parseAchievementHttpTestPayload(payload);
+
           return yield* Effect.promise(() =>
             web.handler(
               new Request(`http://achievements.internal/v1/${operation}`, {
@@ -502,6 +527,7 @@ describe("Achievements real SQLite authority", () => {
             ),
           );
         });
+
         const event = Schema.encodeSync(SongRequestSuccessEvent)(request(1));
         expect((yield* send("handleEvent", { event })).status).toBe(200);
         const viewer = yield* send("getUserAchievements", { userDisplayName: "Viewer" });

@@ -3,8 +3,10 @@ import { EventId, IsoTimestamp, PageSize, ViewerId } from "./identity.ts";
 
 /** Stable achievement identity includes the thirteen historical definitions. */
 export const AchievementId = Schema.NonEmptyString.pipe(Schema.brand("AchievementId"));
+
 /** Stable achievement identity. */
 export type AchievementId = typeof AchievementId.Type;
+
 /** Achievement grouping retained for overlay compatibility. */
 export const AchievementCategory = Schema.Literals([
   "song_request",
@@ -12,6 +14,7 @@ export const AchievementCategory = Schema.Literals([
   "engagement",
   "special",
 ]);
+
 /** Events that advance achievement progress. */
 export const AchievementTriggerEvent = Schema.Literals([
   "song_request",
@@ -22,6 +25,7 @@ export const AchievementTriggerEvent = Schema.Literals([
   "raffle_closest_record",
   "request_streak",
 ]);
+
 /** Definition thresholds are absent for one-time event achievements. */
 export const AchievementDefinition = Schema.Struct({
   id: AchievementId,
@@ -33,8 +37,10 @@ export const AchievementDefinition = Schema.Struct({
   triggerEvent: AchievementTriggerEvent,
   scope: Schema.Literals(["session", "cumulative"]),
 });
+
 /** Achievement metadata and progression policy. */
 export interface AchievementDefinition extends Schema.Schema.Type<typeof AchievementDefinition> {}
+
 /** An unlocked achievement carries the original unlock timestamp. */
 export const UnlockedAchievement = Schema.Struct({
   id: AchievementId,
@@ -44,8 +50,10 @@ export const UnlockedAchievement = Schema.Struct({
   category: AchievementCategory,
   unlockedAt: IsoTimestamp,
 });
+
 /** Unlocked achievement projection. */
 export interface UnlockedAchievement extends Schema.Schema.Type<typeof UnlockedAchievement> {}
+
 /** Progress is scoped by stable viewer identity; display names are projections. */
 export const ViewerAchievementProgress = Schema.Struct({
   achievementId: AchievementId,
@@ -58,27 +66,33 @@ export const ViewerAchievementProgress = Schema.Struct({
   unlocked: Schema.Boolean,
   unlockedAt: Schema.OptionFromNullOr(IsoTimestamp),
 });
+
 /** Full viewer progress including locked definitions. */
 export interface ViewerAchievementProgress extends Schema.Schema.Type<
   typeof ViewerAchievementProgress
 > {}
+
 /** Ranking counts unlocked achievements, not cumulative progress. */
 export const AchievementLeaderboardEntry = Schema.Struct({
   userDisplayName: Schema.NonEmptyString,
   count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
+
 /** Viewer achievement rank. */
 export interface AchievementLeaderboardEntry extends Schema.Schema.Type<
   typeof AchievementLeaderboardEntry
 > {}
+
 /** Ranking limit is bounded to one hundred; None selects ten. */
 export const AchievementLeaderboardQuery = Schema.Struct({
   limit: Schema.OptionFromNullOr(PageSize),
 });
+
 /** Bounded achievement ranking query. */
 export interface AchievementLeaderboardQuery extends Schema.Schema.Type<
   typeof AchievementLeaderboardQuery
 > {}
+
 /** Direct event intake uses the same transactional inbox as domain events. */
 export const AchievementEventInput = Schema.Struct({
   userId: ViewerId,
@@ -88,8 +102,10 @@ export const AchievementEventInput = Schema.Struct({
   increment: Schema.Int.check(Schema.isGreaterThan(0)),
   metadata: Schema.OptionFromNullOr(Schema.Record(Schema.String, Schema.Json)),
 });
+
 /** Direct achievement trigger input; increment is explicit. */
 export interface AchievementEventInput extends Schema.Schema.Type<typeof AchievementEventInput> {}
+
 /** Counts support administrative persistence diagnosis. */
 export const AchievementDebugTableCounts = Schema.Struct({
   definitions: Schema.Int,
@@ -98,10 +114,12 @@ export const AchievementDebugTableCounts = Schema.Struct({
   userStreaks: Schema.Int,
   eventHistory: Schema.Int,
 });
+
 /** Administrative achievement table counts. */
 export interface AchievementDebugTableCounts extends Schema.Schema.Type<
   typeof AchievementDebugTableCounts
 > {}
+
 /** Recent event history is diagnostic evidence, not reconstructed from progress. */
 export const AchievementDebugEvent = Schema.Struct({
   eventId: Schema.String,
@@ -111,6 +129,7 @@ export const AchievementDebugEvent = Schema.Struct({
   timestamp: Schema.String,
   metadata: Schema.OptionFromNullOr(Schema.String),
 });
+
 /** Snapshot preserves exact, case-insensitive and loose-name diagnostics. */
 export const AchievementDebugUserSnapshot = Schema.Struct({
   requestedUser: Schema.String,
@@ -126,24 +145,30 @@ export const AchievementDebugUserSnapshot = Schema.Struct({
   recentEvents: Schema.Array(AchievementDebugEvent),
   similarUsers: Schema.Array(Schema.String),
 });
+
 /** Administrative viewer identity diagnostics. */
 export interface AchievementDebugUserSnapshot extends Schema.Schema.Type<
   typeof AchievementDebugUserSnapshot
 > {}
+
 /** Reset only targets cumulative definitions with absent thresholds. */
 export const AchievementResetResult = Schema.Struct({
   deleted: Schema.Int,
   achievementIds: Schema.Array(AchievementId),
 });
+
 /** One-time achievement reset result. */
 export interface AchievementResetResult extends Schema.Schema.Type<typeof AchievementResetResult> {}
+
 /** Unannounced unlocks remain observable even when provider delivery is blocked. */
 export const UnannouncedAchievement = Schema.Struct({
   userDisplayName: Schema.NonEmptyString,
   achievement: UnlockedAchievement,
 });
+
 /** Unannounced achievement projection. */
 export interface UnannouncedAchievement extends Schema.Schema.Type<typeof UnannouncedAchievement> {}
+
 /** Achievement errors distinguish boundary corruption from storage and transport failure. */
 export class AchievementError extends Schema.TaggedError<AchievementError>()("AchievementError", {
   operation: Schema.String,

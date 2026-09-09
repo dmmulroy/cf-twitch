@@ -25,6 +25,7 @@ const translateRaffleClientErrors =
 /** Creates a singleton HTTP client per execution, never retaining invocation-scoped stubs globally. */
 export const makeRaffleClient = Effect.gen(function* () {
   const namespace = yield* RaffleServer;
+
   const client = yield* makeExecutionMemo(
     Effect.suspend(() =>
       HttpApiClient.makeWith(RaffleHttpApi, {
@@ -33,33 +34,39 @@ export const makeRaffleClient = Effect.gen(function* () {
       }),
     ),
   );
+
   return Raffle.of({
     recordRoll: Effect.fn("RaffleClient.recordRoll")(function* (input) {
       const http = yield* client;
+
       return yield* http.raffle
         .recordRoll({ payload: input })
         .pipe(translateRaffleClientErrors("recordRoll"));
     }),
     getOrCreateRoll: Effect.fn("RaffleClient.getOrCreateRoll")(function* (input) {
       const http = yield* client;
+
       return yield* http.raffle
         .getOrCreateRoll({ payload: input })
         .pipe(translateRaffleClientErrors("getOrCreateRoll"));
     }),
     deleteRollById: Effect.fn("RaffleClient.deleteRollById")(function* (input) {
       const http = yield* client;
+
       return yield* http.raffle
         .deleteRollById({ payload: input })
         .pipe(translateRaffleClientErrors("deleteRollById"));
     }),
     getLeaderboard: Effect.fn("RaffleClient.getLeaderboard")(function* (input) {
       const http = yield* client;
+
       return yield* http.raffle
         .getLeaderboard({ payload: input })
         .pipe(translateRaffleClientErrors("getLeaderboard"));
     }),
     getUserStats: Effect.fn("RaffleClient.getUserStats")(function* (input) {
       const http = yield* client;
+
       return yield* http.raffle
         .getUserStats({ payload: input })
         .pipe(translateRaffleClientErrors("getUserStats"));
@@ -67,6 +74,7 @@ export const makeRaffleClient = Effect.gen(function* () {
     getUserStatsByDisplayName: Effect.fn("RaffleClient.getUserStatsByDisplayName")(
       function* (input) {
         const http = yield* client;
+
         return yield* http.raffle
           .getUserStatsByDisplayName({ payload: input })
           .pipe(translateRaffleClientErrors("getUserStatsByDisplayName"));
@@ -74,14 +82,17 @@ export const makeRaffleClient = Effect.gen(function* () {
     ),
     getClosestRecord: Effect.fn("RaffleClient.getClosestRecord")(function* () {
       const http = yield* client;
+
       return yield* http.raffle
         .getClosestRecord()
         .pipe(translateRaffleClientErrors("getClosestRecord"));
     }),
   });
 });
+
 /** Provides the raffle client while leaving namespace binding selection explicit. */
 export const raffleClientLayerWithoutDependencies = Layer.effect(Raffle, makeRaffleClient);
+
 /** Provides the raffle client and its physical Durable Object server. */
 export const raffleClientLayer = raffleClientLayerWithoutDependencies.pipe(
   Layer.provide(raffleServerLayer),

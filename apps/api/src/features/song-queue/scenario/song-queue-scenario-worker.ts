@@ -37,6 +37,7 @@ const localSpotifyLayer = Layer.effect(
       isPlaying: false,
       progressMs: 0,
     });
+
     const getTrack = Effect.fn("LocalSpotify.getTrack")(
       (id: SpotifyTrackId): Effect.Effect<SpotifyTrack, ProviderError> =>
         id === localTrack.id
@@ -51,6 +52,7 @@ const localSpotifyLayer = Layer.effect(
               }),
             ),
     );
+
     const connectState = (state: SpotifyPlayback): SpotifyConnectState => ({
       timestamp: "0",
       context_uri: "local:queue",
@@ -63,6 +65,7 @@ const localSpotifyLayer = Layer.effect(
       })),
       prev_tracks: [],
     });
+
     return SpotifyService.of({
       getTrack,
       getPlayback: Effect.fn("LocalSpotify.getPlayback")(() => Ref.get(playback)),
@@ -111,6 +114,7 @@ const localSpotifyLayer = Layer.effect(
 );
 
 type SongQueueScenarioWorkerContract = { readonly fetch: HttpEffect };
+
 /** Scratch-only scenario Worker exercises the real song queue HTTP namespace client. */
 export class SongQueueScenarioWorker extends Cloudflare.Worker<
   SongQueueScenarioWorker,
@@ -127,16 +131,20 @@ export const songQueueScenarioWorkerLayer = SongQueueScenarioWorker.make(
   },
   Effect.gen(function* () {
     const queue = yield* SongQueue;
+
     const httpLayer = HttpApiBuilder.layer(SongQueueHttpApi).pipe(
       Layer.provide(
         songQueueHttpHandlersLayer.pipe(Layer.provide(Layer.succeed(SongQueue, queue))),
       ),
       Layer.provide(cloudflareHttpServerLayer),
     );
+
     const router = yield* makeExecutionMemo(HttpRouter.toHttpEffect(httpLayer));
+
     const fetch: HttpEffect = Effect.gen(function* () {
       return yield* yield* router;
     });
+
     return { fetch };
   }).pipe(
     Effect.provide(
@@ -152,6 +160,7 @@ export const songQueueScenarioWorkerLayer = SongQueueScenarioWorker.make(
 /** Scratch scenario output contains only the local Worker URL. */
 export const songQueueScenarioStack = Effect.gen(function* () {
   const worker = yield* SongQueueScenarioWorker;
+
   return { url: worker.url };
 }).pipe(Effect.provide(songQueueScenarioWorkerLayer));
 

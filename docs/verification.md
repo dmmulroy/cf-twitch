@@ -44,6 +44,8 @@ Colocated tests exercise each owner. [Cross-capability regressions](../apps/api/
 
 Root tooling tests exercise all custom anti-slop rules through Oxlint RuleTester. [Complexity policy tests](../tools/oxlint/complexity-policy.test.ts) invoke the real root configuration at its allowed/rejected boundary and separately audit both maintained plugin copies. The vendored-source ignore is not an exemption from the complexity policy. The configured ceiling lives in `vite.config.ts`.
 
+[Readable spacing policy tests](../tools/oxlint/readable-spacing-policy.test.ts) exercise exact whitespace fixes, JSDoc/trailing-comment attachment, overload grouping, Effect-style generators, actual-root enforcement, and lint/Oxfmt convergence. They also check that both maintained copies ship identical spacing code, MIT license, and upstream provenance. The rule is configured in `vite.config.ts`; it adds structural blank lines without changing statement ordering.
+
 ## Local workerd harness
 
 Run `pnpm test:e2e:local` from the root, one suite at a time. [run-e2e.ts](../apps/api/scripts/run-e2e.ts) validates the local target and creates a cryptographically unique test stage. Strict ports fail visibly on collision. Use this entrypoint rather than invoking the E2E file without its stage setup; a deployment-guard rejection requires inspecting the permitted invocation, not bypassing it.

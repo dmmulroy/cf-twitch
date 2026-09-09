@@ -64,14 +64,20 @@ const receipt = Schema.decodeSync(AcceptedEventSubReceipt)({
     },
   },
 });
+
 const sqlite = SqliteClient.layer({ filename: ":memory:" });
+
 const registryLayer = commandsDatabaseLayerWithoutDependencies;
+
 const executorLayer = executorLayerWithoutDependencies.pipe(
   Layer.provide(computedChatCommandsLayerWithoutDependencies),
   Layer.provide(registryLayer),
 );
+
 const dispatchLayer = eventSubDispatchLayerWithoutDependencies.pipe(Layer.provide(executorLayer));
+
 const inboxLayer = eventSubInboxLayerWithoutDependencies.pipe(Layer.provide(dispatchLayer));
+
 const commonLayer = Layer.mergeAll(
   recordingTwitchAnalyticsLayer,
   Layer.succeed(TwitchConfiguration, httpTestConfiguration),
@@ -91,6 +97,7 @@ describe("Independent EventSub chat delivery integration", () => {
       Effect.gen(function* () {
         const attempts = yield* Ref.make<readonly string[]>([]);
         const refuse = yield* Ref.make(true);
+
         const senderLayer = Layer.mock(TwitchService, {
           sendChatMessage: ({ message }) =>
             Ref.update(attempts, (messages) => [...messages, message]).pipe(
@@ -110,6 +117,7 @@ describe("Independent EventSub chat delivery integration", () => {
               ),
             ),
         });
+
         yield* Effect.gen(function* () {
           const inbox = yield* EventSubInbox;
           const commands = yield* Commands;
@@ -149,6 +157,7 @@ describe("Independent EventSub chat delivery integration", () => {
       Effect.gen(function* () {
         const started = yield* Deferred.make<void>();
         const sends = yield* Ref.make(0);
+
         const senderLayer = Layer.mock(TwitchService, {
           sendChatMessage: () =>
             Ref.update(sends, (n) => n + 1).pipe(
@@ -156,9 +165,11 @@ describe("Independent EventSub chat delivery integration", () => {
               Effect.andThen(Effect.never),
             ),
         });
+
         const layer = Layer.merge(inboxLayer, registryLayer).pipe(
           Layer.provide([commonLayer, senderLayer]),
         );
+
         yield* Effect.gen(function* () {
           const inbox = yield* EventSubInbox;
           yield* inbox.accept(receipt);

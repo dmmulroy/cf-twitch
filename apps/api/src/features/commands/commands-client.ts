@@ -30,6 +30,7 @@ const translateCommandsClientErrors = <A, R>(
 /** Build invocation-scoped HTTP clients for the retained commands singleton, never caching DO stubs. */
 export const makeCommandsClient = Effect.gen(function* () {
   const namespace = yield* CommandsServer;
+
   const httpClient = yield* makeExecutionMemo(
     Effect.suspend(() =>
       HttpApiClient.makeWith(CommandsHttpApi, {
@@ -38,6 +39,7 @@ export const makeCommandsClient = Effect.gen(function* () {
       }),
     ),
   );
+
   return Commands.of({
     getCommand: Effect.fn("CommandsClient.getCommand")(function* (input) {
       return yield* translateCommandsClientErrors(
@@ -81,6 +83,7 @@ export const makeCommandsClient = Effect.gen(function* () {
     ),
     createCommand: Effect.fn("CommandsClient.createCommand")(function* (input) {
       const client = (yield* httpClient).commands;
+
       // The generated client exposes one overload per union member, so discriminate before calling.
       const request =
         input.responseType === "static"
@@ -88,6 +91,7 @@ export const makeCommandsClient = Effect.gen(function* () {
           : input.responseType === "dynamic"
             ? client.createCommand({ payload: input })
             : client.createCommand({ payload: input });
+
       return yield* translateCommandsClientErrors(request, "createCommand");
     }),
     updateCommand: Effect.fn("CommandsClient.updateCommand")(function* (input) {
@@ -128,8 +132,10 @@ export const makeCommandsClient = Effect.gen(function* () {
     }),
   });
 });
+
 /** Commands HTTP client with explicit namespace and Alchemy execution requirements. */
 export const commandsClientLayerWithoutDependencies = Layer.effect(Commands, makeCommandsClient);
+
 /** Ready commands client registers the matching physical Durable Object during planning. */
 export const commandsClientLayer = commandsClientLayerWithoutDependencies.pipe(
   Layer.provide(commandsServerLayer),

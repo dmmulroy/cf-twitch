@@ -32,6 +32,7 @@ export const providerAuthorizationScopes = {
     "moderator:manage:shoutouts",
   ],
 } as const;
+
 /** HTTP consumes state before inspecting provider denial or absent authorization code. */
 export interface IOAuthAuthorization {
   readonly beginAuthorization: (
@@ -44,10 +45,12 @@ export interface IOAuthAuthorization {
     input: ExchangeAuthorizationCode,
   ) => Effect.Effect<ProviderTokens, OAuthError | ProviderError>;
 }
+
 /** OAuth authorization owns attempt lifetime, provider scope selection, exchange and durable token acceptance. */
 export class OAuthAuthorization extends Context.Service<OAuthAuthorization, IOAuthAuthorization>()(
   "@cf-twitch/OAuthAuthorization",
 ) {}
+
 /** Construct OAuth orchestration without hiding the one-use state or token persistence requirements. */
 export const makeOAuthAuthorization = Effect.gen(function* () {
   const configuration = yield* TwitchConfiguration;
@@ -55,6 +58,7 @@ export const makeOAuthAuthorization = Effect.gen(function* () {
   const states = yield* OAuthStateClient;
   const exchange = yield* ProviderTokenExchange;
   const tokens = yield* ProviderAccessTokens;
+
   const beginAuthorization = Effect.fn("OAuthAuthorization.beginAuthorization")(function* (
     input: BeginAuthorization,
   ) {
@@ -64,6 +68,7 @@ export const makeOAuthAuthorization = Effect.gen(function* () {
         () => new OAuthError({ operation: "beginAuthorization", reason: "randomness" }),
       ),
     );
+
     const now = yield* Clock.currentTimeMillis;
     yield* states.createAttempt({
       provider: input.provider,
@@ -72,11 +77,13 @@ export const makeOAuthAuthorization = Effect.gen(function* () {
       createdAtMs: now,
       expiresAtMs: now + 600_000,
     });
+
     const authorizationUrl = new URL(
       input.provider === "spotify"
         ? "https://accounts.spotify.com/authorize"
         : "https://id.twitch.tv/oauth2/authorize",
     );
+
     authorizationUrl.searchParams.set("client_id", configuration[input.provider].clientId);
     authorizationUrl.searchParams.set("response_type", "code");
     authorizationUrl.searchParams.set("redirect_uri", input.redirectUri);
@@ -85,29 +92,36 @@ export const makeOAuthAuthorization = Effect.gen(function* () {
       providerAuthorizationScopes[input.provider].join(" "),
     );
     authorizationUrl.searchParams.set("state", Redacted.value(state));
+
     return { state, authorizationUrl: Redacted.make(authorizationUrl.toString()) };
   });
+
   const consumeAuthorizationState = Effect.fn("OAuthAuthorization.consumeAuthorizationState")(
     (input: ConsumeAuthorizationState) => states.consumeAttempt(input),
   );
+
   const exchangeAuthorizationCode = Effect.fn("OAuthAuthorization.exchangeAuthorizationCode")(
     function* (input: ExchangeAuthorizationCode) {
       const received = yield* exchange.exchangeAuthorizationCode(input);
       yield* tokens.setTokens({ provider: input.provider, tokens: received });
+
       return received;
     },
   );
+
   return OAuthAuthorization.of({
     beginAuthorization,
     consumeAuthorizationState,
     exchangeAuthorizationCode,
   });
 });
+
 /** OAuth orchestration with state, tokens, provider exchange and configuration requirements visible. */
 export const oauthAuthorizationLayerWithoutDependencies = Layer.effect(
   OAuthAuthorization,
   makeOAuthAuthorization,
 );
+
 /** OAuth orchestration selects HTTP-only durable clients and real provider token exchange. */
 export const oauthAuthorizationLayer = oauthAuthorizationLayerWithoutDependencies.pipe(
   Layer.provide([oauthStateClientLayer, providerAccessTokensLayer, providerTokenExchangeLayer]),

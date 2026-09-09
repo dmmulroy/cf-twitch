@@ -29,18 +29,22 @@ const EventSubSubscription = Schema.Struct({
   }),
   created_at: IsoTimestamp,
 });
+
 const broadcasterFields = {
   broadcaster_user_id: BroadcasterId,
   broadcaster_user_login: Schema.String,
   broadcaster_user_name: Schema.String,
 };
+
 const StreamOnlineEvent = Schema.Struct({
   ...broadcasterFields,
   id: Schema.NonEmptyString,
   type: Schema.NonEmptyString,
   started_at: IsoTimestamp,
 });
+
 const StreamOfflineEvent = Schema.Struct(broadcasterFields);
+
 const RedemptionEvent = Schema.Struct({
   ...broadcasterFields,
   id: RedemptionId,
@@ -57,6 +61,7 @@ const RedemptionEvent = Schema.Struct({
   status: Schema.NonEmptyString,
   redeemed_at: IsoTimestamp,
 });
+
 const RaidEvent = Schema.Struct({
   from_broadcaster_user_id: BroadcasterId,
   from_broadcaster_user_login: Schema.String,
@@ -66,6 +71,7 @@ const RaidEvent = Schema.Struct({
   to_broadcaster_user_name: Schema.String,
   viewers: NonNegativeInt,
 });
+
 const ChatMessageEvent = Schema.Struct({
   ...broadcasterFields,
   chatter_user_id: ViewerId,
@@ -77,6 +83,7 @@ const ChatMessageEvent = Schema.Struct({
     Schema.Struct({ set_id: Schema.String, id: Schema.String, info: Schema.String }),
   ),
 });
+
 /** Parsed EventSub messages retain transport fields only until the dispatch adapter translates them. */
 export const ParsedEventSubMessage = Schema.TaggedUnion({
   EventSubChallenge: { subscription: EventSubSubscription, challenge: Schema.NonEmptyString },
@@ -91,25 +98,37 @@ export const ParsedEventSubMessage = Schema.TaggedUnion({
     event: Schema.Record(Schema.String, Schema.Json),
   },
 });
+
 /** Closed parsed notification variants with explicit unknown subscription policy. */
 export type ParsedEventSubMessage = typeof ParsedEventSubMessage.Type;
+
 const parseMessage = Schema.decodeEffect(Schema.toCodecJson(ParsedEventSubMessage));
+
 const isEventSubJsonObject = (body: Schema.Json): body is Schema.JsonObject =>
   Predicate.isReadonlyObject(body);
+
 const selectEventSubMessageTag = (
   messageType: EventSubHeaders["twitch-eventsub-message-type"],
   subscriptionType: EventSubHeaders["twitch-eventsub-subscription-type"],
 ): ParsedEventSubMessage["_tag"] => {
   if (messageType === "webhook_callback_verification") return "EventSubChallenge";
+
   if (messageType === "revocation") return "EventSubRevocation";
+
   if (subscriptionType === "stream.online") return "StreamOnlineNotification";
+
   if (subscriptionType === "stream.offline") return "StreamOfflineNotification";
+
   if (subscriptionType === "channel.channel_points_custom_reward_redemption.add")
     return "RewardRedemptionNotification";
+
   if (subscriptionType === "channel.raid") return "RaidNotification";
+
   if (subscriptionType === "channel.chat.message") return "ChatMessageNotification";
+
   return "UnhandledEventSubNotification";
 };
+
 /** Parse signed EventSub content and reject header/body subscription type or version disagreement. */
 export const parseEventSubMessage: (
   headers: EventSubHeaders,
@@ -123,6 +142,7 @@ export const parseEventSubMessage: (
         operation: "parse-message",
         reason: "invalid",
       });
+
     // Own-entry reconstruction avoids Object.assign's __proto__ setter while the final entry overrides a body-supplied tag.
     const message = yield* parseMessage(
       Object.fromEntries([
@@ -136,6 +156,7 @@ export const parseEventSubMessage: (
         ],
       ]),
     );
+
     if (
       message.subscription.type !== headers["twitch-eventsub-subscription-type"] ||
       message.subscription.version !== headers["twitch-eventsub-subscription-version"]
@@ -147,6 +168,7 @@ export const parseEventSubMessage: (
         }),
       );
     }
+
     return message;
   },
   Effect.mapError(

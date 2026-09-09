@@ -17,8 +17,11 @@ import {
 import { EventBusAlarm, EventBusProcessor, eventBusLayerWithoutDependencies } from "./event-bus.ts";
 
 const eventId = Schema.decodeUnknownSync(EventId)("550e8400-e29b-41d4-a716-446655440000");
+
 const replayEventId = Schema.decodeUnknownSync(EventId)("550e8400-e29b-41d4-a716-446655440001");
+
 const timestamp = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T12:00:00.000Z");
+
 const event = Schema.decodeUnknownSync(DomainEvent)({
   id: eventId,
   type: "song_request_success",
@@ -30,7 +33,9 @@ const event = Schema.decodeUnknownSync(DomainEvent)({
   sagaId: "redemption-1",
   trackId: "abc123",
 });
+
 const replayEvent = DomainEvent.make({ ...event, id: replayEventId });
+
 const firstPage = { limit: PageSize.make(10), offset: 0 };
 
 const timestampAfter = (milliseconds: number): IsoTimestamp =>
@@ -45,6 +50,7 @@ const makeEventBusTestLayer = (
   const databaseLayer = eventBusDatabaseLayerWithoutDependencies.pipe(
     Layer.provide(SqliteClient.layer({ filename: ":memory:" })),
   );
+
   const applicationLayer = eventBusLayerWithoutDependencies.pipe(
     Layer.provide(databaseLayer),
     Layer.provide(Layer.succeed(EventHandler, handler)),
@@ -59,6 +65,7 @@ const makeEventBusTestLayer = (
       ),
     ),
   );
+
   return Layer.merge(databaseLayer, applicationLayer);
 };
 
@@ -67,6 +74,7 @@ describe("Event Bus", () => {
     Effect.gen(function* () {
       const calls = yield* Ref.make(0);
       const alarmUpdates = yield* Ref.make<ReadonlyArray<Option.Option<IsoTimestamp>>>([]);
+
       const layer = makeEventBusTestLayer(
         EventHandler.of({
           handleDomainEvent: () => Ref.update(calls, (count) => count + 1),
@@ -90,6 +98,7 @@ describe("Event Bus", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse(timestamp));
       const alarmUpdates = yield* Ref.make<ReadonlyArray<Option.Option<IsoTimestamp>>>([]);
+
       const layer = makeEventBusTestLayer(
         EventHandler.of({
           handleDomainEvent: () =>
@@ -141,6 +150,7 @@ describe("Event Bus", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse(timestamp));
       const alarmUpdates = yield* Ref.make<ReadonlyArray<Option.Option<IsoTimestamp>>>([]);
+
       const layer = makeEventBusTestLayer(
         EventHandler.of({ handleDomainEvent: () => Effect.void }),
         alarmUpdates,
@@ -186,6 +196,7 @@ describe("Event Bus", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse(timestamp));
       const alarmUpdates = yield* Ref.make<ReadonlyArray<Option.Option<IsoTimestamp>>>([]);
+
       const layer = makeEventBusTestLayer(
         EventHandler.of({ handleDomainEvent: () => Effect.void }),
         alarmUpdates,
@@ -209,6 +220,7 @@ describe("Event Bus", () => {
           firstRetryAt: timestampAfter(5_000),
         });
         const deadLetterPending = yield* database.findPending(replayEventId);
+
         if (Option.isNone(deadLetterPending)) return yield* Effect.die("expected pending event");
         yield* database.moveToDeadLetter({
           pending: deadLetterPending.value,

@@ -17,6 +17,7 @@ import { twitchEventSubHandlersLayer } from "./twitch-eventsub-handlers.ts";
 import { twitchHttpCorrelationLayer } from "./http-request-correlation.ts";
 
 const eventSubApi = HttpApi.make("TwitchHttpApi").add(TwitchEventSubApi);
+
 const envelope = (type = "unknown.subscription", event: Schema.Json = {}) => ({
   subscription: {
     id: "subscription-id",
@@ -30,6 +31,7 @@ const envelope = (type = "unknown.subscription", event: Schema.Json = {}) => ({
   },
   event,
 });
+
 const signedRequest = async (input: {
   readonly bytes?: Uint8Array<ArrayBuffer>;
   readonly text?: string;
@@ -48,6 +50,7 @@ const signedRequest = async (input: {
   const signed = new Uint8Array(prefix.length + bytes.length);
   signed.set(prefix);
   signed.set(bytes, prefix.length);
+
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode("webhook-secret"),
@@ -55,9 +58,11 @@ const signedRequest = async (input: {
     false,
     ["sign"],
   );
+
   const signature =
     input.signature ??
     `sha256=${Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, signed)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+
   return new Request("https://worker.test/webhooks/twitch", {
     method: "POST",
     headers: {
@@ -73,6 +78,7 @@ const signedRequest = async (input: {
     body: bytes,
   });
 };
+
 const withWebhook = <A, E, R>(
   test: (
     fetch: (request: Request) => Promise<Response>,
@@ -82,17 +88,21 @@ const withWebhook = <A, E, R>(
 ) =>
   Effect.gen(function* () {
     const receipts: AcceptedEventSubReceipt[] = [];
+
     const receiptLayer = Layer.mock(EventSubReceipts, {
       accept: (receipt) =>
         Effect.gen(function* () {
           const existing = receipts.find((entry) => entry.messageId === receipt.messageId);
+
           if (existing !== undefined && existing.contentDigest !== receipt.contentDigest)
             return yield* Effect.fail(
               new EventSubReceiptConflict({ messageId: receipt.messageId }),
             );
+
           if (existing === undefined) receipts.push(receipt);
         }),
     });
+
     const api = HttpApiBuilder.layer(eventSubApi).pipe(
       Layer.provide(twitchEventSubHandlersLayer),
       Layer.provide(twitchHttpCorrelationLayer),
@@ -103,6 +113,7 @@ const withWebhook = <A, E, R>(
         cloudflareHttpServerLayer,
       ]),
     );
+
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
       ({ handler }) => test(handler, receipts),
@@ -121,7 +132,9 @@ describe("authenticated EventSub HTTP ingress", () => {
               new Request("https://worker.test/webhooks/twitch", { method: "POST", body: "{}" }),
             ),
           );
+
           expect(missing.status).toBe(400);
+
           for (const [input, status] of [
             [{ retry: "NaN" }, 400],
             [{ version: "" }, 400],
@@ -134,6 +147,7 @@ describe("authenticated EventSub HTTP ingress", () => {
             const response = yield* Effect.promise(() => fetch(request));
             expect(response.status, JSON.stringify(input)).toBe(status);
           }
+
           expect(receipts).toHaveLength(0);
         }),
       ),
@@ -147,12 +161,15 @@ describe("authenticated EventSub HTTP ingress", () => {
           const unsignedJson = yield* Effect.promise(() =>
             signedRequest({ text: "{", signature: `sha256=${"0".repeat(64)}` }),
           );
+
           expect((yield* Effect.promise(() => fetch(unsignedJson))).status).toBe(403);
           const signedJson = yield* Effect.promise(() => signedRequest({ text: "{" }));
           expect((yield* Effect.promise(() => fetch(signedJson))).status).toBe(400);
+
           const invalidUtf8 = yield* Effect.promise(() =>
             signedRequest({ bytes: new Uint8Array([0xc3, 0x28]) }),
           );
+
           const invalidResponse = yield* Effect.promise(() => fetch(invalidUtf8));
           expect(invalidResponse.status).toBe(400);
           expect(yield* Effect.promise(() => invalidResponse.json())).toEqual({
@@ -180,6 +197,7 @@ describe("authenticated EventSub HTTP ingress", () => {
             },
             challenge: "challenge-value",
           };
+
           const challenge = yield* Effect.promise(() =>
             signedRequest({
               text: JSON.stringify(challengeBody),
@@ -187,10 +205,12 @@ describe("authenticated EventSub HTTP ingress", () => {
               subscriptionType: "stream.online",
             }),
           );
+
           const response = yield* Effect.promise(() => fetch(challenge));
           expect(response.status).toBe(200);
           expect(response.headers.get("content-type")).toBe("text/plain; charset=UTF-8");
           expect(yield* Effect.promise(() => response.text())).toBe("challenge-value");
+
           for (const input of [
             { text: JSON.stringify(envelope("stream.online")), subscriptionType: "stream.offline" },
             { text: JSON.stringify(envelope()), version: "2" },
@@ -205,6 +225,7 @@ describe("authenticated EventSub HTTP ingress", () => {
             const request = yield* Effect.promise(() => signedRequest(input));
             expect((yield* Effect.promise(() => fetch(request))).status).toBe(400);
           }
+
           expect(receipts).toHaveLength(0);
         }),
       ),
@@ -216,6 +237,7 @@ describe("authenticated EventSub HTTP ingress", () => {
         const oversize = yield* Effect.promise(() =>
           signedRequest({ text: "x".repeat(1_048_577), signature: `sha256=${"0".repeat(64)}` }),
         );
+
         const response = yield* Effect.promise(() => fetch(oversize));
         expect(response.status).toBe(413);
         const declared = yield* Effect.promise(() => signedRequest({}));
@@ -233,14 +255,18 @@ describe("authenticated EventSub HTTP ingress", () => {
         Effect.gen(function* () {
           const timestamp = new Date().toISOString();
           const text = JSON.stringify(envelope());
+
           for (const retry of ["0", "1", "22"]) {
             const request = yield* Effect.promise(() => signedRequest({ timestamp, text, retry }));
             expect((yield* Effect.promise(() => fetch(request))).status).toBe(200);
           }
+
           expect(receipts).toHaveLength(1);
+
           const conflict = yield* Effect.promise(() =>
             signedRequest({ timestamp, text: `${text} ` }),
           );
+
           const response = yield* Effect.promise(() => fetch(conflict));
           expect(response.status).toBe(503);
           expect(yield* Effect.promise(() => response.json())).toEqual({
@@ -266,6 +292,7 @@ const managedSubscription = (type: string, id = type) =>
           : { broadcaster_user_id: "12345" },
     transport: { method: "webhook", callback: Option.some("https://worker.test/webhooks/twitch") },
   }) satisfies ProviderEventSubSubscription;
+
 const managementRequest = (path: string, method = "GET") =>
   new Request(`https://worker.test/eventsub${path}`, {
     method,
@@ -283,12 +310,14 @@ describe("EventSub management HTTP", () => {
         "channel.chat.message",
         "channel.raid",
       ].map((type) => managedSubscription(type));
+
       return withWebhook(
         (fetch) =>
           Effect.gen(function* () {
             const response = yield* Effect.promise(() =>
               fetch(managementRequest("/setup", "POST")),
             );
+
             expect(response.status).toBe(200);
             expect(yield* Effect.promise(() => response.json())).toEqual({
               success: true,
@@ -312,6 +341,7 @@ describe("EventSub management HTTP", () => {
 
   it.effect("continues partial setup and omits absent subscription callback keys", () => {
     const attempted: string[] = [];
+
     return withWebhook(
       (fetch) =>
         Effect.gen(function* () {
@@ -355,6 +385,7 @@ describe("EventSub management HTTP", () => {
         createEventSubSubscription: (input) => {
           attempted.push(input.type);
           expect(input.callbackUrl).toBe("https://worker.test/webhooks/twitch");
+
           return input.type === "stream.offline"
             ? Effect.fail(
                 new ProviderError({
@@ -373,12 +404,14 @@ describe("EventSub management HTTP", () => {
 
   it.effect("reports partial cleanup honestly and decodes deletion path IDs exactly once", () => {
     const deleted: string[] = [];
+
     return withWebhook(
       (fetch) =>
         Effect.gen(function* () {
           const response = yield* Effect.promise(() =>
             fetch(managementRequest("/cleanup", "POST")),
           );
+
           expect(response.status).toBe(200);
           expect(yield* Effect.promise(() => response.json())).toEqual({
             success: false,
@@ -386,9 +419,11 @@ describe("EventSub management HTTP", () => {
             deleted: 1,
             failed: 1,
           });
+
           const deletion = yield* Effect.promise(() =>
             fetch(managementRequest("/id%2Fwith%20space", "DELETE")),
           );
+
           expect(deletion.status).toBe(200);
           expect(yield* Effect.promise(() => deletion.json())).toEqual({
             success: true,
@@ -404,6 +439,7 @@ describe("EventSub management HTTP", () => {
           ]),
         deleteEventSubSubscription: (id) => {
           deleted.push(id);
+
           return id === "keep-me"
             ? Effect.fail(
                 new ProviderError({

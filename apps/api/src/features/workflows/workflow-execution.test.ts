@@ -42,6 +42,7 @@ const song = Schema.decodeUnknownSync(WorkflowInput)({
     redeemedAt: "2026-01-01T00:00:00Z",
   },
 });
+
 const track = Schema.decodeUnknownSync(SpotifyTrack)({
   id: "abc",
   name: "Track",
@@ -49,6 +50,7 @@ const track = Schema.decodeUnknownSync(SpotifyTrack)({
   album: "Album",
   albumCoverUrl: null,
 });
+
 const raffleResult = Schema.decodeUnknownSync(RaffleRecordResult)({
   roll: {
     id: "redemption-1",
@@ -62,6 +64,7 @@ const raffleResult = Schema.decodeUnknownSync(RaffleRecordResult)({
     rolledAt: "2026-01-01T00:00:00Z",
   },
 });
+
 const providerError = (kind: ProviderError["kind"], operation: string) =>
   new ProviderError({
     provider: "twitch",
@@ -70,6 +73,7 @@ const providerError = (kind: ProviderError["kind"], operation: string) =>
     status: kind === "rejected" ? 400 : 0,
     retryAfterMs: Option.none(),
   });
+
 const sqlite = SqliteClient.layer({ filename: ":memory:" });
 
 const recordingServices = Effect.gen(function* () {
@@ -82,6 +86,7 @@ const recordingServices = Effect.gen(function* () {
   const slowChat = yield* Ref.make(false);
   const chatStarted = yield* Deferred.make<void>();
   const record = (name: string) => Ref.update(calls, (values) => [...values, name]);
+
   const dependencies = Layer.mergeAll(
     Layer.mock(SpotifyService, {
       getTrack: () => record("track").pipe(Effect.as(track)),
@@ -106,7 +111,9 @@ const recordingServices = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* record("chat");
           yield* Deferred.succeed(chatStarted, undefined);
+
           if (yield* Ref.get(slowChat)) return yield* Effect.never;
+
           if (yield* Ref.get(unknownChat)) return yield* providerError("outcome-unknown", "chat");
         }),
       createShoutout: () => record("shoutout"),
@@ -141,28 +148,35 @@ const recordingServices = Effect.gen(function* () {
     NodeCrypto.layer,
     recordingTwitchAnalyticsLayer,
   );
+
   const executionLayer = workflowExecutionLayerWithoutDependencies.pipe(
     Layer.provide(workflowJournalLayerWithoutDependencies),
     Layer.provide(dependencies),
   );
+
   const use = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowExecution>) =>
     effect.pipe(Effect.provide(executionLayer, { local: true }));
+
   const start = (input = song) =>
     use(
       Effect.gen(function* () {
         const execution = yield* WorkflowExecution;
         yield* execution.start(input);
+
         return yield* execution.getStatus();
       }),
     );
+
   const resume = () =>
     use(
       Effect.gen(function* () {
         const execution = yield* WorkflowExecution;
         yield* execution.resume();
+
         return yield* execution.getStatus();
       }),
     );
+
   return {
     calls,
     events,
@@ -187,10 +201,12 @@ describe("Workflow execution public service with real SQLite restarts", () => {
         yield* Ref.set(controls.rejectFulfill, true);
         yield* Ref.set(controls.rejectRemove, true);
         yield* controls.start();
+
         for (const delay of [2, 4, 8, 16]) {
           yield* TestClock.adjust(`${delay} seconds`);
           yield* controls.resume();
         }
+
         expect(yield* controls.resume()).toMatchObject({
           value: { status: "COMPENSATION_FAILED" },
         });
@@ -206,6 +222,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
   it.effect("thanks and shouts out one raid exactly once using its EventSub message identity", () =>
     Effect.gen(function* () {
       const controls = yield* recordingServices;
+
       const input = Schema.decodeUnknownSync(WorkflowInput)({
         _tag: "RaidShoutout",
         raid: {
@@ -215,6 +232,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
           viewers: 42,
         },
       });
+
       expect(yield* controls.start(input)).toMatchObject({
         value: { sagaId: "raid-success", status: "COMPLETED" },
       });
@@ -229,6 +247,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
       Effect.gen(function* () {
         const controls = yield* recordingServices;
         yield* Ref.set(controls.slowChat, true);
+
         const input = Schema.decodeUnknownSync(WorkflowInput)({
           _tag: "RaidShoutout",
           raid: {
@@ -238,11 +257,14 @@ describe("Workflow execution public service with real SQLite restarts", () => {
             viewers: 42,
           },
         });
+
         const completed = yield* Ref.make(false);
+
         const fiber = yield* controls.start(input).pipe(
           Effect.tap(() => Ref.set(completed, true)),
           Effect.forkChild,
         );
+
         yield* Deferred.await(controls.chatStarted);
         yield* TestClock.adjust("9 seconds");
         expect(yield* Ref.get(completed)).toBe(false);
@@ -260,6 +282,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
         if (song._tag !== "SongRequest") return;
         const controls = yield* recordingServices;
         const sql = yield* SqlClient.SqlClient;
+
         const httpLayer = HttpApiBuilder.layer(WorkflowHttpApi).pipe(
           Layer.provide(
             workflowHttpHandlersLayer.pipe(
@@ -272,10 +295,12 @@ describe("Workflow execution public service with real SQLite restarts", () => {
           ),
           Layer.provide(cloudflareHttpServerLayer),
         );
+
         const app = yield* Effect.acquireRelease(
           Effect.sync(() => HttpRouter.toWebHandler(httpLayer, { disableLogger: true })),
           (app) => Effect.promise(() => app.dispose()),
         );
+
         const fetchLayer = FetchHttpClient.layer.pipe(
           Layer.provide(
             Layer.succeed(FetchHttpClient.Fetch, (input, init) =>
@@ -283,12 +308,15 @@ describe("Workflow execution public service with real SQLite restarts", () => {
             ),
           ),
         );
+
         yield* Effect.gen(function* () {
           const httpClient = yield* HttpClient.HttpClient;
+
           const client = yield* HttpApiClient.makeWith(WorkflowHttpApi, {
             baseUrl: "http://workflow.test",
             httpClient,
           });
+
           expect(yield* client.workflow.getStatus()).toEqual(Option.none());
           yield* client.workflow.start({ payload: song });
           expect(yield* client.workflow.getStatus()).toMatchObject({
@@ -386,10 +414,12 @@ describe("Workflow execution public service with real SQLite restarts", () => {
         const services = yield* recordingServices;
         yield* Ref.set(services.rejectPublish, true);
         expect(yield* services.start()).toMatchObject({ value: { status: "RUNNING" } });
+
         for (const delay of [2, 4, 8, 16]) {
           yield* TestClock.adjust(`${delay} seconds`);
           yield* services.resume();
         }
+
         expect(yield* services.resume()).toMatchObject({
           value: { status: "POST_COMMIT_FAILED", fulfilledAt: { _tag: "Some" } },
         });
@@ -456,6 +486,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
     Effect.gen(function* () {
       const services = yield* recordingServices;
       yield* Ref.set(services.unknownChat, true);
+
       const input = Schema.decodeUnknownSync(WorkflowInput)({
         _tag: "RaidShoutout",
         raid: {
@@ -465,6 +496,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
           viewers: 42,
         },
       });
+
       expect(yield* services.start(input)).toMatchObject({ value: { status: "OUTCOME_UNKNOWN" } });
       yield* services.start(input);
       expect(yield* Ref.get(services.calls)).toEqual(["chat"]);

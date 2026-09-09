@@ -15,29 +15,35 @@ export const EventSubChatResponse = Schema.Struct({
   commandName: ChatCommandName,
   message: ChatMessageText,
 });
+
 /** Parsed command response ready for durable sending intent. */
 export type EventSubChatResponse = typeof EventSubChatResponse.Type;
+
 /** Dispatch owns notification translation while the inbox owns leases and chat sending checkpoints. */
 export interface IEventSubDispatch {
   readonly dispatch: (
     receipt: AcceptedEventSubReceipt,
   ) => Effect.Effect<Option.Option<EventSubChatResponse>, EventSubReceiptError>;
 }
+
 /** Parsed EventSub dispatcher composes real workflow, stream and command capabilities. */
 export class EventSubDispatch extends Context.Service<EventSubDispatch, IEventSubDispatch>()(
   "@cf-twitch/EventSubDispatch",
 ) {}
+
 /** Construct notification routing with parsed runtime reward configuration. */
 export const makeEventSubDispatch = Effect.gen(function* () {
   const configuration = yield* TwitchConfiguration;
   const workflows = yield* WorkflowStarters;
   const stream = yield* StreamLifecycleClient;
   const commands = yield* ChatCommandExecutor;
+
   const dispatch = Effect.fn("EventSubDispatch.dispatch")(
     function* (receipt: AcceptedEventSubReceipt) {
       const message = yield* parseEventSubMessage(receipt.headers, receipt.body);
       // Signed source time is stable across redelivery; receivedAt is only first server-ingestion metadata.
       const sourceTimestamp = receipt.headers["twitch-eventsub-message-timestamp"];
+
       switch (message._tag) {
         case "EventSubChallenge":
           return Option.none();
@@ -46,20 +52,24 @@ export const makeEventSubDispatch = Effect.gen(function* () {
             subscriptionType: message.subscription.type,
             status: message.subscription.status,
           });
+
           return Option.none();
         case "UnhandledEventSubNotification":
           yield* Effect.logWarning("EventSub subscription type is unhandled", {
             subscriptionType: message.subscription.type,
           });
+
           return Option.none();
         case "StreamOnlineNotification":
           yield* stream.markOnline({
             streamId: StreamId.make(message.event.id),
             startedAt: message.event.started_at,
           });
+
           return Option.none();
         case "StreamOfflineNotification":
           yield* stream.markOffline({ endedAt: sourceTimestamp });
+
           return Option.none();
         case "RaidNotification":
           yield* workflows.startRaidShoutout({
@@ -72,9 +82,11 @@ export const makeEventSubDispatch = Effect.gen(function* () {
             },
             viewers: message.event.viewers,
           });
+
           return Option.none();
         case "RewardRedemptionNotification": {
           const event = message.event;
+
           const redemption = {
             id: event.id,
             broadcasterId: event.broadcaster_user_id,
@@ -85,15 +97,19 @@ export const makeEventSubDispatch = Effect.gen(function* () {
             reward: event.reward,
             redeemedAt: event.redeemed_at,
           };
+
           if (event.reward.id === configuration.rewardRouting.songRequestRewardId)
             yield* workflows.startSongRequest(redemption);
           else if (event.reward.id === configuration.rewardRouting.keyboardRaffleRewardId)
             yield* workflows.startKeyboardRaffle(redemption);
+
           return Option.none();
         }
+
         case "ChatMessageNotification": {
           const event = message.event;
           const permission = getChatCommandPermission(event.badges);
+
           const prepared = yield* commands.prepare({
             messageId: event.message_id,
             text: event.message.text.trim(),
@@ -104,8 +120,10 @@ export const makeEventSubDispatch = Effect.gen(function* () {
               permission,
             },
           });
+
           if (prepared._tag === "ChatCommandIgnored" || Option.isNone(prepared.message))
             return Option.none();
+
           const chatMessage = yield* ChatMessageText.makeEffect(prepared.message.value).pipe(
             Effect.mapError(
               () =>
@@ -115,6 +133,7 @@ export const makeEventSubDispatch = Effect.gen(function* () {
                 }),
             ),
           );
+
           return Option.some({ commandName: prepared.commandName, message: chatMessage });
         }
       }
@@ -127,8 +146,10 @@ export const makeEventSubDispatch = Effect.gen(function* () {
         }),
     ),
   );
+
   return EventSubDispatch.of({ dispatch });
 });
+
 /** EventSub dispatch retains dependency requirements instead of fake production fallbacks. */
 export const eventSubDispatchLayerWithoutDependencies = Layer.effect(
   EventSubDispatch,

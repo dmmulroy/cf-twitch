@@ -9,6 +9,7 @@ import {
 } from "./provider-token-database.ts";
 
 const sqliteLayer = SqliteClient.layer({ filename: ":memory:" });
+
 for (const provider of ["spotify", "twitch"] as const) {
   for (const version of ["legacy", "versioned"] as const) {
     it.effect(
@@ -16,6 +17,7 @@ for (const provider of ["spotify", "twitch"] as const) {
       () =>
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+
           const historical = {
             token: {
               accessToken: "legacy-access",
@@ -28,23 +30,29 @@ for (const provider of ["spotify", "twitch"] as const) {
             refreshScheduleId: "refresh-retry-2",
             refreshRetryCount: 2,
           };
+
           const state = JSON.stringify(
             version === "versioned"
               ? { ...historical, version: 1, authorizationStatus: "authorized" }
               : historical,
           );
+
           yield* sql`CREATE TABLE cf_agents_state(id TEXT PRIMARY KEY NOT NULL, state TEXT)`;
           yield* sql`INSERT INTO cf_agents_state VALUES ('cf_state_row_id', ${state})`;
           yield* sql`INSERT INTO cf_agents_state VALUES ('cf_schema_version', '2')`;
           yield* sql`CREATE TABLE cf_agents_schedules(id TEXT PRIMARY KEY, callback TEXT, type TEXT, time INTEGER)`;
           yield* sql`INSERT INTO cf_agents_schedules VALUES ('refresh-retry-2', 'refreshTokenTick', 'delayed', 1767225500)`;
+
           const layer = providerTokenDatabaseLayerWithoutDependencies.pipe(
             Layer.provide(Layer.succeed(TokenProviderIdentity, provider)),
           );
+
           const imported = yield* Effect.gen(function* () {
             const database = yield* ProviderTokenDatabase;
+
             return yield* database.readState();
           }).pipe(Effect.provide(layer));
+
           expect(imported.authorizationStatus).toBe("authorized");
           expect(imported.isStreamLive).toBe(true);
           expect(imported.refreshRetryCount).toBe(2);
@@ -67,15 +75,19 @@ for (const provider of ["spotify", "twitch"] as const) {
               nextRefreshAtMs: Option.none(),
             });
           }).pipe(Effect.provide(layer, { local: true }));
+
           const restored = yield* Effect.gen(function* () {
             const database = yield* ProviderTokenDatabase;
+
             return yield* database.readState();
           }).pipe(Effect.provide(layer, { local: true }));
+
           expect(restored.isStreamLive).toBe(false);
           expect(restored.nextRefreshAtMs).toEqual(Option.none());
         }).pipe(Effect.provide(sqliteLayer)),
     );
   }
+
   for (const missingScheduleEvidence of ["table", "referenced-row"] as const) {
     for (const isStreamLive of [true, false]) {
       it.effect(
@@ -83,6 +95,7 @@ for (const provider of ["spotify", "twitch"] as const) {
         () =>
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
+
             const state = JSON.stringify({
               token: {
                 accessToken: "legacy-access",
@@ -95,12 +108,16 @@ for (const provider of ["spotify", "twitch"] as const) {
               refreshScheduleId: "missing-refresh-schedule",
               refreshRetryCount: 0,
             });
+
             yield* sql`CREATE TABLE cf_agents_state(id TEXT PRIMARY KEY NOT NULL, state TEXT)`;
             yield* sql`INSERT INTO cf_agents_state VALUES ('cf_state_row_id', ${state})`;
+
             if (missingScheduleEvidence === "referenced-row")
               yield* sql`CREATE TABLE cf_agents_schedules(id TEXT PRIMARY KEY, callback TEXT, type TEXT, time INTEGER)`;
+
             const result = yield* Effect.gen(function* () {
               const database = yield* ProviderTokenDatabase;
+
               return yield* database.readState();
             }).pipe(
               Effect.provide(
@@ -110,6 +127,7 @@ for (const provider of ["spotify", "twitch"] as const) {
               ),
               Effect.result,
             );
+
             expect(result).toMatchObject({
               _tag: "Failure",
               failure: { operation: "LegacyAgentStateImportRequired", kind: "persistence" },
@@ -122,12 +140,14 @@ for (const provider of ["spotify", "twitch"] as const) {
       );
     }
   }
+
   for (const authorizationStatus of ["not-configured", "reauthorization-required"] as const) {
     it.effect(
       `${provider} preserves ${authorizationStatus} without resurrecting proactive refresh`,
       () =>
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+
           const state = JSON.stringify({
             version: 1,
             token:
@@ -145,10 +165,13 @@ for (const provider of ["spotify", "twitch"] as const) {
             refreshScheduleId: null,
             refreshRetryCount: 0,
           });
+
           yield* sql`CREATE TABLE cf_agents_state(id TEXT PRIMARY KEY NOT NULL, state TEXT)`;
           yield* sql`INSERT INTO cf_agents_state VALUES ('cf_state_row_id', ${state})`;
+
           const imported = yield* Effect.gen(function* () {
             const database = yield* ProviderTokenDatabase;
+
             return yield* database.readState();
           }).pipe(
             Effect.provide(
@@ -157,6 +180,7 @@ for (const provider of ["spotify", "twitch"] as const) {
               ),
             ),
           );
+
           expect(imported.authorizationStatus).toBe(authorizationStatus);
           expect(imported.nextRefreshAtMs).toEqual(Option.none());
         }).pipe(Effect.provide(sqliteLayer)),

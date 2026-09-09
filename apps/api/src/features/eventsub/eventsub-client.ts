@@ -11,6 +11,7 @@ import eventSubWebhookServerLayer, { EventSubWebhookServer } from "./eventsub-se
 /** Construct receipt clients with execution-scoped cache ownership, never globally cached DO stubs. */
 export const makeEventSubReceipts = Effect.gen(function* () {
   const namespace = yield* EventSubWebhookServer;
+
   const clients = yield* makeExecutionMemo(
     Cache.make({
       capacity: Number.POSITIVE_INFINITY,
@@ -23,8 +24,10 @@ export const makeEventSubReceipts = Effect.gen(function* () {
         ),
     }),
   );
+
   const clientFor = (messageId: EventSubMessageId) =>
     clients.pipe(Effect.flatMap((cache) => Cache.get(cache, messageId)));
+
   const accept = Effect.fn("EventSubReceipts.accept")(
     function* (receipt: AcceptedEventSubReceipt) {
       const client = yield* clientFor(receipt.messageId);
@@ -47,9 +50,11 @@ export const makeEventSubReceipts = Effect.gen(function* () {
         ),
     }),
   );
+
   const getReceiptStatus = Effect.fn("EventSubReceipts.getReceiptStatus")(
     function* (messageId: EventSubMessageId) {
       const client = yield* clientFor(messageId);
+
       return yield* client.receipts.getReceiptStatus();
     },
     Effect.catchTags({
@@ -69,13 +74,16 @@ export const makeEventSubReceipts = Effect.gen(function* () {
         ),
     }),
   );
+
   return EventSubReceipts.of({ accept, getReceiptStatus });
 });
+
 /** Receipt client leaves the physical namespace implementation selectable for real HTTP tests. */
 export const eventSubReceiptsLayerWithoutDependencies = Layer.effect(
   EventSubReceipts,
   makeEventSubReceipts,
 );
+
 /** Production receipt client includes the complete EventSub durable dispatch graph. */
 export const eventSubReceiptsLayer = eventSubReceiptsLayerWithoutDependencies.pipe(
   Layer.provide(eventSubWebhookServerLayer),

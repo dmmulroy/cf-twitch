@@ -19,6 +19,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+
       for (const statement of historicalAchievementStatements) yield* sql.unsafe(statement);
       const timestamp = IsoTimestamp.make("2026-04-07T14:00:00Z");
       const id = EventId.make("00000000-0000-4000-8000-000000000001");

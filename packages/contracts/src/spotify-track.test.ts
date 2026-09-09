@@ -14,6 +14,7 @@ describe("Spotify track input", () => {
           `https://open.spotify.com/intl-de/track/${trackId}/?si=ignored#ignored`,
           `  http://open.spotify.com/track/${trackId}  `,
         ];
+
         for (const input of inputs) {
           expect(Effect.runSync(parseSpotifyTrackInput(input))).toBe(trackId);
         }

@@ -42,6 +42,7 @@ const outboxTestLayer = (mode: ControlledTwitchProviderMode) =>
     ),
     Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })),
   );
+
 const request = SongRequestSuccessEvent.make({
   id: EventId.make("00000000-0000-4000-8000-000000000001"),
   v: 1,
@@ -65,6 +66,7 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
         const transcript = yield* ProviderScenarioTranscript;
         const analytics = yield* TwitchAnalyticsRecording;
         const definitions = yield* achievements.getDefinitions();
+
         for (const [index, definition] of definitions.entries()) {
           yield* achievements.recordEvent({
             userId: request.userId,
@@ -75,6 +77,7 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
             metadata: Option.none(),
           });
         }
+
         expect(
           yield* achievements.getUnlockedAchievements({ userDisplayName: "Viewer" }),
         ).toHaveLength(13);
@@ -138,10 +141,12 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
         yield* TestClock.adjust("1 millis");
         yield* outbox.flush();
         expect(yield* transcript.readRequestCount()).toBe(2);
+
         for (let retry = 0; retry < 2; retry++) {
           yield* TestClock.adjust("12 seconds");
           yield* outbox.flush();
         }
+
         expect(yield* transcript.readRequestCount()).toBe(4);
         expect(
           yield* sql`SELECT announcement_state,announcement_attempts FROM achievement_unlock_outbox`,
@@ -153,6 +158,7 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
         expect(yield* outbox.hasPending()).toBe(false);
       }).pipe(Effect.provide(outboxTestLayer("rate-limited"))),
   );
+
   for (const mode of ["unknown", "malformed-chat"] as const) {
     it.effect(
       `${mode} outcome is uncertain and never retried, including after SQL authority restart`,
@@ -180,6 +186,7 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
         }).pipe(Effect.provide(outboxTestLayer(mode))),
     );
   }
+
   it.effect(
     "confirmed provider send followed by failed SQL finalization becomes uncertain on restart without duplicate chat or metrics",
     () =>

@@ -5,7 +5,9 @@ import { FastCheck } from "effect/testing";
 import { providerAuthorizationScopes } from "./oauth-authorization.ts";
 
 const parseState = Schema.decodeSync(OAuthState);
+
 const encodeState = Schema.encodeSync(OAuthState);
+
 const parseRedirect = Schema.decodeOption(OAuthRedirectUri);
 
 it.effect(
@@ -23,6 +25,7 @@ it.effect(
       );
     }),
 );
+
 it.effect("OAuth redirect URI parser rejects malformed absolute URLs and non-HTTP schemes", () =>
   Effect.sync(() => {
     for (const value of [
@@ -33,6 +36,7 @@ it.effect("OAuth redirect URI parser rejects malformed absolute URLs and non-HTT
       "https://bad host/callback",
     ])
       expect(parseRedirect(value)._tag).toBe("None");
+
     for (const value of [
       "https://localhost/oauth/callback",
       "http://127.0.0.1:8787/oauth/callback",
@@ -41,6 +45,7 @@ it.effect("OAuth redirect URI parser rejects malformed absolute URLs and non-HTT
       expect(parseRedirect(value)._tag).toBe("Some");
   }),
 );
+
 it.effect("OAuth token setup retains all baseline provider scopes", () =>
   Effect.sync(() => {
     expect(providerAuthorizationScopes.spotify).toEqual([
@@ -57,6 +62,7 @@ it.effect("OAuth token setup retains all baseline provider scopes", () =>
     ]);
   }),
 );
+
 it.effect("OAuth errors carry no state, authorization code or persistence cause fields", () =>
   Effect.sync(() => {
     const error = new OAuthError({ operation: "consumeAttempt", reason: "persistence" });

@@ -16,7 +16,9 @@ import { SongQueueHttpApi } from "../song-queue-http-api.ts";
 import { songQueueScenarioStack } from "./song-queue-scenario-worker.ts";
 
 const stage = Effect.runSync(cfTwitchInfrastructureStageConfig);
+
 const songQueueLimit = (value: number): SongQueueLimit => SongQueueLimit.make(value);
+
 const { test } = Test.make({ providers: Cloudflare.providers(), adopt: false, dev: true, stage });
 
 test.provider(
@@ -29,7 +31,9 @@ test.provider(
           baseUrl: deployed.url,
           httpClient: yield* HttpClient.HttpClient,
         });
+
         const eventId = RedemptionId.make(crypto.randomUUID());
+
         const input = {
           eventId,
           track: {
@@ -43,11 +47,14 @@ test.provider(
           requesterDisplayName: "Local viewer",
           requestedAt: IsoTimestamp.make(new Date().toISOString()),
         };
+
         yield* client.songQueue.persistRequest({ payload: input }).pipe(Effect.scoped);
         yield* client.songQueue.persistRequest({ payload: input }).pipe(Effect.scoped);
+
         const queue = yield* client.songQueue
           .getSongQueue({ payload: { limit: songQueueLimit(10) } })
           .pipe(Effect.scoped);
+
         expect(queue.totalCount).toBe(2);
         expect(queue.tracks).toMatchObject([{ source: "user", eventId }, { source: "autoplay" }]);
         expect(yield* client.songQueue.getCurrentlyPlaying().pipe(Effect.scoped)).toEqual({
@@ -68,9 +75,11 @@ test.provider(
         ).toBe(0);
         yield* client.songQueue.deleteRequest({ payload: { eventId } }).pipe(Effect.scoped);
         yield* client.songQueue.refreshQueue().pipe(Effect.scoped);
+
         const compensated = yield* client.songQueue
           .getSongQueue({ payload: { limit: songQueueLimit(10) } })
           .pipe(Effect.scoped);
+
         expect(compensated.tracks.every((track) => track.source === "autoplay")).toBe(true);
       }).pipe(Effect.provide(FetchHttpClient.layer));
     }),

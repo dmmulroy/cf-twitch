@@ -64,11 +64,13 @@ it("preserves raffle evidence and optional correlation through durable JSON repl
           isWinner: roll === winningNumber,
           isNewRecord: false,
         });
+
         const replayed = Effect.runSync(
           Effect.gen(function* () {
             return yield* parseDomainEventJson(yield* encodeDomainEventJson(event));
           }),
         );
+
         expect(replayed).toEqual(event);
       },
     ),

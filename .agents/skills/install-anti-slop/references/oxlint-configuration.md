@@ -14,6 +14,12 @@ Register the installed generic entrypoint, adjusting the path if a different des
 
 The installed `index.ts` is the authority for available rule names; the bundled [entrypoint](../assets/anti-slop/index.ts) describes this distribution. Read its `rules` keys and add each as `anti-slop/<rule-name>: "error"` to the active configuration. Merge entries with existing plugins/rules rather than replacing policy or maintaining a second rule-name catalog in this document.
 
+## Readable spacing
+
+`anti-slop/require-readable-spacing` is part of the generic policy. Its comment-aware whitespace fixer is vendored from ESLint Stylistic; retain `vendor/eslint-stylistic/LICENSE` and `UPSTREAM.md` with the copied files. It requires no additional plugin dependency.
+
+When cleanup is authorized, run lint autofix, then the project's formatter, then lint again. Confirm a second fix/format pass leaves files unchanged. The rule preserves compact local bindings and overload groups; it restores structural blank lines rather than inferring every logical step. Keep unrelated semantic fixes out of the spacing pass.
+
 ## Configuration placement
 
 | Host                                     | Placement                                                                                                                                                       |

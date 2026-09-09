@@ -15,6 +15,7 @@ export const ChannelPointReward = Schema.Struct({
   cost: NonNegativeInt,
   prompt: Schema.String,
 });
+
 /** Parsed reward metadata; its identity is distinct from a redemption identity. */
 export type ChannelPointReward = typeof ChannelPointReward.Type;
 
@@ -29,5 +30,6 @@ export const ChannelPointRedemption = Schema.Struct({
   reward: ChannelPointReward,
   redeemedAt: IsoTimestamp,
 });
+
 /** Parsed channel point redemption accepted by song request and raffle workflows. */
 export type ChannelPointRedemption = typeof ChannelPointRedemption.Type;

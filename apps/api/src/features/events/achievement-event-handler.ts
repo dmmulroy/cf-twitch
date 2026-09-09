@@ -22,6 +22,7 @@ export const achievementEventHandlerLayer = Layer.effect(
   EventHandler,
   Effect.gen(function* () {
     const achievements = yield* Achievements;
+
     return EventHandler.of({
       handleDomainEvent: Effect.fn("AchievementEventHandler.handleDomainEvent")(function* (event) {
         yield* achievements

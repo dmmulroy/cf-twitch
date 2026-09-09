@@ -11,6 +11,7 @@ const CfTwitchVerificationCommand = Schema.Literals([
   "tests",
   "typecheck",
 ]);
+
 type CfTwitchVerificationCommand = typeof CfTwitchVerificationCommand.Type;
 
 class CfTwitchVerificationCommandFailed extends Schema.TaggedError<CfTwitchVerificationCommandFailed>()(
@@ -36,6 +37,7 @@ const runCfTwitchVerificationCommand = Effect.fn(
 )(function* (name: CfTwitchVerificationCommand, command: ChildProcess.Command) {
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const exitCode = yield* childProcessSpawner.exitCode(command);
+
   if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
     return yield* Effect.fail(new CfTwitchVerificationCommandFailed({ command: name, exitCode }));
   }

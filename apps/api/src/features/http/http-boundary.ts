@@ -35,8 +35,11 @@ export const renderHttpBoundaryError = (
   failure: HttpBoundaryError,
 ): HttpServerResponse.HttpServerResponse => {
   const body: HttpErrorEnvelope = { error: failure.error };
+
   if (failure.code !== undefined) body.code = failure.code;
+
   if (failure.details !== undefined) body.details = failure.details;
+
   return HttpServerResponse.jsonUnsafe(body, { status: failure.status });
 };
 
@@ -49,6 +52,7 @@ export const compareHttpSecret = Effect.fn("Http.compareSecret")(function* (
     try: async () => {
       const encoder = new TextEncoder();
       const algorithm = { name: "HMAC", hash: "SHA-256" };
+
       const candidateKey = await crypto.subtle.importKey(
         "raw",
         encoder.encode(Redacted.value(provided)),
@@ -56,6 +60,7 @@ export const compareHttpSecret = Effect.fn("Http.compareSecret")(function* (
         false,
         ["sign"],
       );
+
       const expectedKey = await crypto.subtle.importKey(
         "raw",
         encoder.encode(Redacted.value(expected)),
@@ -63,8 +68,10 @@ export const compareHttpSecret = Effect.fn("Http.compareSecret")(function* (
         false,
         ["verify"],
       );
+
       const message = encoder.encode("CF Twitch HTTP credential verification");
       const signature = await crypto.subtle.sign("HMAC", candidateKey, message);
+
       return crypto.subtle.verify("HMAC", expectedKey, signature, message);
     },
     catch: () => new HttpBoundaryError({ status: 503, error: "Authentication unavailable" }),
@@ -85,11 +92,13 @@ export const requireHttpAdministrator = Effect.fn("Http.requireAdministrator")(f
     );
   const request = yield* HttpServerRequest.HttpServerRequest;
   const authorization = request.headers["authorization"];
+
   if (!authorization)
     return yield* Effect.fail(
       new HttpBoundaryError({ status: 401, error: "Missing Authorization header" }),
     );
   const [scheme, token, extra] = authorization.split(" ");
+
   if (scheme !== "Bearer" || !token || (audience === "EventSub management" && extra !== undefined))
     return yield* Effect.fail(
       new HttpBoundaryError({
@@ -100,6 +109,7 @@ export const requireHttpAdministrator = Effect.fn("Http.requireAdministrator")(f
             : "Invalid Authorization header format. Expected: Bearer <token>",
       }),
     );
+
   if (!(yield* compareHttpSecret(Redacted.make(token), secret)))
     return yield* Effect.fail(new HttpBoundaryError({ status: 403, error: "Invalid token" }));
 });
@@ -125,29 +135,40 @@ export const handleHttpBoundary = <R>(
   );
 
 const decodePageSize = Schema.decodeEffect(PageSize);
+
 const decodeSongQueueLimit = Schema.decodeEffect(SongQueueLimit);
+
 const decodeOffset = Schema.decodeEffect(NonNegativeInt);
+
 const sortSchema = Schema.Literals(["rolls", "wins", "closest"]);
+
 const sortFromString = Schema.String.pipe(Schema.decodeTo(sortSchema));
+
 const decodeSort = Schema.decodeEffect(sortFromString);
+
 const leaderboardSortValues = ["rolls", "wins", "closest"] as const;
 
 const readHttpSearchParams = Effect.fn("Http.readSearchParams")(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
+
   return new URL(request.originalUrl, "https://http.internal").searchParams;
 });
+
 const readPublicLimitValue = (query: URLSearchParams): number =>
   query.getAll("limit").length > 1
     ? Number.NaN
     : query.has("limit")
       ? Number(query.get("limit"))
       : 10;
+
 const findUnknownQueryKeys = (
   query: URLSearchParams,
   allowed: readonly string[],
 ): readonly string[] => [...new Set(query.keys())].filter((key) => !allowed.includes(key));
+
 const invalidQueryParameters = (details: readonly Schema.Json[]) =>
   new HttpBoundaryError({ status: 400, error: "Invalid query parameters", details });
+
 const decodeHttpLimit = <A>(
   decode: (input: number) => Effect.Effect<A, Schema.SchemaError>,
   value: number,
@@ -169,6 +190,7 @@ const decodeHttpLimit = <A>(
 /** Parse the sole public limit query parameter into a branded page size. */
 export const parseHttpLimitQuery = Effect.fn("Http.parseLimitQuery")(function* () {
   const query = yield* readHttpSearchParams();
+
   return yield* decodeHttpLimit(
     decodePageSize,
     readPublicLimitValue(query),
@@ -182,10 +204,12 @@ export const parseHttpLeaderboardQuery = Effect.fn("Http.parseLeaderboardQuery")
   const limitValue = readPublicLimitValue(query);
   const sortValue = query.get("sortBy") ?? "closest";
   const unknownKeys = findUnknownQueryKeys(query, ["limit", "sortBy"]);
+
   const [limitResult, sortResult] = yield* Effect.all([
     decodePageSize(limitValue).pipe(Effect.result),
     decodeSort(sortValue).pipe(Effect.result),
   ]);
+
   const issues = [
     ...(Result.isFailure(sortResult) || query.getAll("sortBy").length > 1
       ? [formatHttpEnumIssue(leaderboardSortValues, ["sortBy"])]
@@ -193,8 +217,10 @@ export const parseHttpLeaderboardQuery = Effect.fn("Http.parseLeaderboardQuery")
     ...(Result.isFailure(limitResult) ? formatHttpNumberIssues(limitValue, ["limit"], 1, 100) : []),
     ...(unknownKeys.length > 0 ? [formatHttpUnknownKeys(unknownKeys)] : []),
   ];
+
   if (Result.isFailure(limitResult) || Result.isFailure(sortResult) || issues.length > 0)
     return yield* Effect.fail(invalidQueryParameters(issues));
+
   return { limit: limitResult.success, sortBy: sortResult.success };
 });
 
@@ -203,18 +229,22 @@ export const parseHttpAdminPageQuery = Effect.fn("Http.parseAdminPageQuery")(fun
   const query = yield* readHttpSearchParams();
   const limitValue = query.has("limit") ? Number(query.get("limit")) : 50;
   const offsetValue = query.has("offset") ? Number(query.get("offset")) : 0;
+
   const [limitResult, offsetResult] = yield* Effect.all([
     decodePageSize(limitValue).pipe(Effect.result),
     decodeOffset(offsetValue).pipe(Effect.result),
   ]);
+
   const issues = [
     ...(Result.isFailure(limitResult) ? formatHttpNumberIssues(limitValue, ["limit"], 1, 100) : []),
     ...(Result.isFailure(offsetResult)
       ? formatHttpNumberIssues(offsetValue, ["offset"], 0, Number.MAX_SAFE_INTEGER)
       : []),
   ];
+
   if (Result.isFailure(limitResult) || Result.isFailure(offsetResult))
     return yield* Effect.fail(invalidQueryParameters(issues));
+
   return { limit: limitResult.success, offset: offsetResult.success };
 });
 
@@ -222,6 +252,7 @@ export const parseHttpAdminPageQuery = Effect.fn("Http.parseAdminPageQuery")(fun
 export const rejectHttpQueryParameters = Effect.fn("Http.rejectQueryParameters")(function* () {
   const query = yield* readHttpSearchParams();
   const unknownKeys = findUnknownQueryKeys(query, []);
+
   if (unknownKeys.length > 0)
     return yield* Effect.fail(invalidQueryParameters([formatHttpUnknownKeys(unknownKeys)]));
 });
@@ -229,6 +260,7 @@ export const rejectHttpQueryParameters = Effect.fn("Http.rejectQueryParameters")
 /** Parse a public song queue limit directly into its nominal service type. */
 export const parseHttpSongQueueQuery = Effect.fn("Http.parseSongQueueQuery")(function* () {
   const query = yield* readHttpSearchParams();
+
   return yield* decodeHttpLimit(
     decodeSongQueueLimit,
     readPublicLimitValue(query),

@@ -23,10 +23,12 @@ const httpLayer = HttpApiBuilder.layer(CommandsHttpApi).pipe(
   ),
   Layer.provide(cloudflareHttpServerLayer),
 );
+
 const server = Effect.acquireRelease(
   Effect.sync(() => HttpRouter.toWebHandler(httpLayer, { disableLogger: true })),
   (server) => Effect.promise(() => server.dispose()),
 );
+
 const parseErrorBody = Schema.decodeUnknownEffect(Schema.Struct({ _tag: Schema.String }));
 
 describe("Commands real HTTP API", () => {
@@ -35,6 +37,7 @@ describe("Commands real HTTP API", () => {
     () =>
       Effect.gen(function* () {
         const app = yield* server;
+
         const fetchLayer = FetchHttpClient.layer.pipe(
           Layer.provide(
             Layer.succeed(FetchHttpClient.Fetch, (input, init) =>
@@ -42,20 +45,25 @@ describe("Commands real HTTP API", () => {
             ),
           ),
         );
+
         yield* Effect.gen(function* () {
           const httpClient = yield* HttpClient.HttpClient;
+
           const client = yield* HttpApiClient.makeWith(CommandsHttpApi, {
             baseUrl: "http://commands.test",
             httpClient,
           });
+
           expect((yield* client.commands.getAllCommands()).length).toBe(37);
           const today = ChatCommandName.make("today");
+
           const update = {
             name: today,
             value: "HTTP update",
             actor: { displayName: "Mod", permission: "moderator" as const },
             operationId: Option.some(EventSubMessageId.make("http-message")),
           };
+
           yield* client.commands.updateCommandValue({ payload: update });
           yield* client.commands.updateCommandValue({ payload: update });
           expect(
@@ -68,6 +76,7 @@ describe("Commands real HTTP API", () => {
               .updateCommandValue({ payload: { ...update, value: "conflict" } })
               .pipe(Effect.result),
           ).toMatchObject({ failure: { _tag: "CommandInputParseError" } });
+
           const created = yield* client.commands.createCommand({
             payload: {
               name: ChatCommandName.make("runtime"),
@@ -80,6 +89,7 @@ describe("Commands real HTTP API", () => {
               initialCounter: 2,
             },
           });
+
           expect(created).toMatchObject({ counterSourceName: Option.some("runtime") });
           expect(
             yield* client.commands.incrementCommandCounter({
@@ -103,6 +113,7 @@ describe("Commands real HTTP API", () => {
     () =>
       Effect.gen(function* () {
         const app = yield* server;
+
         const requests = [
           {
             method: "POST",
@@ -142,6 +153,7 @@ describe("Commands real HTTP API", () => {
             body: { name: "skillissue", increment: 101, operationId: null },
           },
         ];
+
         for (const input of requests) {
           const response = yield* Effect.promise(() =>
             app.handler(
@@ -152,8 +164,10 @@ describe("Commands real HTTP API", () => {
               }),
             ),
           );
+
           expect(response.status).toBe(400);
         }
+
         const response = yield* Effect.promise(() =>
           app.handler(
             new Request("http://commands.test/v1/commands", {
@@ -163,6 +177,7 @@ describe("Commands real HTTP API", () => {
             }),
           ),
         );
+
         const error = yield* parseErrorBody(yield* Effect.promise(() => response.json()));
         expect(error._tag).toBe("CommandInvalidDefinitionError");
       }).pipe(Effect.scoped),

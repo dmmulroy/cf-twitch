@@ -12,11 +12,13 @@ export interface IProviderScenarioTranscript {
   readonly readRequests: () => Effect.Effect<readonly ProviderScenarioRequest[]>;
   readonly awaitRefreshStarted: () => Effect.Effect<void>;
 }
+
 /** Bounded test transcript excludes query strings, headers, bodies and credentials. */
 export interface ProviderScenarioRequest {
   readonly method: string;
   readonly path: string;
 }
+
 /** Test control is separate from the production HttpClient capability. */
 export class ProviderScenarioTranscript extends Context.Service<
   ProviderScenarioTranscript,
@@ -67,24 +69,31 @@ const providerScenarioSpotifyApiResponse = (
   mode: string,
 ): HttpClientResponse.HttpClientResponse => {
   const reply = makeProviderScenarioReply(request);
+
   if (mode === "no-device") return reply({ error: "No active device" }, 404);
+
   if (url.pathname.includes("/tracks/"))
     return mode === "missing-track"
       ? reply({ error: "Not found" }, 404)
       : reply(providerScenarioTrack);
+
   if (url.pathname === "/v1/me/player/queue" && request.method === "GET")
     return mode === "queue-error"
       ? reply({ error: "Queue unavailable" }, 503)
       : reply({ currently_playing: providerScenarioTrack, queue: [providerScenarioTrack] });
+
   if (url.pathname === "/v1/me/player/currently-playing") {
     if (mode === "current-error") return reply({ error: "Playback observation unavailable" }, 503);
+
     if (mode === "no-playback") return providerScenarioNoContent(request);
+
     return reply({
       is_playing: mode !== "paused",
       item: providerScenarioTrack,
       progress_ms: 1250,
     });
   }
+
   if (url.pathname === "/v1/me/player/devices")
     return reply({
       devices: [
@@ -96,6 +105,7 @@ const providerScenarioSpotifyApiResponse = (
         },
       ],
     });
+
   return providerScenarioNoContent(request);
 };
 
@@ -104,12 +114,14 @@ const providerScenarioSpotifyConnectResponse = (
   mode: string,
 ): HttpClientResponse.HttpClientResponse => {
   if (request.method !== "PUT") return providerScenarioNoContent(request);
+
   const track = {
     uri: `spotify:track:${providerScenarioTrack.id}`,
     uid: "scenario-uid",
     metadata: {},
     provider: "queue",
   };
+
   return makeProviderScenarioReply(request)({
     player_state: {
       timestamp: "0",
@@ -127,6 +139,7 @@ const providerScenarioTwitchApiResponse = (
   mode: string,
 ): HttpClientResponse.HttpClientResponse => {
   const reply = makeProviderScenarioReply(request);
+
   if (url.pathname === "/helix/streams")
     return reply({
       data: [
@@ -139,8 +152,10 @@ const providerScenarioTwitchApiResponse = (
         },
       ],
     });
+
   if (url.pathname === "/helix/chat/messages") {
     if (mode === "malformed-chat") return reply({ data: [] });
+
     return reply({
       data: [
         {
@@ -151,8 +166,10 @@ const providerScenarioTwitchApiResponse = (
       ],
     });
   }
+
   if (url.pathname.includes("custom_rewards/redemptions"))
     return reply({ data: [{ id: "scenario-redemption" }] });
+
   if (url.pathname === "/helix/eventsub/subscriptions" && request.method !== "DELETE")
     return reply({
       data: [
@@ -167,6 +184,7 @@ const providerScenarioTwitchApiResponse = (
       ],
       pagination: {},
     });
+
   return providerScenarioNoContent(request);
 };
 
@@ -182,11 +200,14 @@ export const providerScenarioTransportLayer = Layer.effectContext(
       "ProviderScenarioTransport.executeAuthorizationRequest",
     )(function* (request: HttpClientRequest.HttpClientRequest, url: URL) {
       const reply = makeProviderScenarioReply(request);
+
       const form = new URLSearchParams(
         request.body._tag === "Uint8Array" ? new TextDecoder().decode(request.body.body) : "",
       );
+
       const grant = form.get("grant_type");
       const spotify = url.hostname === "accounts.spotify.com";
+
       if (grant !== "refresh_token")
         return reply({
           access_token: grant === "client_credentials" ? "scenario-app" : "scenario:normal",
@@ -200,22 +221,27 @@ export const providerScenarioTransportLayer = Layer.effectContext(
 
       yield* Deferred.succeed(refreshStarted, undefined);
       const refresh = form.get("refresh_token");
+
       if (refresh === "scenario-revoked")
         return reply(
           { error: "invalid_grant", error_description: "scenario-secret-never-log" },
           400,
         );
+
       if (refresh === "scenario-network") return reply({ error: "temporarily_unavailable" }, 503);
+
       if (refresh === "scenario-malformed") return reply({ access_token: "scenario-invalid" });
       const count = yield* Ref.updateAndGet(refreshCount, (value) => value + 1);
       // Allows public requests to overlap while the real token lifecycle holds its refresh lock.
       yield* Effect.sleep("100 millis");
+
       const fields = {
         access_token: `scenario-access-${count}`,
         token_type: "Bearer",
         expires_in: 3600,
         scope: spotify ? "user-read-playback-state" : ["user:write:chat"],
       };
+
       return refresh === "scenario-retain"
         ? reply(fields)
         : reply({ ...fields, refresh_token: `scenario-rotated-${count}` });
@@ -229,14 +255,18 @@ export const providerScenarioTransportLayer = Layer.effectContext(
           ...previous.slice(-127),
           { method: request.method, path: url.pathname },
         ]);
+
         if (url.hostname === "accounts.spotify.com" || url.hostname === "id.twitch.tv")
           return yield* executeAuthorizationRequest(request, url);
 
         const mode = (request.headers["authorization"] ?? "").replace("Bearer scenario:", "");
         const reply = makeProviderScenarioReply(request);
+
         if (mode === "unauthorized") return reply({ error: "Unauthorized" }, 401);
+
         if (mode === "rate-limited")
           return reply({ error: "Rate limited" }, 429, { "retry-after": "12" });
+
         if (mode === "unknown" && request.method !== "GET")
           return yield* Effect.fail(
             providerScenarioTransportFailure(
@@ -244,16 +274,21 @@ export const providerScenarioTransportLayer = Layer.effectContext(
               "Controlled provider connection lost after dispatch",
             ),
           );
+
         if (url.hostname === "api.spotify.com")
           return providerScenarioSpotifyApiResponse(request, url, mode);
+
         if (url.hostname === "clienttoken.spotify.com")
           return reply({
             granted_token: { token: "scenario-client-token", expires_after_seconds: 3600 },
           });
+
         if (url.hostname === "gue1-spclient.spotify.com")
           return providerScenarioSpotifyConnectResponse(request, mode);
+
         if (url.hostname === "api.twitch.tv")
           return providerScenarioTwitchApiResponse(request, url, mode);
+
         return yield* Effect.fail(
           providerScenarioTransportFailure(
             request,
@@ -262,6 +297,7 @@ export const providerScenarioTransportLayer = Layer.effectContext(
         );
       }),
     );
+
     return Context.make(HttpClient.HttpClient, transport).pipe(
       Context.add(ProviderScenarioTranscript, {
         readRequestCount: Effect.fn("ProviderScenarioTranscript.readRequestCount")(() =>

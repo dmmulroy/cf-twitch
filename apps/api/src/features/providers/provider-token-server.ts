@@ -23,11 +23,13 @@ type ProviderTokenServerContract = {
   readonly fetch: HttpEffect;
   readonly alarm: () => Effect.Effect<void>;
 };
+
 /** Spotify token namespace preserves its historical physical class without adopting production storage. */
 export class SpotifyTokenServer extends Cloudflare.DurableObject<
   SpotifyTokenServer,
   ProviderTokenServerContract
 >()("SpotifyTokenDO") {}
+
 /** Twitch token namespace preserves its historical physical class without adopting production storage. */
 export class TwitchTokenServer extends Cloudflare.DurableObject<
   TwitchTokenServer,
@@ -38,6 +40,7 @@ const tokenServer = (provider: OAuthProvider) =>
   Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     const exchange = yield* ProviderTokenExchange;
+
     return Effect.gen(function* () {
       const failure = () =>
         new ProviderError({
@@ -47,6 +50,7 @@ const tokenServer = (provider: OAuthProvider) =>
           status: 0,
           retryAfterMs: Option.none(),
         });
+
       const alarmLayer = Layer.succeed(ProviderTokenAlarm, {
         setAlarm: Effect.fn("ProviderTokenAlarm.setAlarm")((atMs) =>
           Effect.tryPromise({ try: () => state.raw.storage.setAlarm(atMs), catch: failure }),
@@ -55,10 +59,12 @@ const tokenServer = (provider: OAuthProvider) =>
           Effect.tryPromise({ try: () => state.raw.storage.deleteAlarm(), catch: failure }),
         ),
       });
+
       const databaseLayer = providerTokenDatabaseLayerWithoutDependencies.pipe(
         Layer.provide(SqliteClient.layer({ storage: state.raw.storage })),
         Layer.provide(Layer.succeed(TokenProviderIdentity, provider)),
       );
+
       const lifecycleLayer = providerTokenLifecycleLayerWithoutDependencies.pipe(
         Layer.provide([
           databaseLayer,
@@ -67,8 +73,10 @@ const tokenServer = (provider: OAuthProvider) =>
           Layer.succeed(TokenProviderIdentity, provider),
         ]),
       );
+
       return yield* Effect.gen(function* () {
         const lifecycle = yield* ProviderTokenLifecycle;
+
         const httpLayer = HttpApiBuilder.layer(ProviderTokenHttpApi).pipe(
           Layer.provide(
             providerTokenHttpHandlersLayer.pipe(
@@ -77,7 +85,9 @@ const tokenServer = (provider: OAuthProvider) =>
           ),
           Layer.provide(cloudflareHttpServerLayer),
         );
+
         const fetch = yield* HttpRouter.toHttpEffect(httpLayer);
+
         return {
           fetch,
           alarm: () =>
@@ -100,19 +110,25 @@ const tokenServer = (provider: OAuthProvider) =>
 export const spotifyTokenServerLayerWithoutDependencies = SpotifyTokenServer.make(
   tokenServer("spotify"),
 );
+
 /** Twitch token server preserves the provider exchange seam for controlled workerd transports. */
 export const twitchTokenServerLayerWithoutDependencies = TwitchTokenServer.make(
   tokenServer("twitch"),
 );
+
 const readyTokenExchangeLayer = providerTokenExchangeLayer;
+
 /** Spotify token server acquires SQL only inside its returned runtime Effect. */
 export const spotifyTokenServerLayer = spotifyTokenServerLayerWithoutDependencies.pipe(
   Layer.provide(readyTokenExchangeLayer),
 );
+
 /** Twitch token server acquires SQL only inside its returned runtime Effect. */
 export const twitchTokenServerLayer = twitchTokenServerLayerWithoutDependencies.pipe(
   Layer.provide(readyTokenExchangeLayer),
 );
+
 /** Both provider token servers are registered at the Worker composition root. */
 const providerTokenServerLayer = Layer.mergeAll(spotifyTokenServerLayer, twitchTokenServerLayer);
+
 export default providerTokenServerLayer;

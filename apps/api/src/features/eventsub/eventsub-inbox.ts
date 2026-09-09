@@ -27,14 +27,21 @@ const StoredReceipt = Schema.Struct({
   chatResponse: Schema.OptionFromNullOr(EventSubChatResponse),
   chatDelivery: EventSubReceiptStatus.fields.chatCommandDelivery,
 });
+
 type StoredReceipt = typeof StoredReceipt.Type;
+
 const parseStoredReceipt = Schema.decodeEffect(Schema.fromJsonString(StoredReceipt));
+
 const encodeStoredReceipt = Schema.encodeEffect(Schema.fromJsonString(StoredReceipt));
+
 const parseRows = Schema.decodeUnknownEffect(
   Schema.Array(Schema.Struct({ receipt_json: Schema.String })),
 );
+
 const MAX_EVENTSUB_ATTEMPTS = 20;
+
 const EVENTSUB_LEASE_MS = 60_000;
+
 const migrationLoader = SqliteMigrator.fromRecord({
   "1_eventsub_inbox": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -42,11 +49,13 @@ const migrationLoader = SqliteMigrator.fromRecord({
     yield* sql`CREATE TABLE eventsub_metric_claims (identity TEXT PRIMARY KEY)`;
   }),
 });
+
 type EventSubInboxBoundaryError =
   | EventSubReceiptError
   | SchemaError
   | SqlError.SqlError
   | WorkflowAlarmError;
+
 const catchEventSubInboxBoundaryErrors =
   (operation: string) =>
   <A, R>(
@@ -60,6 +69,7 @@ const catchEventSubInboxBoundaryErrors =
           Effect.fail(new EventSubReceiptError({ operation, reason: "schedule" })),
       }),
     );
+
 const catchEventSubAcceptanceBoundaryErrors =
   (operation: string) =>
   <A, R>(
@@ -73,6 +83,7 @@ const catchEventSubAcceptanceBoundaryErrors =
           Effect.fail(new EventSubReceiptError({ operation, reason: "schedule" })),
       }),
     );
+
 /** Instance-local durable inbox with leased dispatch and uncertain chat recovery. */
 export interface IEventSubInbox {
   readonly accept: (
@@ -85,10 +96,12 @@ export interface IEventSubInbox {
   readonly recover: () => Effect.Effect<void, EventSubReceiptError>;
   readonly restoreAlarm: () => Effect.Effect<void, EventSubReceiptError>;
 }
+
 /** EventSub inbox authority is acquired once per Durable Object database. */
 export class EventSubInbox extends Context.Service<EventSubInbox, IEventSubInbox>()(
   "@cf-twitch/EventSubInbox",
 ) {}
+
 /** Construct SQL receipt persistence, then dispatch only after a durable lease is recorded. */
 export const makeEventSubInbox = Effect.gen(function* () {
   yield* SqliteMigrator.run({ loader: migrationLoader, table: "eventsub_schema_migrations" });
@@ -98,27 +111,33 @@ export const makeEventSubInbox = Effect.gen(function* () {
   const twitch = yield* TwitchService;
   const analytics = yield* TwitchAnalytics;
   const permit = yield* Semaphore.make(1);
+
   const readReceipt = Effect.fn("EventSubInbox.readReceipt")(function* () {
     const row = (yield* parseRows(
       yield* sql`SELECT receipt_json FROM eventsub_receipts WHERE singleton=1`,
     ))[0];
+
     return row === undefined
       ? Option.none<StoredReceipt>()
       : Option.some(yield* parseStoredReceipt(row.receipt_json));
   });
+
   const saveReceipt = Effect.fn("EventSubInbox.saveReceipt")(function* (
     receipt: StoredReceipt,
     expectedGeneration: number,
   ) {
     const json = yield* encodeStoredReceipt(receipt);
+
     const rows =
       yield* sql`UPDATE eventsub_receipts SET receipt_json=${json},generation=${receipt.generation} WHERE singleton=1 AND generation=${expectedGeneration} RETURNING message_id`;
+
     if (rows.length !== 1)
       return yield* new EventSubReceiptError({
         operation: "save-lease",
         reason: "storage",
       });
   });
+
   const emitChatMetric = Effect.fn("EventSubInbox.emitChatMetric")(function* (
     receipt: StoredReceipt,
     status: "success" | "error",
@@ -126,10 +145,13 @@ export const makeEventSubInbox = Effect.gen(function* () {
   ) {
     if (Option.isNone(receipt.chatResponse)) return;
     const message = yield* parseEventSubMessage(receipt.receipt.headers, receipt.receipt.body);
+
     if (message._tag !== "ChatMessageNotification") return;
     const identity = `${receipt.attempts}:${status}:${Option.getOrElse(receipt.chatDelivery, () => "refused")}`;
+
     const claimed =
       yield* sql`INSERT INTO eventsub_metric_claims(identity) VALUES(${identity}) ON CONFLICT DO NOTHING RETURNING identity`;
+
     if (claimed.length === 0) return;
     yield* analytics.writeChatCommandMetric({
       command: receipt.chatResponse.value.commandName,
@@ -140,10 +162,13 @@ export const makeEventSubInbox = Effect.gen(function* () {
       durationMs: Math.max(0, (yield* Clock.currentTimeMillis) - receipt.startedAt),
     });
   });
+
   const emitCompletedMetric = Effect.fn("EventSubInbox.emitCompletedMetric")(function* () {
     const stored = yield* readReceipt();
+
     if (Option.isNone(stored) || stored.value.status !== "completed") return;
     const delivery = Option.getOrNull(stored.value.chatDelivery);
+
     if (delivery === "sent" || delivery === "uncertain")
       yield* emitChatMetric(
         stored.value,
@@ -153,18 +178,23 @@ export const makeEventSubInbox = Effect.gen(function* () {
           : Option.some("EventSub chat outcome uncertain; resend prohibited"),
       );
   });
+
   const restoreAlarm = Effect.fn("EventSubInbox.restoreAlarm")(function* () {
     const stored = yield* readReceipt();
+
     if (Option.isNone(stored) || stored.value.status !== "pending")
       return yield* alarm.set(Option.none());
     const now = yield* Clock.currentTimeMillis;
+
     const due = Math.max(
       now + 1,
       stored.value.nextAttemptAt,
       Option.getOrElse(stored.value.leaseUntil, () => 0),
     );
+
     yield* alarm.set(Option.some(due));
   }, catchEventSubInboxBoundaryErrors("restore-alarm"));
+
   const complete = Effect.fn("EventSubInbox.complete")(function* (receipt: StoredReceipt) {
     yield* saveReceipt(
       { ...receipt, status: "completed", leaseUntil: Option.none(), lastError: Option.none() },
@@ -173,19 +203,23 @@ export const makeEventSubInbox = Effect.gen(function* () {
     yield* emitCompletedMetric();
     yield* alarm.set(Option.none());
   });
+
   const recoverUnlocked = Effect.fn("EventSubInbox.recoverUnlocked")(function* () {
     const claimed = yield* sql.withTransaction(
       Effect.gen(function* () {
         const existing = yield* readReceipt();
+
         if (Option.isNone(existing) || existing.value.status !== "pending")
           return Option.none<StoredReceipt>();
         const receipt = existing.value;
         const now = yield* Clock.currentTimeMillis;
+
         if (
           receipt.nextAttemptAt > now ||
           (Option.isSome(receipt.leaseUntil) && receipt.leaseUntil.value > now)
         )
           return Option.none<StoredReceipt>();
+
         // An interrupted sending intent is sufficient evidence to prohibit a second send, even at budget exhaustion.
         if (Option.getOrNull(receipt.chatDelivery) === "sending") {
           const uncertain: StoredReceipt = {
@@ -197,9 +231,12 @@ export const makeEventSubInbox = Effect.gen(function* () {
               "EventSub chat delivery interrupted; outcome uncertain and resend prohibited",
             ),
           };
+
           yield* saveReceipt(uncertain, receipt.generation);
+
           return Option.none<StoredReceipt>();
         }
+
         if (receipt.attempts >= MAX_EVENTSUB_ATTEMPTS) {
           yield* saveReceipt(
             {
@@ -210,49 +247,63 @@ export const makeEventSubInbox = Effect.gen(function* () {
             },
             receipt.generation,
           );
+
           return Option.none<StoredReceipt>();
         }
+
         const lease: StoredReceipt = {
           ...receipt,
           attempts: receipt.attempts + 1,
           generation: receipt.generation + 1,
           leaseUntil: Option.some(now + EVENTSUB_LEASE_MS),
         };
+
         yield* saveReceipt(lease, receipt.generation);
+
         return Option.some(lease);
       }),
     );
+
     if (Option.isNone(claimed)) {
       yield* emitCompletedMetric();
+
       return yield* restoreAlarm();
     }
+
     let receipt = claimed.value;
     let providerRetryAfterMs = 0;
     yield* alarm.set(receipt.leaseUntil);
+
     const dispatch = Effect.gen(function* () {
       if (
         Option.getOrNull(receipt.chatDelivery) === "sent" ||
         Option.getOrNull(receipt.chatDelivery) === "uncertain"
       )
         return;
+
       if (Option.isNone(receipt.chatResponse)) {
         const response = yield* dispatcher.dispatch(receipt.receipt);
         receipt = { ...receipt, chatResponse: response };
         yield* saveReceipt(receipt, receipt.generation);
       }
+
       if (Option.isNone(receipt.chatResponse)) return;
       const response = receipt.chatResponse.value;
       receipt = { ...receipt, chatDelivery: Option.some("sending") };
       yield* saveReceipt(receipt, receipt.generation);
       const sent = yield* twitch.sendChatMessage({ message: response.message }).pipe(Effect.result);
+
       if (sent._tag === "Failure") {
         const kind = sent.failure.kind;
         providerRetryAfterMs = Option.getOrElse(sent.failure.retryAfterMs, () => 0);
+
         if (kind === "outcome-unknown" || kind === "network" || kind === "invalid-response") {
           receipt = { ...receipt, chatDelivery: Option.some("uncertain") };
           yield* saveReceipt(receipt, receipt.generation);
+
           return;
         }
+
         // A definite refusal permits another attempt; the prepared response and command mutation are not repeated.
         receipt = { ...receipt, chatDelivery: Option.none() };
         yield* saveReceipt(receipt, receipt.generation);
@@ -261,14 +312,17 @@ export const makeEventSubInbox = Effect.gen(function* () {
           "error",
           Option.some("EventSub chat provider explicitly refused delivery"),
         );
+
         return yield* new EventSubReceiptError({
           operation: "chat-send",
           reason: "dispatch",
         });
       }
+
       receipt = { ...receipt, chatDelivery: Option.some("sent") };
       yield* saveReceipt(receipt, receipt.generation);
     });
+
     const outcome = yield* dispatch.pipe(
       Effect.annotateLogs({
         message_id: receipt.receipt.messageId,
@@ -287,20 +341,28 @@ export const makeEventSubInbox = Effect.gen(function* () {
       Effect.timeout("45 seconds"),
       Effect.result,
     );
+
     if (outcome._tag === "Success") return yield* complete(receipt);
+
     // Parse and persistence failures never overwrite newer or corrupt evidence with the stale in-memory copy.
     if (outcome.failure._tag !== "EventSubReceiptError" && outcome.failure._tag !== "TimeoutError")
       return yield* Effect.fail(outcome.failure);
+
     if (outcome.failure._tag === "EventSubReceiptError" && outcome.failure.reason !== "dispatch")
       return yield* outcome.failure;
+
     if (Option.getOrNull(receipt.chatDelivery) === "sending") {
       receipt = { ...receipt, chatDelivery: Option.some("uncertain") };
+
       return yield* complete(receipt);
     }
+
     const exhausted = receipt.attempts >= MAX_EVENTSUB_ATTEMPTS;
+
     const due =
       (yield* Clock.currentTimeMillis) +
       Math.max(providerRetryAfterMs, Math.min(1_000 * 2 ** Math.min(receipt.attempts, 9), 600_000));
+
     receipt = {
       ...receipt,
       status: exhausted ? "dead_letter" : "pending",
@@ -316,11 +378,13 @@ export const makeEventSubInbox = Effect.gen(function* () {
       status: receipt.status,
     });
   }, catchEventSubInboxBoundaryErrors("recover"));
+
   const accept = Effect.fn("EventSubInbox.accept")((input: AcceptedEventSubReceipt) =>
     permit
       .withPermits(1)(
         Effect.gen(function* () {
           const receipt = input;
+
           if (receipt.messageId !== receipt.headers["twitch-eventsub-message-id"])
             return yield* new EventSubReceiptError({
               operation: "accept",
@@ -330,8 +394,10 @@ export const makeEventSubInbox = Effect.gen(function* () {
           yield* sql.withTransaction(
             Effect.gen(function* () {
               const existing = yield* readReceipt();
+
               if (Option.isSome(existing)) {
                 const previous = existing.value.receipt;
+
                 if (
                   previous.messageId !== receipt.messageId ||
                   previous.contentDigest !== receipt.contentDigest ||
@@ -345,8 +411,10 @@ export const makeEventSubInbox = Effect.gen(function* () {
                   return yield* new EventSubReceiptConflict({
                     messageId: receipt.messageId,
                   });
+
                 return;
               }
+
               const stored: StoredReceipt = {
                 receipt,
                 status: "pending",
@@ -359,6 +427,7 @@ export const makeEventSubInbox = Effect.gen(function* () {
                 chatResponse: Option.none(),
                 chatDelivery: Option.none(),
               };
+
               const json = yield* encodeStoredReceipt(stored);
               yield* sql`INSERT INTO eventsub_receipts(singleton,message_id,generation,receipt_json) VALUES(1,${receipt.messageId},0,${json})`;
             }),
@@ -368,6 +437,7 @@ export const makeEventSubInbox = Effect.gen(function* () {
       )
       .pipe(catchEventSubAcceptanceBoundaryErrors("accept")),
   );
+
   const getReceiptStatus = Effect.fn("EventSubInbox.getReceiptStatus")(function* () {
     return Option.map(yield* readReceipt(), (receipt) => ({
       status: receipt.status,
@@ -376,10 +446,13 @@ export const makeEventSubInbox = Effect.gen(function* () {
       chatCommandDelivery: receipt.chatDelivery,
     }));
   }, catchEventSubInboxBoundaryErrors("get-status"));
+
   const recover = Effect.fn("EventSubInbox.recover")(() =>
     permit.withPermits(1)(recoverUnlocked()),
   );
+
   return EventSubInbox.of({ accept, getReceiptStatus, recover, restoreAlarm });
 });
+
 /** SQL inbox Layer keeps real dispatcher, provider and alarm services replaceable through their public interfaces. */
 export const eventSubInboxLayerWithoutDependencies = Layer.effect(EventSubInbox, makeEventSubInbox);

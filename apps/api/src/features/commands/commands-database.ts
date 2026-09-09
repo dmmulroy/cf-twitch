@@ -34,7 +34,9 @@ const StoredCommandValue = Schema.Struct({
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
   ),
 });
+
 const StoredCommandCounter = Schema.Struct({ count: NonNegativeInt, updatedAt: IsoTimestamp });
+
 const CommandMutationReceipt = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("update"), fingerprint: Schema.NonEmptyString }),
   Schema.Struct({
@@ -43,7 +45,9 @@ const CommandMutationReceipt = Schema.Union([
     resultingCount: NonNegativeInt,
   }),
 ]);
+
 const ReceiptKey = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
+
 // Retain the original Agent snapshot representation to make the state transition lossless.
 const CommandsSnapshot = Schema.Struct({
   revision: NonNegativeInt,
@@ -55,7 +59,9 @@ const CommandsSnapshot = Schema.Struct({
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
   ),
 });
+
 type CommandsSnapshot = typeof CommandsSnapshot.Type;
+
 const LegacyCommandsSnapshot = Schema.Struct({
   ...CommandsSnapshot.fields,
   mutationReceiptsByOperationId: Schema.optionalKey(
@@ -65,25 +71,35 @@ const LegacyCommandsSnapshot = Schema.Struct({
   legacyImportCompleted: Schema.optionalKey(Schema.Boolean),
   migrationReport: Schema.optionalKey(Schema.Json),
 });
+
 const parseSnapshotJson = Schema.decodeEffect(Schema.fromJsonString(CommandsSnapshot), {
   onExcessProperty: "error",
 });
+
 const parseLegacySnapshotJson = Schema.decodeEffect(Schema.fromJsonString(LegacyCommandsSnapshot), {
   onExcessProperty: "error",
 });
+
 const encodeSnapshotJson = Schema.encodeEffect(Schema.fromJsonString(CommandsSnapshot));
+
 const encodeDefinition = Schema.encodeEffect(ChatCommandDefinition);
+
 const decodeUpdatedDefinition = Schema.decodeEffect(Schema.toCodecJson(ChatCommandDefinition), {
   onExcessProperty: "error",
 });
+
 const refineTimestamp = Schema.decodeEffect(IsoTimestamp);
+
 const parseRows = Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ state: Schema.String })));
+
 const parseTableRows = Schema.decodeUnknownEffect(
   Schema.Array(Schema.Struct({ name: Schema.String })),
 );
+
 const commandNow = Effect.flatMap(Clock.currentTimeMillis, (now) =>
   refineTimestamp(new Date(now).toISOString()),
 );
+
 const persistenceErrors = <A, R>(
   operation: Effect.Effect<A, CommandsError | SqlError.SqlError | Schema.SchemaError, R>,
 ): Effect.Effect<A, CommandsError, R> =>
@@ -94,15 +110,18 @@ const persistenceErrors = <A, R>(
         Effect.fail(new CommandsStateParseError({ operation: "Commands rehydrate" })),
     }),
   );
+
 const counterStorageName = (command: ChatCommandDefinition): ChatCommandName =>
   command.responseType === "computed"
     ? Option.getOrElse(command.counterSourceName, () => command.name)
     : command.name;
+
 const resolveCommand = (state: CommandsSnapshot, name: string): ChatCommandDefinition | undefined =>
   (Object.hasOwn(state.commandsByName, name) ? state.commandsByName[name] : undefined) ??
   Object.values(state.commandsByName).find((command) =>
     command.aliases.some((alias) => alias === name),
   );
+
 const commandValue = (
   state: CommandsSnapshot,
   command: ChatCommandDefinition,
@@ -110,6 +129,7 @@ const commandValue = (
   command.valueSourceName === null
     ? Option.none()
     : Option.fromNullishOr(state.valuesByName[command.valueSourceName]?.value);
+
 const initialized = (state: CommandsSnapshot): boolean =>
   state.revision > 0 ||
   Object.keys(state.commandsByName).length > 0 ||
@@ -129,28 +149,34 @@ const parseCommandReferences = Effect.fn("Commands.parseCommandReferences")(func
   state: CommandsSnapshot,
 ) {
   const aliases = new Map<string, string>();
+
   for (const [name, command] of Object.entries(state.commandsByName)) {
     if (command.name !== name)
       return yield* new CommandInvalidDefinitionError({
         commandName: name,
         reason: "Chat command stored key mismatch",
       });
+
     for (const alias of command.aliases) {
       const owner = aliases.get(alias);
+
       if (owner !== undefined || Object.hasOwn(state.commandsByName, alias))
         return yield* new CommandAliasConflictError({ alias, owner: owner ?? alias });
       aliases.set(alias, name);
     }
+
     const source =
       command.responseType === "computed"
         ? Option.getOrNull(command.counterSourceName)
         : command.valueSourceName;
+
     if (source !== null && !Object.hasOwn(state.commandsByName, source))
       return yield* new CommandInvalidDefinitionError({
         commandName: name,
         reason: `Chat command missing source: ${source}`,
       });
   }
+
   for (const name of [...Object.keys(state.valuesByName), ...Object.keys(state.countersByName)]) {
     if (!Object.hasOwn(state.commandsByName, name))
       return yield* new CommandInvalidDefinitionError({
@@ -162,12 +188,15 @@ const parseCommandReferences = Effect.fn("Commands.parseCommandReferences")(func
 
 const pruneCommandState = (state: CommandsSnapshot): CommandsSnapshot => {
   const commands = Object.values(state.commandsByName);
+
   const values = new Set<string>(
     commands.flatMap((command) =>
       command.valueSourceName === null ? [] : [command.valueSourceName],
     ),
   );
+
   const counters = new Set<string>(commands.map(counterStorageName));
+
   return {
     ...state,
     valuesByName: Object.fromEntries(
@@ -192,6 +221,7 @@ const buildCommandDefinition = (
     createdAt: input.createdAt ?? now,
     aliases: input.aliases ?? [],
   };
+
   if (input.responseType === "computed")
     return {
       ...base,
@@ -203,6 +233,7 @@ const buildCommandDefinition = (
       emptyResponse: null,
       writePermission: null,
     };
+
   const stored = {
     ...base,
     valueSourceName: input.valueSourceName ?? input.name,
@@ -211,16 +242,19 @@ const buildCommandDefinition = (
     outputTemplate: input.outputTemplate ?? "{value}",
     emptyResponse: input.emptyResponse ?? `${input.name} info is not available.`,
   };
+
   return input.responseType === "static"
     ? { ...stored, responseType: "static", writePermission: null }
     : { ...stored, responseType: "dynamic", writePermission: input.writePermission ?? "moderator" };
 };
+
 const addCommandToState = (
   state: CommandsSnapshot,
   input: CreateChatCommandInput,
   now: typeof IsoTimestamp.Type,
 ): CommandsSnapshot => {
   const command = buildCommandDefinition(input, now);
+
   return pruneCommandState({
     ...state,
     commandsByName: { ...state.commandsByName, [command.name]: command },
@@ -248,6 +282,7 @@ const addCommandToState = (
         : state.countersByName,
   });
 };
+
 const appendReceipt = (
   state: CommandsSnapshot,
   operationId: Option.Option<string>,
@@ -260,6 +295,7 @@ const appendReceipt = (
         Object.entries({ ...state.mutationReceiptsByOperationId, [id]: receipt }).slice(-5000),
       ),
   });
+
 const checkReceipt = Effect.fn("Commands.checkReceipt")(function* (
   state: CommandsSnapshot,
   operationId: Option.Option<string>,
@@ -270,12 +306,15 @@ const checkReceipt = Effect.fn("Commands.checkReceipt")(function* (
       ? Option.fromNullishOr(state.mutationReceiptsByOperationId[id])
       : Option.none(),
   );
+
   if (Option.isSome(receipt) && receipt.value.fingerprint !== fingerprint)
     return yield* new CommandInputParseError({
       operation: "Commands mutation",
     });
+
   return receipt;
 });
+
 const requireCommand = Effect.fn("Commands.requireCommand")(function* (
   state: CommandsSnapshot,
   name: string,
@@ -287,6 +326,7 @@ const requireCommand = Effect.fn("Commands.requireCommand")(function* (
         ? state.commandsByName[name]
         : undefined
       : resolveCommand(state, name);
+
   return command ?? (yield* new CommandNotFoundError({ commandName: name }));
 });
 
@@ -304,33 +344,44 @@ export const makeCommandsDatabase = Effect.gen(function* () {
     loader: commandsMigrationLoader,
     table: "commands_schema_migrations",
   });
+
   const readState = Effect.fn("Commands.readState")(function* () {
     const rows = yield* parseRows(
       yield* sql`SELECT state FROM commands_snapshot WHERE singleton = 1`,
     );
+
     const row = rows[0];
+
     if (row === undefined)
       return yield* new CommandsStateParseError({ operation: "Commands snapshot missing" });
     const state = yield* parseSnapshotJson(row.state);
     yield* parseCommandReferences(state);
+
     return state;
   });
+
   const persistState = Effect.fn("Commands.persistState")(function* (state: CommandsSnapshot) {
     yield* parseCommandReferences(state);
     const encoded = yield* encodeSnapshotJson(state);
     yield* sql`INSERT INTO commands_snapshot (singleton, state) VALUES (1, ${encoded}) ON CONFLICT(singleton) DO UPDATE SET state = excluded.state`;
   });
+
   const readLegacyState = Effect.fn("Commands.readLegacyState")(function* () {
     const tables = yield* parseTableRows(
       yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_state'`,
     );
+
     if (tables.length === 0) return emptyCommandsSnapshot;
+
     const rows = yield* parseRows(
       yield* sql`SELECT state FROM cf_agents_state WHERE id = 'cf_state_row_id'`,
     );
+
     const row = rows[0];
+
     if (row === undefined) return emptyCommandsSnapshot;
     const parsed = yield* parseLegacySnapshotJson(row.state);
+
     const state: CommandsSnapshot = {
       revision: parsed.revision,
       commandsByName: parsed.commandsByName,
@@ -339,48 +390,63 @@ export const makeCommandsDatabase = Effect.gen(function* () {
       mutationReceiptsByOperationId: parsed.mutationReceiptsByOperationId ?? {},
       appliedMigrations: parsed.appliedMigrations ?? [],
     };
+
     yield* parseCommandReferences(state);
+
     return state;
   });
+
   const readStateForMigration = Effect.fn("Commands.readStateForMigration")(function* () {
     const rows = yield* parseRows(
       yield* sql`SELECT state FROM commands_snapshot WHERE singleton = 1`,
     );
+
     const row = rows[0];
+
     if (row === undefined) return yield* readLegacyState();
     const state = yield* parseSnapshotJson(row.state);
     yield* parseCommandReferences(state);
+
     return state;
   });
+
   const installDefaultCommands = Effect.fn("Commands.installDefaultCommands")(function* (
     state: CommandsSnapshot,
     now: typeof IsoTimestamp.Type,
   ) {
     if (initialized(state)) return state;
+
     let initializedState: CommandsSnapshot = {
       ...state,
       revision: 1,
       appliedMigrations: [...defaultCommandMigrationIds],
     };
+
     for (const raw of createDefaultCommandInputs(now)) {
       const input = yield* parseCreateChatCommandInput(raw);
       initializedState = addCommandToState(initializedState, input, now);
     }
+
     return initializedState;
   });
+
   const applyDefaultCommandMigrations = Effect.fn("Commands.applyDefaultCommandMigrations")(
     function* (state: CommandsSnapshot, now: typeof IsoTimestamp.Type) {
       const pending = defaultCommandMigrations.filter(
         (migration) => !state.appliedMigrations.includes(migration.id),
       );
+
       let migratedState = state;
+
       for (const migration of pending) {
         if (migration.kind === "create") {
           const input = yield* parseCreateChatCommandInput(migration.createInput(now));
+
           if (resolveCommand(migratedState, input.name) === undefined)
             migratedState = addCommandToState(migratedState, input, now);
         } else {
           const command = resolveCommand(migratedState, migration.commandName);
+
           if (
             command !== undefined &&
             resolveCommand(migratedState, migration.alias) === undefined
@@ -397,16 +463,19 @@ export const makeCommandsDatabase = Effect.gen(function* () {
             };
           }
         }
+
         migratedState = {
           ...migratedState,
           appliedMigrations: [...migratedState.appliedMigrations, migration.id],
         };
       }
+
       return pending.length === 0
         ? migratedState
         : { ...migratedState, revision: migratedState.revision + 1 };
     },
   );
+
   yield* sql
     .withTransaction(
       Effect.gen(function* () {
@@ -423,12 +492,14 @@ export const makeCommandsDatabase = Effect.gen(function* () {
   }) {
     return yield* requireCommand(yield* readState(), name, "alias");
   }, persistenceErrors);
+
   const getAllCommands: ICommands["getAllCommands"] = Effect.fn("Commands.getAllCommands")(
     function* () {
       return Object.values((yield* readState()).commandsByName);
     },
     persistenceErrors,
   );
+
   const getEnabledCommandsByPermission: ICommands["getEnabledCommandsByPermission"] = Effect.fn(
     "Commands.getEnabledCommandsByPermission",
   )(function* ({ permission }) {
@@ -436,44 +507,54 @@ export const makeCommandsDatabase = Effect.gen(function* () {
       (command) => command.enabled && hasCommandPermission(permission, command.permission),
     );
   });
+
   const getCommandValue: ICommands["getCommandValue"] = Effect.fn("Commands.getCommandValue")(
     function* ({ name }) {
       const state = yield* readState();
       const command = resolveCommand(state, name);
+
       return command === undefined ? Option.none() : commandValue(state, command);
     },
     persistenceErrors,
   );
+
   const getCommandWithValue: ICommands["getCommandWithValue"] = Effect.fn(
     "Commands.getCommandWithValue",
   )(function* ({ name }) {
     const state = yield* readState();
     const command = yield* requireCommand(state, name, "alias");
+
     return { command, value: commandValue(state, command) };
   }, persistenceErrors);
+
   const getEnabledCommandsWithValues: ICommands["getEnabledCommandsWithValues"] = Effect.fn(
     "Commands.getEnabledCommandsWithValues",
   )(function* () {
     const state = yield* readState();
+
     return Object.values(state.commandsByName)
       .filter((command) => command.enabled)
       .map((command) => ({ command, value: commandValue(state, command) }));
   }, persistenceErrors);
+
   const createCommand: ICommands["createCommand"] = Effect.fn("Commands.createCommand")(function* (
     input,
   ) {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const state = yield* readState();
+
         if (resolveCommand(state, input.name) !== undefined)
           return yield* new CommandAlreadyExistsError({ commandName: input.name });
         const now = yield* commandNow;
         const next = addCommandToState(state, input, now);
         yield* persistState({ ...next, revision: state.revision + 1 });
+
         return buildCommandDefinition(input, now);
       }),
     );
   }, persistenceErrors);
+
   const updateCommand: ICommands["updateCommand"] = Effect.fn("Commands.updateCommand")(function* ({
     name,
     patch,
@@ -482,10 +563,12 @@ export const makeCommandsDatabase = Effect.gen(function* () {
       Effect.gen(function* () {
         const state = yield* readState();
         const existing = yield* requireCommand(state, name, "canonical");
+
         const mergedDefinition = {
           ...(yield* encodeDefinition(existing)),
           ...patch,
         };
+
         const updated = yield* decodeUpdatedDefinition(mergedDefinition).pipe(
           Effect.mapError(
             () =>
@@ -495,6 +578,7 @@ export const makeCommandsDatabase = Effect.gen(function* () {
               }),
           ),
         );
+
         yield* persistState(
           pruneCommandState({
             ...state,
@@ -502,10 +586,12 @@ export const makeCommandsDatabase = Effect.gen(function* () {
             commandsByName: { ...state.commandsByName, [name]: updated },
           }),
         );
+
         return updated;
       }),
     );
   }, persistenceErrors);
+
   const deleteCommand: ICommands["deleteCommand"] = Effect.fn("Commands.deleteCommand")(function* ({
     name,
   }) {
@@ -515,19 +601,23 @@ export const makeCommandsDatabase = Effect.gen(function* () {
         yield* requireCommand(state, name, "canonical");
         const deleted = new Set<string>([name]);
         let added = true;
+
         while (added) {
           added = false;
+
           for (const command of Object.values(state.commandsByName)) {
             const source =
               command.responseType === "computed"
                 ? Option.getOrNull(command.counterSourceName)
                 : command.valueSourceName;
+
             if (!deleted.has(command.name) && source !== null && deleted.has(source)) {
               deleted.add(command.name);
               added = true;
             }
           }
         }
+
         yield* persistState(
           pruneCommandState({
             ...state,
@@ -540,31 +630,39 @@ export const makeCommandsDatabase = Effect.gen(function* () {
       }),
     );
   }, persistenceErrors);
+
   const updateCommandValue: ICommands["updateCommandValue"] = Effect.fn(
     "Commands.updateCommandValue",
   )(function* (input) {
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const state = yield* readState();
+
         const fingerprint = JSON.stringify({
           kind: "update",
           commandName: input.name,
           value: input.value,
           actor: input.actor,
         });
+
         const receipt = yield* checkReceipt(state, input.operationId, fingerprint);
+
         if (Option.isSome(receipt)) {
           if (receipt.value.kind === "update") return;
+
           return yield* new CommandInputParseError({
             operation: "updateCommandValue",
           });
         }
+
         const command = yield* requireCommand(state, input.name, "alias");
+
         if (command.responseType !== "dynamic")
           return yield* new CommandNotUpdateableError({
             commandName: input.name,
             responseType: command.responseType,
           });
+
         if (!hasCommandPermission(input.actor.permission, command.writePermission))
           return yield* new CommandUpdatePermissionDeniedError({
             commandName: input.name,
@@ -589,32 +687,40 @@ export const makeCommandsDatabase = Effect.gen(function* () {
       }),
     );
   }, persistenceErrors);
+
   const getCommandCounter: ICommands["getCommandCounter"] = Effect.fn("Commands.getCommandCounter")(
     function* ({ name }) {
       const state = yield* readState();
       const command = yield* requireCommand(state, name, "alias");
+
       return state.countersByName[counterStorageName(command)]?.count ?? 0;
     },
     persistenceErrors,
   );
+
   const incrementCommandCounter: ICommands["incrementCommandCounter"] = Effect.fn(
     "Commands.incrementCommandCounter",
   )(function* (input) {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const state = yield* readState();
+
         const fingerprint = JSON.stringify({
           kind: "counter",
           commandName: input.name,
           increment: input.increment,
         });
+
         const receipt = yield* checkReceipt(state, input.operationId, fingerprint);
+
         if (Option.isSome(receipt)) {
           if (receipt.value.kind === "counter") return receipt.value.resultingCount;
+
           return yield* new CommandInputParseError({
             operation: "incrementCommandCounter",
           });
         }
+
         const command = yield* requireCommand(state, input.name, "alias");
         const source = counterStorageName(command);
         const count = (state.countersByName[source]?.count ?? 0) + input.increment;
@@ -631,14 +737,17 @@ export const makeCommandsDatabase = Effect.gen(function* () {
             resultingCount: count,
           }),
         });
+
         return count;
       }),
     );
   }, persistenceErrors);
+
   const getDebugSnapshot: ICommands["getDebugSnapshot"] = Effect.fn("Commands.getDebugSnapshot")(
     function* () {
       const state = yield* readState();
       const commands = Object.values(state.commandsByName);
+
       return {
         commands: commands.map((command) => ({
           command,
@@ -661,6 +770,7 @@ export const makeCommandsDatabase = Effect.gen(function* () {
     },
     persistenceErrors,
   );
+
   return Commands.of({
     getCommand,
     getAllCommands,

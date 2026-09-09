@@ -26,6 +26,7 @@ export const SongRequestSuccessEvent = Schema.Struct({
   sagaId: RedemptionId,
   trackId: SpotifyTrackId,
 });
+
 /** Fulfilled song request evidence used by achievement rules. */
 export type SongRequestSuccessEvent = typeof SongRequestSuccessEvent.Type;
 
@@ -55,6 +56,7 @@ export const RaffleRollEvent = Schema.Struct({
     }),
   )
   .pipe(Schema.brand("RaffleRollEvent"));
+
 /** Valid keyboard raffle evidence used by achievement rules. */
 export type RaffleRollEvent = typeof RaffleRollEvent.Type;
 
@@ -66,6 +68,7 @@ export const StreamOnlineEvent = Schema.Struct({
   streamId: StreamId,
   startedAt: IsoTimestamp,
 });
+
 /** Stream session start evidence. */
 export type StreamOnlineEvent = typeof StreamOnlineEvent.Type;
 
@@ -77,6 +80,7 @@ export const StreamOfflineEvent = Schema.Struct({
   streamId: StreamId,
   endedAt: IsoTimestamp,
 });
+
 /** Stream session end evidence. */
 export type StreamOfflineEvent = typeof StreamOfflineEvent.Type;
 
@@ -87,11 +91,14 @@ export const DomainEvent = Schema.Union([
   StreamOnlineEvent,
   StreamOfflineEvent,
 ]);
+
 /** Parsed durable domain event with optional correlation normalized to Effect Option. */
 export type DomainEvent = typeof DomainEvent.Type;
 
 const DomainEventJson = Schema.fromJsonString(DomainEvent);
+
 const decodeDomainEventJson = Schema.decodeEffect(DomainEventJson);
+
 const encodeDomainEventToJson = Schema.encodeEffect(DomainEventJson);
 
 /** Decode persisted domain event JSON without an unchecked JSON.parse cast. */

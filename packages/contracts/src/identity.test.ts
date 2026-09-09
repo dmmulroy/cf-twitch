@@ -4,6 +4,7 @@ import { FastCheck } from "effect/testing";
 import { IsoTimestamp } from "./identity.ts";
 
 const parseIsoTimestamp = Schema.decodeEffect(IsoTimestamp);
+
 const parseCalendarTimestamp = Schema.decodeUnknownOption(IsoTimestamp);
 
 describe("ISO timestamp calendar compatibility", () => {
@@ -24,6 +25,7 @@ describe("ISO timestamp calendar compatibility", () => {
     for (const timestamp of ["2026-01-01T12:30Z", "2026-01-01T12:30+05:30"]) {
       expect(Effect.runSync(parseIsoTimestamp(timestamp))).toBe(timestamp);
     }
+
     for (const timestamp of ["2026-01-01T12Z", "2026-01-01T12:30", "2025-02-29T12:30Z"]) {
       expect(parseCalendarTimestamp(timestamp)._tag).toBe("None");
     }
@@ -38,6 +40,7 @@ describe("ISO timestamp calendar compatibility", () => {
     ]) {
       expect(parseCalendarTimestamp(timestamp)._tag).toBe("None");
     }
+
     expect(parseCalendarTimestamp("2000-02-29T12:00:00+03:00")._tag).toBe("Some");
     expect(parseCalendarTimestamp("2024-02-29T12:00:00-05:30")._tag).toBe("Some");
   });

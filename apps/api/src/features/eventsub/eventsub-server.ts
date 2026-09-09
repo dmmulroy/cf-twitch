@@ -24,11 +24,13 @@ interface EventSubServerContract {
   readonly fetch: HttpEffect;
   readonly alarm: () => Effect.Effect<void>;
 }
+
 /** EventSub inbox preserves its physical namespace class and signed-message-id object names. */
 export class EventSubWebhookServer extends Cloudflare.DurableObject<
   EventSubWebhookServer,
   EventSubServerContract
 >()("EventSubWebhookDO") {}
+
 /** Real receipt SQL/HTTP server with downstream authority selection visible to composition and smoke tests. */
 export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServer.make(
   Effect.gen(function* () {
@@ -39,6 +41,7 @@ export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServ
     const commands = yield* ChatCommandExecutor;
     const configuration = yield* TwitchConfiguration;
     const analytics = yield* TwitchAnalytics;
+
     return Effect.gen(function* () {
       // Native legacy receipts contain no exact raw-body digest. Never silently adopt them into an empty SQL inbox.
       const legacy = yield* Effect.tryPromise({
@@ -49,11 +52,13 @@ export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServ
             reason: "storage",
           }),
       });
+
       if (legacy !== undefined)
         return yield* new EventSubReceiptError({
           operation: "legacy-state-gate",
           reason: "corrupt",
         });
+
       const dispatchLayer = eventSubDispatchLayerWithoutDependencies.pipe(
         Layer.provide([
           Layer.succeed(WorkflowStarters, workflows),
@@ -62,6 +67,7 @@ export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServ
           Layer.succeed(TwitchConfiguration, configuration),
         ]),
       );
+
       const inboxLayer = eventSubInboxLayerWithoutDependencies.pipe(
         Layer.provide([
           dispatchLayer,
@@ -71,21 +77,26 @@ export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServ
           SqliteClient.layer({ storage: state.raw.storage }),
         ]),
       );
+
       return yield* Effect.gen(function* () {
         const inbox = yield* EventSubInbox;
         yield* inbox.restoreAlarm();
+
         const httpLayer = HttpApiBuilder.layer(EventSubHttpApi).pipe(
           Layer.provide(
             eventSubHttpHandlersLayer.pipe(Layer.provide(Layer.succeed(EventSubInbox, inbox))),
           ),
           Layer.provide(cloudflareHttpServerLayer),
         );
+
         const fetch = yield* HttpRouter.toHttpEffect(httpLayer);
+
         return { fetch, alarm: () => inbox.recover().pipe(Effect.orDie) };
       }).pipe(Effect.provide(inboxLayer));
     }).pipe(Effect.orDie);
   }),
 );
+
 /** Ready EventSub receipt server registers real dependency bindings during the outer phase. */
 export const eventSubWebhookServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
   Layer.provide([
@@ -95,4 +106,5 @@ export const eventSubWebhookServerLayer = eventSubWebhookServerLayerWithoutDepen
     executorLayer,
   ]),
 );
+
 export default eventSubWebhookServerLayer;

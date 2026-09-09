@@ -10,10 +10,12 @@ import {
 } from "./provider-token-database.ts";
 
 const sqliteLayer = SqliteClient.layer({ filename: ":memory:" });
+
 const databaseLayer = providerTokenDatabaseLayerWithoutDependencies.pipe(
   Layer.provide(Layer.succeed(TokenProviderIdentity, "spotify")),
   Layer.provideMerge(sqliteLayer),
 );
+
 const authorizedState: ProviderTokenState = {
   token: Option.some({
     accessToken: Redacted.make("synthetic-access"),
@@ -49,8 +51,10 @@ describe("Provider token real SQLite persistence", () => {
       Effect.gen(function* () {
         const database = yield* ProviderTokenDatabase;
         yield* database.writeState(authorizedState);
+
         const restarted = yield* Effect.gen(function* () {
           const restored = yield* ProviderTokenDatabase;
+
           return yield* restored.readState();
         }).pipe(
           Effect.provide(
@@ -60,6 +64,7 @@ describe("Provider token real SQLite persistence", () => {
             { local: true },
           ),
         );
+
         expect(restarted).toEqual(authorizedState);
         expect(JSON.stringify(restarted)).not.toContain("synthetic-access");
         expect(JSON.stringify(restarted)).not.toContain("synthetic-refresh");
@@ -107,9 +112,11 @@ describe("Provider token real SQLite persistence", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* database.writeState(authorizedState);
         yield* sql`CREATE TRIGGER fail_token BEFORE UPDATE ON provider_token_state BEGIN SELECT RAISE(FAIL, 'token write refused'); END`;
+
         const result = yield* database
           .writeState({ ...authorizedState, isStreamLive: false })
           .pipe(Effect.result);
+
         expect(result).toMatchObject({ _tag: "Failure", failure: { kind: "persistence" } });
         expect((yield* database.readState()).isStreamLive).toBe(true);
       }).pipe(Effect.provide(databaseLayer)),
@@ -136,8 +143,10 @@ for (const state of [
         yield* sql`INSERT INTO cf_agents_state VALUES ('cf_state_row_id', ${state})`;
         yield* sql`CREATE TABLE cf_agents_schedules(id TEXT PRIMARY KEY, callback TEXT)`;
         yield* sql`INSERT INTO cf_agents_schedules VALUES ('old-schedule', 'refreshTokenTick')`;
+
         const result = yield* Effect.gen(function* () {
           const database = yield* ProviderTokenDatabase;
+
           return yield* database.readState();
         }).pipe(
           Effect.provide(
@@ -147,6 +156,7 @@ for (const state of [
           ),
           Effect.result,
         );
+
         expect(result).toMatchObject({
           _tag: "Failure",
           failure: { operation: "LegacyAgentStateImportRequired", kind: "persistence" },

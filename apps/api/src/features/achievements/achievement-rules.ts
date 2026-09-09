@@ -10,11 +10,13 @@ export interface AchievementProgressFact {
   readonly unlockedAt: Option.Option<IsoTimestamp>;
   readonly eventId: Option.Option<string>;
 }
+
 /** Progress decision retains the first unlock time, even for repeated one-time events. */
 export interface AchievementProgressDecision extends AchievementProgressFact {
   readonly definition: AchievementDefinition;
   readonly newlyUnlocked: boolean;
 }
+
 /** Trigger increment can set streak progress rather than adding it cumulatively. */
 export interface AchievementTrigger {
   readonly event: AchievementDefinition["triggerEvent"];
@@ -22,6 +24,7 @@ export interface AchievementTrigger {
   readonly mode: "increment" | "set";
   readonly eventId: string;
 }
+
 /** Evaluate one trigger without I/O; threshold unlocks freeze, one-time progress may keep growing. */
 export function evaluateAchievementProgress(input: {
   readonly definitions: ReadonlyArray<AchievementDefinition>;
@@ -31,31 +34,38 @@ export function evaluateAchievementProgress(input: {
   readonly direct: boolean;
 }): ReadonlyArray<AchievementProgressDecision> {
   const decisions: AchievementProgressDecision[] = [];
+
   for (const definition of input.definitions) {
     if (definition.triggerEvent !== input.trigger.event) continue;
     const existing = input.progress.get(definition.id);
+
     if (
       existing &&
       Option.isSome(existing.unlockedAt) &&
       (input.direct || Option.isSome(definition.threshold))
     )
       continue;
+
     if (
       Option.isNone(definition.threshold) &&
       existing &&
       Option.contains(existing.eventId, input.trigger.eventId)
     )
       continue;
+
     const progress =
       input.trigger.mode === "set"
         ? input.trigger.increment
         : (existing?.progress ?? 0) + input.trigger.increment;
+
     const unlocked = progress >= Option.getOrElse(definition.threshold, () => 1);
+
     const unlockedAt = unlocked
       ? existing && Option.isSome(existing.unlockedAt)
         ? existing.unlockedAt
         : Option.some(input.now)
       : Option.none<IsoTimestamp>();
+
     decisions.push({
       definition,
       achievementId: definition.id,
@@ -67,8 +77,10 @@ export function evaluateAchievementProgress(input: {
       newlyUnlocked: unlocked && (!existing || Option.isNone(existing.unlockedAt)),
     });
   }
+
   return decisions;
 }
+
 /** All successful requests advance streaks, even offline; only a new online session resets them. */
 export function achievementTriggersForEvent(input: {
   readonly event: DomainEvent;
@@ -76,6 +88,7 @@ export function achievementTriggersForEvent(input: {
   readonly nextStreak: number;
 }): ReadonlyArray<AchievementTrigger> {
   const event = input.event;
+
   switch (event.type) {
     case "stream_online":
     case "stream_offline":
@@ -140,6 +153,7 @@ export function achievementTriggersForEvent(input: {
       ];
   }
 }
+
 /** Stream watermark comparisons use instants, not lexical timezone representations. */
 export interface AchievementSession {
   readonly status: "online" | "offline";
@@ -147,6 +161,7 @@ export interface AchievementSession {
   readonly startedAt: Option.Option<IsoTimestamp>;
   readonly transitionAt: IsoTimestamp;
 }
+
 /** Reject stale and mismatched stream transitions without resetting session progress. */
 export function acceptsAchievementTransition(
   session: Option.Option<AchievementSession>,
@@ -154,11 +169,13 @@ export function acceptsAchievementTransition(
 ): boolean {
   if (Option.isNone(session)) return true;
   const current = session.value;
+
   if (event.type === "stream_online")
     return (
       Date.parse(event.startedAt) > Date.parse(current.transitionAt) &&
       !(current.status === "online" && Option.contains(current.streamId, event.streamId))
     );
+
   return current.status === "offline"
     ? Date.parse(event.endedAt) > Date.parse(current.transitionAt)
     : Option.contains(current.streamId, event.streamId) &&

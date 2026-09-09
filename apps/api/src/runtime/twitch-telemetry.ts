@@ -15,15 +15,18 @@ export const twitchTelemetryLayer = Layer.unwrap(
   Effect.gen(function* () {
     const endpoint = yield* Config.option(Config.url("CF_TWITCH_OTLP_ENDPOINT"));
     const token = yield* Config.option(Config.redacted("CF_TWITCH_OTLP_TOKEN"));
+
     if (Option.isNone(endpoint)) {
       return Alchemy.Telemetry.layerOtlp({ serviceName: telemetryServiceName });
     }
+
     if (Option.isNone(token)) {
       return Alchemy.Telemetry.layerOtlp({
         serviceName: telemetryServiceName,
         url: endpoint.value.href,
       });
     }
+
     return Alchemy.Telemetry.layerOtlp({
       serviceName: telemetryServiceName,
       url: endpoint.value.href,

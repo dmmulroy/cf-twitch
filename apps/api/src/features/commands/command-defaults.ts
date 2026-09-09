@@ -1,6 +1,7 @@
 import { ChatCommandName, type CreateChatCommandInput } from "@cf-twitch/contracts/chat-command";
 
 const DynamicCommandEmptyResponse = "No topic set for today.";
+
 const DynamicCommandOutputTemplate = "Working on: {value}";
 
 function createPlanCommandInput(now: string): typeof CreateChatCommandInput.Encoded {

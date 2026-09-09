@@ -18,6 +18,7 @@ const repeatTrack: SpotifyTrack = {
   album: "Album",
   albumCoverUrl: Option.none(),
 };
+
 const makeRequest = (index: number, track = repeatTrack) =>
   PendingSongRequest.make({
     eventId: RedemptionId.make(`request${index}`),
@@ -34,21 +35,25 @@ describe("Song queue occurrence attribution properties", () => {
     ({ count }) => {
       const pending = Array.from({ length: count }, (_, index) => makeRequest(index));
       const upcoming = pending.map((request) => request.track);
+
       const previous = attributeSongQueueOccurrences({
         previous: [],
         pending,
         currentlyPlaying: Option.some(repeatTrack),
         upcoming,
       });
+
       expect(previous.find((occurrence) => occurrence.position === 0)?.track.source).toBe(
         "autoplay",
       );
+
       const result = attributeSongQueueOccurrences({
         previous,
         pending,
         currentlyPlaying: Option.some(repeatTrack),
         upcoming: upcoming.slice(1),
       });
+
       expect(
         result.map(({ track }) => (track.source === "user" ? track.eventId : "autoplay")),
       ).toEqual(pending.map((request) => request.eventId));
@@ -74,18 +79,22 @@ describe("Song queue occurrence attribution properties", () => {
     },
     ({ trackIds, requestCount }) => {
       const upcoming = trackIds.map((id) => ({ ...repeatTrack, id: SpotifyTrackId.make(id) }));
+
       const pending = upcoming
         .slice(0, requestCount)
         .map((track, index) => makeRequest(index, track));
+
       const result = attributeSongQueueOccurrences({
         previous: [],
         pending,
         currentlyPlaying: Option.none(),
         upcoming,
       });
+
       const identities = result.flatMap(({ track }) =>
         track.source === "user" ? [track.eventId] : [],
       );
+
       expect(new Set(identities).size).toBe(identities.length);
       expect(identities.length).toBe(pending.length);
       expect(result.map(({ track }) => track.id)).toEqual(trackIds);

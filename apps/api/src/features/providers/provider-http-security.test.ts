@@ -13,13 +13,16 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const spans: Tracer.NativeSpan[] = [];
+
       const tracer = Tracer.make({
         span: (options) => {
           const span = new Tracer.NativeSpan(options);
           spans.push(span);
+
           return span;
         },
       });
+
       const transport = HttpClient.make((request) =>
         Effect.succeed(
           HttpClientResponse.fromWeb(
@@ -31,8 +34,10 @@ it.effect(
           ),
         ),
       );
+
       const outcome = yield* Effect.gen(function* () {
         const exchange = yield* ProviderTokenExchange;
+
         return yield* exchange.exchangeAuthorizationCode({
           provider: "spotify",
           code: Redacted.make("private-code"),
@@ -51,7 +56,9 @@ it.effect(
         Effect.withTracer(tracer),
         Effect.withTracerEnabled(true),
       );
+
       expect(outcome).toMatchObject({ _tag: "Failure", failure: { kind: "invalid-response" } });
+
       const recorded = JSON.stringify(
         spans.map((span) => ({
           name: span.name,
@@ -59,6 +66,7 @@ it.effect(
           events: span.events,
         })),
       );
+
       for (const secret of [
         "private-code",
         "response-private-secret",

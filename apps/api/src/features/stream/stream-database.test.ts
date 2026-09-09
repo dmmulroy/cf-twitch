@@ -63,6 +63,7 @@ const corruptHybridLegacyState = JSON.stringify({
 describe("Stream Lifecycle database migration", () => {
   it.effect("preserves baseline viewer evidence and partial Agent checkpoints", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE viewer_snapshots (timestamp TEXT PRIMARY KEY NOT NULL,viewer_count INTEGER NOT NULL)`;
@@ -94,6 +95,7 @@ describe("Stream Lifecycle database migration", () => {
 
   it.effect("blocks an opaque schedule with mismatched callback metadata", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE cf_agents_state (id TEXT PRIMARY KEY NOT NULL,state TEXT)`;
@@ -110,6 +112,7 @@ describe("Stream Lifecycle database migration", () => {
 
   it.effect("blocks corrupt Agent state before writing migration metadata", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const corrupt = "{not-json";
@@ -127,6 +130,7 @@ describe("Stream Lifecycle database migration", () => {
 
   it.effect("rejects malformed tagged legacy evidence instead of falling back to boolean", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE cf_agents_state (id TEXT PRIMARY KEY NOT NULL,state TEXT)`;
@@ -146,6 +150,7 @@ describe("Stream Lifecycle database migration", () => {
 
   it.effect("rejects a current row missing its required checkpoint field", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE stream_lifecycle_state (id INTEGER PRIMARY KEY CHECK (id = 1),state TEXT NOT NULL)`;
@@ -165,6 +170,7 @@ describe("Stream Lifecycle database migration", () => {
 
   it.effect("rejects corrupt current checkpoint evidence before migration writes", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE stream_lifecycle_state (id INTEGER PRIMARY KEY CHECK (id = 1),state TEXT NOT NULL)`;
@@ -184,6 +190,7 @@ describe("Stream Lifecycle database migration", () => {
 
   it.effect("rejects corrupt current checkpoint evidence on later reads", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const database = yield* makeStreamDatabase;

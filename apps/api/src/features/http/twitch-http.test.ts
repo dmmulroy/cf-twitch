@@ -23,6 +23,7 @@ import { twitchStatsHandlersLayer } from "./twitch-stats-handlers.ts";
 import { httpValidationGoldenCases } from "./http-validation-golden.ts";
 
 const adminHeaders = { authorization: "Bearer admin-secret" };
+
 const testLayers = (settings = configuration) =>
   Layer.mergeAll(
     Layer.succeed(TwitchConfiguration, settings),
@@ -70,6 +71,7 @@ const testLayers = (settings = configuration) =>
     Layer.mock(EventSubReceipts, {}),
     Layer.mock(HttpResponseCache, { readThrough: ({ load }) => load }),
   );
+
 const withHttp = <A, E, R>(
   test: (handler: (request: Request) => Promise<Response>) => Effect.Effect<A, E, R>,
   settings = configuration,
@@ -100,6 +102,7 @@ describe("Worker HTTP compatibility boundary", () => {
             method: golden.method,
             headers: { ...adminHeaders, "content-type": "application/json" },
           };
+
           if (golden.method !== "GET") init.body = JSON.stringify(golden.body);
           const response = yield* Effect.promise(() => fetch(request(golden.path, init)));
           expect(response.status).toBe(400);
@@ -120,13 +123,16 @@ describe("Worker HTTP compatibility boundary", () => {
             const response = yield* Effect.promise(() =>
               fetch(request(path, { headers: adminHeaders })),
             );
+
             expect(response.status, path).toBe(503);
           }
+
           const oauth = yield* Effect.promise(() =>
             fetch(
               request("/oauth/twitch/authorize", { headers: { "x-setup-secret": "setup-secret" } }),
             ),
           );
+
           expect(oauth.status).toBe(500);
         }),
       {
@@ -149,6 +155,7 @@ describe("Worker HTTP compatibility boundary", () => {
               }),
             ),
           );
+
           expect(response.status).toBe(200);
           expect(yield* Effect.promise(() => response.json())).toEqual({ status: "ok" });
           expect(response.headers.get("x-request-id")).toMatch(/^[a-f\d-]{36}$/u);
@@ -186,6 +193,7 @@ describe("Worker HTTP compatibility boundary", () => {
           expect(response.status, path).toBe(200);
           expect(yield* Effect.promise(() => response.json())).toEqual(expected);
         }
+
         for (const path of [
           "/api/stats/top-tracks",
           "/api/stats/top-tracks/123",
@@ -197,6 +205,7 @@ describe("Worker HTTP compatibility boundary", () => {
           expect(response.headers.get("cache-control")).toBe("public, max-age=60");
           expect(yield* Effect.promise(() => response.json())).toEqual([]);
         }
+
         const missing = yield* Effect.promise(() => fetch(request("/api/stats/raffle/user/123")));
         expect(missing.status).toBe(404);
         expect(yield* Effect.promise(() => missing.json())).toEqual({ error: "User not found" });
@@ -225,6 +234,7 @@ describe("Worker HTTP compatibility boundary", () => {
             Layer.mock(HttpResponseCache, { readThrough: ({ load }) => load }),
           ]),
         );
+
         yield* Effect.acquireUseRelease(
           Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
           ({ handler }) =>
@@ -282,17 +292,21 @@ describe("Worker HTTP compatibility boundary", () => {
                   request(path, { headers: authorization === undefined ? {} : { authorization } }),
                 ),
               );
+
               expect(response.status, `${path}: ${authorization}`).toBe(
                 authorization === "Bearer admin-secret trailing" && path !== "/eventsub/list"
                   ? 200
                   : status,
               );
             }
+
             const accepted = yield* Effect.promise(() =>
               fetch(request(path, { headers: adminHeaders })),
             );
+
             expect(accepted.status, path).toBe(200);
           }
+
           const body = yield* Effect.promise(() =>
             fetch(
               request("/api/admin/commands", {
@@ -302,7 +316,9 @@ describe("Worker HTTP compatibility boundary", () => {
               }),
             ),
           );
+
           expect(body.status).toBe(401);
+
           const authorizedBody = yield* Effect.promise(() =>
             fetch(
               request("/api/admin/commands", {
@@ -312,6 +328,7 @@ describe("Worker HTTP compatibility boundary", () => {
               }),
             ),
           );
+
           expect(authorizedBody.status).toBe(400);
           expect(yield* Effect.promise(() => authorizedBody.json())).toEqual({
             error: "Invalid JSON body",
@@ -328,6 +345,7 @@ describe("Worker HTTP compatibility boundary", () => {
           const page = yield* Effect.promise(() =>
             fetch(request("/api/admin/dlq?limit=7&limit=8&nonce=1", { headers: adminHeaders })),
           );
+
           expect(page.status).toBe(200);
           expect(yield* Effect.promise(() => page.json())).toEqual({
             items: [],
@@ -335,6 +353,7 @@ describe("Worker HTTP compatibility boundary", () => {
             limit: 7,
             offset: 0,
           });
+
           const reset = yield* Effect.promise(() =>
             fetch(
               request("/api/admin/achievements/reset-one-time?user=", {
@@ -343,6 +362,7 @@ describe("Worker HTTP compatibility boundary", () => {
               }),
             ),
           );
+
           expect(reset.status).toBe(400);
           expect(yield* Effect.promise(() => reset.json())).toEqual({
             error: "Viewer display name must not be empty",
@@ -357,10 +377,13 @@ describe("Worker HTTP compatibility boundary", () => {
         const authorize = yield* Effect.promise(() =>
           fetch(request("/oauth/spotify/authorize?setup_secret=setup-secret")),
         );
+
         expect(authorize.status).toBe(401);
+
         const callback = yield* Effect.promise(() =>
           fetch(request("/oauth/twitch/callback?code=uncorrelated")),
         );
+
         expect(callback.status).toBe(400);
         expect(yield* Effect.promise(() => callback.json())).toEqual({
           error: "Invalid or expired OAuth state",

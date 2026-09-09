@@ -23,36 +23,42 @@ const readPolicy: WorkflowStepPolicy = {
   safety: "idempotent",
   rollback: false,
 };
+
 const undoablePolicy: WorkflowStepPolicy = {
   attempts: 2,
   timeoutMs: 10_000,
   safety: "idempotent",
   rollback: true,
 };
+
 const mutationPolicy: WorkflowStepPolicy = {
   attempts: 3,
   timeoutMs: 30_000,
   safety: "non-idempotent",
   rollback: true,
 };
+
 const fulfillmentPolicy: WorkflowStepPolicy = {
   attempts: 3,
   timeoutMs: 30_000,
   safety: "non-idempotent",
   rollback: false,
 };
+
 const chatPolicy: WorkflowStepPolicy = {
   attempts: 2,
   timeoutMs: 10_000,
   safety: "non-idempotent",
   rollback: false,
 };
+
 const publishPolicy: WorkflowStepPolicy = {
   attempts: 5,
   timeoutMs: 10_000,
   safety: "idempotent",
   rollback: false,
 };
+
 const providerFailure =
   (safety: WorkflowStepPolicy["safety"]) =>
   (error: ProviderError): WorkflowStepFailure =>
@@ -73,6 +79,7 @@ const providerFailure =
           : error.message,
       retryAfterMs: error.retryAfterMs,
     });
+
 const durableFailure = (error: { readonly message: string }): WorkflowStepFailure =>
   new WorkflowStepFailure({
     kind: "retryable",
@@ -86,10 +93,12 @@ export interface IWorkflowExecution {
   readonly resume: () => Effect.Effect<void, WorkflowError>;
   readonly getStatus: () => Effect.Effect<Option.Option<WorkflowRunStatus>, WorkflowError>;
 }
+
 /** One workflow execution service is acquired per Durable Object, never per HTTP request. */
 export class WorkflowExecution extends Context.Service<WorkflowExecution, IWorkflowExecution>()(
   "@cf-twitch/WorkflowExecution",
 ) {}
+
 /** Construct all three persisted workflows from their authoritative application capabilities. */
 export const makeWorkflowExecution = Effect.gen(function* () {
   const journal = yield* WorkflowJournal;
@@ -101,20 +110,24 @@ export const makeWorkflowExecution = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const analytics = yield* TwitchAnalytics;
   const permit = yield* Semaphore.make(1);
+
   const eventId = Effect.fn("WorkflowExecution.eventId")(function* (id: RedemptionId) {
     const digest = yield* crypto
       .digest("SHA-256", new TextEncoder().encode(`cf-twitch:saga-event:${id}`))
       .pipe(
         Effect.mapError(() => durableFailure({ message: "Workflow event identity digest failed" })),
       );
+
     const bytes = digest.slice(0, 16);
     bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
     bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
     const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
     return EventId.make(
       `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
     );
   });
+
   const refineChatMessage = (message: string) =>
     ChatMessageText.makeEffect(message).pipe(
       Effect.mapError(
@@ -126,13 +139,16 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           }),
       ),
     );
+
   const chat = Effect.fn("WorkflowExecution.chat")(function* (name: string, message: string) {
     const send = Effect.gen(function* () {
       const chatMessage = yield* refineChatMessage(message);
+
       return yield* twitch
         .sendChatMessage({ message: chatMessage })
         .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null));
     });
+
     yield* journal.checkpoint(name, Schema.Null, send, chatPolicy).pipe(
       // Optional chat is never resent after ambiguous delivery; required domain publication still proceeds.
       Effect.catchTag("WorkflowStepHalt", (error) =>
@@ -140,6 +156,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       ),
     );
   });
+
   const metric = Effect.fn("WorkflowExecution.metric")(
     (name: string, operation: Effect.Effect<void>) =>
       journal
@@ -151,6 +168,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
         })
         .pipe(Effect.catchTag("WorkflowStepHalt", () => Effect.void)),
   );
+
   const publish = Effect.fn("WorkflowExecution.publish")(function* (event: DomainEvent) {
     // Persist the complete event before the publication boundary. Its ID and source timestamp never change on retry.
     const pending = yield* journal.checkpoint(
@@ -159,6 +177,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       Effect.succeed(event),
       readPolicy,
     );
+
     yield* journal.checkpoint(
       "publish-event",
       Schema.Null,
@@ -166,17 +185,21 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       publishPolicy,
     );
   });
+
   const execute = Effect.fn("WorkflowExecution.execute")(function* (input: WorkflowInput) {
     if (input._tag === "RaidShoutout") {
       const raid = input.raid;
+
       const sendThanks = Effect.gen(function* () {
         const thanks = yield* refineChatMessage(
           `Thanks for the raid @${raid.raider.login}! Go check them out: https://twitch.tv/${raid.raider.login}`,
         );
+
         return yield* twitch
           .sendChatMessage({ message: thanks })
           .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null));
       });
+
       yield* journal.checkpoint("send-chat-thanks", Schema.Null, sendThanks, chatPolicy);
       yield* journal.checkpoint(
         "create-native-shoutout",
@@ -186,9 +209,12 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null)),
         chatPolicy,
       );
+
       return;
     }
+
     const redemption = input.redemption;
+
     const fulfill = () =>
       journal.checkpoint(
         "fulfill-redemption",
@@ -202,12 +228,14 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null)),
         fulfillmentPolicy,
       );
+
     const stableId = yield* journal.checkpoint(
       "domain-event-id",
       EventId,
       eventId(redemption.id),
       readPolicy,
     );
+
     if (input._tag === "SongRequest") {
       const trackId = yield* journal.checkpoint(
         "parse-spotify-url",
@@ -224,12 +252,14 @@ export const makeWorkflowExecution = Effect.gen(function* () {
         ),
         readPolicy,
       );
+
       const track = yield* journal.checkpoint(
         "get-track-info",
         SpotifyTrack,
         spotify.getTrack(trackId).pipe(Effect.mapError(providerFailure("idempotent"))),
         readPolicy,
       );
+
       // Known-key undo intent survives remote commit followed by lost HTTP response, even if every retry fails.
       yield* journal.checkpoint(
         "persist-request-undo-intent",
@@ -289,14 +319,17 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           ),
         }),
       );
+
       return;
     }
+
     yield* journal.checkpoint(
       "record-roll-undo-intent",
       RedemptionId,
       Effect.succeed(redemption.id),
       undoablePolicy,
     );
+
     const recorded = yield* journal.checkpoint(
       "record-roll",
       RaffleRecordResult,
@@ -310,6 +343,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
         .pipe(Effect.mapError(durableFailure)),
       { ...readPolicy, attempts: 2, timeoutMs: 10_000 },
     );
+
     const roll = recorded.roll;
     yield* fulfill();
     yield* publish(
@@ -347,12 +381,14 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       }),
     );
   });
+
   const compensate = Effect.fn("WorkflowExecution.compensate")(function* (
     input: WorkflowInput,
     originalError: Option.Option<string>,
   ) {
     if (input._tag === "RaidShoutout") return;
     const redemption = input.redemption;
+
     if (input._tag === "SongRequest") {
       // Strict reverse ordering: confirmed Spotify removal, attribution deletion, then points refund.
       yield* journal.compensate(
@@ -389,6 +425,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
         "idempotent",
       );
     }
+
     yield* journal.checkpoint(
       "refund-redemption",
       Schema.Null,
@@ -401,6 +438,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
         .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null)),
       { ...fulfillmentPolicy, attempts: 5 },
     );
+
     if (input._tag === "SongRequest") {
       const invalid = Option.getOrNull(originalError) === "Workflow Spotify track input is invalid";
       yield* chat(
@@ -411,6 +449,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       );
     }
   });
+
   const recoverCompensation = Effect.fn("WorkflowExecution.recoverCompensation")(function* (
     input: WorkflowInput,
     error: Option.Option<string>,
@@ -427,15 +466,19 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       ),
     );
   });
+
   const resumeUnlocked = Effect.fn("WorkflowExecution.resumeUnlocked")(function* () {
     const status = yield* journal.getStatus();
+
     if (
       Option.isNone(status) ||
       (status.value.status !== "RUNNING" && status.value.status !== "COMPENSATING")
     )
       return yield* journal.restoreAlarm();
     const input = yield* journal.getInput();
+
     if (Option.isNone(input)) return;
+
     if (status.value.status === "COMPENSATING")
       return yield* recoverCompensation(input.value, status.value.error);
     yield* execute(input.value).pipe(
@@ -443,11 +486,14 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       Effect.catchTag("WorkflowStepHalt", (halt) =>
         Effect.gen(function* () {
           if (halt.reason === "retry") return;
+
           if (halt.reason === "unknown")
             return yield* journal.transition("OUTCOME_UNKNOWN", Option.some(halt.message));
           const latest = yield* journal.getStatus();
+
           if (Option.isSome(latest) && Option.isSome(latest.value.fulfilledAt))
             return yield* journal.transition("POST_COMMIT_FAILED", Option.some(halt.message));
+
           if (input.value._tag === "RaidShoutout")
             return yield* journal.transition("FAILED", Option.some(halt.message));
           yield* journal.transition("COMPENSATING", Option.some(halt.message));
@@ -456,14 +502,18 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       ),
     );
   });
+
   const resume = Effect.fn("WorkflowExecution.resume")(() =>
     permit.withPermits(1)(resumeUnlocked()),
   );
+
   const start = Effect.fn("WorkflowExecution.start")((input: WorkflowInput) =>
     permit.withPermits(1)(journal.initialize(input).pipe(Effect.andThen(resumeUnlocked()))),
   );
+
   return WorkflowExecution.of({ start, resume, getStatus: journal.getStatus });
 });
+
 /** Workflow execution retains real dependency requirements for runtime and controlled-provider tests. */
 export const workflowExecutionLayerWithoutDependencies = Layer.effect(
   WorkflowExecution,

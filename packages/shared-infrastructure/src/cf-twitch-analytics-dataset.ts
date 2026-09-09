@@ -9,6 +9,7 @@ export const cfTwitchAnalyticsDataset: Effect.Effect<
   Alchemy.Stage
 > = Effect.gen(function* () {
   const stage = yield* Alchemy.Stage;
+
   return yield* Cloudflare.AnalyticsEngine.Dataset("ANALYTICS", {
     dataset: `cf-twitch-${stage}`,
   });

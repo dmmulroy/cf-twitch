@@ -30,5 +30,6 @@ export const generateIsolatedCfTwitchTestStage: () => Effect.Effect<
 > = Effect.fn("CfTwitchInfrastructure.generateIsolatedCfTwitchTestStage")(function* () {
   const crypto = yield* Crypto.Crypto;
   const entropy = (yield* crypto.randomUUIDv4).replaceAll("-", "").slice(0, 32);
+
   return yield* parseCfTwitchInfrastructureStage(`test-${entropy}`);
 });

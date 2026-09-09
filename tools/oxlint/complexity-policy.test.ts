@@ -11,8 +11,9 @@ const complexityProbeSource = (complexity: number): string => {
   const branches = Array.from(
     { length: complexity - 1 },
     (_, index) => `  if (flags[${index}] === true) total += 1;`,
-  ).join("\n");
-  return `export const measureComplexityProbe = (flags: ReadonlyArray<boolean>): number => {\n  let total = 0;\n${branches}\n  return total;\n};\n`;
+  ).join("\n\n");
+
+  return `export const measureComplexityProbe = (flags: ReadonlyArray<boolean>): number => {\n  let total = 0;\n\n${branches}\n\n  return total;\n};\n`;
 };
 
 const runRootLint = (file: string) =>
@@ -71,6 +72,7 @@ describe("root cyclomatic complexity policy", () => {
         ],
         { cwd: process.cwd(), encoding: "utf8" },
       );
+
       expect(result.status, `${result.stdout ?? ""}\n${result.stderr ?? ""}`).toBe(0);
     } finally {
       rmSync(probeRoot, { recursive: true, force: true });

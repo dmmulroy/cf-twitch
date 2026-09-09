@@ -17,19 +17,24 @@ import {
 
 const providerCode = (error: ProviderError) => {
   if (error.kind === "invalid-response") return "TwitchParseError";
+
   if (error.operation === "createEventSubSubscription") return "TwitchSubscriptionCreateError";
+
   if (
     error.operation === "deleteEventSubSubscription" &&
     error.kind !== "network" &&
     error.kind !== "outcome-unknown"
   )
     return "TwitchSubscriptionDeleteError";
+
   return "TwitchNetworkError";
 };
+
 const subscriptionList = Schema.Struct({
   subscriptions: Schema.Array(TwitchSubscriptionResponse),
   total: Schema.Int,
 });
+
 const subscriptionConfigurations = (broadcasterId: BroadcasterId) => [
   { type: "stream.online", version: "1", condition: { broadcaster_user_id: broadcasterId } },
   { type: "stream.offline", version: "1", condition: { broadcaster_user_id: broadcasterId } },
@@ -55,6 +60,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
       const configuration = yield* TwitchConfiguration;
       const twitch = yield* TwitchService;
       const receipts = yield* EventSubReceipts;
+
       const admin = <R>(
         effect: Effect.Effect<HttpServerResponse.HttpServerResponse, HttpBoundaryError, R>,
       ) =>
@@ -62,6 +68,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
           Effect.andThen(effect),
           handleHttpBoundary,
         );
+
       return handlers
         .handleRaw("webhook", () =>
           handleEventSubWebhook().pipe(
@@ -82,6 +89,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                     }),
                 ),
               );
+
               return yield* encodeHttpResponse(subscriptionList, {
                 subscriptions,
                 total: subscriptions.length,
@@ -113,6 +121,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
               const request = yield* HttpServerRequest.HttpServerRequest;
               const callbackUrl = `${new URL(request.originalUrl).origin}/webhooks/twitch`;
               const existing = yield* twitch.listEventSubSubscriptions().pipe(Effect.result);
+
               if (existing._tag === "Failure")
                 return HttpServerResponse.jsonUnsafe(
                   {
@@ -122,12 +131,15 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                   },
                   { status: 500 },
                 );
+
               const configurations = subscriptionConfigurations(
                 configuration.twitch.broadcaster.id,
               );
+
               const created: ProviderEventSubSubscription[] = [];
               const skipped: typeof configurations = [];
               const errors: { type: string; error: string; code: string }[] = [];
+
               for (const config of configurations) {
                 if (
                   existing.success.some(
@@ -145,6 +157,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                   skipped.push(config);
                   continue;
                 }
+
                 const result = yield* twitch
                   .createEventSubSubscription({
                     ...config,
@@ -152,6 +165,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                     secret: configuration.eventSubSecret,
                   })
                   .pipe(Effect.result);
+
                 if (result._tag === "Success") created.push(result.success);
                 else
                   errors.push({
@@ -160,6 +174,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                     code: providerCode(result.failure),
                   });
               }
+
               const subscriptions = yield* Schema.encodeEffect(
                 Schema.Array(TwitchSubscriptionResponse),
               )(created).pipe(
@@ -167,6 +182,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                   () => new HttpBoundaryError({ status: 502, error: "Invalid service response" }),
                 ),
               );
+
               return errors.length > 0
                 ? HttpServerResponse.jsonUnsafe(
                     {
@@ -200,15 +216,19 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                     }),
                 ),
               );
+
               let deleted = 0;
               let failed = 0;
+
               for (const subscription of subscriptions) {
                 const result = yield* twitch
                   .deleteEventSubSubscription(subscription.id)
                   .pipe(Effect.result);
+
                 if (result._tag === "Success") deleted++;
                 else failed++;
               }
+
               return HttpServerResponse.jsonUnsafe({
                 success: failed === 0,
                 message: `Deleted ${deleted} subscriptions, ${failed} failed`,

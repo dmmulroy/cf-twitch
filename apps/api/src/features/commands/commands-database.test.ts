@@ -10,10 +10,15 @@ import { commandsDatabaseLayerWithoutDependencies } from "./commands-database.ts
 import { defaultCommandMigrationIds } from "./command-defaults.ts";
 
 const name = (value: string) => ChatCommandName.make(value);
+
 const operation = (value: string) => Option.some(EventSubMessageId.make(value));
+
 const sqliteLayer = SqliteClient.layer({ filename: ":memory:" });
+
 const commandsLayer = commandsDatabaseLayerWithoutDependencies.pipe(Layer.provide(sqliteLayer));
+
 const createInput = Schema.decodeUnknownSync(CreateChatCommandInput);
+
 const dynamicInput = (command: string) =>
   createInput({
     name: command,
@@ -23,10 +28,13 @@ const dynamicInput = (command: string) =>
     permission: "everyone",
     initialValue: "initial",
   });
+
 const actor = { displayName: "ModeratorViewer", permission: "moderator" } as const;
+
 const parseStoredRows = Schema.decodeUnknownEffect(
   Schema.Array(Schema.Struct({ state: Schema.String })),
 );
+
 const legacyCommand = {
   name: "runtime",
   description: "Runtime definition",
@@ -43,6 +51,7 @@ const legacyCommand = {
   emptyResponse: null,
   writePermission: null,
 };
+
 const legacyState = {
   revision: 44,
   commandsByName: { runtime: legacyCommand },
@@ -59,6 +68,7 @@ const legacyState = {
   legacyImportCompleted: true,
   migrationReport: { importedCommands: 1 },
 };
+
 const seedLegacyState = (state: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -197,6 +207,7 @@ describe("Commands SQL authority", () => {
         const before = yield* commands.getDebugSnapshot();
         const duplicate = yield* commands.createCommand(dynamicInput("df")).pipe(Effect.result);
         expect(duplicate).toMatchObject({ failure: { _tag: "CommandAlreadyExistsError" } });
+
         for (const aliases of [
           [name("keyboard")],
           [name("df")],
@@ -209,6 +220,7 @@ describe("Commands SQL authority", () => {
               .pipe(Effect.result),
           ).toMatchObject({ failure: { _tag: "CommandAliasConflictError" } });
         }
+
         const missing = yield* commands
           .createCommand({
             ...dynamicInput("missing-source"),
@@ -217,6 +229,7 @@ describe("Commands SQL authority", () => {
             initialValue: "do not write",
           })
           .pipe(Effect.result);
+
         expect(missing).toMatchObject({ failure: { _tag: "CommandInvalidDefinitionError" } });
         expect(yield* commands.getDebugSnapshot()).toEqual(before);
       }).pipe(Effect.provide(commandsLayer)),
@@ -324,6 +337,7 @@ describe("Commands SQL authority", () => {
           yield* commands.deleteCommand({ name: name("df") }).pipe(Effect.result),
         ).toMatchObject({ failure: { _tag: "CommandNotFoundError" } });
         yield* commands.deleteCommand({ name: name("today") });
+
         for (const missing of ["today", "project", "grandchild", "counter-child"])
           expect(
             yield* commands.getCommand({ name: name(missing) }).pipe(Effect.result),
@@ -337,9 +351,11 @@ describe("Commands SQL authority", () => {
       Effect.gen(function* () {
         const commands = yield* Commands;
         yield* commands.updateCommand({ name: name("keyboard"), patch: { enabled: false } });
+
         const available = yield* commands.getEnabledCommandsByPermission({
           permission: "everyone",
         });
+
         expect(
           available.some(
             (command) =>
@@ -358,11 +374,13 @@ describe("Commands SQL authority", () => {
     () =>
       Effect.gen(function* () {
         const commands = yield* Commands;
+
         const input = {
           name: name("skillissue"),
           increment: 1,
           operationId: operation("same-message"),
         };
+
         expect(
           yield* Effect.all(
             [commands.incrementCommandCounter(input), commands.incrementCommandCounter(input)],
@@ -391,12 +409,14 @@ describe("Commands SQL authority", () => {
     () =>
       Effect.gen(function* () {
         const commands = yield* Commands;
+
         const input = {
           name: name("today"),
           value: "first",
           actor,
           operationId: operation("first"),
         };
+
         yield* commands.updateCommandValue(input);
         yield* commands.updateCommandValue({
           ...input,
@@ -422,6 +442,7 @@ describe("Commands SQL authority", () => {
     () =>
       Effect.gen(function* () {
         yield* seedLegacyState(JSON.stringify(legacyState));
+
         const inspect = Effect.gen(function* () {
           const commands = yield* Commands;
           expect((yield* commands.getAllCommands()).length).toBe(1);
@@ -435,6 +456,7 @@ describe("Commands SQL authority", () => {
           ).toBe(73);
           expect(yield* commands.getDebugSnapshot()).toMatchObject({ revision: 44 });
         });
+
         yield* inspect.pipe(
           Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
         );
@@ -442,9 +464,11 @@ describe("Commands SQL authority", () => {
           Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
         );
         const sql = yield* SqlClient.SqlClient;
+
         const source = yield* parseStoredRows(
           yield* sql`SELECT state FROM cf_agents_state WHERE id = 'cf_state_row_id'`,
         );
+
         expect(source[0]?.state).toBe(JSON.stringify(legacyState));
       }).pipe(Effect.provide(sqliteLayer)),
   );
@@ -461,6 +485,7 @@ describe("Commands SQL authority", () => {
           },
         }),
       );
+
       const inspect = Effect.gen(function* () {
         const commands = yield* Commands;
         expect((yield* commands.getCommand({ name: name("herdr") })).responseType).toBe("computed");
@@ -475,6 +500,7 @@ describe("Commands SQL authority", () => {
         ]);
         expect(yield* commands.getDebugSnapshot()).toMatchObject({ revision: 45 });
       });
+
       yield* inspect.pipe(
         Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
       );
@@ -490,6 +516,7 @@ describe("Commands SQL authority", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* seedLegacyState("{broken");
+
         for (const state of [
           "{broken",
           JSON.stringify({
@@ -502,12 +529,14 @@ describe("Commands SQL authority", () => {
           }),
         ]) {
           yield* sql`UPDATE cf_agents_state SET state = ${state} WHERE id = 'cf_state_row_id'`;
+
           const result = yield* Effect.gen(function* () {
             yield* Commands;
           }).pipe(
             Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
             Effect.result,
           );
+
           expect(Result.isFailure(result)).toBe(true);
           expect(yield* parseStoredRows(yield* sql`SELECT state FROM commands_snapshot`)).toEqual(
             [],
@@ -523,8 +552,10 @@ describe("Commands SQL authority", () => {
         yield* Effect.gen(function* () {
           const commands = yield* Commands;
           let all = yield* commands.getAllCommands();
+
           while (all.length > 0) {
             const first = all[0];
+
             if (first !== undefined) yield* commands.deleteCommand({ name: first.name });
             all = yield* commands.getAllCommands();
           }
@@ -568,6 +599,7 @@ describe("Commands SQL authority", () => {
             },
           ]),
         );
+
         yield* seedLegacyState(
           JSON.stringify({ ...legacyState, mutationReceiptsByOperationId: receipts }),
         );

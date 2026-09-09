@@ -21,6 +21,7 @@ export const makeWorkflowStarters = Effect.gen(function* () {
   const song = yield* SongRequestSagaServer;
   const raffle = yield* KeyboardRaffleSagaServer;
   const raid = yield* RaidShoutoutSagaServer;
+
   const songClients = yield* makeExecutionMemo(
     Cache.make({
       capacity: Number.POSITIVE_INFINITY,
@@ -33,6 +34,7 @@ export const makeWorkflowStarters = Effect.gen(function* () {
         ),
     }),
   );
+
   const raffleClients = yield* makeExecutionMemo(
     Cache.make({
       capacity: Number.POSITIVE_INFINITY,
@@ -45,6 +47,7 @@ export const makeWorkflowStarters = Effect.gen(function* () {
         ),
     }),
   );
+
   const raidClients = yield* makeExecutionMemo(
     Cache.make({
       capacity: Number.POSITIVE_INFINITY,
@@ -57,25 +60,34 @@ export const makeWorkflowStarters = Effect.gen(function* () {
         ),
     }),
   );
+
   const songClientFor = (redemptionId: RedemptionId) =>
     songClients.pipe(Effect.flatMap((cache) => Cache.get(cache, redemptionId)));
+
   const raffleClientFor = (redemptionId: RedemptionId) =>
     raffleClients.pipe(Effect.flatMap((cache) => Cache.get(cache, redemptionId)));
+
   const raidClientFor = (messageId: EventSubMessageId) =>
     raidClients.pipe(Effect.flatMap((cache) => Cache.get(cache, messageId)));
+
   const start = Effect.fn("WorkflowStarters.start")(
     function* (input: WorkflowInput) {
       switch (input._tag) {
         case "SongRequest": {
           const client = yield* songClientFor(input.redemption.id);
+
           return yield* client.workflow.start({ payload: input });
         }
+
         case "KeyboardRaffle": {
           const client = yield* raffleClientFor(input.redemption.id);
+
           return yield* client.workflow.start({ payload: input });
         }
+
         case "RaidShoutout": {
           const client = yield* raidClientFor(input.raid.messageId);
+
           return yield* client.workflow.start({ payload: input });
         }
       }
@@ -97,19 +109,25 @@ export const makeWorkflowStarters = Effect.gen(function* () {
         ),
     }),
   );
+
   const getStatus = Effect.fn("WorkflowStarters.getStatus")(
     function* (input: WorkflowLookup) {
       switch (input._tag) {
         case "SongRequest": {
           const client = yield* songClientFor(input.redemptionId);
+
           return yield* client.workflow.getStatus();
         }
+
         case "KeyboardRaffle": {
           const client = yield* raffleClientFor(input.redemptionId);
+
           return yield* client.workflow.getStatus();
         }
+
         case "RaidShoutout": {
           const client = yield* raidClientFor(input.messageId);
+
           return yield* client.workflow.getStatus();
         }
       }
@@ -131,6 +149,7 @@ export const makeWorkflowStarters = Effect.gen(function* () {
         ),
     }),
   );
+
   return WorkflowStarters.of({
     startSongRequest: Effect.fn("WorkflowStarters.startSongRequest")((redemption) =>
       start({ _tag: "SongRequest", redemption }),
@@ -144,11 +163,13 @@ export const makeWorkflowStarters = Effect.gen(function* () {
     getStatus,
   });
 });
+
 /** Workflow clients retain namespace requirements for controlled HTTP tests. */
 export const workflowStartersLayerWithoutDependencies = Layer.effect(
   WorkflowStarters,
   makeWorkflowStarters,
 );
+
 /** Ready workflow clients register all three durable namespaces at the outer composition phase. */
 export const workflowStartersLayer = workflowStartersLayerWithoutDependencies.pipe(
   Layer.provide(workflowServersLayer),

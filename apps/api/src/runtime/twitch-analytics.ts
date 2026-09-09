@@ -11,6 +11,7 @@ export const AchievementUnlockMetric = Schema.Struct({
   achievementName: Schema.String,
   category: Schema.String,
 });
+
 /** Achievement unlock analytics input; callers own at-most-once durable claiming. */
 export type AchievementUnlockMetric = typeof AchievementUnlockMetric.Type;
 
@@ -23,6 +24,7 @@ export const ChatCommandMetric = Schema.Struct({
   durationMs: Schema.Number,
   error: Schema.Option(Schema.String),
 });
+
 /** Chat command outcome used by historical Analytics Engine queries. */
 export type ChatCommandMetric = typeof ChatCommandMetric.Type;
 
@@ -46,6 +48,7 @@ export const SagaLifecycleMetric = Schema.Struct({
   error: Schema.Option(Schema.String),
   durationMs: Schema.Option(Schema.Number),
 });
+
 /** Workflow outcome metric; errors must be classified safe messages, never provider payloads. */
 export type SagaLifecycleMetric = typeof SagaLifecycleMetric.Type;
 
@@ -57,6 +60,7 @@ export const SongRequestMetric = Schema.Struct({
   status: Schema.Literals(["fulfilled", "failed"]),
   latencyMs: Schema.Number,
 });
+
 /** Song request Analytics Engine input. */
 export type SongRequestMetric = typeof SongRequestMetric.Type;
 
@@ -68,6 +72,7 @@ export const RaffleRollMetric = Schema.Struct({
   distance: Schema.Number,
   status: Schema.Literals(["win", "loss"]),
 });
+
 /** Keyboard raffle Analytics Engine input. */
 export type RaffleRollMetric = typeof RaffleRollMetric.Type;
 
@@ -94,6 +99,7 @@ export class TwitchAnalytics extends Context.Service<TwitchAnalytics, ITwitchAna
 export const makeTwitchAnalytics = Effect.gen(function* () {
   const dataset = yield* cfTwitchAnalyticsDataset;
   const writer = yield* Cloudflare.AnalyticsEngine.WriteDataset(dataset);
+
   const writeMetric = Effect.fn("TwitchAnalytics.writeMetric")(function* (
     index: string,
     blobs: string[],

@@ -20,11 +20,13 @@ export interface IProviderTokenExchange {
   }) => Effect.Effect<ProviderTokens, ProviderError>;
   readonly getTwitchAppToken: () => Effect.Effect<Redacted.Redacted<string>, ProviderError>;
 }
+
 /** OAuth provider endpoint authority keeps refresh cycles out of user-token clients. */
 export class ProviderTokenExchange extends Context.Service<
   ProviderTokenExchange,
   IProviderTokenExchange
 >()("@cf-twitch/ProviderTokenExchange") {}
+
 const TokenResponseFields = {
   access_token: Schema.RedactedFromValue(Schema.Trim.check(Schema.isMinLength(1))),
   refresh_token: Schema.OptionFromOptionalKey(
@@ -33,10 +35,12 @@ const TokenResponseFields = {
   token_type: Schema.Trim.check(Schema.isMinLength(1)),
   expires_in: Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(31_536_000)),
 };
+
 const spotifyDecode = decodeProviderResponse(
   Schema.Struct({ ...TokenResponseFields, scope: Schema.optionalKey(Schema.String) }),
   { provider: "spotify", operation: "tokenExchange", mutation: false },
 );
+
 const twitchDecode = decodeProviderResponse(
   Schema.Struct({ ...TokenResponseFields, scope: Schema.optionalKey(Schema.Array(Schema.String)) }),
   { provider: "twitch", operation: "tokenExchange", mutation: false },
@@ -46,11 +50,13 @@ const twitchDecode = decodeProviderResponse(
 export const makeProviderTokenExchange = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const configuration = yield* TwitchConfiguration;
+
   const exchange = Effect.fn("ProviderTokenExchange.exchange")(function* (
     provider: OAuthProvider,
     grant: Readonly<Record<string, string>>,
   ) {
     const credentials = configuration[provider];
+
     const outgoing =
       provider === "spotify"
         ? HttpClientRequest.post("https://accounts.spotify.com/api/token").pipe(
@@ -64,6 +70,7 @@ export const makeProviderTokenExchange = Effect.gen(function* () {
               client_secret: Redacted.value(credentials.clientSecret),
             }),
           );
+
     const response = yield* executeProviderRequest(client, {
       provider,
       operation: "tokenExchange",
@@ -71,6 +78,7 @@ export const makeProviderTokenExchange = Effect.gen(function* () {
       mutation: false,
       notFound: "not-found",
     });
+
     const token = yield* provider === "spotify"
       ? spotifyDecode(response).pipe(
           Effect.map((received) => ({
@@ -79,6 +87,7 @@ export const makeProviderTokenExchange = Effect.gen(function* () {
           })),
         )
       : twitchDecode(response);
+
     return {
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
@@ -87,6 +96,7 @@ export const makeProviderTokenExchange = Effect.gen(function* () {
       scopes: token.scope ?? [],
     };
   });
+
   return ProviderTokenExchange.of({
     exchangeAuthorizationCode: Effect.fn("ProviderTokenExchange.exchangeAuthorizationCode")(
       (input) =>
@@ -121,10 +131,12 @@ export const makeProviderTokenExchange = Effect.gen(function* () {
     ),
   });
 });
+
 /** Token exchange leaves HTTP transport and runtime configuration visible. */
 export const providerTokenExchangeLayerWithoutDependencies = Layer.effect(
   ProviderTokenExchange,
   makeProviderTokenExchange,
 );
+
 /** Token exchange has no infrastructure dependencies beyond runtime HTTP and configuration. */
 export const providerTokenExchangeLayer = providerTokenExchangeLayerWithoutDependencies;

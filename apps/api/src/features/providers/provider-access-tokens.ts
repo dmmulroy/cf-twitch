@@ -14,6 +14,7 @@ export interface IProviderAccessTokens {
   readonly onStreamOnline: (provider: OAuthProvider) => Effect.Effect<void, ProviderError>;
   readonly onStreamOffline: (provider: OAuthProvider) => Effect.Effect<void, ProviderError>;
 }
+
 /** Durable token capability shared by providers, OAuth setup, and stream lifecycle fanout. */
 export class ProviderAccessTokens extends Context.Service<
   ProviderAccessTokens,

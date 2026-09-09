@@ -20,6 +20,7 @@ const eventJson = JSON.stringify({
 describe("Event Bus database migration", () => {
   it.effect("adopts baseline SQL rows and validates historical schedule state", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE pending_events (id TEXT PRIMARY KEY NOT NULL,event TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_retry_at TEXT NOT NULL,created_at TEXT NOT NULL)`;
@@ -44,6 +45,7 @@ describe("Event Bus database migration", () => {
 
   it.effect("blocks corrupt historical schedule state instead of resetting it", () => {
     const sqlLayer = SqliteClient.layer({ filename: ":memory:" });
+
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const corrupt = "{not-json";

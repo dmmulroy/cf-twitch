@@ -26,7 +26,9 @@ import {
 } from "./event-bus-service.ts";
 
 const MAX_ATTEMPTS = 3;
+
 const BACKOFF_DELAYS_MS = [1_000, 4_000, 16_000] as const;
+
 const DLQ_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 /** Alarm capability used to rebuild retry and DLQ timers from SQLite authority. */
@@ -65,6 +67,7 @@ const timestampAt = (epochMillis: number) =>
 const nowAndAfter = (delayMillis: number) =>
   Effect.gen(function* () {
     const nowMillis = yield* Clock.currentTimeMillis;
+
     return {
       now: yield* timestampAt(nowMillis),
       after: yield* timestampAt(nowMillis + delayMillis),
@@ -116,6 +119,7 @@ export const makeEventBus = Effect.gen(function* () {
 
   const rebuildAlarm = Effect.fn("EventBus.rebuildAlarm")(function* () {
     const wakeAt = yield* database.earliestWakeAt();
+
     if (Option.isSome(wakeAt)) yield* alarm.scheduleAt(wakeAt.value);
     else yield* alarm.clear();
   });
@@ -125,6 +129,7 @@ export const makeEventBus = Effect.gen(function* () {
     operation: EventBusError["operation"],
   ) {
     const subscriptions = yield* database.listSubscriptions();
+
     if (subscriptions.some((subscription) => subscription.event_type === event.type)) {
       yield* handler
         .handleDomainEvent(event)
@@ -153,6 +158,7 @@ export const makeEventBus = Effect.gen(function* () {
   const processPending = Effect.fn("EventBus.processPending")(function* (pending: PendingEventRow) {
     const attempt = pending.attempts + 1;
     const decodedEvent = yield* Effect.result(parseDomainEventJson(pending.event));
+
     if (decodedEvent._tag === "Failure") {
       const { now, after: expiresAt } = yield* nowAndAfter(DLQ_RETENTION_MS);
       yield* database.moveToDeadLetter({
@@ -162,11 +168,15 @@ export const makeEventBus = Effect.gen(function* () {
         failedAt: now,
         expiresAt,
       });
+
       return;
     }
+
     const result = yield* Effect.result(deliver(decodedEvent.success, "retryDue"));
+
     if (result._tag === "Success") {
       yield* recordSuccess(decodedEvent.success.id, "retryDue");
+
       return;
     }
 
@@ -179,6 +189,7 @@ export const makeEventBus = Effect.gen(function* () {
         failedAt: now,
         expiresAt,
       });
+
       return;
     }
 
@@ -190,9 +201,11 @@ export const makeEventBus = Effect.gen(function* () {
   const processDue = Effect.fn("EventBus.processDue")(function* () {
     const { now } = yield* nowAndAfter(0);
     const due = yield* database.listDue(now);
+
     for (const pending of due) {
       yield* processPending(pending);
     }
+
     yield* database.purgeExpiredDeadLetters(now);
     yield* rebuildAlarm();
   });
@@ -204,19 +217,24 @@ export const makeEventBus = Effect.gen(function* () {
           eventBusError("publish", "stored_event_invalid", Option.some(event.id)),
         ),
       );
+
       const { now, after: firstRetryAt } = yield* nowAndAfter(BACKOFF_DELAYS_MS[0]);
+
       const acceptance = yield* database.accept({
         eventId: event.id,
         encodedEvent,
         now,
         firstRetryAt,
       });
+
       if (acceptance !== "accepted") {
         yield* rebuildAlarm();
+
         return;
       }
 
       const delivery = yield* Effect.result(deliver(event, "publish"));
+
       if (delivery._tag === "Success") yield* recordSuccess(event.id, "publish");
       yield* rebuildAlarm();
     }),
@@ -232,6 +250,7 @@ export const makeEventBus = Effect.gen(function* () {
         database.earliestRetryAt(),
         database.earliestDeadLetterExpiryAt(),
       ]);
+
       return {
         healthy: true,
         nextRetryAt,
@@ -241,6 +260,7 @@ export const makeEventBus = Effect.gen(function* () {
     }),
     listPending: Effect.fn("EventBusAdministration.listPending")(function* (input) {
       const page = yield* database.listPending(input);
+
       return {
         items: yield* Effect.all(page.rows.map(pendingItemFromRow)),
         totalCount: page.totalCount,
@@ -250,6 +270,7 @@ export const makeEventBus = Effect.gen(function* () {
     }),
     listDeadLetters: Effect.fn("EventBusAdministration.listDeadLetters")(function* (input) {
       const page = yield* database.listDeadLetters(input);
+
       return {
         items: yield* Effect.all(page.rows.map(deadLetterItemFromRow)),
         totalCount: page.totalCount,
@@ -259,6 +280,7 @@ export const makeEventBus = Effect.gen(function* () {
     }),
     replayDeadLetter: Effect.fn("EventBusAdministration.replayDeadLetter")(function* (input) {
       const dead = yield* database.findDeadLetter(input.eventId);
+
       if (Option.isNone(dead)) {
         return yield* eventBusError(
           "replayDeadLetter",
@@ -266,17 +288,22 @@ export const makeEventBus = Effect.gen(function* () {
           Option.some(input.eventId),
         );
       }
+
       const event = yield* parseDomainEventJson(dead.value.event).pipe(
         Effect.mapError(() =>
           eventBusError("replayDeadLetter", "stored_event_invalid", Option.some(input.eventId)),
         ),
       );
+
       const delivery = yield* Effect.result(deliver(event, "replayDeadLetter"));
+
       if (delivery._tag === "Success") {
         yield* recordSuccess(event.id, "replayDeadLetter");
         yield* rebuildAlarm();
+
         return { success: true, eventId: input.eventId, error: Option.none() };
       }
+
       const { now } = yield* nowAndAfter(0);
       const message = "Event subscriber unavailable";
       yield* database.recordDeadLetterReplayFailure({
@@ -285,13 +312,16 @@ export const makeEventBus = Effect.gen(function* () {
         failedAt: now,
       });
       yield* rebuildAlarm();
+
       return { success: false, eventId: input.eventId, error: Option.some(message) };
     }),
     retryPending: Effect.fn("EventBusAdministration.retryPending")(function* (input) {
       const pending = yield* database.findPending(input.eventId);
+
       if (Option.isNone(pending)) {
         return yield* eventBusError("retryPending", "event_not_found", Option.some(input.eventId));
       }
+
       const { now } = yield* nowAndAfter(0);
       yield* database.reschedule({
         eventId: input.eventId,
@@ -308,6 +338,7 @@ export const makeEventBus = Effect.gen(function* () {
           Option.some(input.eventId),
         );
       }
+
       yield* rebuildAlarm();
     }),
     purgeExpiredDeadLetters: Effect.fn("EventBusAdministration.purgeExpiredDeadLetters")(
@@ -315,6 +346,7 @@ export const makeEventBus = Effect.gen(function* () {
         const { now } = yield* nowAndAfter(0);
         const count = yield* database.purgeExpiredDeadLetters(now);
         yield* rebuildAlarm();
+
         return count;
       },
     ),
@@ -324,6 +356,7 @@ export const makeEventBus = Effect.gen(function* () {
     registerSubscription: Effect.fn("EventBusAdministration.registerSubscription")(
       function* (input) {
         const { now } = yield* nowAndAfter(0);
+
         return (yield* database.registerSubscriptions({
           subscriber: input.subscriber,
           eventTypes: input.eventTypes,
@@ -355,6 +388,7 @@ export const makeEventBus = Effect.gen(function* () {
 export const eventBusLayerWithoutDependencies = Layer.effectContext(
   Effect.gen(function* () {
     const services = yield* makeEventBus;
+
     return Context.make(EventPublisher, services.publisher).pipe(
       Context.add(EventBusAdministration, services.administration),
       Context.add(EventBusProcessor, services.processor),

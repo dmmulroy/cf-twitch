@@ -36,7 +36,9 @@ const SubscriptionRow = Schema.Struct({
 });
 
 const CountRow = Schema.Struct({ count: NonNegativeInt });
+
 const TimestampRow = Schema.Struct({ timestamp: Schema.NullOr(IsoTimestamp) });
+
 const LegacyEventBusAgentState = Schema.Struct({
   retrySweepScheduleId: Schema.NullOr(Schema.String),
   retrySweepDueAt: Schema.NullOr(IsoTimestamp),
@@ -46,14 +48,17 @@ const LegacyEventBusAgentState = Schema.Struct({
 
 /** Parsed private pending-delivery persistence row. */
 export type PendingEventRow = typeof PendingEventRow.Type;
+
 type EncodedPendingEventRow = typeof PendingEventRow.Encoded;
 
 /** Parsed private dead-letter persistence row. */
 export type DeadLetterRow = typeof DeadLetterRow.Type;
+
 type EncodedDeadLetterRow = typeof DeadLetterRow.Encoded;
 
 /** Parsed private Event Bus subscription row. */
 export type SubscriptionRow = typeof SubscriptionRow.Type;
+
 type EncodedSubscriptionRow = typeof SubscriptionRow.Encoded;
 
 /** Result of transactionally accepting a producer event identity. */
@@ -188,6 +193,7 @@ const initialMigration = Effect.gen(function* () {
       UNIQUE(subscriber, event_type)
     )
   `;
+
   for (const eventType of [
     "song_request_success",
     "raffle_roll",
@@ -206,9 +212,13 @@ const migrationLoader = SqliteMigrator.fromRecord({
 });
 
 const parsePendingRows = Schema.decodeUnknownEffect(Schema.Array(PendingEventRow));
+
 const parseDeadLetterRows = Schema.decodeUnknownEffect(Schema.Array(DeadLetterRow));
+
 const parseSubscriptionRows = Schema.decodeUnknownEffect(Schema.Array(SubscriptionRow));
+
 const parseCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
+
 const parseTimestampRows = Schema.decodeUnknownEffect(Schema.Array(TimestampRow));
 
 const operationError = (
@@ -243,10 +253,12 @@ export const makeEventBusDatabase: Effect.Effect<
     SELECT COUNT(*) AS count FROM sqlite_master
     WHERE type = 'table' AND name = 'cf_agents_state'
   `.pipe(Effect.flatMap(parseCountRows));
+
   if ((legacyTable[0]?.count ?? 0) > 0) {
     const legacyRows = yield* sql<{ readonly state: string }>`
       SELECT state FROM cf_agents_state WHERE id = 'cf_state_row_id' LIMIT 1
     `;
+
     if (legacyRows[0] !== undefined) {
       yield* Schema.decodeEffect(Schema.fromJsonString(LegacyEventBusAgentState))(
         legacyRows[0].state,
@@ -264,23 +276,30 @@ export const makeEventBusDatabase: Effect.Effect<
           const delivered = yield* parseCountRows(
             yield* sql`SELECT COUNT(*) AS count FROM delivered_events WHERE id = ${input.eventId}`,
           );
+
           if ((delivered[0]?.count ?? 0) > 0) {
             yield* sql`DELETE FROM pending_events WHERE id = ${input.eventId}`;
             yield* sql`DELETE FROM dead_letter_queue WHERE id = ${input.eventId}`;
+
             return "already_delivered" as const;
           }
+
           const pending = yield* parseCountRows(
             yield* sql`SELECT COUNT(*) AS count FROM pending_events WHERE id = ${input.eventId}`,
           );
+
           if ((pending[0]?.count ?? 0) > 0) return "already_pending" as const;
+
           const dead = yield* parseCountRows(
             yield* sql`SELECT COUNT(*) AS count FROM dead_letter_queue WHERE id = ${input.eventId}`,
           );
+
           if ((dead[0]?.count ?? 0) > 0) return "dead_lettered" as const;
           yield* sql`
             INSERT INTO pending_events (id, event, attempts, next_retry_at, created_at)
             VALUES (${input.eventId}, ${input.encodedEvent}, 0, ${input.firstRetryAt}, ${input.now})
           `;
+
           return "accepted" as const;
         }),
       ),
@@ -350,9 +369,11 @@ export const makeEventBusDatabase: Effect.Effect<
           SELECT id, event, attempts, next_retry_at, created_at FROM pending_events
           ORDER BY created_at DESC LIMIT ${input.limit} OFFSET ${input.offset}
         `.pipe(Effect.flatMap(parsePendingRows));
+
         const counts = yield* sql`SELECT COUNT(*) AS count FROM pending_events`.pipe(
           Effect.flatMap(parseCountRows),
         );
+
         return { rows, totalCount: counts[0]?.count ?? 0 };
       }),
     );
@@ -365,9 +386,11 @@ export const makeEventBusDatabase: Effect.Effect<
           SELECT id, event, error, attempts, first_failed_at, last_failed_at, expires_at
           FROM dead_letter_queue ORDER BY last_failed_at DESC LIMIT ${input.limit} OFFSET ${input.offset}
         `.pipe(Effect.flatMap(parseDeadLetterRows));
+
         const counts = yield* sql`SELECT COUNT(*) AS count FROM dead_letter_queue`.pipe(
           Effect.flatMap(parseCountRows),
         );
+
         return { rows, totalCount: counts[0]?.count ?? 0 };
       }),
     );
@@ -403,7 +426,9 @@ export const makeEventBusDatabase: Effect.Effect<
         const before = yield* parseCountRows(
           yield* sql`SELECT COUNT(*) AS count FROM dead_letter_queue WHERE id = ${eventId}`,
         );
+
         yield* sql`DELETE FROM dead_letter_queue WHERE id = ${eventId}`;
+
         return (before[0]?.count ?? 0) > 0;
       }),
     );
@@ -415,7 +440,9 @@ export const makeEventBusDatabase: Effect.Effect<
         const before = yield* parseCountRows(
           yield* sql`SELECT COUNT(*) AS count FROM dead_letter_queue WHERE expires_at <= ${now}`,
         );
+
         yield* sql`DELETE FROM dead_letter_queue WHERE expires_at <= ${now}`;
+
         return before[0]?.count ?? 0;
       }),
     );
@@ -432,6 +459,7 @@ export const makeEventBusDatabase: Effect.Effect<
             Effect.flatMap(parseCountRows),
           ),
         ]);
+
         return {
           pendingCount: pending[0]?.count ?? 0,
           deadLetterCount: dead[0]?.count ?? 0,
@@ -492,6 +520,7 @@ export const makeEventBusDatabase: Effect.Effect<
               VALUES (${`${input.subscriber}:${eventType}`}, ${input.subscriber}, ${eventType}, ${input.createdAt})
             `;
           }
+
           return yield* sql<EncodedSubscriptionRow>`
             SELECT id, subscriber, event_type, created_at FROM event_subscriptions
             WHERE subscriber = ${input.subscriber} ORDER BY event_type
@@ -507,7 +536,9 @@ export const makeEventBusDatabase: Effect.Effect<
         const before = yield* parseCountRows(
           yield* sql`SELECT COUNT(*) AS count FROM event_subscriptions WHERE id = ${id}`,
         );
+
         yield* sql`DELETE FROM event_subscriptions WHERE id = ${id}`;
+
         return (before[0]?.count ?? 0) > 0;
       }),
     );

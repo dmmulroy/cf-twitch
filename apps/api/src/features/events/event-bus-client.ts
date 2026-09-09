@@ -42,6 +42,7 @@ export const makeEventBusClient: Effect.Effect<
   Cloudflare.Worker | EventBusServer
 > = Effect.gen(function* () {
   const namespace = yield* EventBusServer;
+
   const memoizedClient = yield* makeExecutionMemo(
     Effect.suspend(() =>
       HttpApiClient.makeWith(EventBusHttpApi, {
@@ -50,11 +51,13 @@ export const makeEventBusClient: Effect.Effect<
       }),
     ),
   );
+
   const client = memoizedClient;
 
   const publisher: IEventPublisher = {
     publish: Effect.fn("EventBusClient.publish")(function* (event) {
       const http = yield* client;
+
       const request = (() => {
         switch (event.type) {
           case "song_request_success":
@@ -67,6 +70,7 @@ export const makeEventBusClient: Effect.Effect<
             return http.eventBus.publish({ payload: event });
         }
       })();
+
       yield* mapClientErrors("publish", request);
     }),
   };
@@ -137,6 +141,7 @@ export const makeEventBusClient: Effect.Effect<
 const eventBusClientLayerWithoutDependencies = Layer.effectContext(
   Effect.gen(function* () {
     const services = yield* makeEventBusClient;
+
     return Context.make(EventPublisher, EventPublisher.of(services.publisher)).pipe(
       Context.add(EventBusAdministration, EventBusAdministration.of(services.administration)),
     );

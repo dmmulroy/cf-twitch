@@ -37,6 +37,7 @@ export class TwitchAnalyticsRecording extends Context.Service<
 export const recordingTwitchAnalyticsLayer = Layer.effectContext(
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<RecordedTwitchAnalyticsCall>>([]);
+
     const recordCall = (call: RecordedTwitchAnalyticsCall) =>
       Ref.update(calls, (recordedCalls) => [...recordedCalls, call]);
 
@@ -48,6 +49,7 @@ export const recordingTwitchAnalyticsLayer = Layer.effectContext(
       writeSongRequestMetric: (metric) => recordCall({ _tag: "SongRequestMetric", metric }),
       writeRaffleRollMetric: (metric) => recordCall({ _tag: "RaffleRollMetric", metric }),
     });
+
     const recording = TwitchAnalyticsRecording.of({
       clearRecordedTwitchAnalyticsCalls: Effect.fn(
         "TwitchAnalyticsRecording.clearRecordedTwitchAnalyticsCalls",

@@ -61,7 +61,9 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
         catch: alarmError,
       }),
   });
+
   const alarmLayer = Layer.succeed(StreamAlarm, streamAlarm);
+
   const viewerLayer = Layer.succeed(
     StreamViewerProvider,
     StreamViewerProvider.of({
@@ -78,9 +80,11 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
         ),
     }),
   );
+
   const databaseLayer = streamDatabaseLayerWithoutDependencies.pipe(
     Layer.provide(SqliteClient.layer({ storage: state.raw.storage })),
   );
+
   const applicationLayer = streamLifecycleLayerWithoutDependencies.pipe(
     Layer.provide(databaseLayer),
     Layer.provide(alarmLayer),
@@ -88,6 +92,7 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
     Layer.provide(Layer.succeed(ProviderAccessTokens, accessTokens)),
     Layer.provide(Layer.succeed(EventPublisher, eventPublisher)),
   );
+
   const handlersLayer = streamLifecycleHttpHandlersLayer.pipe(Layer.provide(applicationLayer));
 
   return Effect.gen(function* () {
@@ -95,10 +100,12 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
       Layer.provide(handlersLayer),
       Layer.provide(cloudflareHttpServerLayer),
     );
+
     const fetch = yield* HttpRouter.toHttpEffect(apiLayer);
     const processor = yield* StreamProcessor;
     yield* Effect.result(processor.resumeTransitionEffects());
     yield* processor.rebuildAlarm();
+
     return {
       fetch,
       alarm: () => processor.processAlarm().pipe(Effect.orDie),

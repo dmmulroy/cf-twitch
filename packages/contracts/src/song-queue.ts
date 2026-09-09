@@ -12,6 +12,7 @@ import { SpotifyTrack } from "./spotify-track.ts";
 export const SongQueueLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })).pipe(
   Schema.brand("SongQueueLimit"),
 );
+
 /** Song queue page size accepted at HTTP and service boundaries. */
 export type SongQueueLimit = typeof SongQueueLimit.Type;
 
@@ -23,6 +24,7 @@ export const PendingSongRequest = Schema.Struct({
   requesterDisplayName: Schema.NonEmptyString,
   requestedAt: IsoTimestamp,
 });
+
 /** A request persists before the external Spotify queue mutation. */
 export interface PendingSongRequest extends Schema.Schema.Type<typeof PendingSongRequest> {}
 
@@ -38,6 +40,7 @@ export const QueuedTrack = Schema.Union([
     requestedAt: IsoTimestamp,
   }),
 ]);
+
 /** Attribution belongs to a single occurrence even when track IDs repeat. */
 export type QueuedTrack = typeof QueuedTrack.Type;
 
@@ -46,6 +49,7 @@ export const NowPlaying = Schema.Struct({
   track: Schema.OptionFromNullOr(QueuedTrack),
   position: Schema.Literal(0),
 });
+
 /** Current song queue occurrence, or no active playback. */
 export interface NowPlaying extends Schema.Schema.Type<typeof NowPlaying> {}
 
@@ -54,6 +58,7 @@ export const SongQueueResult = Schema.Struct({
   tracks: Schema.Array(QueuedTrack).check(Schema.isMaxLength(100)),
   totalCount: NonNegativeInt,
 });
+
 /** The total count is measured before applying the page limit. */
 export interface SongQueueResult extends Schema.Schema.Type<typeof SongQueueResult> {}
 
@@ -70,6 +75,7 @@ export const RequestHistoryItem = Schema.Struct({
   requestedAt: IsoTimestamp,
   fulfilledAt: IsoTimestamp,
 });
+
 /** Fulfilled timestamp means observed playback departure, never redemption fulfillment. */
 export interface RequestHistoryItem extends Schema.Schema.Type<typeof RequestHistoryItem> {}
 
@@ -90,6 +96,7 @@ export const RequestHistoryQuery = Schema.Struct({
     ),
   )
   .pipe(Schema.brand("RequestHistoryQuery"));
+
 /** History date filtering compares instants, including ISO timestamps with offsets. */
 export type RequestHistoryQuery = typeof RequestHistoryQuery.Type;
 
@@ -98,6 +105,7 @@ export const RequestHistoryResult = Schema.Struct({
   requests: Schema.Array(RequestHistoryItem).check(Schema.isMaxLength(100)),
   totalCount: NonNegativeInt,
 });
+
 /** Total history matches are measured before pagination. */
 export interface RequestHistoryResult extends Schema.Schema.Type<typeof RequestHistoryResult> {}
 
@@ -108,6 +116,7 @@ export const TopRequestedTrack = Schema.Struct({
   artists: SpotifyTrack.fields.artists,
   requestCount: NonNegativeInt,
 });
+
 /** Played request count for one stable track identity. */
 export interface TopRequestedTrack extends Schema.Schema.Type<typeof TopRequestedTrack> {}
 
@@ -117,24 +126,31 @@ export const TopSongRequester = Schema.Struct({
   displayName: Schema.NonEmptyString,
   requestCount: NonNegativeInt,
 });
+
 /** Played request count for one stable viewer identity. */
 export interface TopSongRequester extends Schema.Schema.Type<typeof TopSongRequester> {}
 
 /** Song queue limit options are explicit rather than positional defaults. */
 export const SongQueueLimitInput = Schema.Struct({ limit: SongQueueLimit });
+
 /** Song request compensation uses the same durable redemption identity. */
 export const SongRequestIdentityInput = Schema.Struct({ eventId: RedemptionId });
+
 /** Viewer song statistics use stable IDs, not display names. */
 export const SongQueueViewerInput = Schema.Struct({ userId: ViewerId });
+
 /** Display name lookup preserves the exact public API spelling. */
 export const SongQueueDisplayNameInput = Schema.Struct({ displayName: Schema.NonEmptyString });
+
 /** Viewer top tracks combine identity with bounded pagination. */
 export const SongQueueViewerTracksInput = Schema.Struct({
   userId: ViewerId,
   limit: SongQueueLimit,
 });
+
 /** Session counts include playback departures at the supplied instant. */
 export const SongQueueSessionInput = Schema.Struct({ since: IsoTimestamp });
+
 /** Duplicate song requests inspect pending and played requests inside a minute window. */
 export const SongQueueDuplicateInput = Schema.Struct({
   userId: ViewerId,

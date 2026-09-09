@@ -10,6 +10,7 @@ export const commandsHttpHandlersLayerWithoutDependencies = HttpApiBuilder.group
   (handlers) =>
     Effect.gen(function* () {
       const commands = yield* Commands;
+
       return handlers
         .handle("getAllCommands", () => commands.getAllCommands())
         .handle("getCommand", ({ payload }) => commands.getCommand(payload))

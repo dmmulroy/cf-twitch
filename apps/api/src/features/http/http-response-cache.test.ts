@@ -22,6 +22,7 @@ class RecordingWebCache {
     this.entries.get(this.key(request))?.clone();
   readonly delete = async (request: RequestInfo | URL): Promise<boolean> => {
     this.deleted.push(this.key(request));
+
     return this.entries.delete(this.key(request));
   };
   readonly put = async (request: RequestInfo | URL, response: Response): Promise<void> => {
@@ -29,6 +30,7 @@ class RecordingWebCache {
     this.entries.set(this.key(request), response.clone());
   };
 }
+
 const statsApi = HttpApi.make("TwitchHttpApi").add(TwitchStatsApi);
 
 describe("HTTP statistics edge cache", () => {
@@ -40,6 +42,7 @@ describe("HTTP statistics edge cache", () => {
         const canonicalKey = "https://stats.internal/api/stats/top-requesters?limit=10";
         cache.entries.set(canonicalKey, Response.json({ malformed: true }));
         let loads = 0;
+
         const api = HttpApiBuilder.layer(statsApi).pipe(
           Layer.provide(twitchStatsHandlersLayer),
           Layer.provide([
@@ -50,11 +53,13 @@ describe("HTTP statistics edge cache", () => {
               getTopRequesters: () =>
                 Effect.sync(() => {
                   loads++;
+
                   return [];
                 }),
             }),
           ]),
         );
+
         yield* Effect.acquireUseRelease(
           Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
           ({ handler }) =>
@@ -67,6 +72,7 @@ describe("HTTP statistics edge cache", () => {
                 const response = yield* Effect.promise(() =>
                   handler(new Request(`https://different-origin.test${path}`)),
                 );
+
                 expect(response.status).toBe(200);
                 expect(response.headers.get("cache-control")).toBe("public, max-age=60");
                 expect(yield* Effect.promise(() => response.json())).toEqual([]);
@@ -85,6 +91,7 @@ describe("HTTP statistics edge cache", () => {
     Effect.gen(function* () {
       const cache = new RecordingWebCache();
       let loads = 0;
+
       const api = HttpApiBuilder.layer(statsApi).pipe(
         Layer.provide(twitchStatsHandlersLayer),
         Layer.provide([
@@ -99,6 +106,7 @@ describe("HTTP statistics edge cache", () => {
             getTopRequesters: () =>
               Effect.sync(() => {
                 loads++;
+
                 return [
                   {
                     userId: Schema.decodeSync(ViewerId)("non-numeric"),
@@ -110,6 +118,7 @@ describe("HTTP statistics edge cache", () => {
           }),
         ]),
       );
+
       yield* Effect.acquireUseRelease(
         Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
         ({ handler }) =>
@@ -122,6 +131,7 @@ describe("HTTP statistics edge cache", () => {
               const response = yield* Effect.promise(() =>
                 handler(new Request(`https://worker.test/api/stats/${path}`)),
               );
+
               expect(response.status).toBe(status);
               expect(yield* Effect.promise(() => response.json())).toEqual({ error });
               expect(response.headers.get("cache-control")).toBeNull();

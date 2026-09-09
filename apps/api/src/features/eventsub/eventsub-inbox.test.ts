@@ -50,6 +50,7 @@ const receipt = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
     event: {},
   },
 });
+
 const chatReceipt = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
   ...receipt,
   headers: { ...receipt.headers, "twitch-eventsub-subscription-type": "channel.chat.message" },
@@ -77,10 +78,12 @@ const chatReceipt = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
     },
   },
 });
+
 const sqlite = Layer.merge(
   SqliteClient.layer({ filename: ":memory:" }),
   recordingTwitchAnalyticsLayer,
 );
+
 const recordingInbox = Effect.gen(function* () {
   const analytics = yield* TwitchAnalytics;
   const metrics = yield* TwitchAnalyticsRecording;
@@ -94,6 +97,7 @@ const recordingInbox = Effect.gen(function* () {
   const sendStarted = yield* Deferred.make<void>();
   const releaseSend = yield* Deferred.make<void>();
   const blockSend = yield* Ref.make(false);
+
   const dependencies = Layer.mergeAll(
     Layer.succeed(TwitchAnalytics, analytics),
     Layer.succeed(EventSubDispatch, {
@@ -117,8 +121,10 @@ const recordingInbox = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* Ref.update(sends, (n) => n + 1);
           yield* Deferred.succeed(sendStarted, undefined);
+
           if (yield* Ref.get(blockSend)) yield* Deferred.await(releaseSend);
           const error = yield* Ref.get(sendFailure);
+
           if (Option.isSome(error)) return yield* error.value;
         }),
     }),
@@ -133,10 +139,13 @@ const recordingInbox = Effect.gen(function* () {
         ),
     }),
   );
+
   const layer = eventSubInboxLayerWithoutDependencies.pipe(Layer.provide(dependencies));
+
   const acquire = Effect.gen(function* () {
     return yield* EventSubInbox;
   }).pipe(Effect.provide(layer, { local: true }));
+
   return {
     layer,
     metrics,
@@ -160,14 +169,17 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
     () =>
       Effect.gen(function* () {
         const controls = yield* recordingInbox;
+
         const first = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
           ...receipt,
           receivedAt: "2026-01-01T00:01:00Z",
         });
+
         const redelivered = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
           ...receipt,
           receivedAt: "2026-01-01T00:02:00Z",
         });
+
         const inbox = yield* controls.acquire;
         yield* inbox.accept(first);
         const restarted = yield* controls.acquire;
@@ -178,11 +190,13 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
         });
         expect(yield* Ref.get(controls.dispatches)).toBe(1);
         const sql = yield* SqlClient.SqlClient;
+
         const rows = yield* Schema.decodeUnknownEffect(
           Schema.Array(Schema.Struct({ received_at: Schema.String })),
         )(
           yield* sql`SELECT json_extract(receipt_json,'$.receipt.receivedAt') AS received_at FROM eventsub_receipts`,
         );
+
         expect(rows).toEqual([{ received_at: "2026-01-01T00:01:00Z" }]);
       }).pipe(Effect.provide(sqlite)),
   );
@@ -193,16 +207,19 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
       Effect.gen(function* () {
         const controls = yield* recordingInbox;
         const inbox = yield* controls.acquire;
+
         const httpLayer = HttpApiBuilder.layer(EventSubHttpApi).pipe(
           Layer.provide(
             eventSubHttpHandlersLayer.pipe(Layer.provide(Layer.succeed(EventSubInbox, inbox))),
           ),
           Layer.provide(cloudflareHttpServerLayer),
         );
+
         const app = yield* Effect.acquireRelease(
           Effect.sync(() => HttpRouter.toWebHandler(httpLayer, { disableLogger: true })),
           (app) => Effect.promise(() => app.dispose()),
         );
+
         const fetchLayer = FetchHttpClient.layer.pipe(
           Layer.provide(
             Layer.succeed(FetchHttpClient.Fetch, (input, init) =>
@@ -210,17 +227,21 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
             ),
           ),
         );
+
         yield* Effect.gen(function* () {
           const httpClient = yield* HttpClient.HttpClient;
+
           const client = yield* HttpApiClient.makeWith(EventSubHttpApi, {
             baseUrl: "http://eventsub.test",
             httpClient,
           });
+
           expect(yield* client.receipts.getReceiptStatus()).toEqual(Option.none());
           yield* client.receipts.accept({ payload: receipt });
           yield* client.receipts.accept({ payload: receipt });
           const dueAt = yield* Ref.get(controls.dueAt);
           expect(Option.isSome(dueAt)).toBe(true);
+
           if (Option.isSome(dueAt)) yield* TestClock.setTime(dueAt.value);
           yield* inbox.recover();
           expect(yield* inbox.getReceiptStatus()).toMatchObject({
@@ -271,11 +292,13 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
       Effect.gen(function* () {
         const controls = yield* recordingInbox;
         const inbox = yield* controls.acquire;
+
         const retried: AcceptedEventSubReceipt = {
           ...receipt,
           correlation: { traceId: "another-trace", requestId: "another-request" },
           headers: { ...receipt.headers, "twitch-eventsub-message-retry": "8" },
         };
+
         yield* Effect.all([inbox.accept(receipt), inbox.accept(retried)], {
           concurrency: "unbounded",
         });
@@ -339,11 +362,13 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
       });
       yield* inbox.accept(receipt);
       expect(yield* Ref.get(controls.dispatches)).toBe(1);
+
       for (let i = 1; i < 20; i++) {
         yield* TestClock.adjust("1 hour");
         inbox = yield* controls.acquire;
         yield* inbox.recover();
       }
+
       expect(yield* inbox.getReceiptStatus()).toMatchObject({
         value: { status: "dead_letter", attempts: 20 },
       });
@@ -445,9 +470,11 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
         );
         yield* Ref.set(controls.blockSend, true);
         const inbox = yield* controls.acquire;
+
         const acknowledgment = yield* inbox
           .accept(chatReceipt)
           .pipe(Effect.timeout("1 second"), Effect.forkChild);
+
         yield* Effect.yieldNow;
         yield* TestClock.adjust("1 second");
         expect(yield* Fiber.join(acknowledgment).pipe(Effect.result)).toMatchObject({

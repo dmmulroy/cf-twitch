@@ -16,6 +16,7 @@ export const SpotifyTrack = Schema.Struct({
   album: Schema.NonEmptyString,
   albumCoverUrl: Schema.OptionFromNullOr(spotifyArtworkUrl),
 });
+
 /** Parsed Spotify track metadata shared by provider and song queue capabilities. */
 export type SpotifyTrack = typeof SpotifyTrack.Type;
 
@@ -26,6 +27,7 @@ export const SpotifyPlayback = Schema.Struct({
   isPlaying: Schema.Boolean,
   progressMs: NonNegativeInt,
 });
+
 /** Parsed playback evidence from Spotify, including paused playback. */
 export type SpotifyPlayback = typeof SpotifyPlayback.Type;
 
@@ -48,12 +50,14 @@ const spotifyTrackIdFromUri = (input: string): string | undefined =>
 const spotifyTrackIdFromUrl = (input: string): string | undefined => {
   if (!URL.canParse(input)) return undefined;
   const url = new URL(input);
+
   if (
     (url.protocol !== "http:" && url.protocol !== "https:") ||
     url.hostname !== "open.spotify.com"
   ) {
     return undefined;
   }
+
   return url.pathname.match(/^\/(?:intl-[a-z]{2}\/)?track\/([a-zA-Z0-9]+)\/?$/)?.[1];
 };
 
@@ -62,7 +66,9 @@ export const parseSpotifyTrackInput = Effect.fn("SpotifyTrack.parseSpotifyTrackI
   function* (input: string) {
     const trimmed = input.trim();
     const trackId = spotifyTrackIdFromUri(trimmed) ?? spotifyTrackIdFromUrl(trimmed);
+
     if (trackId === undefined) return yield* new InvalidSpotifyTrackInput();
+
     return yield* parseSpotifyTrackIdentity(trackId);
   },
   Effect.catchTag("SchemaError", () => Effect.fail(new InvalidSpotifyTrackInput())),

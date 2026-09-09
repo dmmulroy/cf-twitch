@@ -17,9 +17,13 @@ import { twitchAdminHandlersLayer } from "./twitch-admin-handlers.ts";
 import { httpTestConfiguration } from "./http-test-fixtures.ts";
 
 const deliveredEventId = "00000000-0000-4000-8000-000000000001";
+
 const retainedEventId = "00000000-0000-4000-8000-000000000002";
+
 const missingEventId = "00000000-0000-4000-8000-000000000003";
+
 const adminApi = HttpApi.make("TwitchHttpApi").add(TwitchAdminApi);
+
 const withAdmin = <A, E, R>(
   test: (fetch: (request: Request) => Promise<Response>) => Effect.Effect<A, E, R>,
 ) => {
@@ -94,23 +98,28 @@ const withAdmin = <A, E, R>(
     Layer.mock(SongQueue, { getUserRequestCountByDisplayName: () => Effect.succeed(0) }),
     Layer.mock(Raffle, { getUserStatsByDisplayName: () => Effect.succeed(Option.none()) }),
   );
+
   const api = HttpApiBuilder.layer(adminApi).pipe(
     Layer.provide(twitchAdminHandlersLayer),
     Layer.provide(layers),
     Layer.provide(cloudflareHttpServerLayer),
   );
+
   return Effect.acquireUseRelease(
     Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
     ({ handler }) => test(handler),
     ({ dispose }) => Effect.promise(dispose),
   );
 };
+
 const adminRequest = (path: string, method = "GET", body?: Schema.Json) => {
   const init: RequestInit = {
     method,
     headers: { authorization: "Bearer admin-secret", "content-type": "application/json" },
   };
+
   if (body !== undefined) init.body = JSON.stringify(body);
+
   return new Request(`https://worker.test/api/admin${path}`, init);
 };
 
@@ -132,6 +141,7 @@ describe("administrator HTTP with real SQLite command registry", () => {
               }),
             ),
           );
+
           expect(create.status).toBe(201);
           expect(yield* Effect.promise(() => create.json())).toMatchObject({
             name: "integration",
@@ -139,14 +149,18 @@ describe("administrator HTTP with real SQLite command registry", () => {
             counterSourceName: null,
             writePermission: null,
           });
+
           const patch = yield* Effect.promise(() =>
             fetch(adminRequest("/commands/integration", "PATCH", { enabled: false })),
           );
+
           expect(patch.status).toBe(200);
           expect(yield* Effect.promise(() => patch.json())).toMatchObject({ enabled: false });
+
           const snapshot = yield* Effect.promise(() =>
             fetch(adminRequest("/commands/debug/snapshot")),
           );
+
           expect(snapshot.status).toBe(200);
           expect(yield* Effect.promise(() => snapshot.json())).toMatchObject({
             commands: expect.arrayContaining([
@@ -157,17 +171,21 @@ describe("administrator HTTP with real SQLite command registry", () => {
               }),
             ]),
           });
+
           const deletion = yield* Effect.promise(() =>
             fetch(adminRequest("/commands/integration", "DELETE")),
           );
+
           expect(deletion.status).toBe(200);
           expect(yield* Effect.promise(() => deletion.json())).toEqual({
             message: "Command deleted",
             command: "integration",
           });
+
           const missing = yield* Effect.promise(() =>
             fetch(adminRequest("/commands/integration", "DELETE")),
           );
+
           expect(missing.status).toBe(404);
           expect(yield* Effect.promise(() => missing.json())).toMatchObject({
             code: "CommandNotFoundError",
@@ -192,14 +210,17 @@ describe("administrator HTTP with real SQLite command registry", () => {
               }),
             ),
           );
+
           expect(duplicate.status).toBe(409);
           expect(yield* Effect.promise(() => duplicate.json())).toMatchObject({
             code: "CommandAlreadyExistsError",
           });
+
           for (const patch of [{ enable: false }, {}, { responseType: "computed" }]) {
             const response = yield* Effect.promise(() =>
               fetch(adminRequest("/commands/keyboard", "PATCH", patch)),
             );
+
             expect(response.status).toBe(400);
           }
         }),
@@ -212,46 +233,56 @@ describe("administrator HTTP with real SQLite command registry", () => {
         const pending = yield* Effect.promise(() =>
           fetch(adminRequest("/event-bus/pending?limit=4&offset=2")),
         );
+
         expect(yield* Effect.promise(() => pending.json())).toEqual({
           items: [],
           totalCount: 0,
           limit: 4,
           offset: 2,
         });
+
         const delivered = yield* Effect.promise(() =>
           fetch(adminRequest(`/dlq/${deliveredEventId}/replay`, "POST")),
         );
+
         expect(yield* Effect.promise(() => delivered.json())).toEqual({
           message: "Event replayed successfully",
           eventId: deliveredEventId,
         });
+
         const retained = yield* Effect.promise(() =>
           fetch(adminRequest(`/dlq/${retainedEventId}/replay`, "POST")),
         );
+
         expect(retained.status).toBe(200);
         expect(yield* Effect.promise(() => retained.json())).toEqual({
           message: "Replay failed - event remains in DLQ",
           eventId: retainedEventId,
           error: "Consumer unavailable",
         });
+
         for (const [path, method] of [
           [`/dlq/${missingEventId}/replay`, "POST"],
           [`/dlq/${missingEventId}`, "DELETE"],
         ] as const) {
           expect((yield* Effect.promise(() => fetch(adminRequest(path, method)))).status).toBe(404);
         }
+
         const reset = yield* Effect.promise(() =>
           fetch(adminRequest("/achievements/reset-one-time", "POST")),
         );
+
         expect(yield* Effect.promise(() => reset.json())).toEqual({
           message: "One-time achievements reset",
           deleted: 2,
           achievementIds: ["close_call"],
           user: "all",
         });
+
         const absent = yield* Effect.promise(() =>
           fetch(adminRequest("/achievements/reset-one-time?user=Missing", "POST")),
         );
+
         expect(absent.status).toBe(404);
       }),
     ),
@@ -263,10 +294,13 @@ describe("administrator HTTP with real SQLite command registry", () => {
         const counts = yield* Effect.promise(() =>
           fetch(adminRequest("/achievements/debug/counts")),
         );
+
         expect(yield* Effect.promise(() => counts.json())).toMatchObject({ definitions: 13 });
+
         const snapshot = yield* Effect.promise(() =>
           fetch(adminRequest("/achievements/debug/user/Viewer")),
         );
+
         expect(yield* Effect.promise(() => snapshot.json())).toMatchObject({
           requestedUser: "Viewer",
           normalizedUser: "viewer",

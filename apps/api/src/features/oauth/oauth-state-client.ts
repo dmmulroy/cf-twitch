@@ -19,13 +19,16 @@ export interface IOAuthStateClient {
     input: ConsumeAuthorizationState,
   ) => Effect.Effect<OAuthStateOutcome, OAuthError>;
 }
+
 /** OAuth state client exposes no native Durable Object handles to HTTP routes. */
 export class OAuthStateClient extends Context.Service<OAuthStateClient, IOAuthStateClient>()(
   "@cf-twitch/OAuthStateClient",
 ) {}
+
 /** Construct bounded invocation-local OAuth clients without retaining stubs across invocations. */
 export const makeOAuthStateClient = Effect.gen(function* () {
   const namespace = yield* OAuthStateServer;
+
   const clients = yield* makeExecutionMemo(
     Cache.make({
       capacity: 128,
@@ -38,8 +41,10 @@ export const makeOAuthStateClient = Effect.gen(function* () {
         ),
     }),
   );
+
   const clientFor = (state: Redacted.Redacted<string>) =>
     clients.pipe(Effect.flatMap((cache) => Cache.get(cache, Redacted.value(state))));
+
   const boundaryError =
     (operation: string) =>
     <A, R>(
@@ -56,6 +61,7 @@ export const makeOAuthStateClient = Effect.gen(function* () {
           SchemaError: () => Effect.fail(new OAuthError({ operation, reason: "invalid_response" })),
         }),
       );
+
   return OAuthStateClient.of({
     createAttempt: Effect.fn("OAuthStateClient.createAttempt")((input) =>
       clientFor(input.state).pipe(
@@ -71,11 +77,13 @@ export const makeOAuthStateClient = Effect.gen(function* () {
     ),
   });
 });
+
 /** OAuth state clients preserve namespace and Worker execution requirements. */
 export const oauthStateClientLayerWithoutDependencies = Layer.effect(
   OAuthStateClient,
   makeOAuthStateClient,
 );
+
 /** OAuth state client selects the native-storage HTTP Durable Object server. */
 export const oauthStateClientLayer = oauthStateClientLayerWithoutDependencies.pipe(
   Layer.provide(oauthStateServerLayer),

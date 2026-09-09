@@ -29,6 +29,7 @@ const translateAchievementsClientErrors =
 /** Creates a singleton HTTP client per execution, never retaining invocation-scoped stubs globally. */
 export const makeAchievementsClient = Effect.gen(function* () {
   const namespace = yield* AchievementsServer;
+
   const client = yield* makeExecutionMemo(
     Effect.suspend(() =>
       HttpApiClient.makeWith(AchievementsHttpApi, {
@@ -37,27 +38,32 @@ export const makeAchievementsClient = Effect.gen(function* () {
       }),
     ),
   );
+
   return Achievements.of({
     handleEvent: Effect.fn("AchievementsClient.handleEvent")(function* (input) {
       const http = yield* client;
+
       return yield* http.achievements
         .handleEvent({ payload: { event: input } })
         .pipe(translateAchievementsClientErrors("handleEvent"));
     }),
     recordEvent: Effect.fn("AchievementsClient.recordEvent")(function* (input) {
       const http = yield* client;
+
       return yield* http.achievements
         .recordEvent({ payload: input })
         .pipe(translateAchievementsClientErrors("recordEvent"));
     }),
     getDefinitions: Effect.fn("AchievementsClient.getDefinitions")(function* () {
       const http = yield* client;
+
       return yield* http.achievements
         .getDefinitions()
         .pipe(translateAchievementsClientErrors("getDefinitions"));
     }),
     getUserAchievements: Effect.fn("AchievementsClient.getUserAchievements")(function* (input) {
       const http = yield* client;
+
       return yield* http.achievements
         .getUserAchievements({ payload: input })
         .pipe(translateAchievementsClientErrors("getUserAchievements"));
@@ -65,6 +71,7 @@ export const makeAchievementsClient = Effect.gen(function* () {
     getUnlockedAchievements: Effect.fn("AchievementsClient.getUnlockedAchievements")(
       function* (input) {
         const http = yield* client;
+
         return yield* http.achievements
           .getUnlockedAchievements({ payload: input })
           .pipe(translateAchievementsClientErrors("getUnlockedAchievements"));
@@ -72,24 +79,28 @@ export const makeAchievementsClient = Effect.gen(function* () {
     ),
     getLeaderboard: Effect.fn("AchievementsClient.getLeaderboard")(function* (input) {
       const http = yield* client;
+
       return yield* http.achievements
         .getLeaderboard({ payload: input })
         .pipe(translateAchievementsClientErrors("getLeaderboard"));
     }),
     getUnannounced: Effect.fn("AchievementsClient.getUnannounced")(function* () {
       const http = yield* client;
+
       return yield* http.achievements
         .getUnannounced()
         .pipe(translateAchievementsClientErrors("getUnannounced"));
     }),
     getDebugTableCounts: Effect.fn("AchievementsClient.getDebugTableCounts")(function* () {
       const http = yield* client;
+
       return yield* http.achievements
         .getDebugTableCounts()
         .pipe(translateAchievementsClientErrors("getDebugTableCounts"));
     }),
     getDebugUserSnapshot: Effect.fn("AchievementsClient.getDebugUserSnapshot")(function* (input) {
       const http = yield* client;
+
       return yield* http.achievements
         .getDebugUserSnapshot({ payload: input })
         .pipe(translateAchievementsClientErrors("getDebugUserSnapshot"));
@@ -97,6 +108,7 @@ export const makeAchievementsClient = Effect.gen(function* () {
     resetOneTimeAchievements: Effect.fn("AchievementsClient.resetOneTimeAchievements")(
       function* (input) {
         const http = yield* client;
+
         return yield* http.achievements
           .resetOneTimeAchievements({ payload: input })
           .pipe(translateAchievementsClientErrors("resetOneTimeAchievements"));
@@ -104,11 +116,13 @@ export const makeAchievementsClient = Effect.gen(function* () {
     ),
   });
 });
+
 /** Provides the achievements client while leaving namespace binding selection explicit. */
 export const achievementsClientLayerWithoutDependencies = Layer.effect(
   Achievements,
   makeAchievementsClient,
 );
+
 /** Provides the achievements client and its physical Durable Object server. */
 export const achievementsClientLayer = achievementsClientLayerWithoutDependencies.pipe(
   Layer.provide(achievementsServerLayer),

@@ -42,7 +42,9 @@ export const PersistedStreamState = Schema.Union([OfflineStreamState, LiveStream
   Schema.makeFilter(
     (state) => {
       const checkpoint = state.transitionCheckpoint;
+
       if (checkpoint === null) return true;
+
       return state._tag === "LiveStream"
         ? checkpoint.transition === "online" &&
             checkpoint.streamId === state.streamId &&
@@ -98,13 +100,19 @@ const LegacyBooleanStreamState = Schema.Struct({
 });
 
 const CurrentStreamStateEvidence = Schema.Struct({ transitionCheckpoint: Schema.Unknown });
+
 const TaggedStreamStateEvidence = Schema.Struct({ _tag: Schema.Unknown });
+
 const hasCurrentStreamStateEvidence = Schema.is(CurrentStreamStateEvidence);
+
 const hasTaggedStreamStateEvidence = Schema.is(TaggedStreamStateEvidence);
+
 const decodeCurrentStreamStateJson = Schema.decodeEffect(Schema.toCodecJson(PersistedStreamState));
+
 const decodeLegacyTaggedStreamStateJson = Schema.decodeEffect(
   Schema.toCodecJson(LegacyTaggedStreamState),
 );
+
 const decodeLegacyBooleanStreamStateJson = Schema.decodeEffect(
   Schema.toCodecJson(LegacyBooleanStreamState),
 );
@@ -145,6 +153,7 @@ const stateFromLegacyTagged = (
   legacy: typeof LegacyTaggedStreamState.Type,
 ): Effect.Effect<PersistedStreamState, StreamLifecycleError> => {
   const checkpoint = checkpointFromLegacy(legacy.transitionIntent);
+
   if (legacy._tag === "LiveStream") {
     if (
       checkpoint !== null &&
@@ -154,6 +163,7 @@ const stateFromLegacyTagged = (
     ) {
       return Effect.fail(persistenceError());
     }
+
     return Effect.succeed({
       _tag: "LiveStream",
       streamId: legacy.streamSessionId,
@@ -163,6 +173,7 @@ const stateFromLegacyTagged = (
       transitionCheckpoint: checkpoint,
     });
   }
+
   if (
     checkpoint !== null &&
     (checkpoint.transition !== "offline" ||
@@ -171,6 +182,7 @@ const stateFromLegacyTagged = (
   ) {
     return Effect.fail(persistenceError());
   }
+
   return Effect.succeed({
     _tag: "OfflineStream",
     lastStartedAt: legacy.lastStartedAt,
@@ -187,6 +199,7 @@ const stateFromLegacyBoolean = (
     if (legacy.startedAt === null || legacy.streamSessionId === null) {
       return Effect.fail(persistenceError());
     }
+
     return Effect.succeed({
       _tag: "LiveStream",
       streamId: legacy.streamSessionId,
@@ -196,6 +209,7 @@ const stateFromLegacyBoolean = (
       transitionCheckpoint: null,
     });
   }
+
   return Effect.succeed({
     _tag: "OfflineStream",
     lastStartedAt: legacy.startedAt,
@@ -212,12 +226,14 @@ export const decodePersistedStreamState = (
   if (hasCurrentStreamStateEvidence(input)) {
     return decodeCurrentStreamStateJson(input).pipe(Effect.mapError(persistenceError));
   }
+
   if (hasTaggedStreamStateEvidence(input)) {
     return decodeLegacyTaggedStreamStateJson(input).pipe(
       Effect.flatMap(stateFromLegacyTagged),
       Effect.mapError(persistenceError),
     );
   }
+
   return decodeLegacyBooleanStreamStateJson(input).pipe(
     Effect.flatMap(stateFromLegacyBoolean),
     Effect.mapError(persistenceError),
@@ -243,8 +259,11 @@ export const toStreamLifecycleState = (state: PersistedStreamState): StreamLifec
 /** Latest source timestamp used to reject stale lifecycle evidence. */
 const latestTransitionAt = (state: PersistedStreamState): IsoTimestamp | null => {
   if (state._tag === "LiveStream") return state.startedAt;
+
   if (state.lastStartedAt === null) return state.endedAt;
+
   if (state.endedAt === null) return state.lastStartedAt;
+
   return state.lastStartedAt < state.endedAt ? state.endedAt : state.lastStartedAt;
 };
 
@@ -258,8 +277,11 @@ export const acceptOnlineTransition = (
   },
 ): PersistedStreamState => {
   const latest = latestTransitionAt(state);
+
   if (latest !== null && input.startedAt <= latest) return state;
+
   if (state._tag === "LiveStream") return state;
+
   return {
     _tag: "LiveStream",
     streamId: input.streamId,
@@ -286,8 +308,11 @@ export const acceptOfflineTransition = (
   input: { readonly eventId: EventId; readonly endedAt: IsoTimestamp },
 ): PersistedStreamState => {
   const latest = latestTransitionAt(state);
+
   if (latest !== null && input.endedAt < latest) return state;
+
   if (state._tag === "OfflineStream") return state;
+
   return {
     _tag: "OfflineStream",
     lastStartedAt: state.startedAt,
@@ -320,7 +345,9 @@ export const completeTransitionEffect = (
   >,
 ): PersistedStreamState => {
   const checkpoint = state.transitionCheckpoint;
+
   if (checkpoint === null || checkpoint.eventId !== eventId) return state;
+
   return {
     ...state,
     transitionCheckpoint: { ...checkpoint, [effect]: true },
@@ -330,6 +357,7 @@ export const completeTransitionEffect = (
 /** Clear checkpoint evidence only after all four durable effects completed. */
 export const clearCompletedTransition = (state: PersistedStreamState): PersistedStreamState => {
   const checkpoint = state.transitionCheckpoint;
+
   if (
     checkpoint === null ||
     !checkpoint.spotifyTokenNotified ||
@@ -339,5 +367,6 @@ export const clearCompletedTransition = (state: PersistedStreamState): Persisted
   ) {
     return state;
   }
+
   return { ...state, transitionCheckpoint: null };
 };

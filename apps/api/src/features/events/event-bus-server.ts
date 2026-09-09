@@ -37,6 +37,7 @@ const alarmFailure = () =>
 const makeEventBusServer = Effect.gen(function* () {
   const state = yield* Cloudflare.DurableObjectState;
   const eventHandler = yield* EventHandler;
+
   const alarmLayer = Layer.succeed(
     EventBusAlarm,
     EventBusAlarm.of({
@@ -52,14 +53,17 @@ const makeEventBusServer = Effect.gen(function* () {
         }),
     }),
   );
+
   const databaseLayer = eventBusDatabaseLayerWithoutDependencies.pipe(
     Layer.provide(SqliteClient.layer({ storage: state.raw.storage })),
   );
+
   const eventBusLayer = eventBusLayerWithoutDependencies.pipe(
     Layer.provide(databaseLayer),
     Layer.provide(alarmLayer),
     Layer.provide(Layer.succeed(EventHandler, eventHandler)),
   );
+
   const handlersLayer = eventBusHttpHandlersLayer.pipe(Layer.provide(eventBusLayer));
 
   return Effect.gen(function* () {
@@ -67,9 +71,11 @@ const makeEventBusServer = Effect.gen(function* () {
       Layer.provide(handlersLayer),
       Layer.provide(cloudflareHttpServerLayer),
     );
+
     const fetch = yield* HttpRouter.toHttpEffect(apiLayer);
     const processor = yield* EventBusProcessor;
     yield* processor.rebuildAlarm();
+
     return {
       fetch,
       alarm: () => processor.processDue().pipe(Effect.orDie),

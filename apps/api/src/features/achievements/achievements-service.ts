@@ -55,6 +55,7 @@ export interface IAchievements {
     readonly userDisplayName: Option.Option<string>;
   }) => Effect.Effect<AchievementResetResult, AchievementError>;
 }
+
 /** Shared service tag for local SQL authority and namespace HTTP client. */
 export class Achievements extends Context.Service<Achievements, IAchievements>()(
   "@cf-twitch/Achievements",

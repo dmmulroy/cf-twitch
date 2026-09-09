@@ -17,10 +17,13 @@ export function decideAchievementAnnouncement(input: {
   if (input.error.kind === "outcome-unknown")
     return { state: "uncertain", attempts: input.attempts };
   const delay = announcementRetryDelaysMs[input.attempts];
+
   const retryable = ["network", "rate-limited", "offline", "persistence"].includes(
     input.error.kind,
   );
+
   if (!retryable || delay === undefined) return { state: "abandoned", attempts: input.attempts };
+
   return {
     state: "pending",
     attempts: input.attempts + 1,

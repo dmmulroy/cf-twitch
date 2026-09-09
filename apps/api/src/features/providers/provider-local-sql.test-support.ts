@@ -41,6 +41,7 @@ const sqliteAlarmLayer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const provider = yield* TokenProviderIdentity;
+
     const failure = () =>
       new ProviderError({
         provider,
@@ -49,9 +50,11 @@ const sqliteAlarmLayer = Layer.effect(
         status: 0,
         retryAfterMs: Option.none(),
       });
+
     yield* sql`CREATE TABLE IF NOT EXISTS local_token_alarm (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), due_at_ms INTEGER NOT NULL)`.pipe(
       Effect.mapError(failure),
     );
+
     return ProviderTokenAlarm.of({
       setAlarm: Effect.fn("LocalSqliteTokenAlarm.setAlarm")((atMs) =>
         sql`INSERT INTO local_token_alarm VALUES(1, ${atMs}) ON CONFLICT(singleton) DO UPDATE SET due_at_ms = excluded.due_at_ms`.pipe(
@@ -69,10 +72,12 @@ const sqliteAlarmLayer = Layer.effect(
 /** Local token lifecycle uses real SQLite for credentials and alarm intent, with HTTP exchange left injectable. */
 export const providerLocalTokenLayer = (provider: OAuthProvider) => {
   const sqlite = SqliteClient.layer({ filename: ":memory:" });
+
   const resources = Layer.mergeAll(
     providerTokenDatabaseLayerWithoutDependencies,
     sqliteAlarmLayer,
   ).pipe(Layer.provide(Layer.succeed(TokenProviderIdentity, provider)), Layer.provideMerge(sqlite));
+
   return providerTokenLifecycleLayerWithoutDependencies.pipe(
     Layer.provideMerge(resources),
     Layer.provide(Layer.succeed(TokenProviderIdentity, provider)),
@@ -88,11 +93,14 @@ export const providerLocalAccessTokensLayer = Layer.effect(
       yield* Layer.build(providerLocalTokenLayer("spotify")),
       ProviderTokenLifecycle,
     );
+
     const twitch = Context.get(
       yield* Layer.build(providerLocalTokenLayer("twitch")),
       ProviderTokenLifecycle,
     );
+
     const lifecycle = (provider: OAuthProvider) => (provider === "spotify" ? spotify : twitch);
+
     return ProviderAccessTokens.of({
       getValidAccessToken: Effect.fn("LocalProviderAccessTokens.getValidAccessToken")((provider) =>
         lifecycle(provider).getValidToken(),

@@ -20,8 +20,11 @@ import {
 } from "./http-boundary.ts";
 
 const decodeTimestamp = Schema.decodeEffect(IsoTimestamp);
+
 const encodeStreamState = Schema.encodeEffect(StreamLifecycleState);
+
 const failure = (error: string) => () => new HttpBoundaryError({ status: 500, error });
+
 const debugSongQueueLimit = SongQueueLimit.make(5);
 
 /** Debug reconciliation replays same-state effects and preserves Twitch's authoritative start timestamp. */
@@ -32,6 +35,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
     const twitch = yield* TwitchService;
     const queue = yield* SongQueue;
     const raffle = yield* Raffle;
+
     const admin = <R>(
       effect: Effect.Effect<HttpServerResponse.HttpServerResponse, HttpBoundaryError, R>,
     ) =>
@@ -39,6 +43,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
         Effect.andThen(effect),
         handleHttpBoundary,
       );
+
     return handlers
       .handleRaw("streamState", () =>
         admin(
@@ -52,6 +57,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
         admin(
           Effect.gen(function* () {
             const { limit, sortBy } = yield* parseHttpLeaderboardQuery();
+
             const value = yield* raffle
               .getLeaderboard({ limit: Option.some(limit), sortBy })
               .pipe(
@@ -59,6 +65,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                   (error) => new HttpBoundaryError({ status: 500, error: error.message }),
                 ),
               );
+
             return yield* encodeHttpResponse(Schema.Array(RaffleLeaderboardEntry), value);
           }),
         ),
@@ -75,6 +82,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
               ],
               { concurrency: "unbounded" },
             );
+
             if (beforeResult._tag === "Failure")
               return yield* Effect.fail(
                 new HttpBoundaryError({
@@ -82,6 +90,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                   error: "Failed to fetch current stream state",
                 }),
               );
+
             if (providerResult._tag === "Failure")
               return yield* Effect.fail(
                 new HttpBoundaryError({
@@ -92,30 +101,40 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
             const before = beforeResult.success;
             const provider = providerResult.success;
             let action: "noop" | "set_online" | "set_offline" = "noop";
+
             if (Option.isSome(provider)) {
               yield* stream
                 .markOnline({ streamId: provider.value.id, startedAt: provider.value.startedAt })
                 .pipe(Effect.mapError(failure("Failed to reconcile online stream state")));
+
               if (!before.isLive) action = "set_online";
             } else {
               const now = yield* Clock.currentTimeMillis;
+
               const endedAt = yield* decodeTimestamp(new Date(now).toISOString()).pipe(
                 Effect.orDie,
               );
+
               yield* stream
                 .markOffline({ endedAt })
                 .pipe(Effect.mapError(failure("Failed to reconcile offline stream state")));
+
               if (before.isLive) action = "set_offline";
             }
+
             let queueWarmup: "not_needed" | "ok" | "error" = "not_needed";
+
             if (action === "set_online") {
               const warmup = yield* queue.getCurrentlyPlaying().pipe(Effect.result);
               queueWarmup = warmup._tag === "Success" ? "ok" : "error";
             }
+
             const after = yield* stream.getState().pipe(Effect.result);
+
             const encodedBefore = yield* encodeStreamState(before).pipe(
               Effect.mapError(failure("Invalid service response")),
             );
+
             if (after._tag === "Failure")
               return HttpServerResponse.jsonUnsafe(
                 {
@@ -125,9 +144,11 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                 },
                 { status: 500 },
               );
+
             const encodedAfter = yield* encodeStreamState(after.success).pipe(
               Effect.mapError(failure("Invalid service response")),
             );
+
             return HttpServerResponse.jsonUnsafe({
               action,
               queueWarmup,
@@ -166,7 +187,9 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
               ],
               { concurrency: "unbounded" },
             );
+
             const now = yield* Clock.currentTimeMillis;
+
             return HttpServerResponse.jsonUnsafe({
               timestamp: new Date(now).toISOString(),
               stream:

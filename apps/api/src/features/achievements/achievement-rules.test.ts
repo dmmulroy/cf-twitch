@@ -7,6 +7,7 @@ import { StreamOnlineEvent } from "@cf-twitch/contracts/domain-event";
 import { acceptsAchievementTransition, evaluateAchievementProgress } from "./achievement-rules.ts";
 
 const timestamp = IsoTimestamp.make("2026-04-07T14:00:00.000Z");
+
 const definition = (threshold: number) =>
   AchievementDefinition.make({
     id: AchievementId.make("threshold"),
@@ -28,12 +29,14 @@ describe("Achievement rule properties", () => {
         FastCheck.integer({ min: 1, max: 1_000 }),
         (threshold, progress, increment) => {
           const achievement = definition(threshold);
+
           const existing = {
             achievementId: achievement.id,
             progress,
             unlockedAt: Option.none<IsoTimestamp>(),
             eventId: Option.none<string>(),
           };
+
           const input = {
             definitions: [achievement],
             progress: new Map([[achievement.id, existing]]),
@@ -46,6 +49,7 @@ describe("Achievement rule properties", () => {
             now: timestamp,
             direct: false,
           };
+
           const decisions = evaluateAchievementProgress(input);
           expect(decisions[0]?.progress).toBe(progress + increment);
           expect(decisions[0]?.newlyUnlocked).toBe(progress + increment >= threshold);
@@ -69,6 +73,7 @@ describe("Achievement rule properties", () => {
         FastCheck.integer({ min: 1, max: 1_000 }),
         (previous, current) => {
           const achievement = { ...definition(10_000), triggerEvent: "request_streak" as const };
+
           const decisions = evaluateAchievementProgress({
             definitions: [achievement],
             progress: new Map([
@@ -91,6 +96,7 @@ describe("Achievement rule properties", () => {
             now: timestamp,
             direct: false,
           });
+
           expect(decisions[0]?.progress).toBe(current);
         },
       ),
@@ -103,11 +109,14 @@ describe("Achievement rule properties", () => {
         const shifted = new Date(Date.parse(timestamp) + offset * 60_000)
           .toISOString()
           .slice(0, -1);
+
         const sign = offset >= 0 ? "+" : "-";
         const absolute = Math.abs(offset);
+
         const at = IsoTimestamp.make(
           `${shifted}${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`,
         );
+
         const event = StreamOnlineEvent.make({
           id: EventId.make("00000000-0000-4000-8000-000000000001"),
           type: "stream_online",
@@ -118,6 +127,7 @@ describe("Achievement rule properties", () => {
           streamId: StreamId.make("new"),
           correlationId: Option.none(),
         });
+
         expect(
           acceptsAchievementTransition(
             Option.some({

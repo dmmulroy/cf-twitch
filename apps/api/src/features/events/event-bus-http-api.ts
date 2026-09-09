@@ -16,7 +16,9 @@ import { EventId, NonNegativeInt } from "@cf-twitch/contracts/identity";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 const EventIdInput = Schema.Struct({ eventId: EventId });
+
 const SubscriptionIdInput = Schema.Struct({ subscriptionId: EventBusSubscriptionId });
+
 const UnitSuccess = Schema.Struct({ success: Schema.Literal(true) });
 
 /** Versioned Event Bus endpoints shared by the singleton server and invocation-scoped client. */

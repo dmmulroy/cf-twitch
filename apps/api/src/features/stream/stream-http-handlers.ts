@@ -10,6 +10,7 @@ export const streamLifecycleHttpHandlersLayer = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const stream = yield* StreamLifecycleClient;
+
       return handlers
         .handle("getState", () => stream.getState())
         .handle("markOnline", ({ payload }) => stream.markOnline(payload))

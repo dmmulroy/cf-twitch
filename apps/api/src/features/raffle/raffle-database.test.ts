@@ -14,10 +14,13 @@ import { RaffleHttpApi } from "./raffle-http-api.ts";
 import { raffleHttpHandlersLayer } from "./raffle-http-handlers.ts";
 
 const RaffleHttpTestPayload = Schema.Json;
+
 type RaffleHttpTestPayload = typeof RaffleHttpTestPayload.Type;
+
 const parseRaffleHttpTestPayload = Schema.decodeUnknownEffect(RaffleHttpTestPayload);
 
 const database = raffleLayer.pipe(Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })));
+
 const rollInput = (
   id: string,
   roll = 9_950,
@@ -63,6 +66,7 @@ describe("Raffle real SQLite authority", () => {
         const first = yield* raffle.recordRoll(input);
         yield* raffle.recordRoll(rollInput("better", 9_999));
         expect(yield* raffle.recordRoll(input)).toEqual(first);
+
         const conflict = yield* raffle
           .recordRoll({
             id: input.id,
@@ -73,6 +77,7 @@ describe("Raffle real SQLite authority", () => {
             rolledAt: input.rolledAt,
           })
           .pipe(Effect.flip);
+
         expect(conflict.reason).toBe("idempotency_conflict");
         yield* raffle.deleteRollById({ rollId: input.id });
         yield* raffle.deleteRollById({ rollId: input.id });
@@ -88,10 +93,12 @@ describe("Raffle real SQLite authority", () => {
       Effect.gen(function* () {
         const raffle = yield* Raffle;
         const { roll: _roll, winningNumber: _winning, ...input } = rollInput("random");
+
         const results = yield* Effect.all(
           Array.from({ length: 20 }, () => raffle.getOrCreateRoll(input)),
           { concurrency: "unbounded" },
         );
+
         expect(
           results.every((result) => JSON.stringify(result) === JSON.stringify(results[0])),
         ).toBe(true);
@@ -113,10 +120,13 @@ describe("Raffle real SQLite authority", () => {
         const raffle = yield* Raffle;
         const first = yield* raffle.recordRoll(rollInput("first", 9_950, 10_000, "a", "OldName"));
         const tie = yield* raffle.recordRoll(rollInput("tie", 9_950, 10_000, "b", "B"));
+
         const winner = yield* raffle.recordRoll(
           rollInput("win", 10_000, 10_000, "winner", "Winner"),
         );
+
         const betterInput = rollInput("better", 9_998, 10_000, "a", "NewName");
+
         const better = yield* raffle.recordRoll({
           id: betterInput.id,
           userId: betterInput.userId,
@@ -125,6 +135,7 @@ describe("Raffle real SQLite authority", () => {
           winningNumber: betterInput.winningNumber,
           rolledAt: IsoTimestamp.make("2026-04-07T15:00:00.000Z"),
         });
+
         expect([
           first.roll.isNewRecord,
           tie.roll.isNewRecord,
@@ -162,10 +173,12 @@ describe("Raffle real SQLite authority", () => {
   it.effect("SQL rejects contradictory derived evidence independently of TypeScript", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+
       const invalid =
         yield* sql`INSERT INTO rolls(id,user_id,display_name,roll,winning_number,distance,is_winner,is_new_record,rolled_at) VALUES ('bad','v','V',1,1,3,0,1,'2026-04-07T00:00:00Z')`.pipe(
           Effect.flip,
         );
+
       expect(invalid._tag).toBe("SqlError");
     }).pipe(Effect.provide(database)),
   );
@@ -196,6 +209,7 @@ describe("Raffle real SQLite authority", () => {
     () =>
       Effect.gen(function* () {
         const raffle = yield* Raffle;
+
         const pairs = FastCheck.sample(
           FastCheck.tuple(
             FastCheck.integer({ min: 1, max: 10_000 }),
@@ -203,13 +217,16 @@ describe("Raffle real SQLite authority", () => {
           ),
           { seed: 7123, numRuns: 150 },
         );
+
         let best = Infinity;
+
         for (const [index, [roll, winning]] of pairs.entries()) {
           const result = yield* raffle.recordRoll(rollInput(`property-${index}`, roll, winning));
           const distance = Math.abs(roll - winning);
           expect(result.roll.distance).toBe(distance);
           expect(result.roll.isWinner).toBe(distance === 0);
           expect(result.roll.isNewRecord).toBe(distance > 0 && distance < best);
+
           if (distance > 0) best = Math.min(best, distance);
         }
       }).pipe(Effect.provide(database)),
@@ -229,8 +246,10 @@ describe("Raffle real SQLite authority", () => {
         ),
         (web) => Effect.promise(() => web.dispose()),
       );
+
       const request = Effect.fn("RaffleTest.request")(function* (body: RaffleHttpTestPayload) {
         const payload = yield* parseRaffleHttpTestPayload(body);
+
         return yield* Effect.promise(() =>
           web.handler(
             new Request("http://raffle.internal/v1/recordRoll", {
@@ -241,6 +260,7 @@ describe("Raffle real SQLite authority", () => {
           ),
         );
       });
+
       const response = yield* request(yield* parseRaffleHttpTestPayload(rollInput("http")));
       expect(response.status).toBe(200);
       const json = yield* Effect.promise(() => response.json());
@@ -248,6 +268,7 @@ describe("Raffle real SQLite authority", () => {
         roll: { distance: 50, isWinner: false, isNewRecord: true },
       });
       const invalidInput = rollInput("invalid");
+
       const invalid = yield* request({
         id: invalidInput.id,
         userId: invalidInput.userId,
@@ -256,8 +277,10 @@ describe("Raffle real SQLite authority", () => {
         winningNumber: invalidInput.winningNumber,
         rolledAt: invalidInput.rolledAt,
       });
+
       expect(invalid.status).toBeGreaterThanOrEqual(400);
       const contradictoryInput = rollInput("contradictory");
+
       const contradictory = yield* request({
         id: contradictoryInput.id,
         userId: contradictoryInput.userId,
@@ -268,6 +291,7 @@ describe("Raffle real SQLite authority", () => {
         distance: 0,
         isWinner: true,
       });
+
       expect(contradictory.status).toBeGreaterThanOrEqual(400);
     }).pipe(Effect.scoped),
   );

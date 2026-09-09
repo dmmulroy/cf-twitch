@@ -23,25 +23,33 @@ const input = Schema.decodeUnknownSync(WorkflowInput)({
     viewers: 42,
   },
 });
+
 const safe: WorkflowStepPolicy = {
   attempts: 3,
   timeoutMs: 30_000,
   safety: "idempotent",
   rollback: false,
 };
+
 const unsafe: WorkflowStepPolicy = { ...safe, safety: "non-idempotent" };
+
 const rollback: WorkflowStepPolicy = { ...safe, rollback: true };
+
 const retryable = new WorkflowStepFailure({
   kind: "retryable",
   message: "Provider temporarily unavailable",
   retryAfterMs: Option.none(),
 });
+
 const testSql = Layer.merge(
   SqliteClient.layer({ filename: ":memory:" }),
   recordingTwitchAnalyticsLayer,
 );
+
 const alarmLayer = Layer.succeed(WorkflowAlarm, { set: () => Effect.void });
+
 const journalLayer = workflowJournalLayerWithoutDependencies.pipe(Layer.provide(alarmLayer));
+
 const withJournal = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowJournal>) =>
   effect.pipe(Effect.provide(journalLayer, { local: true }));
 
@@ -52,6 +60,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
       Effect.gen(function* () {
         const failing = yield* Ref.make(false);
         const calls = yield* Ref.make(0);
+
         const alarm = Layer.succeed(WorkflowAlarm, {
           set: () =>
             Ref.get(failing).pipe(
@@ -62,12 +71,14 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
               ),
             ),
         });
+
         const use = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowJournal>) =>
           effect.pipe(
             Effect.provide(workflowJournalLayerWithoutDependencies.pipe(Layer.provide(alarm)), {
               local: true,
             }),
           );
+
         yield* use(
           Effect.gen(function* () {
             const journal = yield* WorkflowJournal;
@@ -105,9 +116,11 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
   it.effect("reconstructs a journal and replays successful results without repeating effects", () =>
     Effect.gen(function* () {
       const calls = yield* Ref.make(0);
+
       const execute = Effect.gen(function* () {
         const journal = yield* WorkflowJournal;
         yield* journal.initialize(input);
+
         return yield* journal.checkpoint(
           "lookup",
           Schema.Number,
@@ -115,6 +128,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
           safe,
         );
       });
+
       expect(yield* withJournal(execute)).toBe(42);
       expect(yield* withJournal(execute)).toBe(42);
       expect(yield* Ref.get(calls)).toBe(1);
@@ -127,6 +141,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
       Effect.gen(function* () {
         const journal = yield* WorkflowJournal;
         yield* journal.initialize(input);
+
         if (input._tag !== "RaidShoutout") return;
         expect(
           yield* journal
@@ -154,8 +169,10 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
         }),
       );
       yield* sql`UPDATE saga_steps SET result_json='42' WHERE step_name='reserve'`;
+
       const replay = Effect.gen(function* () {
         const journal = yield* WorkflowJournal;
+
         return yield* journal
           .checkpoint(
             "reserve",
@@ -165,6 +182,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
           )
           .pipe(Effect.result);
       });
+
       expect(yield* withJournal(replay)).toMatchObject({ failure: { reason: "corrupt" } });
       yield* sql`UPDATE saga_steps SET result_json='"reservation"',undo_json='42' WHERE step_name='reserve'`;
       expect(yield* withJournal(replay)).toMatchObject({ failure: { reason: "corrupt" } });
@@ -172,6 +190,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
         yield* withJournal(
           Effect.gen(function* () {
             const journal = yield* WorkflowJournal;
+
             return yield* journal
               .compensate(
                 "reserve",
@@ -192,6 +211,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
     () =>
       Effect.gen(function* () {
         const failAlarm = yield* Ref.make(false);
+
         const alarm = Layer.succeed(WorkflowAlarm, {
           set: () =>
             Ref.get(failAlarm).pipe(
@@ -202,17 +222,20 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
               ),
             ),
         });
+
         const use = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowJournal>) =>
           effect.pipe(
             Effect.provide(workflowJournalLayerWithoutDependencies.pipe(Layer.provide(alarm)), {
               local: true,
             }),
           );
+
         const calls = yield* Ref.make(0);
         yield* use(
           Effect.gen(function* () {
             const journal = yield* WorkflowJournal;
             yield* journal.initialize(input);
+
             const result = yield* journal
               .checkpoint(
                 "lookup",
@@ -232,12 +255,15 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
                 safe,
               )
               .pipe(Effect.result);
+
             expect(result).toMatchObject({ failure: { reason: "schedule" } });
           }),
         );
         yield* Ref.set(failAlarm, false);
+
         const resume = Effect.gen(function* () {
           const journal = yield* WorkflowJournal;
+
           return yield* journal
             .checkpoint(
               "lookup",
@@ -247,6 +273,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
             )
             .pipe(Effect.result);
         });
+
         expect(yield* use(resume)).toMatchObject({ failure: { reason: "retry" } });
         yield* TestClock.adjust("10 seconds");
         expect(yield* use(resume)).toMatchObject({ success: null });
@@ -257,9 +284,11 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
   it.effect("bounds total retries across restarts and never reopens exhausted work", () =>
     Effect.gen(function* () {
       const calls = yield* Ref.make(0);
+
       const attempt = Effect.gen(function* () {
         const journal = yield* WorkflowJournal;
         yield* journal.initialize(input);
+
         return yield* journal
           .checkpoint(
             "lookup",
@@ -269,6 +298,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
           )
           .pipe(Effect.result);
       });
+
       expect(yield* withJournal(attempt)).toMatchObject({ failure: { reason: "retry" } });
       yield* TestClock.adjust("2 seconds");
       expect(yield* withJournal(attempt)).toMatchObject({ failure: { reason: "retry" } });
@@ -306,6 +336,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
         yield* withJournal(
           Effect.gen(function* () {
             const journal = yield* WorkflowJournal;
+
             return yield* journal
               .checkpoint(
                 "spotify-add",
@@ -362,6 +393,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
           }),
         );
         yield* TestClock.adjust("2 seconds");
+
         const compensate = Effect.gen(function* () {
           const journal = yield* WorkflowJournal;
           yield* journal.compensate(
@@ -371,6 +403,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
             "idempotent",
           );
         });
+
         yield* withJournal(compensate);
         yield* withJournal(compensate);
         expect(yield* Ref.get(undone)).toEqual(["reservation"]);
@@ -392,6 +425,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
         yield* withJournal(
           Effect.gen(function* () {
             const journal = yield* WorkflowJournal;
+
             return yield* journal.getInput().pipe(Effect.result);
           }),
         ),

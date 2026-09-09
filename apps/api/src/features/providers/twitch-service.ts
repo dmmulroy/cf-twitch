@@ -40,10 +40,12 @@ export interface ITwitchService {
     subscriptionId: string,
   ) => Effect.Effect<void, ProviderError>;
 }
+
 /** Twitch HTTP provider owns Helix authorization, pagination and delivery evidence. */
 export class TwitchService extends Context.Service<TwitchService, ITwitchService>()(
   "@cf-twitch/TwitchService",
 ) {}
+
 const TwitchStreamResponse = Schema.Struct({
   data: Schema.Array(
     Schema.Struct({
@@ -55,6 +57,7 @@ const TwitchStreamResponse = Schema.Struct({
     }),
   ),
 });
+
 const TwitchSubscription = Schema.Struct({
   id: Schema.NonEmptyString,
   status: Schema.NonEmptyString,
@@ -66,16 +69,19 @@ const TwitchSubscription = Schema.Struct({
     callback: Schema.OptionFromOptionalKey(Schema.String),
   }),
 });
+
 const TwitchSubscriptionResponse = Schema.Struct({
   data: Schema.Array(TwitchSubscription),
   pagination: Schema.optionalKey(
     Schema.Struct({ cursor: Schema.optionalKey(Schema.NonEmptyString) }),
   ),
 });
+
 const TwitchSubscriptionCreateResponse = Schema.Struct({
   ...TwitchSubscriptionResponse.fields,
   data: Schema.NonEmptyArray(TwitchSubscription),
 });
+
 const TwitchChatResponse = Schema.Struct({
   data: Schema.NonEmptyArray(
     Schema.Struct({
@@ -87,40 +93,48 @@ const TwitchChatResponse = Schema.Struct({
     }),
   ),
 });
+
 const TwitchRedemptionResponse = Schema.Struct({
   data: Schema.NonEmptyArray(Schema.Struct({ id: Schema.optionalKey(Schema.String) })),
 });
+
 const streamDecode = decodeProviderResponse(TwitchStreamResponse, {
   provider: "twitch",
   operation: "getStreamInfo",
   mutation: false,
 });
+
 const subscriptionsDecode = decodeProviderResponse(TwitchSubscriptionResponse, {
   provider: "twitch",
   operation: "listEventSubSubscriptions",
   mutation: false,
 });
+
 const subscriptionCreateDecode = decodeProviderResponse(TwitchSubscriptionCreateResponse, {
   provider: "twitch",
   operation: "createEventSubSubscription",
   mutation: true,
 });
+
 const chatDecode = decodeProviderResponse(TwitchChatResponse, {
   provider: "twitch",
   operation: "sendChatMessage",
   mutation: true,
 });
+
 const redemptionDecode = decodeProviderResponse(TwitchRedemptionResponse, {
   provider: "twitch",
   operation: "updateRedemptionStatus",
   mutation: true,
 });
+
 /** Construct Twitch provider with app credentials independent of stream-aware user tokens. */
 export const makeTwitchService = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const configuration = yield* TwitchConfiguration;
   const tokens = yield* ProviderAccessTokens;
   const exchange = yield* ProviderTokenExchange;
+
   const request = Effect.fn("TwitchService.request")(function* (
     operation: string,
     outgoing: HttpClientRequest.HttpClientRequest,
@@ -130,6 +144,7 @@ export const makeTwitchService = Effect.gen(function* () {
     const token = yield* authorization === "app"
       ? exchange.getTwitchAppToken()
       : tokens.getValidAccessToken("twitch");
+
     return yield* executeProviderRequest(client, {
       provider: "twitch",
       operation,
@@ -141,6 +156,7 @@ export const makeTwitchService = Effect.gen(function* () {
       ),
     });
   });
+
   const getStreamInfo = Effect.fn("TwitchService.getStreamInfo")(function* (userLogin: string) {
     const response = yield* request(
       "getStreamInfo",
@@ -150,7 +166,9 @@ export const makeTwitchService = Effect.gen(function* () {
       "app",
       false,
     ).pipe(Effect.flatMap(streamDecode));
+
     const stream = response.data[0];
+
     return stream === undefined
       ? Option.none()
       : Option.some({
@@ -161,6 +179,7 @@ export const makeTwitchService = Effect.gen(function* () {
           title: stream.title,
         });
   });
+
   const sendChatMessage = Effect.fn("TwitchService.sendChatMessage")(function* (
     input: SendChatMessage,
   ) {
@@ -176,7 +195,9 @@ export const makeTwitchService = Effect.gen(function* () {
       "user",
       true,
     ).pipe(Effect.flatMap(chatDecode));
+
     const delivery = response.data[0];
+
     if (!delivery.is_sent)
       return yield* Effect.fail(
         new ProviderError({
@@ -188,6 +209,7 @@ export const makeTwitchService = Effect.gen(function* () {
         }),
       );
   });
+
   const createShoutout = Effect.fn("TwitchService.createShoutout")((input: CreateShoutout) =>
     request(
       "createShoutout",
@@ -210,6 +232,7 @@ export const makeTwitchService = Effect.gen(function* () {
       ),
     ),
   );
+
   const updateRedemptionStatus = Effect.fn("TwitchService.updateRedemptionStatus")(
     (input: UpdateRedemptionStatus) =>
       request(
@@ -228,6 +251,7 @@ export const makeTwitchService = Effect.gen(function* () {
         true,
       ).pipe(Effect.flatMap(redemptionDecode), Effect.asVoid),
   );
+
   const createEventSubSubscription = Effect.fn("TwitchService.createEventSubSubscription")(
     function* (input: CreateEventSubSubscription) {
       const response = yield* request(
@@ -247,14 +271,17 @@ export const makeTwitchService = Effect.gen(function* () {
         "app",
         true,
       ).pipe(Effect.flatMap(subscriptionCreateDecode));
+
       return response.data[0];
     },
   );
+
   const listEventSubSubscriptions = Effect.fn("TwitchService.listEventSubSubscriptions")(
     function* () {
       const token = yield* exchange.getTwitchAppToken();
       const subscriptions: ProviderEventSubSubscription[] = [];
       let cursor: string | undefined;
+
       for (let page = 0; page < 100; page++) {
         const outgoing = HttpClientRequest.get(
           "https://api.twitch.tv/helix/eventsub/subscriptions",
@@ -262,6 +289,7 @@ export const makeTwitchService = Effect.gen(function* () {
           HttpClientRequest.bearerToken(token),
           HttpClientRequest.setHeader("Client-ID", configuration.twitch.clientId),
         );
+
         const response = yield* executeProviderRequest(client, {
           provider: "twitch",
           operation: "listEventSubSubscriptions",
@@ -272,10 +300,13 @@ export const makeTwitchService = Effect.gen(function* () {
               ? outgoing
               : outgoing.pipe(HttpClientRequest.setUrlParam("after", cursor)),
         }).pipe(Effect.flatMap(subscriptionsDecode));
+
         subscriptions.push(...response.data);
         cursor = response.pagination?.cursor;
+
         if (cursor === undefined) return subscriptions;
       }
+
       return yield* Effect.fail(
         new ProviderError({
           provider: "twitch",
@@ -287,6 +318,7 @@ export const makeTwitchService = Effect.gen(function* () {
       );
     },
   );
+
   const deleteEventSubSubscription = Effect.fn("TwitchService.deleteEventSubSubscription")(
     (subscriptionId: string) =>
       request(
@@ -306,6 +338,7 @@ export const makeTwitchService = Effect.gen(function* () {
         ),
       ),
   );
+
   return TwitchService.of({
     getStreamInfo,
     sendChatMessage,
@@ -316,8 +349,10 @@ export const makeTwitchService = Effect.gen(function* () {
     deleteEventSubSubscription,
   });
 });
+
 /** Twitch provider with all dependency requirements available to real-interface tests. */
 export const twitchServiceLayerWithoutDependencies = Layer.effect(TwitchService, makeTwitchService);
+
 /** Twitch provider selects durable user tokens and provider app-token exchange. */
 export const twitchServiceLayer = twitchServiceLayerWithoutDependencies.pipe(
   Layer.provide([providerAccessTokensLayer, providerTokenExchangeLayer]),

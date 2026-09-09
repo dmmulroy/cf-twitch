@@ -7,6 +7,7 @@ import { RaffleHttpApi } from "./raffle-http-api.ts";
 export const raffleHttpHandlersLayer = HttpApiBuilder.group(RaffleHttpApi, "raffle", (handlers) =>
   Effect.gen(function* () {
     const service = yield* Raffle;
+
     return handlers
       .handle("recordRoll", ({ payload }) => service.recordRoll(payload))
       .handle("getOrCreateRoll", ({ payload }) => service.getOrCreateRoll(payload))

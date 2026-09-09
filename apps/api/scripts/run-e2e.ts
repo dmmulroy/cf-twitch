@@ -26,6 +26,7 @@ export const runCfTwitchLocalEndToEndTests = Effect.fn(
 )(function* () {
   const stage = yield* generateIsolatedCfTwitchTestStage();
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
   const command = ChildProcess.make(
     "vp",
     [
@@ -50,6 +51,7 @@ export const runCfTwitchLocalEndToEndTests = Effect.fn(
       },
     },
   );
+
   const exitCode = yield* childProcessSpawner.exitCode(command);
 
   if (exitCode !== ChildProcessSpawner.ExitCode(0)) {

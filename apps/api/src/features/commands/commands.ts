@@ -52,5 +52,6 @@ export interface ICommands {
   ) => Effect.Effect<number, CommandsError>;
   readonly getDebugSnapshot: () => Effect.Effect<ChatCommandDebugSnapshot, CommandsError>;
 }
+
 /** Shared service tag implemented by SQLite in the DO and HTTP in Worker callers. */
 export class Commands extends Context.Service<Commands, ICommands>()("@cf-twitch/Commands") {}

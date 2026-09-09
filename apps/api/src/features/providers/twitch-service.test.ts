@@ -20,6 +20,7 @@ const layer = twitchServiceLayerWithoutDependencies.pipe(
   Layer.provide(providerLocalConfigurationLayer),
   Layer.provideMerge(providerScenarioTransportLayer),
 );
+
 const seed = Effect.fn("TwitchTest.seed")(function* (mode: string) {
   const tokens = yield* ProviderAccessTokens;
   yield* tokens.setTokens({
@@ -46,6 +47,7 @@ it.effect("Twitch stream reconciliation uses app credentials without configured 
     ]);
   }).pipe(Effect.provide(layer)),
 );
+
 it.effect("Twitch confirms chat delivery instead of treating any HTTP200 as sent", () =>
   Effect.gen(function* () {
     yield* seed("normal");
@@ -57,6 +59,7 @@ it.effect("Twitch confirms chat delivery instead of treating any HTTP200 as sent
     ]);
   }).pipe(Effect.provide(layer)),
 );
+
 for (const [mode, kind] of [
   ["dropped-chat", "chat-dropped"],
   ["malformed-chat", "outcome-unknown"],
@@ -68,19 +71,23 @@ for (const [mode, kind] of [
     Effect.gen(function* () {
       yield* seed(mode);
       const twitch = yield* TwitchService;
+
       const result = yield* twitch
         .sendChatMessage({ message: ChatMessageText.make("Private viewer message") })
         .pipe(Effect.result);
+
       expect(result).toMatchObject({ _tag: "Failure", failure: { kind } });
       expect(JSON.stringify(result)).not.toContain("Private viewer message");
       expect(JSON.stringify(result)).not.toContain(`scenario:${mode}`);
       const transcript = yield* ProviderScenarioTranscript;
       expect(yield* transcript.readRequestCount()).toBe(1);
+
       if (result._tag === "Failure" && mode === "rate-limited")
         expect(result.failure.retryAfterMs).toEqual(Option.some(12_000));
     }).pipe(Effect.provide(layer)),
   );
 }
+
 it.effect(
   "Twitch native shoutout and redemption update preserve configured broadcaster authority",
   () =>
@@ -100,11 +107,13 @@ it.effect(
       ]);
     }).pipe(Effect.provide(layer)),
 );
+
 it.effect(
   "Twitch EventSub create/list/delete use app authorization and preserve matching transport evidence",
   () =>
     Effect.gen(function* () {
       const twitch = yield* TwitchService;
+
       const created = yield* twitch.createEventSubSubscription({
         type: "stream.online",
         version: "1",
@@ -112,6 +121,7 @@ it.effect(
         callbackUrl: "https://local.test/webhooks/twitch",
         secret: Redacted.make("private-webhook-secret"),
       });
+
       expect(created.transport.callback).toEqual(Option.some("https://local.test/webhooks/twitch"));
       expect(yield* twitch.listEventSubSubscriptions()).toHaveLength(1);
       yield* twitch.deleteEventSubSubscription(created.id);

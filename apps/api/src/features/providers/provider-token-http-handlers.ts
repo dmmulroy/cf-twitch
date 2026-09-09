@@ -10,6 +10,7 @@ export const providerTokenHttpHandlersLayer = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const lifecycle = yield* ProviderTokenLifecycle;
+
       return handlers
         .handle("getValidToken", () => lifecycle.getValidToken())
         .handle("setTokens", ({ payload }) => lifecycle.setTokens(payload))

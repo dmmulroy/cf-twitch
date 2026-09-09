@@ -31,6 +31,7 @@ export const SongQueueCoordination = Schema.Struct({
   cleanupDueAt: Schema.Number,
   consecutiveSyncFailures: NonNegativeInt,
 });
+
 /** Absolute polling deadlines are milliseconds since the Unix epoch. */
 export interface SongQueueCoordination extends Schema.Schema.Type<typeof SongQueueCoordination> {}
 
@@ -45,6 +46,7 @@ export interface ISongQueueDatabase extends Omit<ISongQueue, "refreshQueue"> {
   readonly getCoordination: () => Effect.Effect<SongQueueCoordination, SongQueueError>;
   readonly setCoordination: (input: SongQueueCoordination) => Effect.Effect<void, SongQueueError>;
 }
+
 /** Parsed song queue persistence keeps historical SQL representations private. */
 export class SongQueueDatabase extends Context.Service<SongQueueDatabase, ISongQueueDatabase>()(
   "@cf-twitch/SongQueueDatabase",
@@ -57,6 +59,7 @@ const storedTrackFields = {
   album: SpotifyTrack.fields.album,
   album_cover_url: SpotifyTrack.fields.albumCoverUrl,
 };
+
 const storedRequestFields = {
   ...storedTrackFields,
   event_id: RedemptionId,
@@ -64,13 +67,17 @@ const storedRequestFields = {
   requester_display_name: Schema.NonEmptyString,
   requested_at: IsoTimestamp,
 };
+
 const StoredPendingRequest = Schema.Struct({
   ...storedRequestFields,
   first_seen_in_spotify_at: Schema.OptionFromNullOr(IsoTimestamp),
   last_seen_in_spotify_at: Schema.OptionFromNullOr(IsoTimestamp),
 });
+
 const StoredHistoryRequest = Schema.Struct({ ...storedRequestFields, fulfilled_at: IsoTimestamp });
+
 const snapshotFields = { ...storedTrackFields, position: NonNegativeInt, synced_at: IsoTimestamp };
+
 const StoredQueueOccurrence = Schema.Union([
   Schema.Struct({
     ...snapshotFields,
@@ -89,14 +96,22 @@ const StoredQueueOccurrence = Schema.Union([
     requested_at: IsoTimestamp,
   }),
 ]);
+
 const parseStoredPending = Schema.decodeUnknownEffect(Schema.Array(StoredPendingRequest));
+
 const parseStoredHistory = Schema.decodeUnknownEffect(Schema.Array(StoredHistoryRequest));
+
 const parseStoredOccurrences = Schema.decodeUnknownEffect(Schema.Array(StoredQueueOccurrence));
+
 const StoredCountRows = Schema.Array(Schema.Struct({ count: NonNegativeInt }));
+
 const parseStoredCount = Schema.decodeUnknownEffect(StoredCountRows);
+
 const storedCount = (rows: typeof StoredCountRows.Type): NonNegativeInt =>
   rows[0]?.count ?? NonNegativeInt.make(0);
+
 const parseStoredCoordination = Schema.decodeUnknownEffect(Schema.Array(SongQueueCoordination));
+
 const parseTrackStats = Schema.decodeUnknownEffect(
   Schema.Array(
     Schema.Struct({
@@ -107,6 +122,7 @@ const parseTrackStats = Schema.decodeUnknownEffect(
     }),
   ),
 );
+
 const parseViewerStats = Schema.decodeUnknownEffect(
   Schema.Array(
     Schema.Struct({
@@ -116,9 +132,11 @@ const parseViewerStats = Schema.decodeUnknownEffect(
     }),
   ),
 );
+
 const parseTableColumns = Schema.decodeUnknownEffect(
   Schema.Array(Schema.Struct({ name: Schema.String })),
 );
+
 const parseLegacyState = Schema.decodeUnknownEffect(
   Schema.Array(
     Schema.Struct({
@@ -140,25 +158,34 @@ const songQueueMigrations = SqliteMigrator.fromRecord({
     yield* sql`CREATE TABLE IF NOT EXISTS pending_requests (event_id TEXT PRIMARY KEY NOT NULL, track_id TEXT NOT NULL, track_name TEXT NOT NULL, artists TEXT NOT NULL, album TEXT NOT NULL, album_cover_url TEXT, requester_user_id TEXT NOT NULL, requester_display_name TEXT NOT NULL, requested_at TEXT NOT NULL, first_seen_in_spotify_at TEXT, last_seen_in_spotify_at TEXT)`;
     yield* sql`CREATE TABLE IF NOT EXISTS request_history (event_id TEXT PRIMARY KEY NOT NULL, track_id TEXT NOT NULL, track_name TEXT NOT NULL, artists TEXT NOT NULL, album TEXT NOT NULL, album_cover_url TEXT, requester_user_id TEXT NOT NULL, requester_display_name TEXT NOT NULL, requested_at TEXT NOT NULL, fulfilled_at TEXT NOT NULL)`;
     yield* sql`CREATE TABLE IF NOT EXISTS spotify_queue_snapshot (position INTEGER PRIMARY KEY NOT NULL, track_id TEXT NOT NULL, track_name TEXT NOT NULL, artists TEXT NOT NULL, album TEXT NOT NULL, album_cover_url TEXT, synced_at TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'autoplay', event_id TEXT, requester_user_id TEXT, requester_display_name TEXT, requested_at TEXT)`;
+
     // Adopt both baseline Drizzle revisions without replacing any historical row.
     const pendingColumns = yield* parseTableColumns(
       yield* sql`PRAGMA table_info(pending_requests)`,
     );
+
     if (!pendingColumns.some((column) => column.name === "first_seen_in_spotify_at"))
       yield* sql`ALTER TABLE pending_requests ADD COLUMN first_seen_in_spotify_at TEXT`;
+
     if (!pendingColumns.some((column) => column.name === "last_seen_in_spotify_at"))
       yield* sql`ALTER TABLE pending_requests ADD COLUMN last_seen_in_spotify_at TEXT`;
+
     const snapshotColumns = yield* parseTableColumns(
       yield* sql`PRAGMA table_info(spotify_queue_snapshot)`,
     );
+
     if (!snapshotColumns.some((column) => column.name === "source"))
       yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN source TEXT NOT NULL DEFAULT 'autoplay'`;
+
     if (!snapshotColumns.some((column) => column.name === "event_id"))
       yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN event_id TEXT`;
+
     if (!snapshotColumns.some((column) => column.name === "requester_user_id"))
       yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requester_user_id TEXT`;
+
     if (!snapshotColumns.some((column) => column.name === "requester_display_name"))
       yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requester_display_name TEXT`;
+
     if (!snapshotColumns.some((column) => column.name === "requested_at"))
       yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requested_at TEXT`;
     yield* sql`CREATE INDEX IF NOT EXISTS idx_request_history_fulfilled_at ON request_history(fulfilled_at)`;
@@ -168,13 +195,16 @@ const songQueueMigrations = SqliteMigrator.fromRecord({
     yield* sql`INSERT OR IGNORE INTO song_queue_receipts SELECT event_id FROM pending_requests UNION SELECT event_id FROM request_history`;
     yield* sql`CREATE TABLE song_queue_coordination (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), last_sync_at REAL, refresh_due_at REAL NOT NULL, cleanup_due_at REAL NOT NULL, consecutive_sync_failures INTEGER NOT NULL)`;
     yield* sql`INSERT INTO song_queue_coordination VALUES (1, (SELECT (julianday(MAX(synced_at))-2440587.5)*86400000 FROM spotify_queue_snapshot), 0, 0, 0)`;
+
     const legacyTables = yield* parseStoredCount(
       yield* sql`SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_state'`,
     );
+
     if ((legacyTables[0]?.count ?? 0) > 0) {
       const legacy = (yield* parseLegacyState(
         yield* sql`SELECT state FROM cf_agents_state WHERE id = 'cf_state_row_id'`,
       ))[0]?.state;
+
       if (legacy !== undefined) {
         yield* sql`UPDATE song_queue_coordination SET last_sync_at = ${legacy.lastSyncAt === null ? null : Date.parse(legacy.lastSyncAt)}, refresh_due_at = ${legacy.refreshDueAt === null ? 0 : Date.parse(legacy.refreshDueAt)}, cleanup_due_at = ${legacy.cleanupDueAt === null ? 0 : Date.parse(legacy.cleanupDueAt)}, consecutive_sync_failures = ${legacy.consecutiveSyncFailures} WHERE singleton = 1`;
       }
@@ -193,6 +223,7 @@ const storedTrack = (
   album: row.album,
   albumCoverUrl: row.album_cover_url,
 });
+
 const storedRequest = (
   row: Schema.Schema.Type<typeof StoredPendingRequest>,
 ): PendingSongRequest => ({
@@ -202,6 +233,7 @@ const storedRequest = (
   requesterDisplayName: row.requester_display_name,
   requestedAt: row.requested_at,
 });
+
 const storedOccurrence = (
   row: Schema.Schema.Type<typeof StoredQueueOccurrence>,
 ): SongQueueOccurrence => ({
@@ -218,6 +250,7 @@ const storedOccurrence = (
           requestedAt: row.requested_at,
         },
 });
+
 const storedHistory = (
   row: Schema.Schema.Type<typeof StoredHistoryRequest>,
 ): RequestHistoryItem => ({
@@ -232,6 +265,7 @@ const storedHistory = (
   requestedAt: row.requested_at,
   fulfilledAt: row.fulfilled_at,
 });
+
 const databaseFailure =
   (operation: string) =>
   <A, R>(
@@ -251,16 +285,19 @@ const databaseFailure =
 export const makeSongQueueDatabase = Effect.gen(function* () {
   yield* SqliteMigrator.run({ loader: songQueueMigrations, table: "song_queue_schema_migrations" });
   const sql = yield* SqlClient.SqlClient;
+
   const readOccurrences = Effect.fn("SongQueueDatabase.readOccurrences")(function* () {
     return (yield* parseStoredOccurrences(
       yield* sql`SELECT * FROM spotify_queue_snapshot ORDER BY position`,
     )).map(storedOccurrence);
   });
+
   const getTrackStatistics = Effect.fn("SongQueueDatabase.getTrackStatistics")(function* (
     userId: Option.Option<ViewerId>,
     limit: SongQueueLimit,
   ): Effect.fn.Return<readonly TopRequestedTrack[], SqlError.SqlError | Schema.SchemaError> {
     const viewer = Option.getOrNull(userId);
+
     const rows = yield* parseTrackStats(
       yield* sql`
       WITH ranked AS (SELECT *, COUNT(*) OVER (PARTITION BY track_id) AS request_count,
@@ -268,6 +305,7 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
         FROM request_history WHERE (${viewer} IS NULL OR requester_user_id = ${viewer}))
       SELECT track_id, track_name, artists, request_count FROM ranked WHERE rank = 1 ORDER BY request_count DESC, track_id ASC LIMIT ${limit}`,
     );
+
     return rows.map((row) => ({
       trackId: row.track_id,
       trackName: row.track_name,
@@ -275,12 +313,14 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
       requestCount: row.request_count,
     }));
   });
+
   return SongQueueDatabase.of({
     persistRequest: Effect.fn("SongQueueDatabase.persistRequest")(function* (input) {
       yield* sql.withTransaction(
         Effect.gen(function* () {
           const inserted =
             yield* sql`INSERT OR IGNORE INTO song_queue_receipts (event_id) VALUES (${input.eventId}) RETURNING event_id`;
+
           if (inserted.length === 0) return;
           yield* sql`INSERT INTO pending_requests (event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at) VALUES (${input.eventId}, ${input.track.id}, ${input.track.name}, ${JSON.stringify(input.track.artists)}, ${input.track.album}, ${Option.getOrNull(input.track.albumCoverUrl)}, ${input.requesterUserId}, ${input.requesterDisplayName}, ${input.requestedAt})`;
           yield* sql`UPDATE song_queue_coordination SET last_sync_at = NULL, refresh_due_at = 0 WHERE singleton = 1`;
@@ -309,9 +349,11 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
       const upcoming = (yield* readOccurrences())
         .filter((item) => item.position > 0)
         .map((item) => item.track);
+
       const users = upcoming
         .filter((track) => track.source === "user")
         .toSorted((a, b) => Date.parse(a.requestedAt) - Date.parse(b.requestedAt));
+
       return {
         tracks: [...users, ...upcoming.filter((track) => track.source === "autoplay")].slice(
           0,
@@ -325,16 +367,19 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
     ) {
       const since = Option.getOrNull(input.since);
       const until = Option.getOrNull(input.until);
+
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const rows = yield* parseStoredHistory(
             yield* sql`SELECT * FROM request_history WHERE (${since} IS NULL OR julianday(fulfilled_at) >= julianday(${since})) AND (${until} IS NULL OR julianday(fulfilled_at) <= julianday(${until})) ORDER BY julianday(fulfilled_at) DESC, event_id DESC LIMIT ${input.limit} OFFSET ${input.offset}`,
           );
+
           const totalCount = storedCount(
             yield* parseStoredCount(
               yield* sql`SELECT COUNT(*) AS count FROM request_history WHERE (${since} IS NULL OR julianday(fulfilled_at) >= julianday(${since})) AND (${until} IS NULL OR julianday(fulfilled_at) <= julianday(${until}))`,
             ),
           );
+
           return { requests: rows.map(storedHistory), totalCount };
         }),
       );
@@ -378,6 +423,7 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
       const rows = yield* parseViewerStats(
         yield* sql`WITH ranked AS (SELECT *, COUNT(*) OVER (PARTITION BY requester_user_id) AS request_count, ROW_NUMBER() OVER (PARTITION BY requester_user_id ORDER BY julianday(fulfilled_at) DESC, event_id DESC) AS rank FROM request_history) SELECT requester_user_id AS user_id, requester_display_name AS display_name, request_count FROM ranked WHERE rank = 1 ORDER BY request_count DESC, user_id ASC LIMIT ${limit}`,
       );
+
       return rows.map((row) => ({
         userId: row.user_id,
         displayName: row.display_name,
@@ -391,11 +437,13 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
     }) {
       const now = yield* Clock.currentTimeMillis;
       const since = new Date(now - windowMinutes * 60_000).toISOString();
+
       const count = storedCount(
         yield* parseStoredCount(
           yield* sql`SELECT COUNT(*) AS count FROM (SELECT event_id FROM pending_requests WHERE requester_user_id = ${userId} AND track_id = ${trackId} AND julianday(requested_at) >= julianday(${since}) UNION ALL SELECT event_id FROM request_history WHERE requester_user_id = ${userId} AND track_id = ${trackId} AND julianday(fulfilled_at) >= julianday(${since}))`,
         ),
       );
+
       return count > 0;
     }, databaseFailure("checkDuplicateRequest")),
     reconcilePlayback: Effect.fn("SongQueueDatabase.reconcilePlayback")(function* ({
@@ -406,18 +454,23 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
       yield* sql.withTransaction(
         Effect.gen(function* () {
           const previous = yield* readOccurrences();
+
           const pendingRows = yield* parseStoredPending(
             yield* sql`SELECT * FROM pending_requests ORDER BY julianday(requested_at), event_id`,
           );
+
           const pending = pendingRows.map(storedRequest);
+
           const attributed = attributeSongQueueOccurrences({
             previous,
             pending,
             currentlyPlaying,
             upcoming,
           });
+
           const previousCurrent = previous.find((item) => item.position === 0)?.track;
           const nextCurrent = attributed.find((item) => item.position === 0)?.track;
+
           if (
             previousCurrent?.source === "user" &&
             (nextCurrent?.source !== "user" || previousCurrent.eventId !== nextCurrent.eventId)
@@ -425,13 +478,17 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
             yield* sql`INSERT OR IGNORE INTO request_history (event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at, fulfilled_at) SELECT event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at, ${syncedAt} FROM pending_requests WHERE event_id = ${previousCurrent.eventId}`;
             yield* sql`DELETE FROM pending_requests WHERE event_id = ${previousCurrent.eventId}`;
           }
+
           yield* sql`DELETE FROM spotify_queue_snapshot`;
+
           for (const { position, track } of attributed) {
             const eventId = track.source === "user" ? track.eventId : null;
             yield* sql`INSERT INTO spotify_queue_snapshot (position, track_id, track_name, artists, album, album_cover_url, synced_at, source, event_id, requester_user_id, requester_display_name, requested_at) VALUES (${position}, ${track.id}, ${track.name}, ${JSON.stringify(track.artists)}, ${track.album}, ${Option.getOrNull(track.albumCoverUrl)}, ${syncedAt}, ${track.source}, ${eventId}, ${track.source === "user" ? track.requesterUserId : null}, ${track.source === "user" ? track.requesterDisplayName : null}, ${track.source === "user" ? track.requestedAt : null})`;
+
             if (eventId !== null)
               yield* sql`UPDATE pending_requests SET first_seen_in_spotify_at = COALESCE(first_seen_in_spotify_at, ${syncedAt}), last_seen_in_spotify_at = ${syncedAt} WHERE event_id = ${eventId}`;
           }
+
           yield* sql`DELETE FROM pending_requests WHERE first_seen_in_spotify_at IS NOT NULL AND event_id NOT IN (SELECT event_id FROM spotify_queue_snapshot WHERE event_id IS NOT NULL)`;
           yield* sql`DELETE FROM pending_requests WHERE julianday(requested_at) < julianday(${syncedAt}) - (1.0 / 24)`;
           yield* sql`UPDATE song_queue_coordination SET last_sync_at = ${Date.parse(syncedAt)}, consecutive_sync_failures = 0 WHERE singleton = 1`;
@@ -445,11 +502,13 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
       const row = (yield* parseStoredCoordination(
         yield* sql`SELECT last_sync_at AS lastSyncAt, refresh_due_at AS refreshDueAt, cleanup_due_at AS cleanupDueAt, consecutive_sync_failures AS consecutiveSyncFailures FROM song_queue_coordination WHERE singleton = 1`,
       ))[0];
+
       if (row === undefined)
         return yield* new SongQueueError({
           operation: "getCoordination",
           reason: "stored_data_invalid",
         });
+
       return row;
     }, databaseFailure("getCoordination")),
     setCoordination: Effect.fn("SongQueueDatabase.setCoordination")(function* (input) {

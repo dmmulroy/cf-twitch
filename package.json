@@ -16,7 +16,7 @@
     "test": "pnpm run test:unit",
     "test:alchemy:local": "pnpm run test:e2e:local",
     "test:e2e:local": "vp run --no-cache @cf-twitch/api#test:e2e:local",
-    "test:tooling": "vp test run --config vite.config.ts --mode unit tools/architecture/check-cf-twitch-architecture.test.ts tools/oxlint/anti-slop/anti-slop-rules.test.ts tools/oxlint/complexity-policy.test.ts",
+    "test:tooling": "vp test run --config vite.config.ts --mode unit tools/architecture/check-cf-twitch-architecture.test.ts tools/oxlint/anti-slop/anti-slop-rules.test.ts tools/oxlint/complexity-policy.test.ts tools/oxlint/readable-spacing-policy.test.ts",
     "test:unit": "pnpm run test:tooling && pnpm --recursive --if-present run test:unit",
     "typecheck": "tsc --noEmit && pnpm --recursive --if-present run typecheck",
     "verify": "node tools/verification/run-cf-twitch-verification.ts"

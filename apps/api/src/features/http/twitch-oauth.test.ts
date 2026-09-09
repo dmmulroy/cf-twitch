@@ -12,7 +12,9 @@ import { twitchOAuthHandlersLayer } from "./twitch-oauth-handlers.ts";
 import { httpTestConfiguration } from "./http-test-fixtures.ts";
 
 const state = "11111111-1111-4111-8111-111111111111";
+
 const oauthApi = HttpApi.make("TwitchHttpApi").add(TwitchOAuthApi);
+
 const withOAuth = <A, E, R>(
   authorization: IOAuthAuthorization,
   test: (fetch: (request: Request) => Promise<Response>) => Effect.Effect<A, E, R>,
@@ -25,12 +27,14 @@ const withOAuth = <A, E, R>(
       cloudflareHttpServerLayer,
     ]),
   );
+
   return Effect.acquireUseRelease(
     Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
     ({ handler }) => test(handler),
     ({ dispose }) => Effect.promise(dispose),
   );
 };
+
 const fixtureAuthorization = (outcome: OAuthStateOutcome = "ok"): IOAuthAuthorization => ({
   beginAuthorization: () =>
     Effect.succeed({
@@ -47,6 +51,7 @@ const fixtureAuthorization = (outcome: OAuthStateOutcome = "ok"): IOAuthAuthoriz
       scopes: ["first-scope", "second-scope"],
     }),
 });
+
 const oauthRequest = (path: string, headers?: HeadersInit) =>
   new Request(`https://worker.test/oauth${path}`, headers === undefined ? {} : { headers });
 
@@ -56,19 +61,23 @@ describe("OAuth HTTP protocol", () => {
     () => {
       const observations: string[] = [];
       const defaults = fixtureAuthorization();
+
       return withOAuth(
         {
           ...defaults,
           beginAuthorization: (input) => {
             observations.push(`${input.provider}:${input.redirectUri}`);
+
             return defaults.beginAuthorization(input);
           },
           consumeAuthorizationState: (input) => {
             observations.push(`consume:${input.redirectUri}:${Redacted.value(input.state)}`);
+
             return defaults.consumeAuthorizationState(input);
           },
           exchangeAuthorizationCode: (input) => {
             observations.push(`exchange:${input.redirectUri}:${Redacted.value(input.code)}`);
+
             return defaults.exchangeAuthorizationCode(input);
           },
         },
@@ -81,16 +90,19 @@ describe("OAuth HTTP protocol", () => {
                 }),
               ),
             );
+
             expect(started.status).toBe(302);
             expect(started.headers.get("location")).toBe(
               `https://accounts.spotify.com/authorize?state=${state}`,
             );
             expect(started.headers.get("set-cookie")).toBeNull();
             expect(observations).toEqual(["spotify:https://worker.test/oauth/spotify/callback"]);
+
             for (const provider of ["spotify", "twitch"] as const) {
               const callback = yield* Effect.promise(() =>
                 fetch(oauthRequest(`/${provider}/callback?state=${state}&code=opaque-code`)),
               );
+
               expect(callback.status).toBe(200);
               const body = yield* Effect.promise(() => callback.text());
               expect(JSON.parse(body)).toEqual({
@@ -106,6 +118,7 @@ describe("OAuth HTTP protocol", () => {
               });
               expect(body).not.toContain("never-render");
             }
+
             expect(observations.slice(1)).toEqual([
               `consume:https://worker.test/oauth/spotify/callback:${state}`,
               "exchange:https://worker.test/oauth/spotify/callback:opaque-code",
@@ -122,15 +135,18 @@ describe("OAuth HTTP protocol", () => {
     () => {
       const operations: string[] = [];
       const defaults = fixtureAuthorization();
+
       return withOAuth(
         {
           ...defaults,
           consumeAuthorizationState: () => {
             operations.push("consumed");
+
             return Effect.succeed("ok");
           },
           exchangeAuthorizationCode: (input) => {
             operations.push("exchanged");
+
             return defaults.exchangeAuthorizationCode(input);
           },
         },
@@ -139,11 +155,13 @@ describe("OAuth HTTP protocol", () => {
             const malformedState = yield* Effect.promise(() =>
               fetch(oauthRequest("/twitch/callback?state=not-a-uuid&code=opaque-code")),
             );
+
             expect(malformedState.status).toBe(400);
             expect(yield* Effect.promise(() => malformedState.json())).toEqual({
               error: "Invalid or expired OAuth state",
               code: "invalid",
             });
+
             const denied = yield* Effect.promise(() =>
               fetch(
                 oauthRequest(
@@ -151,6 +169,7 @@ describe("OAuth HTTP protocol", () => {
                 ),
               ),
             );
+
             expect(denied.status).toBe(400);
             const deniedBody = yield* Effect.promise(() => denied.text());
             expect(JSON.parse(deniedBody)).toEqual({
@@ -159,9 +178,11 @@ describe("OAuth HTTP protocol", () => {
               details: "Twitch authorization was not approved",
             });
             expect(deniedBody).not.toContain("Declined");
+
             const noCode = yield* Effect.promise(() =>
               fetch(oauthRequest(`/spotify/callback?state=${state}`)),
             );
+
             expect(noCode.status).toBe(400);
             expect(yield* Effect.promise(() => noCode.json())).toEqual({
               error: "No authorization code received",
@@ -185,6 +206,7 @@ describe("OAuth HTTP protocol", () => {
             const response = yield* Effect.promise(() =>
               fetch(oauthRequest(`/spotify/callback?state=${state}&code=secret`)),
             );
+
             expect(response.status).toBe(400);
             expect(yield* Effect.promise(() => response.json())).toEqual({
               error: "Invalid or expired OAuth state",
@@ -210,6 +232,7 @@ describe("OAuth HTTP protocol", () => {
               const response = yield* Effect.promise(() =>
                 fetch(oauthRequest(`/spotify/callback?state=${state}&code=secret`)),
               );
+
               expect(response.status).toBe(503);
               expect(yield* Effect.promise(() => response.json())).toEqual({
                 error: "OAuth state validation unavailable",
@@ -235,6 +258,7 @@ describe("OAuth HTTP protocol", () => {
               const response = yield* Effect.promise(() =>
                 fetch(oauthRequest(`/spotify/callback?state=${state}&code=secret`)),
               );
+
               expect(response.status).toBe(500);
               expect(yield* Effect.promise(() => response.json())).toMatchObject({
                 code: "SpotifyParseError",

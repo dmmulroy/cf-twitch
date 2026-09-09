@@ -17,13 +17,16 @@ export const EventSubHeaders = Schema.Struct({
   "twitch-eventsub-subscription-type": Schema.NonEmptyString,
   "twitch-eventsub-subscription-version": Schema.NonEmptyString,
 });
+
 /** Parsed signed EventSub transport metadata. */
 export interface EventSubHeaders extends Schema.Schema.Type<typeof EventSubHeaders> {}
+
 /** Receipt correlation is diagnostic metadata and never participates in duplicate conflict checks. */
 export const EventSubCorrelation = Schema.Struct({
   traceId: Schema.NonEmptyString,
   requestId: Schema.NonEmptyString,
 });
+
 /** Digest is SHA256(message ID + timestamp + exact raw body bytes), computed after authentication. */
 export const AcceptedEventSubReceipt = Schema.Struct({
   messageId: EventSubMessageId,
@@ -34,10 +37,12 @@ export const AcceptedEventSubReceipt = Schema.Struct({
   body: Schema.Json,
   correlation: EventSubCorrelation,
 });
+
 /** Authenticated durable receipt input; ingestion metadata is excluded from identity. */
 export interface AcceptedEventSubReceipt extends Schema.Schema.Type<
   typeof AcceptedEventSubReceipt
 > {}
+
 /** Receipt status exposes retry and uncertain chat outcomes without the signed personal payload. */
 export const EventSubReceiptStatus = Schema.Struct({
   status: Schema.Literals(["pending", "completed", "dead_letter"]),
@@ -45,8 +50,10 @@ export const EventSubReceiptStatus = Schema.Struct({
   lastError: Schema.OptionFromNullOr(Schema.String),
   chatCommandDelivery: Schema.OptionFromNullOr(Schema.Literals(["sending", "sent", "uncertain"])),
 });
+
 /** Parsed receipt progress without signed personal content. */
 export interface EventSubReceiptStatus extends Schema.Schema.Type<typeof EventSubReceiptStatus> {}
+
 /** Reused EventSub message identity with different authenticated content is rejected. */
 export class EventSubReceiptConflict extends Schema.TaggedError<EventSubReceiptConflict>()(
   "EventSubReceiptConflict",
@@ -59,6 +66,7 @@ export class EventSubReceiptConflict extends Schema.TaggedError<EventSubReceiptC
     return `EventSub receipt conflict for ${this.messageId}`;
   }
 }
+
 /** Receipt parsing, storage and scheduling failures remain explicit acceptance failures. */
 export class EventSubReceiptError extends Schema.TaggedError<EventSubReceiptError>()(
   "EventSubReceiptError",

@@ -19,7 +19,9 @@ const layer = spotifyServiceLayerWithoutDependencies.pipe(
   Layer.provide([providerLocalConfigurationLayer, providerLocalCryptoLayer]),
   Layer.provideMerge(providerScenarioTransportLayer),
 );
+
 const trackId = SpotifyTrackId.make(providerScenarioTrack.id);
+
 const seed = Effect.fn("SpotifyTest.seed")(function* (mode: string) {
   const tokens = yield* ProviderAccessTokens;
   yield* tokens.setTokens({
@@ -69,6 +71,7 @@ for (const mode of ["normal", "paused", "no-playback", "current-error"] as const
       }).pipe(Effect.provide(layer)),
   );
 }
+
 for (const [mode, kind] of [
   ["queue-error", "network"],
   ["no-device", "no-active-device"],
@@ -87,6 +90,7 @@ for (const [mode, kind] of [
       }).pipe(Effect.provide(layer)),
   );
 }
+
 for (const [mode, kind] of [
   ["missing-track", "not-found"],
   ["rate-limited", "rate-limited"],
@@ -97,11 +101,13 @@ for (const [mode, kind] of [
       const spotify = yield* SpotifyService;
       const result = yield* spotify.getTrack(trackId).pipe(Effect.result);
       expect(result).toMatchObject({ _tag: "Failure", failure: { kind } });
+
       if (result._tag === "Failure" && mode === "rate-limited")
         expect(result.failure.retryAfterMs).toEqual(Option.some(12_000));
     }).pipe(Effect.provide(layer)),
   );
 }
+
 it.effect("Spotify mutations execute once and an unknown queue outcome is never retried", () =>
   Effect.gen(function* () {
     yield* seed("unknown");
@@ -116,6 +122,7 @@ it.effect("Spotify mutations execute once and an unknown queue outcome is never 
     ]);
   }).pipe(Effect.provide(layer)),
 );
+
 it.effect(
   "Spotify confirmed queue append and skip expose success after a single request each",
   () =>
@@ -131,6 +138,7 @@ it.effect(
       ]);
     }).pipe(Effect.provide(layer)),
 );
+
 it.effect("Spotify internal compensation removes a uniquely identifiable queued track", () =>
   Effect.gen(function* () {
     yield* seed("normal");
@@ -144,6 +152,7 @@ it.effect("Spotify internal compensation removes a uniquely identifiable queued 
     ).toHaveLength(1);
   }).pipe(Effect.provide(layer)),
 );
+
 it.effect("Spotify duplicate URI compensation refuses to remove unrelated occurrences", () =>
   Effect.gen(function* () {
     yield* seed("duplicate-tracks");

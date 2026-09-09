@@ -14,6 +14,7 @@ export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderReq
   },
 ) {
   yield* Effect.annotateCurrentSpan({ provider: input.provider, operation: input.operation });
+
   const response = yield* client.execute(input.request).pipe(
     // Default HTTP spans collect full URLs and every header, including client-token.
     // Keep the safe named operation span while preventing sensitive transport collection.
@@ -30,10 +31,13 @@ export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderReq
         }),
     ),
   );
+
   if (response.status >= 200 && response.status < 300) return response;
   const seconds = Number(response.headers["retry-after"]);
+
   const retryAfterMs =
     Number.isFinite(seconds) && seconds > 0 ? Math.min(Math.ceil(seconds * 1000), 900_000) : 1000;
+
   return yield* Effect.fail(
     new ProviderError({
       provider: input.provider,
@@ -85,6 +89,7 @@ export const decodeProviderResponse = <A, I>(
   },
 ) => {
   const decode = HttpClientResponse.schemaBodyJson(schema);
+
   return (response: HttpClientResponse.HttpClientResponse): Effect.Effect<A, ProviderError> =>
     decode(response).pipe(
       Effect.mapError(

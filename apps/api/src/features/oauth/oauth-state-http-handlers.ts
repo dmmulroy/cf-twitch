@@ -10,6 +10,7 @@ export const oauthStateHttpHandlersLayer = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const store = yield* OAuthStateStore;
+
       return handlers
         .handle("createAttempt", ({ payload }) => store.createAttempt(payload))
         .handle("consumeAttempt", ({ payload }) => store.consumeAttempt(payload));

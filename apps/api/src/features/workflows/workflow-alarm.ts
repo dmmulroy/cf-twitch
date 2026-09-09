@@ -8,17 +8,21 @@ export class WorkflowAlarmError extends Schema.TaggedError<WorkflowAlarmError>()
     message: Schema.String,
   },
 ) {}
+
 /** Durable wake-up authority; timestamps are epoch milliseconds and None cancels the alarm. */
 export interface IWorkflowAlarm {
   readonly set: (dueAt: Option.Option<number>) => Effect.Effect<void, WorkflowAlarmError>;
 }
+
 /** Durable alarm capability keeps Cloudflare storage outside business policy. */
 export class WorkflowAlarm extends Context.Service<WorkflowAlarm, IWorkflowAlarm>()(
   "@cf-twitch/WorkflowAlarm",
 ) {}
+
 /** Construct the native alarm adapter only in the returned runtime Effect, never planning. */
 export const makeWorkflowAlarm = Effect.gen(function* () {
   const state = yield* Cloudflare.DurableObjectState;
+
   return WorkflowAlarm.of({
     set: Effect.fn("WorkflowAlarm.set")((dueAt) =>
       Effect.tryPromise({
@@ -34,5 +38,6 @@ export const makeWorkflowAlarm = Effect.gen(function* () {
     ),
   });
 });
+
 /** Native runtime alarm Layer; raw Promise interop is confined to this platform adapter. */
 export const workflowAlarmLayer = Layer.effect(WorkflowAlarm, makeWorkflowAlarm);

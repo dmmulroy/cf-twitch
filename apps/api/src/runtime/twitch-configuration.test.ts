@@ -43,6 +43,7 @@ it.effect("reports configuration failure without leaking source values or parse 
         ),
       ),
     );
+
     expect(error._tag).toBe("TwitchConfigurationError");
     expect(JSON.stringify(error)).not.toContain("fixture-");
     expect(error.message).toContain(".env.example");

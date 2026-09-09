@@ -77,11 +77,13 @@ export const deriveLifecycleEventId = (input: {
         `cf-twitch:stream-lifecycle:${input.transition}:${input.streamId}:${input.transitionAt}`,
       ),
     );
+
     const value = Array.from(new Uint8Array(bytes).slice(0, 16));
     value[6] = ((value[6] ?? 0) & 0x0f) | 0x50;
     value[8] = ((value[8] ?? 0) & 0x3f) | 0x80;
     const hex = value.map((byte) => byte.toString(16).padStart(2, "0")).join("");
     const uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+
     return EventId.make(uuid);
   });
 
@@ -123,6 +125,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
   ) {
     const updated = completeTransitionEffect(state, checkpoint.eventId, effect);
     yield* database.saveState(updated);
+
     return updated;
   });
 
@@ -130,6 +133,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     function* () {
       let state = yield* database.getState();
       const initialCheckpoint = state.transitionCheckpoint;
+
       if (initialCheckpoint === null) return;
 
       if (!initialCheckpoint.spotifyTokenNotified) {
@@ -140,7 +144,9 @@ export const makeStreamLifecycle = Effect.gen(function* () {
         ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
         state = yield* saveEffectCheckpoint(state, initialCheckpoint, "spotifyTokenNotified");
       }
+
       const twitchCheckpoint = state.transitionCheckpoint;
+
       if (twitchCheckpoint !== null && !twitchCheckpoint.twitchTokenNotified) {
         yield* (
           twitchCheckpoint.transition === "online"
@@ -149,18 +155,23 @@ export const makeStreamLifecycle = Effect.gen(function* () {
         ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
         state = yield* saveEffectCheckpoint(state, twitchCheckpoint, "twitchTokenNotified");
       }
+
       const eventCheckpoint = state.transitionCheckpoint;
+
       if (eventCheckpoint !== null && !eventCheckpoint.lifecycleEventPublished) {
         yield* events
           .publish(lifecycleEvent(eventCheckpoint))
           .pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
         state = yield* saveEffectCheckpoint(state, eventCheckpoint, "lifecycleEventPublished");
       }
+
       const pollingCheckpoint = state.transitionCheckpoint;
+
       if (pollingCheckpoint !== null && !pollingCheckpoint.viewerPollingUpdated) {
         if (pollingCheckpoint.transition === "online") {
           const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
           yield* alarm.scheduleAt(dueAt);
+
           const withSchedule =
             state._tag === "LiveStream"
               ? {
@@ -169,6 +180,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
                   transitionCheckpoint: { ...pollingCheckpoint, viewerPollScheduleId: dueAt },
                 }
               : state;
+
           state = completeTransitionEffect(
             withSchedule,
             pollingCheckpoint.eventId,
@@ -180,6 +192,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
           state = yield* saveEffectCheckpoint(state, pollingCheckpoint, "viewerPollingUpdated");
         }
       }
+
       yield* database.saveState(clearCompletedTransition(state));
     },
   );
@@ -194,14 +207,18 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     function* (input) {
       yield* resumeTransitionEffects();
       const current = yield* database.getState();
+
       const eventId = yield* deriveLifecycleEventId({
         transition: "online",
         streamId: input.streamId,
         transitionAt: input.startedAt,
       });
+
       const accepted = acceptOnlineTransition(current, { ...input, eventId });
+
       if (accepted !== current) yield* database.saveState(accepted);
       yield* resumeTransitionEffects();
+
       return toStreamLifecycleState(yield* database.getState());
     },
   );
@@ -211,17 +228,23 @@ export const makeStreamLifecycle = Effect.gen(function* () {
   )(function* (input) {
     yield* resumeTransitionEffects();
     const current = yield* database.getState();
+
     const streamId =
       current._tag === "LiveStream" ? current.streamId : current.transitionCheckpoint?.streamId;
+
     if (streamId === undefined) return toStreamLifecycleState(current);
+
     const eventId = yield* deriveLifecycleEventId({
       transition: "offline",
       streamId,
       transitionAt: input.endedAt,
     });
+
     const accepted = acceptOfflineTransition(current, { ...input, eventId });
+
     if (accepted !== current) yield* database.saveState(accepted);
     yield* resumeTransitionEffects();
+
     return toStreamLifecycleState(yield* database.getState());
   });
 
@@ -240,8 +263,10 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     function* (input) {
       const before = yield* getState();
       let action: "noop" | "marked_online" | "marked_offline" | "recorded_viewer_count" = "noop";
+
       if (Option.isSome(input.stream)) {
         const state = yield* database.getState();
+
         if (state._tag === "OfflineStream") {
           yield* markOnline({
             streamId: input.stream.value.id,
@@ -257,11 +282,13 @@ export const makeStreamLifecycle = Effect.gen(function* () {
         }
       } else {
         const state = yield* database.getState();
+
         if (state._tag === "LiveStream") {
           yield* markOffline({ endedAt: input.observedAt });
           action = "marked_offline";
         }
       }
+
       return { action, before, after: yield* getState() };
     },
   );
@@ -273,11 +300,13 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     recordViewerCount,
     getViewerHistory: Effect.fn("StreamLifecycle.getViewerHistory")(function* (input) {
       const history = yield* database.getViewerHistory(input);
+
       return { ...history, limit: input.limit, offset: input.offset };
     }),
     reconcile,
     getStatus: Effect.fn("StreamLifecycle.getStatus")(function* () {
       const state = yield* database.getState();
+
       return {
         healthy: true,
         effectsPending: state.transitionCheckpoint !== null,
@@ -286,6 +315,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     }),
     getDebugState: Effect.fn("StreamLifecycle.getDebugState")(function* () {
       const state = yield* database.getState();
+
       return {
         state: toStreamLifecycleState(state),
         activeStreamId: state._tag === "LiveStream" ? Option.some(state.streamId) : Option.none(),
@@ -301,6 +331,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
 
   const rebuildAlarm = Effect.fn("StreamLifecycle.rebuildAlarm")(function* () {
     const state = yield* database.getState();
+
     if (state.transitionCheckpoint !== null) {
       yield* alarm.scheduleAt(yield* nextAlarmTimestamp(1_000));
     } else if (state._tag === "LiveStream") {
@@ -310,6 +341,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
           : yield* Schema.decodeEffect(IsoTimestamp)(state.viewerPollScheduleId).pipe(
               Effect.mapError(() => streamError("resumeTransitionEffects", "stored_state_invalid")),
             );
+
       yield* alarm.scheduleAt(dueAt);
     } else {
       yield* alarm.clear();
@@ -319,17 +351,23 @@ export const makeStreamLifecycle = Effect.gen(function* () {
   const processAlarm = Effect.fn("StreamLifecycle.processAlarm")(function* () {
     yield* resumeTransitionEffects();
     let state = yield* database.getState();
+
     if (state._tag === "OfflineStream") {
       yield* alarm.clear();
+
       return;
     }
+
     const count = yield* viewerProvider.getViewerCount();
+
     if (Option.isSome(count)) {
       const recordedAt = yield* nextAlarmTimestamp(0);
       state = yield* database.recordViewerCount({ state, count: count.value, recordedAt });
     }
+
     const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
     yield* alarm.scheduleAt(dueAt);
+
     if (state._tag === "LiveStream") {
       yield* database.saveState({ ...state, viewerPollScheduleId: dueAt });
     }
@@ -345,6 +383,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
 export const streamLifecycleLayerWithoutDependencies = Layer.effectContext(
   Effect.gen(function* () {
     const services = yield* makeStreamLifecycle;
+
     return Context.make(StreamLifecycleClient, services.client).pipe(
       Context.add(StreamProcessor, services.processor),
     );

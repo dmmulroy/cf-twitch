@@ -10,6 +10,7 @@ export const songQueueHttpHandlersLayer = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const queue = yield* SongQueue;
+
       return handlers
         .handle("persistRequest", ({ payload }) => queue.persistRequest(payload))
         .handle("deleteRequest", ({ payload }) => queue.deleteRequest(payload))

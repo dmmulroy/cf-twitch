@@ -1,8 +1,11 @@
 import { Option, Predicate, Schema, type SchemaAST, type SchemaIssue } from "effect";
 
 const issuePath = Schema.Array(Schema.Union([Schema.String, Schema.Number]));
+
 const issueBase = { path: issuePath, message: Schema.String };
+
 const literalValue = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
+
 const publicIssue = Schema.Union([
   Schema.Struct({
     ...issueBase,
@@ -53,9 +56,13 @@ const publicIssue = Schema.Union([
     discriminator: Schema.Literal("responseType"),
   }),
 ]);
+
 type PublicIssue = typeof publicIssue.Type;
+
 type IssuePath = typeof issuePath.Type;
+
 type CommandInputValue = Schema.Json | undefined;
+
 const filterMetadata = Schema.Union([
   Schema.Struct({
     id: Schema.Literal("effect/schema/isMinLength"),
@@ -82,11 +89,17 @@ const filterMetadata = Schema.Union([
     payload: Schema.Null,
   }),
 ]);
+
 const parseFilterMetadata = Schema.decodeUnknownOption(filterMetadata);
+
 const parseLiteral = Schema.decodeUnknownOption(literalValue);
+
 const parseMessage = Schema.decodeUnknownOption(Schema.String);
+
 const isJsonArray = Schema.is(Schema.Array(Schema.Json));
+
 const isJsonObject = Schema.is(Schema.Record(Schema.String, Schema.Json));
+
 const receivedType = (input: CommandInputValue): string =>
   input === undefined
     ? "undefined"
@@ -101,12 +114,14 @@ const receivedType = (input: CommandInputValue): string =>
             : Predicate.isBoolean(input)
               ? "boolean"
               : "object";
+
 const typeIssue = (expected: string, input: CommandInputValue, path: IssuePath): PublicIssue => ({
   expected,
   code: "invalid_type",
   path,
   message: `Invalid input: expected ${expected}, received ${receivedType(input)}`,
 });
+
 const enumIssue = (
   values: readonly (typeof literalValue.Type)[],
   path: IssuePath,
@@ -119,6 +134,7 @@ const enumIssue = (
       ? `Invalid input: expected ${JSON.stringify(values[0])}`
       : `Invalid option: expected one of ${values.map((value) => JSON.stringify(value)).join("|")}`,
 });
+
 const boundsIssue = (
   origin: "number" | "string" | "array",
   direction: "minimum" | "maximum",
@@ -126,6 +142,7 @@ const boundsIssue = (
   path: IssuePath,
 ): PublicIssue => {
   const message = `${direction === "minimum" ? "Too small" : "Too big"}: expected ${origin}${origin === "number" ? " to be " : " to have "}${direction === "minimum" ? ">=" : "<="}${bound}${origin === "string" ? " characters" : origin === "array" ? " items" : ""}`;
+
   return direction === "minimum"
     ? { origin, code: "too_small", minimum: bound, inclusive: true, path, message }
     : { origin, code: "too_big", maximum: bound, inclusive: true, path, message };
@@ -148,6 +165,7 @@ export const formatHttpNumberIssues = (
         message: `Invalid input: expected number, received ${Number.isNaN(value) ? "NaN" : "number"}`,
       },
     ];
+
   if (!Number.isInteger(value))
     return [
       {
@@ -159,6 +177,7 @@ export const formatHttpNumberIssues = (
       },
     ];
   const issues: PublicIssue[] = [];
+
   if (value < Number.MIN_SAFE_INTEGER)
     issues.push({
       code: "too_small",
@@ -169,6 +188,7 @@ export const formatHttpNumberIssues = (
       path,
       message: `Too small: expected int to be >=${Number.MIN_SAFE_INTEGER}`,
     });
+
   if (value > Number.MAX_SAFE_INTEGER)
     issues.push({
       code: "too_big",
@@ -179,11 +199,15 @@ export const formatHttpNumberIssues = (
       path,
       message: `Too big: expected int to be <=${Number.MAX_SAFE_INTEGER}`,
     });
+
   if (value < minimum) issues.push(boundsIssue("number", "minimum", minimum, path));
+
   if (value > maximum && maximum !== Number.MAX_SAFE_INTEGER)
     issues.push(boundsIssue("number", "maximum", maximum, path));
+
   return issues;
 };
+
 /** Unknown query keys remain one ordered public issue rather than one issue per key. */
 export const formatHttpUnknownKeys = (
   keys: readonly string[],
@@ -194,12 +218,14 @@ export const formatHttpUnknownKeys = (
   path,
   message: `Unrecognized key${keys.length === 1 ? "" : "s"}: ${keys.map((key) => JSON.stringify(key)).join(", ")}`,
 });
+
 /** Enum diagnostics describe allowed values without returning the rejected input. */
 export const formatHttpEnumIssue = enumIssue;
 
 // Historical datetime pattern is error response metadata, never a second parser.
 const datetimePattern =
   "/^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$/";
+
 const datetimeIssue = (path: IssuePath): PublicIssue => ({
   origin: "string",
   code: "invalid_format",
@@ -208,11 +234,15 @@ const datetimeIssue = (path: IssuePath): PublicIssue => ({
   path,
   message: "Invalid ISO datetime",
 });
+
 const getInputKey = (input: CommandInputValue, key: PropertyKey): CommandInputValue => {
   if (isJsonArray(input) && Predicate.isNumber(key)) return input[key];
+
   if (isJsonObject(input) && Predicate.isString(key)) return input[key];
+
   return undefined;
 };
+
 const expectedIssue = (
   ast: SchemaAST.AST | undefined,
   input: CommandInputValue,
@@ -220,7 +250,9 @@ const expectedIssue = (
 ): PublicIssue => {
   if (ast?._tag === "Union") {
     const nonNull = ast.types.filter((member) => member._tag !== "Null");
+
     if (nonNull.length === 1) return expectedIssue(nonNull[0], input, path);
+
     if (nonNull.every((member) => member._tag === "Literal"))
       return enumIssue(
         nonNull.flatMap((member) =>
@@ -229,7 +261,9 @@ const expectedIssue = (
         path,
       );
   }
+
   if (ast?._tag === "Literal") return enumIssue(Option.toArray(parseLiteral(ast.literal)), path);
+
   return typeIssue(
     ast?._tag === "Objects"
       ? "object"
@@ -240,6 +274,7 @@ const expectedIssue = (
     path,
   );
 };
+
 function formatCompositeCommandIssue(
   issue: SchemaIssue.Composite,
   input: CommandInputValue,
@@ -248,12 +283,15 @@ function formatCompositeCommandIssue(
   if (path[0] === "createdAt" && issue.ast._tag === "String") return [datetimeIssue(path)];
   const unexpected: string[] = [];
   const issues: PublicIssue[] = [];
+
   for (const child of issue.issues) {
     if (child._tag === "Pointer" && child.issue._tag === "UnexpectedKey")
       unexpected.push(...child.path.map(String));
     else issues.push(...formatCommandIssue(child, input, path, issue.ast));
   }
+
   if (unexpected.length > 0) issues.push(formatHttpUnknownKeys(unexpected, path));
+
   return issues;
 }
 
@@ -263,14 +301,19 @@ function formatAnyOfCommandIssue(
   path: IssuePath,
 ): readonly PublicIssue[] {
   const first = issue.issues[0];
+
   if (path.length > 0 || !issue.ast.types.every((member) => member._tag === "Objects")) {
     if (issue.issues.length === 1 && first !== undefined)
       return formatCommandIssue(first, input, path, issue.ast);
+
     return [expectedIssue(issue.ast, input, path)];
   }
+
   if (!isJsonObject(input)) return [typeIssue("object", input, path)];
+
   if (issue.issues.length === 1 && first !== undefined)
     return formatCommandIssue(first, input, path);
+
   return [
     {
       code: "invalid_union",
@@ -291,10 +334,13 @@ function formatFilterCommandIssue(
 ): readonly PublicIssue[] {
   if (path[0] === "createdAt") return [datetimeIssue(path)];
   const metadata = parseFilterMetadata(issue.filter.annotations?.representation);
+
   if (Option.isNone(metadata)) return formatCommandIssue(issue.issue, input, path, parentAst);
   const value = metadata.value;
+
   const origin =
     parentAst?._tag === "Arrays" ? "array" : parentAst?._tag === "Number" ? "number" : "string";
+
   switch (value.id) {
     case "effect/schema/isMinLength":
       return [boundsIssue(origin, "minimum", value.payload.minLength, path)];
@@ -306,6 +352,7 @@ function formatFilterCommandIssue(
       return [boundsIssue(origin, "maximum", value.payload.maximum, path)];
     case "effect/schema/isPattern": {
       const pattern = `/${value.payload.source}/${value.payload.flags}`;
+
       return [
         {
           origin: "string",
@@ -317,6 +364,7 @@ function formatFilterCommandIssue(
         },
       ];
     }
+
     case "effect/schema/isInt":
     case "effect/schema/isFinite":
       return Predicate.isNumber(input)
@@ -334,10 +382,12 @@ function formatCommandIssue(
   switch (issue._tag) {
     case "Pointer": {
       const key = issue.path[0];
+
       const childAst =
         parentAst?._tag === "Objects"
           ? parentAst.propertySignatures.find((field) => field.name === key)?.type
           : undefined;
+
       return formatCommandIssue(
         issue.issue,
         issue.path.reduce(getInputKey, input),
@@ -345,6 +395,7 @@ function formatCommandIssue(
         childAst,
       );
     }
+
     case "Composite":
       return formatCompositeCommandIssue(issue, input, path);
     case "AnyOf":
@@ -372,6 +423,7 @@ function formatCommandIssue(
       return [{ code: "custom", path, message: "Invalid input" }];
   }
 }
+
 /** Format only the concrete command schemas' failure nodes into their historical HTTP issue envelopes. */
 export const formatHttpCommandIssues = (
   error: Schema.SchemaError,

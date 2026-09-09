@@ -12,9 +12,13 @@ import {
 } from "./stream-state.ts";
 
 const eventId = Schema.decodeUnknownSync(EventId)("550e8400-e29b-41d4-a716-446655440002");
+
 const streamId = Schema.decodeUnknownSync(StreamId)("stream-123");
+
 const at = (value: string) => Schema.decodeUnknownSync(IsoTimestamp)(value);
+
 const startedAt = at("2026-01-30T11:55:00.000Z");
+
 const endedAt = at("2026-01-30T14:00:00.000Z");
 
 describe("Stream Lifecycle state", () => {
@@ -62,8 +66,10 @@ describe("Stream Lifecycle state", () => {
 
   it("carries session and polling evidence into one offline transition checkpoint", () => {
     const online = acceptOnlineTransition(initialStreamState(), { eventId, streamId, startedAt });
+
     if (online._tag !== "LiveStream") throw new Error("expected live state");
     const withSchedule = { ...online, viewerPollScheduleId: "viewer-poll-1" };
+
     const offlineEventId = Schema.decodeUnknownSync(EventId)(
       "550e8400-e29b-41d4-a716-446655440003",
     );
@@ -92,12 +98,14 @@ describe("Stream Lifecycle state", () => {
 
   it("clears effect evidence only after all four checkpoints complete", () => {
     const accepted = acceptOnlineTransition(initialStreamState(), { eventId, streamId, startedAt });
+
     const effects: ReadonlyArray<Parameters<typeof completeTransitionEffect>[2]> = [
       "spotifyTokenNotified",
       "twitchTokenNotified",
       "lifecycleEventPublished",
       "viewerPollingUpdated",
     ];
+
     const completed = effects.reduce(
       (state, effect) => completeTransitionEffect(state, eventId, effect),
       accepted,

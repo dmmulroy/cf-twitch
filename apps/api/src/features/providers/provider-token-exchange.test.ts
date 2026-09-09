@@ -24,6 +24,7 @@ const configurationLayer = Layer.succeed(TwitchConfiguration, {
     keyboardRaffleRewardId: RewardId.make("raffle"),
   },
 });
+
 const tokenBody = {
   access_token: "synthetic-access",
   refresh_token: "synthetic-refresh",
@@ -43,10 +44,13 @@ it.effect(
           `Basic ${btoa("spotify-client:spotify-secret")}`,
         );
         expect(request.headers["content-type"]).toContain("application/x-www-form-urlencoded");
+
         return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(tokenBody)));
       });
+
       const result = yield* Effect.gen(function* () {
         const exchange = yield* ProviderTokenExchange;
+
         return yield* exchange.exchangeAuthorizationCode({
           provider: "spotify",
           code: Redacted.make("synthetic-code"),
@@ -59,6 +63,7 @@ it.effect(
           ),
         ),
       );
+
       expect(Redacted.value(result.accessToken)).toBe("synthetic-access");
       expect(Option.map(result.refreshToken, Redacted.value)).toEqual(
         Option.some("synthetic-refresh"),
@@ -73,6 +78,7 @@ it.effect("Twitch app tokens use client credentials without a user refresh token
     const transport = HttpClient.make((request) => {
       expect(request.url).toBe("https://id.twitch.tv/oauth2/token");
       expect(request.headers["authorization"]).toBeUndefined();
+
       return Effect.succeed(
         HttpClientResponse.fromWeb(
           request,
@@ -80,8 +86,10 @@ it.effect("Twitch app tokens use client credentials without a user refresh token
         ),
       );
     });
+
     const result = yield* Effect.gen(function* () {
       const exchange = yield* ProviderTokenExchange;
+
       return yield* exchange.getTwitchAppToken();
     }).pipe(
       Effect.provide(
@@ -90,6 +98,7 @@ it.effect("Twitch app tokens use client credentials without a user refresh token
         ),
       ),
     );
+
     expect(Redacted.value(result)).toBe("app-only");
   }),
 );
@@ -114,8 +123,10 @@ for (const provider of ["spotify", "twitch"] as const) {
               ),
             ),
           );
+
           const result = yield* Effect.gen(function* () {
             const exchange = yield* ProviderTokenExchange;
+
             return yield* exchange.refreshAccessToken({
               provider,
               refreshToken: Redacted.make("synthetic-refresh"),
@@ -131,7 +142,9 @@ for (const provider of ["spotify", "twitch"] as const) {
             ),
             Effect.result,
           );
+
           expect(result._tag).toBe("Failure");
+
           if (result._tag === "Failure") {
             expect(result.failure.kind).toBe(
               status === 429
@@ -146,6 +159,7 @@ for (const provider of ["spotify", "twitch"] as const) {
         }),
     );
   }
+
   it.effect(
     `${provider} omitted rotated refresh token remains explicit absence for lifecycle retention`,
     () =>
@@ -162,8 +176,10 @@ for (const provider of ["spotify", "twitch"] as const) {
             ),
           ),
         );
+
         const result = yield* Effect.gen(function* () {
           const exchange = yield* ProviderTokenExchange;
+
           return yield* exchange.refreshAccessToken({
             provider,
             refreshToken: Redacted.make("previous-refresh"),
@@ -175,9 +191,11 @@ for (const provider of ["spotify", "twitch"] as const) {
             ),
           ),
         );
+
         expect(Option.isNone(result.refreshToken)).toBe(true);
       }),
   );
+
   for (const body of [
     { access_token: "leaked-invalid", expires_in: 0 },
     { ...tokenBody, expires_in: 31_536_001 },
@@ -190,8 +208,10 @@ for (const provider of ["spotify", "twitch"] as const) {
           const transport = HttpClient.make((request) =>
             Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(body))),
           );
+
           const result = yield* Effect.gen(function* () {
             const exchange = yield* ProviderTokenExchange;
+
             return yield* exchange.refreshAccessToken({
               provider,
               refreshToken: Redacted.make("refresh"),
@@ -207,7 +227,9 @@ for (const provider of ["spotify", "twitch"] as const) {
             ),
             Effect.result,
           );
+
           expect(result._tag).toBe("Failure");
+
           if (result._tag === "Failure") {
             expect(result.failure.kind).toBe("invalid-response");
             expect(JSON.stringify(result.failure)).not.toContain("leaked-invalid");

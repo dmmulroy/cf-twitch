@@ -32,7 +32,9 @@ export const controlledTwitchServiceLayer = (mode: ControlledTwitchProviderMode)
       onStreamOffline: () => Effect.void,
     }),
   );
+
   const configuration = Layer.succeed(TwitchConfiguration, httpTestConfiguration);
+
   const tokenExchange = providerTokenExchangeLayerWithoutDependencies.pipe(
     Layer.provide([providerScenarioTransportLayer, configuration]),
   );

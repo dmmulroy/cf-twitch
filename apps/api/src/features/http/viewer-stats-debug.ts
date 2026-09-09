@@ -18,6 +18,7 @@ const summarizeAchievementStats = (
   const success = Result.isSuccess(unlocked) && Result.isSuccess(definitions);
   const unlockedCount = success ? unlocked.success.length : null;
   const definitionsCount = success ? definitions.success.length : null;
+
   return {
     label: success ? `${unlockedCount}/${definitionsCount}` : "?/?",
     component: {
@@ -41,6 +42,7 @@ const formatRaffleStats = (entry: RaffleLeaderboardEntry): string => {
     }),
     ...(entry.totalWins > 0 ? [`${entry.totalWins} win${entry.totalWins > 1 ? "s" : ""}!`] : []),
   ];
+
   return extras.length > 0
     ? `${entry.totalRolls} rolls (${extras.join(", ")})`
     : `${entry.totalRolls} rolls`;
@@ -52,6 +54,7 @@ const summarizeRaffleStats = (
 ) => {
   const notFound = Result.isSuccess(result) && Option.isNone(result.success);
   const entry = Result.isSuccess(result) ? Option.getOrUndefined(result.success) : undefined;
+
   return {
     status: entry === undefined ? ("error" as const) : ("ok" as const),
     notFound,
@@ -67,11 +70,13 @@ const summarizeRaffleStats = (
 /** Debug stats preserve partial failures and the existing no-records chat preview. */
 export const readViewerStatsDebug = Effect.fn("Http.viewerStatsDebug")(function* (rawUser: string) {
   const targetUser = rawUser.trim().replace(/^@+/u, "");
+
   if (targetUser.length === 0)
     return yield* Effect.fail(new HttpBoundaryError({ status: 400, error: "User is required" }));
   const achievements = yield* Achievements;
   const songQueue = yield* SongQueue;
   const raffle = yield* Raffle;
+
   const [unlocked, definitions, song, raffleStatsResult] = yield* Effect.all(
     [
       achievements.getUnlockedAchievements({ userDisplayName: targetUser }).pipe(Effect.result),
@@ -81,17 +86,21 @@ export const readViewerStatsDebug = Effect.fn("Http.viewerStatsDebug")(function*
     ],
     { concurrency: "unbounded" },
   );
+
   const achievementStats = summarizeAchievementStats(unlocked, definitions);
   const songCount = Result.getOrNull(song);
   const raffleStats = summarizeRaffleStats(raffleStatsResult, targetUser);
+
   const noStatsForTargetUser =
     songCount === 0 &&
     achievementStats.component.unlockedCount === 0 &&
     achievementStats.component.definitionsCount !== null &&
     raffleStats.notFound;
+
   const chatMessage = noStatsForTargetUser
     ? `No records found for @${targetUser} yet — no songs, achievements, or raffle stats.`
     : `@${targetUser} — Songs: ${songCount ?? "unavailable"} | Achievements: ${achievementStats.label} | Raffles: ${raffleStats.stats}`;
+
   return HttpServerResponse.jsonUnsafe({
     targetUser,
     noStatsForTargetUser,

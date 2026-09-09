@@ -6,7 +6,9 @@ import { HttpApiClient } from "effect/unstable/httpapi";
 import { STREAM_LIFECYCLE_SINGLETON_KEY, StreamLifecycleError } from "@cf-twitch/contracts/stream";
 import { StreamLifecycleHttpApi } from "./stream-http-api.ts";
 import { StreamLifecycleClient, type IStreamLifecycleClient } from "./stream-lifecycle.ts";
+
 export { StreamLifecycleClient, type IStreamLifecycleClient } from "./stream-lifecycle.ts";
+
 import streamLifecycleServerLayer, { StreamLifecycleServer } from "./stream-server.ts";
 
 const clientError = (
@@ -36,6 +38,7 @@ export const makeStreamLifecycleClient: Effect.Effect<
   Cloudflare.Worker | StreamLifecycleServer
 > = Effect.gen(function* () {
   const namespace = yield* StreamLifecycleServer;
+
   const memoizedClient = yield* makeExecutionMemo(
     Effect.suspend(() =>
       HttpApiClient.makeWith(StreamLifecycleHttpApi, {
@@ -44,6 +47,7 @@ export const makeStreamLifecycleClient: Effect.Effect<
       }),
     ),
   );
+
   const client = memoizedClient;
 
   return StreamLifecycleClient.of({

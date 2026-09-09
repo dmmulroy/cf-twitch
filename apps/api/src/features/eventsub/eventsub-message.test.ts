@@ -14,6 +14,7 @@ const headers = Schema.decodeUnknownSync(EventSubHeaders)({
   "twitch-eventsub-subscription-type": "unknown.subscription",
   "twitch-eventsub-subscription-version": "1",
 });
+
 const subscription = (type: string) => ({
   id: "subscription",
   type,
@@ -24,6 +25,7 @@ const subscription = (type: string) => ({
   transport: { method: "webhook" },
   created_at: "2026-01-01T00:00:00Z",
 });
+
 const broadcaster = {
   broadcaster_user_id: "broadcaster",
   broadcaster_user_login: "broadcaster",
@@ -87,18 +89,23 @@ describe("EventSub signed message boundary", () => {
           },
         },
       ];
+
       for (const example of examples) {
         const body = yield* Schema.decodeUnknownEffect(Schema.Json)({
           subscription: subscription(example.type),
           event: example.event,
         });
+
         const result = yield* parseEventSubMessage(
           { ...headers, "twitch-eventsub-subscription-type": example.type },
           body,
         );
+
         expect(result._tag).toBe(example.tag);
+
         if (result._tag === "StreamOnlineNotification")
           expect(result.event.started_at).toBe("2026-01-01T01:00:00+01:00");
+
         if (result._tag === "ChatMessageNotification")
           expect(result.event.message.text).toBe("!today Using TypeScript");
       }
@@ -139,6 +146,7 @@ describe("EventSub signed message boundary", () => {
               event: { secret: "private-chat-body" },
             },
           ).pipe(Effect.result);
+
           expect(result).toMatchObject({ failure: { reason: "invalid" } });
           expect(JSON.stringify(result)).not.toContain("private-chat-body");
         }
@@ -171,6 +179,7 @@ describe("EventSub signed message boundary", () => {
         Schema.toArbitrary(Schema.Json)(FastCheck),
         (suffix, value) => {
           const type = `unknown.${suffix}`;
+
           const result = Effect.runSync(
             parseEventSubMessage(
               { ...headers, "twitch-eventsub-subscription-type": type },
@@ -182,6 +191,7 @@ describe("EventSub signed message boundary", () => {
               ]),
             ),
           );
+
           expect(result).toMatchObject({
             _tag: "UnhandledEventSubNotification",
             subscription: { type },

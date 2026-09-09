@@ -27,7 +27,9 @@ import { commandsDatabaseLayerWithoutDependencies } from "./commands-database.ts
 import { getChatCommandPermission, hasCommandPermission } from "./command-permissions.ts";
 
 const parseInput = Schema.decodeUnknownSync(ChatCommandInput);
+
 const name = (value: string) => ChatCommandName.make(value);
+
 const input = (
   text: string,
   permission: ChatCommandPermission = "everyone",
@@ -39,6 +41,7 @@ const input = (
     receivedAt: "2026-01-01T00:00:00.000Z",
     viewer: { userId: "viewer-1", displayName: "Viewer", permission },
   });
+
 const track = Schema.decodeUnknownSync(QueuedTrack)({
   id: "Track1",
   name: "A Song",
@@ -51,6 +54,7 @@ const track = Schema.decodeUnknownSync(QueuedTrack)({
   requesterDisplayName: "Requester",
   requestedAt: "2026-01-01T00:00:00.000Z",
 });
+
 const autoplay = Schema.decodeUnknownSync(QueuedTrack)({
   id: "Track2",
   name: "Autoplay",
@@ -59,6 +63,7 @@ const autoplay = Schema.decodeUnknownSync(QueuedTrack)({
   albumCoverUrl: null,
   source: "autoplay",
 });
+
 const unlocked = Schema.decodeUnknownSync(UnlockedAchievement)({
   id: "first-song",
   name: "First Song",
@@ -67,6 +72,7 @@ const unlocked = Schema.decodeUnknownSync(UnlockedAchievement)({
   category: "song_request",
   unlockedAt: "2026-01-01T00:00:00.000Z",
 });
+
 const definition = Schema.decodeUnknownSync(AchievementDefinition)({
   id: "first-song",
   name: "First Song",
@@ -77,6 +83,7 @@ const definition = Schema.decodeUnknownSync(AchievementDefinition)({
   triggerEvent: "song_request",
   scope: "cumulative",
 });
+
 const raffleWinner = Schema.decodeUnknownSync(RaffleLeaderboardEntry)({
   userId: "viewer-1",
   displayName: "Viewer",
@@ -87,6 +94,7 @@ const raffleWinner = Schema.decodeUnknownSync(RaffleLeaderboardEntry)({
   closestWinningNumber: 103,
   lastRolledAt: "2026-01-01T00:00:00.000Z",
 });
+
 interface TestObservations {
   readonly playback: Ref.Ref<NowPlaying>;
   readonly tracks: Ref.Ref<readonly QueuedTrack[]>;
@@ -97,9 +105,11 @@ interface TestObservations {
   readonly metrics: Ref.Ref<readonly ChatCommandMetric[]>;
   readonly lookups: Ref.Ref<readonly string[]>;
 }
+
 class CommandTestObservations extends Context.Service<CommandTestObservations, TestObservations>()(
   "CommandTestObservations",
 ) {}
+
 // Local provider read implementations exercise the real service interfaces. Unused writes fail loudly.
 const providerTestLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -111,6 +121,7 @@ const providerTestLayer = Layer.unwrap(
     const failedProviders = yield* Ref.make<readonly ("song" | "raffle" | "achievements")[]>([]);
     const metrics = yield* Ref.make<readonly ChatCommandMetric[]>([]);
     const lookups = yield* Ref.make<readonly string[]>([]);
+
     const songFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("song"))
         return yield* new SongQueueError({
@@ -118,6 +129,7 @@ const providerTestLayer = Layer.unwrap(
           reason: "provider_unavailable",
         });
     });
+
     const raffleFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("raffle"))
         return yield* new RaffleError({
@@ -125,6 +137,7 @@ const providerTestLayer = Layer.unwrap(
           reason: "transport_unavailable",
         });
     });
+
     const achievementFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("achievements"))
         return yield* new AchievementError({
@@ -132,6 +145,7 @@ const providerTestLayer = Layer.unwrap(
           reason: "transport_unavailable",
         });
     });
+
     return Layer.mergeAll(
       Layer.succeed(CommandTestObservations, {
         playback,
@@ -203,6 +217,7 @@ const providerTestLayer = Layer.unwrap(
     );
   }),
 );
+
 const testLayer = executorLayerWithoutDependencies.pipe(
   Layer.provideMerge(computedChatCommandsLayerWithoutDependencies),
   Layer.provideMerge(
@@ -212,6 +227,7 @@ const testLayer = executorLayerWithoutDependencies.pipe(
   ),
   Layer.provideMerge(providerTestLayer),
 );
+
 const response = Effect.fn("CommandTest.response")(function* (
   text: string,
   permission: ChatCommandPermission = "everyone",
@@ -220,6 +236,7 @@ const response = Effect.fn("CommandTest.response")(function* (
   const executor = yield* ChatCommandExecutor;
   const result = yield* executor.prepare(input(text, permission, messageId));
   expect(result._tag).toBe("ChatCommandPrepared");
+
   return result._tag === "ChatCommandPrepared"
     ? Option.getOrElse(result.message, () => "")
     : "ignored";
@@ -530,6 +547,7 @@ describe("Chat command preparation through real registry and executor", () => {
             responseType: "dynamic",
           }),
         );
+
         const samples = FastCheck.sample(
           FastCheck.tuple(
             FastCheck.constantFrom("a", "😀", "🎉", "é", "中"),
@@ -537,6 +555,7 @@ describe("Chat command preparation through real registry and executor", () => {
           ),
           { seed: 2026, numRuns: 30 },
         );
+
         for (const [point, length] of samples) {
           yield* commands.updateCommandValue({
             name: name("generated"),
@@ -576,6 +595,7 @@ describe("Chat badge permission hierarchy", () => {
                   : badges.includes("vip")
                     ? "vip"
                     : "everyone";
+
               expect(getChatCommandPermission(badges.map((set_id) => ({ set_id })))).toBe(expected);
               expect(
                 getChatCommandPermission([...badges].reverse().map((set_id) => ({ set_id }))),

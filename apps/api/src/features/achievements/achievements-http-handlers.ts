@@ -10,6 +10,7 @@ export const achievementsHttpHandlersLayer = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const service = yield* Achievements;
+
       return handlers
         .handle("handleEvent", ({ payload }) => service.handleEvent(payload.event))
         .handle("recordEvent", ({ payload }) => service.recordEvent(payload))

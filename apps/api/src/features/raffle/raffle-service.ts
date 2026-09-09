@@ -36,5 +36,6 @@ export interface IRaffle {
   /** Return the strictly closest global non-winning active roll, or None when absent. */
   readonly getClosestRecord: () => Effect.Effect<Option.Option<RaffleClosestRecord>, RaffleError>;
 }
+
 /** Raffle service shared by the SQL implementation and HTTP client. */
 export class Raffle extends Context.Service<Raffle, IRaffle>()("@cf-twitch/Raffle") {}

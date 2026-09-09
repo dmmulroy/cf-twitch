@@ -29,6 +29,7 @@ const oauthScenarioHttpHandlersLayer = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const client = yield* OAuthStateClient;
+
       return handlers
         .handle("createAttempt", ({ payload }) => client.createAttempt(payload))
         .handle("consumeAttempt", ({ payload }) => client.consumeAttempt(payload));
@@ -44,13 +45,16 @@ export const oauthScenarioWorkerLayerWithoutDependencies = OAuthScenarioWorker.m
   },
   Effect.gen(function* () {
     const client = yield* OAuthStateClient;
+
     const httpLayer = HttpApiBuilder.layer(OAuthStateHttpApi).pipe(
       Layer.provide(
         oauthScenarioHttpHandlersLayer.pipe(Layer.provide(Layer.succeed(OAuthStateClient, client))),
       ),
       Layer.provide(cloudflareHttpServerLayer),
     );
+
     const runtimeRouter = yield* makeExecutionMemo(HttpRouter.toHttpEffect(httpLayer));
+
     return { fetch: Effect.flatten(runtimeRouter) };
   }).pipe(
     // Durable Object declarations require the surrounding Worker service during outer initialization.

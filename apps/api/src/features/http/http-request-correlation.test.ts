@@ -61,6 +61,7 @@ const expectSafeErrorReports = (reports: readonly Error[], responses: readonly R
     "HTTP request failed",
     "HTTP request failed",
   ]);
+
   for (const [index, report] of reports.entries()) {
     expect(ErrorReporter.getAttributes(report)).toMatchObject({
       "http.failure.classification": "defect",
@@ -69,6 +70,7 @@ const expectSafeErrorReports = (reports: readonly Error[], responses: readonly R
       trace_id: responses[index + 3]?.headers.get("x-trace-id"),
     });
     expect(Predicate.hasProperty(report, "redactedCause")).toBe(true);
+
     if (Predicate.hasProperty(report, "redactedCause"))
       expect(Redacted.isRedacted(report.redactedCause)).toBe(true);
   }
@@ -82,15 +84,19 @@ describe("safe HTTP trace export", () => {
         const spans: Tracer.NativeSpan[] = [];
         const reports: Error[] = [];
         const reporter = ErrorReporter.make(({ error }) => reports.push(error));
+
         const tracer = Tracer.make({
           span: (options) => {
             const span = new Tracer.NativeSpan(options);
             spans.push(span);
+
             return span;
           },
         });
+
         const state = "11111111-1111-4111-8111-111111111111";
         const location = `https://accounts.spotify.com/authorize?state=${state}&sensitive-location=never-collect-location`;
+
         const api = HttpApiBuilder.layer(oauthApi).pipe(
           Layer.provide(
             twitchOAuthHandlersLayer.pipe(
@@ -108,6 +114,7 @@ describe("safe HTTP trace export", () => {
                     state: Redacted.make(state),
                     authorizationUrl: Redacted.make(location),
                   });
+
                 if (input.redirectUri.startsWith("http://"))
                   return Effect.failCause(
                     Cause.fromReasons([
@@ -115,6 +122,7 @@ describe("safe HTTP trace export", () => {
                       Cause.makeInterruptReason(777),
                     ]),
                   );
+
                 return input.redirectUri.startsWith("https://interrupted.")
                   ? Effect.failCause(Cause.interrupt(888))
                   : Effect.die("never-collect-defect-secret");
@@ -135,6 +143,7 @@ describe("safe HTTP trace export", () => {
           Layer.provideMerge(ErrorReporter.layer([reporter])),
           Layer.provideMerge(Layer.succeed(Tracer.Tracer, tracer)),
         );
+
         const responses: Response[] = [];
         yield* Effect.acquireUseRelease(
           Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
@@ -231,6 +240,7 @@ describe("safe HTTP trace export", () => {
         ).toBe(true);
         expect(readSpanInterruptors(interruptedSpan)).toEqual([888]);
         expectSafeErrorReports(reports, responses);
+
         const collected = JSON.stringify({
           reports,
           spans: spans.map((span) => ({
@@ -240,6 +250,7 @@ describe("safe HTTP trace export", () => {
           })),
           exportedFailureExits,
         });
+
         for (const secret of [
           state,
           "setup-secret",

@@ -21,11 +21,13 @@ const tokenInput = (refreshToken: string, expiresIn = 3600): ProviderTokens => (
   expiresIn,
   scopes: ["initial-scope"],
 });
+
 for (const provider of ["spotify", "twitch"] as const) {
   const layer = providerLocalTokenLayer(provider).pipe(
     Layer.provide(providerLocalConfigurationLayer),
     Layer.provideMerge(providerScenarioTransportLayer),
   );
+
   it.effect(
     `${provider} valid offline tokens work but the five-minute expiry boundary never refreshes offline`,
     () =>
@@ -75,10 +77,12 @@ for (const provider of ["spotify", "twitch"] as const) {
         yield* TestClock.adjust("55 minutes");
         const first = yield* lifecycle.getValidToken().pipe(Effect.forkScoped);
         yield* transcript.awaitRefreshStarted();
+
         const others = yield* Effect.all(
           Array.from({ length: 20 }, () => lifecycle.getValidToken()),
           { concurrency: "unbounded" },
         ).pipe(Effect.forkScoped);
+
         yield* TestClock.adjust("100 millis");
         const firstToken = yield* Fiber.join(first);
         const otherTokens = yield* Fiber.join(others);
@@ -120,10 +124,12 @@ for (const provider of ["spotify", "twitch"] as const) {
         const database = yield* ProviderTokenDatabase;
         const sql = yield* SqlClient.SqlClient;
         yield* lifecycle.setTokens(tokenInput("scenario-network", 1));
+
         for (const [index, delay] of [60_000, 120_000, 240_000, 600_000].entries()) {
           const result = yield* (
             index === 0 ? lifecycle.onStreamOnline() : lifecycle.refreshTokenTick()
           ).pipe(Effect.result);
+
           expect(result).toMatchObject({ _tag: "Failure", failure: { kind: "network" } });
           const now = yield* Clock.currentTimeMillis;
           expect(yield* sql`SELECT due_at_ms FROM local_token_alarm`).toEqual([

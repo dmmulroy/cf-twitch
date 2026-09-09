@@ -14,6 +14,7 @@ import {
 import { initialStreamState } from "./stream-state.ts";
 
 const startedAt = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T11:55:00.000Z");
+
 const streamId = Schema.decodeUnknownSync(StreamId)("stream-123");
 
 describe("Stream Lifecycle", () => {
@@ -33,6 +34,7 @@ describe("Stream Lifecycle", () => {
         getViewerSnapshotCount: () => Effect.succeed(0),
         reset: () => Ref.set(state, initialStreamState()).pipe(Effect.as(initialStreamState())),
       };
+
       const layer = streamLifecycleLayerWithoutDependencies.pipe(
         Layer.provide(Layer.succeed(StreamDatabase, StreamDatabase.of(database))),
         Layer.provide(
@@ -55,10 +57,12 @@ describe("Stream Lifecycle", () => {
               publish: (event) =>
                 Effect.gen(function* () {
                   yield* Ref.update(publishedIds, (ids) => [...ids, event.id]);
+
                   const attempt = yield* Ref.getAndUpdate(
                     publicationAttempts,
                     (value) => value + 1,
                   );
+
                   if (attempt === 0) {
                     return yield* new EventBusError({
                       operation: "publish",

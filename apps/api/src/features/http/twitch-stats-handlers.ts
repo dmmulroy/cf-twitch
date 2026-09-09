@@ -22,11 +22,16 @@ import {
 } from "./http-boundary.ts";
 
 const parseViewerId = Schema.decodeEffect(TwitchStatsViewerId);
+
 const topTracks = Schema.Array(TopRequestedTrack);
+
 const topRequesters = TwitchTopRequestersResponse;
+
 const raffleLeaderboard = Schema.Array(TwitchRaffleViewerResponse);
+
 const invalidRequest = () =>
   new HttpBoundaryError({ status: 400, error: "Invalid request parameters" });
+
 const statsFailure = (failure: SongQueueError | RaffleError) => {
   switch (failure.reason) {
     case "invalid_response":
@@ -41,7 +46,9 @@ const statsFailure = (failure: SongQueueError | RaffleError) => {
       return new HttpBoundaryError({ status: 500, error: "Failed to fetch statistics" });
   }
 };
+
 const renderFailure = handleHttpBoundary;
+
 const withCacheHeader = HttpServerResponse.setHeader("Cache-Control", "public, max-age=60");
 
 /** Statistics share canonical cache entries across origins and equivalent limit spellings. */
@@ -50,15 +57,18 @@ export const twitchStatsHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "sta
     const songQueue = yield* SongQueue;
     const raffle = yield* Raffle;
     const cache = yield* HttpResponseCache;
+
     return handlers
       .handleRaw("topTracks", () =>
         Effect.gen(function* () {
           const limit = yield* parseHttpSongQueueQuery();
+
           const value = yield* cache.readThrough({
             key: `https://stats.internal/api/stats/top-tracks?limit=${limit}`,
             schema: topTracks,
             load: songQueue.getTopTracks({ limit }).pipe(Effect.mapError(statsFailure)),
           });
+
           return withCacheHeader(yield* encodeHttpResponse(topTracks, value));
         }).pipe(renderFailure),
       )
@@ -66,6 +76,7 @@ export const twitchStatsHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "sta
         Effect.gen(function* () {
           const limit = yield* parseHttpSongQueueQuery().pipe(Effect.mapError(invalidRequest));
           const userId = yield* parseViewerId(params.user).pipe(Effect.mapError(invalidRequest));
+
           const value = yield* cache.readThrough({
             key: `https://stats.internal/api/stats/top-tracks/${userId}?limit=${limit}`,
             schema: topTracks,
@@ -73,23 +84,27 @@ export const twitchStatsHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "sta
               .getTopTracksByUser({ userId, limit })
               .pipe(Effect.mapError(statsFailure)),
           });
+
           return withCacheHeader(yield* encodeHttpResponse(topTracks, value));
         }).pipe(renderFailure),
       )
       .handleRaw("topRequesters", () =>
         Effect.gen(function* () {
           const limit = yield* parseHttpSongQueueQuery();
+
           const value = yield* cache.readThrough({
             key: `https://stats.internal/api/stats/top-requesters?limit=${limit}`,
             schema: topRequesters,
             load: songQueue.getTopRequesters({ limit }).pipe(Effect.mapError(statsFailure)),
           });
+
           return withCacheHeader(yield* encodeHttpResponse(topRequesters, value));
         }).pipe(renderFailure),
       )
       .handleRaw("raffleLeaderboard", () =>
         Effect.gen(function* () {
           const { limit, sortBy } = yield* parseHttpLeaderboardQuery();
+
           const value = yield* cache.readThrough({
             key: `https://stats.internal/api/stats/raffle/leaderboard?limit=${limit}&sortBy=${sortBy}`,
             schema: raffleLeaderboard,
@@ -97,6 +112,7 @@ export const twitchStatsHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "sta
               .getLeaderboard({ limit: Option.some(limit), sortBy })
               .pipe(Effect.mapError(statsFailure)),
           });
+
           return withCacheHeader(yield* encodeHttpResponse(raffleLeaderboard, value));
         }).pipe(renderFailure),
       )
@@ -104,6 +120,7 @@ export const twitchStatsHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "sta
         Effect.gen(function* () {
           yield* rejectHttpQueryParameters().pipe(Effect.mapError(invalidRequest));
           const userId = yield* parseViewerId(params.user).pipe(Effect.mapError(invalidRequest));
+
           const value = yield* cache.readThrough({
             key: `https://stats.internal/api/stats/raffle/user/${userId}`,
             schema: TwitchRaffleViewerResponse,
@@ -118,6 +135,7 @@ export const twitchStatsHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "sta
               ),
             ),
           });
+
           return withCacheHeader(yield* encodeHttpResponse(TwitchRaffleViewerResponse, value));
         }).pipe(renderFailure),
       );

@@ -33,6 +33,7 @@ const clientFailure =
 /** Construct the singleton song queue HTTP client without retaining invocation-scoped DO stubs. */
 export const makeSongQueueClient = Effect.gen(function* () {
   const namespace = yield* SongQueueServer;
+
   const client = yield* makeExecutionMemo(
     Effect.suspend(() =>
       HttpApiClient.makeWith(SongQueueHttpApi, {
@@ -41,6 +42,7 @@ export const makeSongQueueClient = Effect.gen(function* () {
       }),
     ),
   );
+
   return SongQueue.of({
     persistRequest: Effect.fn("SongQueueClient.persistRequest")(function* (input) {
       return yield* (yield* client).songQueue.persistRequest({ payload: input });
@@ -91,6 +93,7 @@ export const makeSongQueueClient = Effect.gen(function* () {
 
 /** Song queue HTTP client leaves namespace selection visible to the root. */
 export const songQueueClientLayerWithoutDependencies = Layer.effect(SongQueue, makeSongQueueClient);
+
 /** Ready song queue client selects its HTTP Durable Object server implementation. */
 export const songQueueClientLayer = songQueueClientLayerWithoutDependencies.pipe(
   Layer.provide(songQueueServerLayer),

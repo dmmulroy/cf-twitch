@@ -12,18 +12,23 @@ import { RaffleHttpApi } from "./raffle-http-api.ts";
 interface RaffleServerContract {
   readonly fetch: HttpEffect;
 }
+
 /** Physical KeyboardRaffleDO class is retained; namespace adoption is never automatic. */
 export class RaffleServer extends Cloudflare.DurableObject<RaffleServer, RaffleServerContract>()(
   "KeyboardRaffleDO",
 ) {}
+
 /** Runtime-only SQL acquisition preserves Alchemy's planning phase storage boundary. */
 export const raffleServerLayer = RaffleServer.make<never>(
   Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
+
     const database = raffleLayer.pipe(
       Layer.provide(SqliteClient.layer({ storage: state.raw.storage })),
     );
+
     const handlers = raffleHttpHandlersLayer.pipe(Layer.provide(database));
+
     return Effect.gen(function* () {
       const fetch = yield* HttpRouter.toHttpEffect(
         HttpApiBuilder.layer(RaffleHttpApi).pipe(
@@ -31,8 +36,10 @@ export const raffleServerLayer = RaffleServer.make<never>(
           Layer.provide(cloudflareHttpServerLayer),
         ),
       );
+
       return { fetch };
     }).pipe(Effect.orDie);
   }),
 );
+
 export default raffleServerLayer;

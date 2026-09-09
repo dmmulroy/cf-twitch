@@ -13,7 +13,9 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+
       for (const statement of historicalRaffleStatements) yield* sql.unsafe(statement);
+
       const input = RecordRaffleRoll.make({
         id: RedemptionId.make("historical"),
         userId: ViewerId.make("123"),
@@ -22,6 +24,7 @@ it.effect(
         winningNumber: RaffleNumber.make(5_003),
         rolledAt: IsoTimestamp.make("2026-04-07T14:00:00Z"),
       });
+
       yield* sql`INSERT INTO rolls(id,user_id,display_name,roll,winning_number,distance,is_winner,is_new_record,rolled_at) VALUES (${input.id},${input.userId},${input.displayName},5000,5003,3,0,1,${input.rolledAt})`;
       yield* Effect.gen(function* () {
         const raffle = yield* Raffle;

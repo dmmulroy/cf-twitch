@@ -6,6 +6,7 @@ import {
   EventSubReceiptError,
   EventSubReceiptStatus,
 } from "@cf-twitch/contracts/eventsub";
+
 /** EventSub receipt HTTP contract acknowledges durable acceptance independently of dispatch completion. */
 export class EventSubHttpApi extends HttpApi.make("EventSubHttpApi")
   .add(

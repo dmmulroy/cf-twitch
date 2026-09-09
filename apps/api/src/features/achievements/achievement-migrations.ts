@@ -21,11 +21,13 @@ const achievementSchemaStatements = [
 
 const adoptAchievementSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+
   for (const statement of achievementSchemaStatements) yield* sql.unsafe(statement);
   // Baseline SQL is authoritative; never import the Agent JSON projection.
   yield* sql`SELECT user_id,announcement_state FROM user_achievements LIMIT 0`;
   yield* sql`CREATE TABLE IF NOT EXISTS achievement_outbox_retry (effect_id TEXT PRIMARY KEY NOT NULL, next_attempt_at INTEGER NOT NULL)`;
 });
+
 const fenceAchievementUnlockGeneration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // Fences an old in-flight response from marking a later session's unlock as announced.
@@ -35,6 +37,7 @@ const fenceAchievementUnlockGeneration = Effect.gen(function* () {
  ON o.user_id=u.user_id AND o.achievement_id=u.achievement_id AND o.created_at=u.unlocked_at
  WHERE u.unlocked_at IS NOT NULL ORDER BY o.created_at DESC,o.effect_id DESC`;
 });
+
 /** Adopts complete baseline achievement SQL; older pre-viewer-ID databases fail closed. */
 export const achievementMigrationLoader = SqliteMigrator.fromRecord({
   "1_adopt_achievement_sql": adoptAchievementSchema,

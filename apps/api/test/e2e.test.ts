@@ -18,6 +18,7 @@ import { fullWorkerScenarioStack } from "./scenario/full-worker-scenario.ts";
 import { oauthScenarioStack } from "./scenario/oauth-scenario-stack.ts";
 
 const stage = Effect.runSync(cfTwitchInfrastructureStageConfig);
+
 const { test } = Test.make({
   providers: Cloudflare.providers(),
   adopt: false,
@@ -31,17 +32,25 @@ const ScenarioCommandSnapshot = Schema.Struct({
     Schema.Struct({ name: Schema.String, counter: Schema.NullOr(Schema.Int) }),
   ),
 });
+
 const ScenarioProviderTranscript = Schema.Struct({
   requests: Schema.Array(Schema.Struct({ method: Schema.String, path: Schema.String })),
 });
+
 const parseScenarioCommandSnapshot = Schema.decodeUnknownEffect(ScenarioCommandSnapshot);
+
 const parseScenarioEventSubReceiptStatus = Schema.decodeUnknownEffect(
   Schema.OptionFromNullOr(EventSubReceiptStatus),
 );
+
 const parseScenarioProviderTranscript = Schema.decodeUnknownEffect(ScenarioProviderTranscript);
+
 const parseScenarioRaffleStats = Schema.decodeUnknownEffect(TwitchRaffleViewerResponse);
+
 const parseScenarioSongQueue = Schema.decodeUnknownEffect(SongQueueResult);
+
 const parseScenarioStreamState = Schema.decodeUnknownEffect(Schema.toEncoded(StreamLifecycleState));
+
 const parseScenarioViewerAchievementProgress = Schema.decodeUnknownEffect(
   Schema.Array(ViewerAchievementProgress),
 );
@@ -66,14 +75,19 @@ const waitForScenarioObservableValue = <A>(
 ): Effect.Effect<A, never> =>
   Effect.gen(function* () {
     const value = yield* condition.probe;
+
     if (!condition.isReady(value))
       return yield* new ScenarioObservableStatePending({ description: condition.description });
+
     return value;
   }).pipe(Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }), Effect.orDie);
 
 const randomOAuthState = () => Redacted.make(crypto.randomUUID());
+
 const randomEventSubMessageId = () => EventSubMessageId.make(crypto.randomUUID());
+
 const redirectUri = OAuthRedirectUri.make("https://local.test/oauth/twitch/callback");
+
 const otherRedirectUri = OAuthRedirectUri.make("https://local.test/oauth/twitch/other-callback");
 
 const signEventSubRequest = async (input: {
@@ -84,6 +98,7 @@ const signEventSubRequest = async (input: {
   readonly subscriptionType: string;
 }) => {
   const signed = new TextEncoder().encode(input.messageId + input.timestamp + input.body);
+
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode("webhook-secret"),
@@ -91,9 +106,11 @@ const signEventSubRequest = async (input: {
     false,
     ["sign"],
   );
+
   const signature = Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, signed)))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+
   return new Request(`${input.url}/webhooks/twitch`, {
     method: "POST",
     headers: {
@@ -115,14 +132,17 @@ const authorizeProvider = async (url: string, provider: "spotify" | "twitch") =>
     headers: { "x-setup-secret": "setup-secret" },
     redirect: "manual",
   });
+
   expect(authorize.status).toBe(302);
   const location = authorize.headers.get("location");
   expect(location).not.toBeNull();
   const state = new URL(location ?? "https://invalid.local").searchParams.get("state");
   expect(state).not.toBeNull();
+
   const callback = await fetch(
     `${url}/oauth/${provider}/callback?state=${encodeURIComponent(state ?? "")}&code=scenario-code`,
   );
+
   expect(callback.status).toBe(200);
 };
 
@@ -134,12 +154,15 @@ test.provider(
 
       yield* Effect.gen(function* () {
         const httpClient = yield* HttpClient.HttpClient;
+
         const client = yield* HttpApiClient.makeWith(OAuthStateHttpApi, {
           baseUrl: deployed.url,
           httpClient,
         });
+
         const state = randomOAuthState();
         const now = Date.now();
+
         const attempt = {
           state,
           provider: "twitch" as const,
@@ -175,6 +198,7 @@ test.provider(
           ],
           { concurrency: "unbounded" },
         );
+
         expect([...concurrentOutcomes].sort()).toEqual(["consumed", "ok"]);
 
         const expiringState = randomOAuthState();
@@ -189,9 +213,11 @@ test.provider(
           },
         });
         yield* Effect.sleep("300 millis");
+
         const afterDeadline = yield* client.oauthState.consumeAttempt({
           payload: { state: expiringState, provider: "spotify", redirectUri },
         });
+
         expect(["expired", "invalid"]).toContain(afterDeadline);
 
         yield* Effect.sleep("1 second");
@@ -210,6 +236,7 @@ test.provider(
   (stack) =>
     Effect.gen(function* () {
       const deployed = yield* stack.deploy(fullWorkerScenarioStack);
+
       if (deployed.url === undefined)
         return yield* Effect.die("Full Worker scenario URL is unavailable");
       const scenarioUrl = deployed.url;
@@ -226,6 +253,7 @@ test.provider(
         Effect.promise(async () => {
           const body = JSON.stringify(input.body);
           const messageId = input.messageId ?? randomEventSubMessageId();
+
           const request = await signEventSubRequest({
             url: scenarioUrl,
             body,
@@ -233,10 +261,12 @@ test.provider(
             timestamp: input.timestamp,
             subscriptionType: input.subscriptionType,
           });
+
           const response = await fetch(request);
           const responseBody = await response.text();
           expect(response.status, responseBody).toBe(200);
           expect(JSON.parse(responseBody)).toEqual({ success: true });
+
           return messageId;
         });
 
@@ -255,6 +285,7 @@ test.provider(
         authorization: "Bearer admin-secret",
         "content-type": "application/json",
       };
+
       const createdCommand = yield* Effect.promise(() =>
         fetch(`${scenarioUrl}/api/admin/commands`, {
           method: "POST",
@@ -269,7 +300,9 @@ test.provider(
           }),
         }),
       );
+
       expect(createdCommand.status).toBe(201);
+
       const patchedCommand = yield* Effect.promise(() =>
         fetch(`${scenarioUrl}/api/admin/commands/scenario-command`, {
           method: "PATCH",
@@ -277,23 +310,28 @@ test.provider(
           body: JSON.stringify({ enabled: false }),
         }),
       );
+
       expect(patchedCommand.status).toBe(200);
+
       const listedCommands = yield* Effect.promise(() =>
         fetch(`${scenarioUrl}/api/admin/commands`, { headers: adminHeaders }).then((response) =>
           response.json(),
         ),
       );
+
       expect(listedCommands).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ name: "scenario-command", enabled: false }),
         ]),
       );
+
       const deletedCommand = yield* Effect.promise(() =>
         fetch(`${scenarioUrl}/api/admin/commands/scenario-command`, {
           method: "DELETE",
           headers: adminHeaders,
         }),
       );
+
       expect(deletedCommand.status).toBe(200);
 
       // Both authorization paths traverse native OAuth state, Effect Crypto, controlled provider
@@ -304,6 +342,7 @@ test.provider(
       const concurrentRefresh = yield* Effect.promise(() =>
         fetch(`${scenarioUrl}/__scenario/provider-token/concurrent-refresh`, { method: "POST" }),
       );
+
       expect(concurrentRefresh.status).toBe(200);
       expect(yield* Effect.promise(() => concurrentRefresh.json())).toEqual({
         concurrentCallersConverged: true,
@@ -312,6 +351,7 @@ test.provider(
 
       const skillTimestamp = new Date().toISOString();
       const skillMessageId = randomEventSubMessageId();
+
       const skillBody = {
         subscription: {
           id: "scenario-chat-subscription",
@@ -335,6 +375,7 @@ test.provider(
           badges: [{ set_id: "vip", id: "1", info: "" }],
         },
       };
+
       yield* postSignedNotification({
         body: skillBody,
         messageId: skillMessageId,
@@ -348,6 +389,7 @@ test.provider(
         subscriptionType: "channel.chat.message",
       });
       yield* waitForReceiptCompletion(skillMessageId);
+
       const commandSnapshot = yield* waitForScenarioObservableValue({
         description: "the skillissue command counter to reach one",
         probe: Effect.promise(() =>
@@ -360,6 +402,7 @@ test.provider(
             (command) => command.name === "skillissue" && command.counter === 1,
           ),
       });
+
       expect(commandSnapshot).toMatchObject({
         commands: expect.arrayContaining([
           expect.objectContaining({ name: "skillissue", counter: 1 }),
@@ -368,6 +411,7 @@ test.provider(
 
       const messageId = randomEventSubMessageId();
       const timestamp = new Date().toISOString();
+
       const body = JSON.stringify({
         subscription: {
           id: "scenario-song-subscription",
@@ -393,6 +437,7 @@ test.provider(
           reward: { id: "song-reward", title: "Song Request", cost: 100, prompt: "" },
         },
       });
+
       const request = yield* Effect.promise(() =>
         signEventSubRequest({
           url: scenarioUrl,
@@ -402,6 +447,7 @@ test.provider(
           subscriptionType: "channel.channel_points_custom_reward_redemption.add",
         }),
       );
+
       const accepted = yield* Effect.promise(() => fetch(request));
       const acceptedBody = yield* Effect.promise(() => accepted.text());
       expect(accepted.status, acceptedBody).toBe(200);
@@ -418,6 +464,7 @@ test.provider(
             (track) => track.source === "user" && track.eventId === "scenario-song-redemption",
           ),
       });
+
       expect(queueBody.tracks).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -444,10 +491,13 @@ test.provider(
           subscriptionType: "channel.channel_points_custom_reward_redemption.add",
         }).then(fetch),
       );
+
       expect(replay.status).toBe(200);
+
       const afterReplay = yield* Effect.promise(() =>
         fetch(`${scenarioUrl}/api/queue?limit=10`).then((response) => response.json()),
       ).pipe(Effect.flatMap(parseScenarioSongQueue));
+
       expect(
         afterReplay.tracks.filter(
           (track) => track.source === "user" && track.eventId === "scenario-song-redemption",
@@ -457,6 +507,7 @@ test.provider(
       const transcript = yield* Effect.promise(() =>
         fetch(`${scenarioUrl}/__scenario/provider-transcript`).then((response) => response.json()),
       ).pipe(Effect.flatMap(parseScenarioProviderTranscript));
+
       expect(
         transcript.requests.filter(
           (providerRequest) =>
@@ -483,6 +534,7 @@ test.provider(
             (achievement) => achievement.achievementId === "first_request" && achievement.unlocked,
           ),
       });
+
       expect(achievementProgress).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ achievementId: "first_request", progress: 1, unlocked: true }),
@@ -490,6 +542,7 @@ test.provider(
       );
 
       const raffleTimestamp = new Date().toISOString();
+
       const raffleMessageId = yield* postSignedNotification({
         timestamp: raffleTimestamp,
         subscriptionType: "channel.channel_points_custom_reward_redemption.add",
@@ -519,7 +572,9 @@ test.provider(
           },
         },
       });
+
       yield* waitForReceiptCompletion(raffleMessageId);
+
       const raffleStats = yield* waitForScenarioObservableValue({
         description: "the Keyboard Raffle roll to persist",
         probe: Effect.promise(() =>
@@ -527,9 +582,11 @@ test.provider(
         ).pipe(Effect.flatMap(parseScenarioRaffleStats)),
         isReady: (stats) => stats.totalRolls === 1,
       });
+
       expect(raffleStats).toMatchObject({ totalRolls: 1 });
 
       const onlineTimestamp = new Date().toISOString();
+
       const onlineMessageId = yield* postSignedNotification({
         timestamp: onlineTimestamp,
         subscriptionType: "stream.online",
@@ -554,7 +611,9 @@ test.provider(
           },
         },
       });
+
       yield* waitForReceiptCompletion(onlineMessageId);
+
       const liveState = yield* waitForScenarioObservableValue({
         description: "the online Stream Session state",
         probe: Effect.promise(() =>
@@ -564,9 +623,11 @@ test.provider(
         ).pipe(Effect.flatMap(parseScenarioStreamState)),
         isReady: (state) => state.isLive && state.startedAt === onlineTimestamp,
       });
+
       expect(liveState).toMatchObject({ isLive: true, startedAt: onlineTimestamp });
 
       const offlineTimestamp = new Date(Date.now() + 1).toISOString();
+
       const offlineMessageId = yield* postSignedNotification({
         timestamp: offlineTimestamp,
         subscriptionType: "stream.offline",
@@ -588,7 +649,9 @@ test.provider(
           },
         },
       });
+
       yield* waitForReceiptCompletion(offlineMessageId);
+
       const offlineState = yield* waitForScenarioObservableValue({
         description: "the offline Stream Session state",
         probe: Effect.promise(() =>
@@ -598,9 +661,11 @@ test.provider(
         ).pipe(Effect.flatMap(parseScenarioStreamState)),
         isReady: (state) => !state.isLive && state.endedAt === offlineTimestamp,
       });
+
       expect(offlineState).toMatchObject({ isLive: false, endedAt: offlineTimestamp });
 
       const raidTimestamp = new Date().toISOString();
+
       const raidMessageId = yield* postSignedNotification({
         timestamp: raidTimestamp,
         subscriptionType: "channel.raid",
@@ -626,6 +691,7 @@ test.provider(
           },
         },
       });
+
       yield* waitForReceiptCompletion(raidMessageId);
     }),
   { timeout: 60_000 },

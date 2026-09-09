@@ -32,6 +32,7 @@ const songFailure = (message: string) => (error: SongQueueError) =>
       ? { status: 503, error: "Service temporarily unavailable" }
       : { status: 500, error: message },
   );
+
 const renderFailure = handleHttpBoundary;
 
 /** Public query handlers capture real service requirements without choosing their providers. */
@@ -39,6 +40,7 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
   Effect.gen(function* () {
     const songQueue = yield* SongQueue;
     const achievements = yield* Achievements;
+
     return handlers
       .handle("health", () => Effect.succeed({ status: "ok" as const }))
       .handleRaw("nowPlaying", () =>
@@ -46,21 +48,25 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
           const playing = yield* songQueue
             .getCurrentlyPlaying()
             .pipe(Effect.mapError(songFailure("Failed to fetch now playing")));
+
           return yield* encodeHttpResponse(TwitchNowPlayingResponse, playing);
         }).pipe(renderFailure),
       )
       .handleRaw("queue", () =>
         Effect.gen(function* () {
           const limit = yield* parseHttpSongQueueQuery();
+
           const queue = yield* songQueue
             .getSongQueue({ limit })
             .pipe(Effect.mapError(songFailure("Failed to fetch queue")));
+
           return yield* encodeHttpResponse(SongQueueResult, queue);
         }).pipe(renderFailure),
       )
       .handleRaw("requestHistory", () =>
         Effect.gen(function* () {
           const limit = yield* parseHttpSongQueueQuery();
+
           const history = yield* songQueue
             .getRequestHistory(
               RequestHistoryQuery.make({
@@ -71,6 +77,7 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
               }),
             )
             .pipe(Effect.mapError(songFailure("Failed to fetch song request history")));
+
           return yield* encodeHttpResponse(RequestHistoryResult, history);
         }).pipe(renderFailure),
       )
@@ -90,6 +97,7 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
       .handleRaw("achievementLeaderboard", () =>
         Effect.gen(function* () {
           const limit = yield* parseHttpLimitQuery();
+
           const value = yield* achievements.getLeaderboard({ limit: Option.some(limit) }).pipe(
             Effect.mapError(
               () =>
@@ -99,6 +107,7 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
                 }),
             ),
           );
+
           return yield* encodeHttpResponse(Schema.Array(AchievementLeaderboardEntry), value);
         }).pipe(renderFailure),
       )
