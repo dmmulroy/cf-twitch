@@ -7,8 +7,20 @@ import {
   UpdateRedemptionStatus,
   type ProviderEventSubSubscription,
 } from "@cf-twitch/contracts/provider";
-import { Context, Effect, Layer, Option, Redacted, Schema } from "effect";
+import {
+  Cache,
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Redacted,
+  Schema,
+  Stream,
+} from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
 import { providerAccessTokensLayer } from "./provider-token-client.ts";
@@ -135,6 +147,32 @@ export const makeTwitchService = Effect.gen(function* () {
   const tokens = yield* ProviderAccessTokens;
   const exchange = yield* ProviderTokenExchange;
 
+  // Token values may be reused within one Worker invocation, but the lookup and its
+  // in-flight HTTP request must never cross the execution Scope that owns the transport.
+  const twitchAppTokenCache = yield* makeExecutionMemo(
+    Cache.makeWith(() => exchange.getTwitchAppToken(), {
+      capacity: 1,
+      timeToLive: (exit) =>
+        Exit.isSuccess(exit)
+          ? Duration.millis(Math.max(0, exit.value.expiresIn * 1000 - 300_000))
+          : Duration.zero,
+    }),
+  );
+
+  const getTwitchAppAccessToken = Effect.fn("TwitchService.getTwitchAppAccessToken")(function* () {
+    const cache = yield* twitchAppTokenCache;
+    const appToken = yield* Cache.get(cache, "twitch-app-token");
+
+    return appToken.accessToken;
+  });
+
+  const invalidateTwitchAppAccessToken = Effect.fn("TwitchService.invalidateTwitchAppAccessToken")(
+    function* () {
+      const cache = yield* twitchAppTokenCache;
+      yield* Cache.invalidate(cache, "twitch-app-token");
+    },
+  );
+
   const request = Effect.fn("TwitchService.request")(function* (
     operation: string,
     outgoing: HttpClientRequest.HttpClientRequest,
@@ -142,7 +180,7 @@ export const makeTwitchService = Effect.gen(function* () {
     mutation: boolean,
   ) {
     const token = yield* authorization === "app"
-      ? exchange.getTwitchAppToken()
+      ? getTwitchAppAccessToken()
       : tokens.getValidAccessToken("twitch");
 
     return yield* executeProviderRequest(client, {
@@ -154,7 +192,13 @@ export const makeTwitchService = Effect.gen(function* () {
         HttpClientRequest.bearerToken(token),
         HttpClientRequest.setHeader("Client-ID", configuration.twitch.clientId),
       ),
-    });
+    }).pipe(
+      Effect.tapError((error) =>
+        authorization === "app" && error.kind === "unauthorized"
+          ? invalidateTwitchAppAccessToken()
+          : Effect.void,
+      ),
+    );
   });
 
   const getStreamInfo = Effect.fn("TwitchService.getStreamInfo")(function* (userLogin: string) {
@@ -278,44 +322,56 @@ export const makeTwitchService = Effect.gen(function* () {
 
   const listEventSubSubscriptions = Effect.fn("TwitchService.listEventSubSubscriptions")(
     function* () {
-      const token = yield* exchange.getTwitchAppToken();
-      const subscriptions: ProviderEventSubSubscription[] = [];
-      let cursor: string | undefined;
+      const token = yield* getTwitchAppAccessToken();
 
-      for (let page = 0; page < 100; page++) {
-        const outgoing = HttpClientRequest.get(
-          "https://api.twitch.tv/helix/eventsub/subscriptions",
-        ).pipe(
-          HttpClientRequest.bearerToken(token),
-          HttpClientRequest.setHeader("Client-ID", configuration.twitch.clientId),
-        );
+      const pages = Stream.paginate(
+        { cursor: Option.none<string>(), page: 1 },
+        ({ cursor, page }) =>
+          Effect.gen(function* () {
+            const outgoing = HttpClientRequest.get(
+              "https://api.twitch.tv/helix/eventsub/subscriptions",
+            ).pipe(
+              HttpClientRequest.bearerToken(token),
+              HttpClientRequest.setHeader("Client-ID", configuration.twitch.clientId),
+            );
 
-        const response = yield* executeProviderRequest(client, {
-          provider: "twitch",
-          operation: "listEventSubSubscriptions",
-          mutation: false,
-          notFound: "not-found",
-          request:
-            cursor === undefined
-              ? outgoing
-              : outgoing.pipe(HttpClientRequest.setUrlParam("after", cursor)),
-        }).pipe(Effect.flatMap(subscriptionsDecode));
+            const response = yield* executeProviderRequest(client, {
+              provider: "twitch",
+              operation: "listEventSubSubscriptions",
+              mutation: false,
+              notFound: "not-found",
+              request: Option.match(cursor, {
+                onNone: () => outgoing,
+                onSome: (after) => outgoing.pipe(HttpClientRequest.setUrlParam("after", after)),
+              }),
+            }).pipe(
+              Effect.tapError((error) =>
+                error.kind === "unauthorized" ? invalidateTwitchAppAccessToken() : Effect.void,
+              ),
+              Effect.flatMap(subscriptionsDecode),
+            );
 
-        subscriptions.push(...response.data);
-        cursor = response.pagination?.cursor;
+            const nextCursor = Option.fromUndefinedOr(response.pagination?.cursor);
 
-        if (cursor === undefined) return subscriptions;
-      }
+            if (page === 100 && Option.isSome(nextCursor))
+              return yield* Effect.fail(
+                new ProviderError({
+                  provider: "twitch",
+                  operation: "listEventSubSubscriptions",
+                  kind: "invalid-response",
+                  status: 200,
+                  retryAfterMs: Option.none(),
+                }),
+              );
 
-      return yield* Effect.fail(
-        new ProviderError({
-          provider: "twitch",
-          operation: "listEventSubSubscriptions",
-          kind: "invalid-response",
-          status: 200,
-          retryAfterMs: Option.none(),
-        }),
+            return [
+              response.data,
+              Option.map(nextCursor, (after) => ({ cursor: Option.some(after), page: page + 1 })),
+            ];
+          }),
       );
+
+      return yield* Stream.runCollect(pages);
     },
   );
 

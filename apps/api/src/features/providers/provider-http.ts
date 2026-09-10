@@ -1,5 +1,5 @@
 import { ProviderError, type OAuthProvider } from "@cf-twitch/contracts/provider";
-import { Effect, Option, Schema } from "effect";
+import { Clock, DateTime, Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
 /** Provider HTTP status and transport classification never retains secret requests or response bodies. */
@@ -33,10 +33,11 @@ export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderReq
   );
 
   if (response.status >= 200 && response.status < 300) return response;
-  const seconds = Number(response.headers["retry-after"]);
 
   const retryAfterMs =
-    Number.isFinite(seconds) && seconds > 0 ? Math.min(Math.ceil(seconds * 1000), 900_000) : 1000;
+    response.status === 429
+      ? yield* parseProviderRetryAfter(response.headers["retry-after"])
+      : Option.none<number>();
 
   return yield* Effect.fail(
     new ProviderError({
@@ -53,8 +54,26 @@ export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderReq
           return "rejected";
         },
       }),
-      retryAfterMs: response.status === 429 ? Option.some(retryAfterMs) : Option.none(),
+      retryAfterMs,
     }),
+  );
+});
+
+const parseProviderRetryAfter = Effect.fn("ProviderHttp.parseProviderRetryAfter")(function* (
+  header: string | undefined,
+) {
+  const seconds = Number(header);
+
+  if (Number.isFinite(seconds))
+    return Option.some(seconds > 0 ? Math.min(Math.ceil(seconds * 1000), 900_000) : 1000);
+
+  const retryAt = DateTime.make(header ?? "");
+
+  if (Option.isNone(retryAt)) return Option.some(1000);
+  const now = yield* Clock.currentTimeMillis;
+
+  return Option.some(
+    Math.min(Math.max(Math.ceil(DateTime.toEpochMillis(retryAt.value) - now), 1000), 900_000),
   );
 });
 

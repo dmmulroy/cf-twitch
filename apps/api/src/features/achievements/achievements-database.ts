@@ -1,6 +1,6 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
 import { DateTime, Effect, Layer, Option, Schema } from "effect";
-import { SqlClient, type SqlError } from "effect/unstable/sql";
+import { SqlClient, SqlSchema, type SqlError } from "effect/unstable/sql";
 import {
   AchievementDefinition,
   AchievementError,
@@ -49,13 +49,9 @@ const StoredSession = Schema.Struct({
   transitionAt: IsoTimestamp,
 });
 
-const parseDefinitions = Schema.decodeUnknownEffect(Schema.Array(AchievementDefinition));
-
 const parseProgress = Schema.decodeUnknownEffect(Schema.Array(StoredProgress));
 
 const parseStreaks = Schema.decodeUnknownEffect(Schema.Array(StoredStreak));
-
-const parseSession = Schema.decodeUnknownEffect(Schema.Array(StoredSession));
 
 const parseCount = Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ count: Schema.Int })));
 
@@ -158,11 +154,14 @@ export const makeAchievements = Effect.gen(function* () {
     "event_id AS eventId,event_type AS eventType,user_id AS userId,user_display_name AS userDisplayName,timestamp,metadata",
   );
 
-  const readDefinitions = Effect.fn("Achievements.readDefinitions")(function* () {
-    return yield* parseDefinitions(
-      yield* sql`SELECT id,name,description,icon,category,threshold,trigger_event AS triggerEvent,scope FROM achievement_definitions`,
-    );
-  });
+  const readDefinitions = Effect.fn("Achievements.readDefinitions")(
+    SqlSchema.findAll({
+      Request: Schema.Void,
+      Result: AchievementDefinition,
+      execute: () =>
+        sql`SELECT id,name,description,icon,category,threshold,trigger_event AS triggerEvent,scope FROM achievement_definitions`,
+    }),
+  );
 
   const readProgress = Effect.fn("Achievements.readProgress")(function* (userId: ViewerId) {
     return yield* parseProgress(
@@ -249,13 +248,14 @@ export const makeAchievements = Effect.gen(function* () {
     return rows.length > 0;
   });
 
-  const readSession = Effect.fn("Achievements.readSession")(function* () {
-    const rows = yield* parseSession(
-      yield* sql`SELECT status,stream_id AS streamId,started_at AS startedAt,transition_at AS transitionAt FROM achievement_stream_session WHERE singleton_id=1`,
-    );
-
-    return Option.fromNullishOr(rows[0]);
-  });
+  const readSession = Effect.fn("Achievements.readSession")(
+    SqlSchema.findOneOption({
+      Request: Schema.Void,
+      Result: StoredSession,
+      execute: () =>
+        sql`SELECT status,stream_id AS streamId,started_at AS startedAt,transition_at AS transitionAt FROM achievement_stream_session WHERE singleton_id=1`,
+    }),
+  );
 
   const applyTransition = Effect.fn("Achievements.applyTransition")(function* (
     event: Extract<DomainEventType, { type: "stream_online" | "stream_offline" }>,

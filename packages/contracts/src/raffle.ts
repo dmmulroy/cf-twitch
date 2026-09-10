@@ -1,5 +1,12 @@
 import { Schema } from "effect";
-import { IsoTimestamp, PageSize, RedemptionId, ViewerId } from "./identity.ts";
+import {
+  IsoTimestamp,
+  NonNegativeInt,
+  PageSize,
+  PositiveInt,
+  RedemptionId,
+  ViewerId,
+} from "./identity.ts";
 
 /** Keyboard raffle numbers are inclusive, from one through ten thousand. */
 export const RaffleNumber = Schema.Int.check(
@@ -60,8 +67,8 @@ export interface RaffleRecordResult extends Schema.Schema.Type<typeof RaffleReco
 export const RaffleLeaderboardEntry = Schema.Struct({
   userId: ViewerId,
   displayName: Schema.NonEmptyString,
-  totalRolls: Schema.Int.check(Schema.isGreaterThan(0)),
-  totalWins: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  totalRolls: PositiveInt,
+  totalWins: NonNegativeInt,
   closestDistance: Schema.OptionFromNullOr(RaffleDistance),
   closestRoll: Schema.OptionFromNullOr(RaffleNumber),
   closestWinningNumber: Schema.OptionFromNullOr(RaffleNumber),

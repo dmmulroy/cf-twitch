@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   Cause,
+  Crypto,
   Effect,
   ErrorReporter,
   Exit,
@@ -22,6 +23,13 @@ import { twitchHttpCorrelationLayer } from "./http-request-correlation.ts";
 import { httpTestConfiguration } from "./http-test-fixtures.ts";
 
 const oauthApi = HttpApi.make("TwitchHttpApi").add(TwitchOAuthApi);
+
+const fixedRequestId = "00000000-0000-4000-8000-000000000000";
+
+const fixedRequestCrypto = Crypto.make({
+  randomBytes: (size) => new Uint8Array(size),
+  digest: () => Effect.die("HTTP correlation test does not use cryptographic digests"),
+});
 
 const findResponseSpan = (spans: readonly Tracer.NativeSpan[], response: Response | undefined) =>
   spans.find((span) => span.traceId === response?.headers.get("x-trace-id"));
@@ -106,6 +114,7 @@ describe("safe HTTP trace export", () => {
           Layer.provide(twitchHttpCorrelationLayer),
           Layer.provide([
             cloudflareHttpServerLayer,
+            Layer.succeed(Crypto.Crypto, fixedRequestCrypto),
             Layer.succeed(TwitchConfiguration, httpTestConfiguration),
             Layer.mock(OAuthAuthorization, {
               beginAuthorization: (input) => {
@@ -220,6 +229,9 @@ describe("safe HTTP trace export", () => {
         const serverSpans = spans.filter((span) => span.kind === "server");
         expect(serverSpans).toHaveLength(6);
         expectResponseCorrelations(serverSpans, responses.slice(0, 5));
+        expect(
+          responses.slice(0, 5).map((response) => response.headers.get("x-request-id")),
+        ).toEqual(Array.from({ length: 5 }, () => fixedRequestId));
         expect(serverSpans[2]?.attributes.get("http.failure.classification")).toBe(
           "expected_http_failure",
         );

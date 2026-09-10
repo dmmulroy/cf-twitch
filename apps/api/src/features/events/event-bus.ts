@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Context, Effect, Layer, Option, Schema, Semaphore } from "effect";
 import {
   encodeDomainEventJson,
   parseDomainEventJson,
@@ -81,11 +81,7 @@ const subscriptionFromRow = (row: SubscriptionRow): EventBusSubscription => ({
   createdAt: row.created_at,
 });
 
-const decodeEventOption = (encoded: string) =>
-  parseDomainEventJson(encoded).pipe(
-    Effect.map(Option.some),
-    Effect.catch(() => Effect.succeed(Option.none<DomainEvent>())),
-  );
+const decodeEventOption = (encoded: string) => parseDomainEventJson(encoded).pipe(Effect.option);
 
 const pendingItemFromRow = (row: PendingEventRow): Effect.Effect<PendingEventItem> =>
   decodeEventOption(row.event).pipe(
@@ -116,6 +112,7 @@ export const makeEventBus = Effect.gen(function* () {
   const database = yield* EventBusDatabase;
   const handler = yield* EventHandler;
   const alarm = yield* EventBusAlarm;
+  const dueProcessingSemaphore = yield* Semaphore.make(1);
 
   const rebuildAlarm = Effect.fn("EventBus.rebuildAlarm")(function* () {
     const wakeAt = yield* database.earliestWakeAt();
@@ -198,7 +195,7 @@ export const makeEventBus = Effect.gen(function* () {
     yield* database.reschedule({ eventId: pending.id, attempts: attempt, nextRetryAt });
   });
 
-  const processDue = Effect.fn("EventBus.processDue")(function* () {
+  const processDueWithoutPermit = Effect.fn("EventBus.processDueWithoutPermit")(function* () {
     const { now } = yield* nowAndAfter(0);
     const due = yield* database.listDue(now);
 
@@ -209,6 +206,10 @@ export const makeEventBus = Effect.gen(function* () {
     yield* database.purgeExpiredDeadLetters(now);
     yield* rebuildAlarm();
   });
+
+  const processDue = Effect.fn("EventBus.processDue")(() =>
+    dueProcessingSemaphore.withPermit(processDueWithoutPermit()),
+  );
 
   const publisher: IEventPublisher = {
     publish: Effect.fn("EventPublisher.publish")(function* (event) {

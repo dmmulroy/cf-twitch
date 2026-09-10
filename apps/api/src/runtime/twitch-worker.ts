@@ -2,7 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { HttpEffect } from "alchemy/Http";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Effect, ErrorReporter, Layer } from "effect";
+import { Crypto, Effect, ErrorReporter, Layer } from "effect";
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http";
 import { achievementsClientLayer } from "../features/achievements/achievements-client.ts";
 import type { AchievementsServer } from "../features/achievements/achievements-server.ts";
@@ -111,6 +111,7 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
   const songQueue = yield* SongQueue;
   const stream = yield* StreamLifecycleClient;
   const configuration = yield* TwitchConfiguration;
+  const crypto = yield* Crypto.Crypto;
   const errorReporters = yield* ErrorReporter.CurrentErrorReporters;
 
   const runtimeServices = Layer.mergeAll(
@@ -124,6 +125,7 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
     Layer.succeed(SongQueue, songQueue),
     Layer.succeed(StreamLifecycleClient, stream),
     Layer.succeed(TwitchConfiguration, configuration),
+    Layer.succeed(Crypto.Crypto, crypto),
   );
 
   // Router acquisition is scoped in Effect rc.112; never attach it to workerd's unclosed isolate scope.
@@ -138,9 +140,7 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
     ),
   );
 
-  const fetch: HttpEffect = Effect.gen(function* () {
-    return yield* yield* requestRouter;
-  });
+  const fetch: HttpEffect = Effect.flatten(requestRouter);
 
   return { fetch };
 });

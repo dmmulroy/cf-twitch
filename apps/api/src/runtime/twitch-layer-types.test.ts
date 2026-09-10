@@ -17,6 +17,12 @@ type RuntimeOnlyRequirement = Cloudflare.DurableObjectState | Scope.Scope;
 
 it("provides cryptography at the Worker root without leaking it into the Stack", () => {
   expectTypeOf<
+    Extract<Layer.Services<typeof raffleServerLayer>, Crypto.Crypto>
+  >().toEqualTypeOf<Crypto.Crypto>();
+  expectTypeOf<
+    Extract<Layer.Services<typeof streamLifecycleServerLayerWithoutDependencies>, Crypto.Crypto>
+  >().toEqualTypeOf<Crypto.Crypto>();
+  expectTypeOf<
     Extract<Layer.Services<typeof twitchApiWorkerLayer>, Crypto.Crypto>
   >().toEqualTypeOf<never>();
 });

@@ -1,6 +1,6 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Option, Ref, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { DomainEvent, encodeDomainEventJson } from "@cf-twitch/contracts/domain-event";
 import { EventId, IsoTimestamp, PageSize } from "@cf-twitch/contracts/identity";
@@ -188,6 +188,94 @@ describe("Event Bus", () => {
           event: "{corrupt-event-json",
           error: "Stored Event Bus delivery is invalid",
         });
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("projects valid and corrupt administrative event evidence as Options", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(timestamp));
+      const alarmUpdates = yield* Ref.make<ReadonlyArray<Option.Option<IsoTimestamp>>>([]);
+
+      const layer = makeEventBusTestLayer(
+        EventHandler.of({ handleDomainEvent: () => Effect.void }),
+        alarmUpdates,
+      );
+
+      yield* Effect.gen(function* () {
+        const database = yield* EventBusDatabase;
+        const administration = yield* EventBusAdministration;
+        const encodedReplayEvent = yield* encodeDomainEventJson(replayEvent);
+        yield* database.accept({
+          eventId,
+          encodedEvent: "{corrupt-event-json",
+          now: timestamp,
+          firstRetryAt: timestampAfter(10_000),
+        });
+        yield* database.accept({
+          eventId: replayEventId,
+          encodedEvent: encodedReplayEvent,
+          now: timestamp,
+          firstRetryAt: timestampAfter(10_000),
+        });
+
+        const pending = yield* administration.listPending(firstPage);
+
+        expect(pending.items.map((item) => item.event)).toEqual([
+          Option.none(),
+          Option.some(replayEvent),
+        ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("serializes concurrent due processing before external delivery", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(timestamp));
+      const alarmUpdates = yield* Ref.make<ReadonlyArray<Option.Option<IsoTimestamp>>>([]);
+      const deliveryCount = yield* Ref.make(0);
+      const firstDeliveryEntered = yield* Deferred.make<void>();
+      const concurrentDeliveryEntered = yield* Deferred.make<void>();
+
+      const layer = makeEventBusTestLayer(
+        EventHandler.of({
+          handleDomainEvent: () =>
+            Effect.gen(function* () {
+              const delivery = yield* Ref.getAndUpdate(deliveryCount, (count) => count + 1);
+
+              if (delivery === 0) {
+                yield* Deferred.succeed(firstDeliveryEntered, undefined);
+                yield* Effect.never;
+              } else {
+                yield* Deferred.succeed(concurrentDeliveryEntered, undefined);
+              }
+            }),
+        }),
+        alarmUpdates,
+      );
+
+      yield* Effect.gen(function* () {
+        const database = yield* EventBusDatabase;
+        const processor = yield* EventBusProcessor;
+        const encodedEvent = yield* encodeDomainEventJson(event);
+        yield* database.accept({
+          eventId,
+          encodedEvent,
+          now: timestamp,
+          firstRetryAt: timestamp,
+        });
+
+        const first = yield* Effect.forkChild(processor.processDue());
+        yield* Deferred.await(firstDeliveryEntered);
+        const second = yield* Effect.forkChild(processor.processDue());
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
+
+        expect(yield* Deferred.isDone(concurrentDeliveryEntered)).toBe(false);
+        yield* Fiber.interrupt(first);
+        yield* Fiber.join(second);
+        expect(yield* Ref.get(deliveryCount)).toBe(2);
+        expect((yield* database.counts()).deliveredCount).toBe(1);
       }).pipe(Effect.provide(layer));
     }),
   );

@@ -16,6 +16,7 @@ import { TwitchRaffleViewerResponse } from "@cf-twitch/contracts/twitch-api";
 import { OAuthStateHttpApi } from "../src/features/oauth/oauth-state-http-api.ts";
 import { fullWorkerScenarioStack } from "./scenario/full-worker-scenario.ts";
 import { oauthScenarioStack } from "./scenario/oauth-scenario-stack.ts";
+import { fetchE2eResponse, fetchE2eText } from "./support/e2e-http-boundary.ts";
 
 const stage = Effect.runSync(cfTwitchInfrastructureStageConfig);
 
@@ -64,14 +65,14 @@ class ScenarioObservableStatePending extends Schema.TaggedError<ScenarioObservab
   }
 }
 
-type ScenarioObservableCondition<A> = {
+type ScenarioObservableCondition<A, E> = {
   readonly description: string;
-  readonly probe: Effect.Effect<A, Schema.SchemaError>;
+  readonly probe: Effect.Effect<A, E>;
   readonly isReady: (value: A) => boolean;
 };
 
-const waitForScenarioObservableValue = <A>(
-  condition: ScenarioObservableCondition<A>,
+const waitForScenarioObservableValue = <A, E>(
+  condition: ScenarioObservableCondition<A, E>,
 ): Effect.Effect<A, never> =>
   Effect.gen(function* () {
     const value = yield* condition.probe;
@@ -127,8 +128,14 @@ const signEventSubRequest = async (input: {
   });
 };
 
-const authorizeProvider = async (url: string, provider: "spotify" | "twitch") => {
-  const authorize = await fetch(`${url}/oauth/${provider}/authorize`, {
+const fetchScenarioJson = (input: RequestInfo | URL, init?: RequestInit) =>
+  fetchE2eText(input, init).pipe(Effect.map(({ body }) => JSON.parse(body)));
+
+const authorizeProvider = Effect.fn("E2e.authorizeProvider")(function* (
+  url: string,
+  provider: "spotify" | "twitch",
+) {
+  const authorize = yield* fetchE2eResponse(`${url}/oauth/${provider}/authorize`, {
     headers: { "x-setup-secret": "setup-secret" },
     redirect: "manual",
   });
@@ -139,12 +146,12 @@ const authorizeProvider = async (url: string, provider: "spotify" | "twitch") =>
   const state = new URL(location ?? "https://invalid.local").searchParams.get("state");
   expect(state).not.toBeNull();
 
-  const callback = await fetch(
+  const callback = yield* fetchE2eResponse(
     `${url}/oauth/${provider}/callback?state=${encodeURIComponent(state ?? "")}&code=scenario-code`,
   );
 
   expect(callback.status).toBe(200);
-};
+});
 
 it.effect("preserves fixed lowercase EventSub signatures including leading zero bytes", () =>
   Effect.gen(function* () {
@@ -165,7 +172,7 @@ it.effect("preserves fixed lowercase EventSub signatures including leading zero 
     ];
 
     for (const { messageId, body, signature } of vectors) {
-      const request = yield* Effect.promise(() =>
+      const request = yield* Effect.tryPromise(() =>
         signEventSubRequest({
           url: "https://worker.test",
           body,
@@ -176,7 +183,7 @@ it.effect("preserves fixed lowercase EventSub signatures including leading zero 
       );
 
       expect(request.headers.get("twitch-eventsub-message-signature")).toBe(signature);
-      expect(yield* Effect.promise(() => request.text())).toBe(body);
+      expect(yield* Effect.tryPromise(() => request.text())).toBe(body);
     }
   }),
 );
@@ -275,9 +282,9 @@ test.provider(
       if (deployed.url === undefined)
         return yield* Effect.die("Full Worker scenario URL is unavailable");
       const scenarioUrl = deployed.url;
-      const health = yield* Effect.promise(() => fetch(`${scenarioUrl}/health`));
-      expect(health.status).toBe(200);
-      expect(yield* Effect.promise(() => health.json())).toEqual({ status: "ok" });
+      const health = yield* fetchE2eText(`${scenarioUrl}/health`);
+      expect(health.response.status).toBe(200);
+      expect(JSON.parse(health.body)).toEqual({ status: "ok" });
 
       const postSignedNotification = (input: {
         readonly body: Schema.Json;
@@ -285,22 +292,24 @@ test.provider(
         readonly timestamp: string;
         readonly subscriptionType: string;
       }) =>
-        Effect.promise(async () => {
+        Effect.gen(function* () {
           const body = JSON.stringify(input.body);
           const messageId = input.messageId ?? randomEventSubMessageId();
 
-          const request = await signEventSubRequest({
-            url: scenarioUrl,
-            body,
-            messageId,
-            timestamp: input.timestamp,
-            subscriptionType: input.subscriptionType,
-          });
+          const request = yield* Effect.tryPromise(() =>
+            signEventSubRequest({
+              url: scenarioUrl,
+              body,
+              messageId,
+              timestamp: input.timestamp,
+              subscriptionType: input.subscriptionType,
+            }),
+          );
 
-          const response = await fetch(request);
-          const responseBody = await response.text();
-          expect(response.status, responseBody).toBe(200);
-          expect(JSON.parse(responseBody)).toEqual({ success: true });
+          const delivered = yield* fetchE2eText(request);
+
+          expect(delivered.response.status, delivered.body).toBe(200);
+          expect(JSON.parse(delivered.body)).toEqual({ success: true });
 
           return messageId;
         });
@@ -308,10 +317,8 @@ test.provider(
       const waitForReceiptCompletion = (messageId: EventSubMessageId) =>
         waitForScenarioObservableValue({
           description: `EventSub receipt ${messageId} to complete`,
-          probe: Effect.promise(() =>
-            fetch(
-              `${scenarioUrl}/__scenario/eventsub-receipt-status?messageId=${encodeURIComponent(messageId)}`,
-            ).then((response) => response.json()),
+          probe: fetchScenarioJson(
+            `${scenarioUrl}/__scenario/eventsub-receipt-status?messageId=${encodeURIComponent(messageId)}`,
           ).pipe(Effect.flatMap(parseScenarioEventSubReceiptStatus)),
           isReady: (status) => Option.isSome(status) && status.value.status === "completed",
         });
@@ -321,38 +328,35 @@ test.provider(
         "content-type": "application/json",
       };
 
-      const createdCommand = yield* Effect.promise(() =>
-        fetch(`${scenarioUrl}/api/admin/commands`, {
-          method: "POST",
-          headers: adminHeaders,
-          body: JSON.stringify({
-            name: "scenario-command",
-            description: "Full workerd scenario command",
-            category: "info",
-            responseType: "static",
-            permission: "everyone",
-            initialValue: "scenario-value",
-          }),
+      const createdCommand = yield* fetchE2eResponse(`${scenarioUrl}/api/admin/commands`, {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({
+          name: "scenario-command",
+          description: "Full workerd scenario command",
+          category: "info",
+          responseType: "static",
+          permission: "everyone",
+          initialValue: "scenario-value",
         }),
-      );
+      });
 
       expect(createdCommand.status).toBe(201);
 
-      const patchedCommand = yield* Effect.promise(() =>
-        fetch(`${scenarioUrl}/api/admin/commands/scenario-command`, {
+      const patchedCommand = yield* fetchE2eResponse(
+        `${scenarioUrl}/api/admin/commands/scenario-command`,
+        {
           method: "PATCH",
           headers: adminHeaders,
           body: JSON.stringify({ enabled: false }),
-        }),
+        },
       );
 
       expect(patchedCommand.status).toBe(200);
 
-      const listedCommands = yield* Effect.promise(() =>
-        fetch(`${scenarioUrl}/api/admin/commands`, { headers: adminHeaders }).then((response) =>
-          response.json(),
-        ),
-      );
+      const listedCommands = yield* fetchScenarioJson(`${scenarioUrl}/api/admin/commands`, {
+        headers: adminHeaders,
+      });
 
       expect(listedCommands).toEqual(
         expect.arrayContaining([
@@ -360,26 +364,28 @@ test.provider(
         ]),
       );
 
-      const deletedCommand = yield* Effect.promise(() =>
-        fetch(`${scenarioUrl}/api/admin/commands/scenario-command`, {
+      const deletedCommand = yield* fetchE2eResponse(
+        `${scenarioUrl}/api/admin/commands/scenario-command`,
+        {
           method: "DELETE",
           headers: adminHeaders,
-        }),
+        },
       );
 
       expect(deletedCommand.status).toBe(200);
 
       // Both authorization paths traverse native OAuth state, Effect Crypto, controlled provider
       // response parsing, and the real provider-token Durable Objects before EventSub intake.
-      yield* Effect.promise(() => authorizeProvider(scenarioUrl, "spotify"));
-      yield* Effect.promise(() => authorizeProvider(scenarioUrl, "twitch"));
+      yield* authorizeProvider(scenarioUrl, "spotify");
+      yield* authorizeProvider(scenarioUrl, "twitch");
 
-      const concurrentRefresh = yield* Effect.promise(() =>
-        fetch(`${scenarioUrl}/__scenario/provider-token/concurrent-refresh`, { method: "POST" }),
+      const concurrentRefresh = yield* fetchE2eText(
+        `${scenarioUrl}/__scenario/provider-token/concurrent-refresh`,
+        { method: "POST" },
       );
 
-      expect(concurrentRefresh.status).toBe(200);
-      expect(yield* Effect.promise(() => concurrentRefresh.json())).toEqual({
+      expect(concurrentRefresh.response.status).toBe(200);
+      expect(JSON.parse(concurrentRefresh.body)).toEqual({
         concurrentCallersConverged: true,
         callersReturnedCommittedToken: true,
       });
@@ -427,11 +433,9 @@ test.provider(
 
       const commandSnapshot = yield* waitForScenarioObservableValue({
         description: "the skillissue command counter to reach one",
-        probe: Effect.promise(() =>
-          fetch(`${scenarioUrl}/api/admin/commands/debug/snapshot`, {
-            headers: adminHeaders,
-          }).then((response) => response.json()),
-        ).pipe(Effect.flatMap(parseScenarioCommandSnapshot)),
+        probe: fetchScenarioJson(`${scenarioUrl}/api/admin/commands/debug/snapshot`, {
+          headers: adminHeaders,
+        }).pipe(Effect.flatMap(parseScenarioCommandSnapshot)),
         isReady: (snapshot) =>
           snapshot.commands.some(
             (command) => command.name === "skillissue" && command.counter === 1,
@@ -473,7 +477,7 @@ test.provider(
         },
       });
 
-      const request = yield* Effect.promise(() =>
+      const request = yield* Effect.tryPromise(() =>
         signEventSubRequest({
           url: scenarioUrl,
           body,
@@ -483,17 +487,17 @@ test.provider(
         }),
       );
 
-      const accepted = yield* Effect.promise(() => fetch(request));
-      const acceptedBody = yield* Effect.promise(() => accepted.text());
-      expect(accepted.status, acceptedBody).toBe(200);
+      const accepted = yield* fetchE2eText(request);
+      const acceptedBody = accepted.body;
+      expect(accepted.response.status, acceptedBody).toBe(200);
       expect(JSON.parse(acceptedBody)).toEqual({ success: true });
       yield* waitForReceiptCompletion(messageId);
 
       const queueBody = yield* waitForScenarioObservableValue({
         description: "the accepted Song Request to enter the queue",
-        probe: Effect.promise(() =>
-          fetch(`${scenarioUrl}/api/queue?limit=10`).then((response) => response.json()),
-        ).pipe(Effect.flatMap(parseScenarioSongQueue)),
+        probe: fetchScenarioJson(`${scenarioUrl}/api/queue?limit=10`).pipe(
+          Effect.flatMap(parseScenarioSongQueue),
+        ),
         isReady: (queue) =>
           queue.tracks.some(
             (track) => track.source === "user" && track.eventId === "scenario-song-redemption",
@@ -517,21 +521,23 @@ test.provider(
       ).toHaveLength(1);
 
       // Signed redelivery re-enters the real inbox but must not duplicate completed workflow state.
-      const replay = yield* Effect.promise(() =>
+      const replayRequest = yield* Effect.tryPromise(() =>
         signEventSubRequest({
           url: scenarioUrl,
           body,
           messageId,
           timestamp,
           subscriptionType: "channel.channel_points_custom_reward_redemption.add",
-        }).then(fetch),
+        }),
       );
+
+      const replay = yield* fetchE2eResponse(replayRequest);
 
       expect(replay.status).toBe(200);
 
-      const afterReplay = yield* Effect.promise(() =>
-        fetch(`${scenarioUrl}/api/queue?limit=10`).then((response) => response.json()),
-      ).pipe(Effect.flatMap(parseScenarioSongQueue));
+      const afterReplay = yield* fetchScenarioJson(`${scenarioUrl}/api/queue?limit=10`).pipe(
+        Effect.flatMap(parseScenarioSongQueue),
+      );
 
       expect(
         afterReplay.tracks.filter(
@@ -539,8 +545,8 @@ test.provider(
         ),
       ).toHaveLength(1);
 
-      const transcript = yield* Effect.promise(() =>
-        fetch(`${scenarioUrl}/__scenario/provider-transcript`).then((response) => response.json()),
+      const transcript = yield* fetchScenarioJson(
+        `${scenarioUrl}/__scenario/provider-transcript`,
       ).pipe(Effect.flatMap(parseScenarioProviderTranscript));
 
       expect(
@@ -559,10 +565,8 @@ test.provider(
 
       const achievementProgress = yield* waitForScenarioObservableValue({
         description: "the first Song Request achievement to unlock",
-        probe: Effect.promise(() =>
-          fetch(`${scenarioUrl}/api/achievements/${encodeURIComponent("Scenario Viewer")}`).then(
-            (response) => response.json(),
-          ),
+        probe: fetchScenarioJson(
+          `${scenarioUrl}/api/achievements/${encodeURIComponent("Scenario Viewer")}`,
         ).pipe(Effect.flatMap(parseScenarioViewerAchievementProgress)),
         isReady: (progress) =>
           progress.some(
@@ -612,9 +616,9 @@ test.provider(
 
       const raffleStats = yield* waitForScenarioObservableValue({
         description: "the Keyboard Raffle roll to persist",
-        probe: Effect.promise(() =>
-          fetch(`${scenarioUrl}/api/stats/raffle/user/123456`).then((response) => response.json()),
-        ).pipe(Effect.flatMap(parseScenarioRaffleStats)),
+        probe: fetchScenarioJson(`${scenarioUrl}/api/stats/raffle/user/123456`).pipe(
+          Effect.flatMap(parseScenarioRaffleStats),
+        ),
         isReady: (stats) => stats.totalRolls === 1,
       });
 
@@ -651,11 +655,9 @@ test.provider(
 
       const liveState = yield* waitForScenarioObservableValue({
         description: "the online Stream Session state",
-        probe: Effect.promise(() =>
-          fetch(`${scenarioUrl}/api/debug/stream-state`, { headers: adminHeaders }).then(
-            (response) => response.json(),
-          ),
-        ).pipe(Effect.flatMap(parseScenarioStreamState)),
+        probe: fetchScenarioJson(`${scenarioUrl}/api/debug/stream-state`, {
+          headers: adminHeaders,
+        }).pipe(Effect.flatMap(parseScenarioStreamState)),
         isReady: (state) => state.isLive && state.startedAt === onlineTimestamp,
       });
 
@@ -689,11 +691,9 @@ test.provider(
 
       const offlineState = yield* waitForScenarioObservableValue({
         description: "the offline Stream Session state",
-        probe: Effect.promise(() =>
-          fetch(`${scenarioUrl}/api/debug/stream-state`, { headers: adminHeaders }).then(
-            (response) => response.json(),
-          ),
-        ).pipe(Effect.flatMap(parseScenarioStreamState)),
+        probe: fetchScenarioJson(`${scenarioUrl}/api/debug/stream-state`, {
+          headers: adminHeaders,
+        }).pipe(Effect.flatMap(parseScenarioStreamState)),
         isReady: (state) => !state.isLive && state.endedAt === offlineTimestamp,
       });
 

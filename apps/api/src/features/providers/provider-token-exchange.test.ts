@@ -99,7 +99,9 @@ it.effect("Twitch app tokens use client credentials without a user refresh token
       ),
     );
 
-    expect(Redacted.value(result)).toBe("app-only");
+    expect(Redacted.value(result.accessToken)).toBe("app-only");
+    expect(result.expiresIn).toBe(3600);
+    expect(Option.isNone(result.refreshToken)).toBe(true);
   }),
 );
 

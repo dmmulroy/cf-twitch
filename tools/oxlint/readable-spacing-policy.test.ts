@@ -1,10 +1,12 @@
+import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { Effect, FileSystem } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { join } from "node:path";
 import { RuleTester } from "oxlint/plugins-dev";
 
 import { requireReadableSpacingRule } from "./anti-slop/rules/require-readable-spacing.ts";
+import { makeOxlintPolicyProbeDirectory, runOxlintPolicyCommand } from "./oxlint-policy-process.ts";
 
 RuleTester.describe = describe;
 
@@ -38,71 +40,87 @@ tester.run("anti-slop/require-readable-spacing", requireReadableSpacingRule, {
   ],
 });
 
-const probeRoot = join("tools", "oxlint", `.generated-spacing-probe-${process.pid}`);
+const runSpacingProbeCommand = (...args: ReadonlyArray<string>) =>
+  runOxlintPolicyCommand(
+    ChildProcess.make("pnpm", ["exec", "vp", ...args], {
+      cwd: process.cwd(),
+      extendEnv: true,
+    }),
+  );
 
-const runSpacingProbeCommand = (...args: ReadonlyArray<string>) => {
-  const result = spawnSync("pnpm", ["exec", "vp", ...args], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-  });
-
-  return { status: result.status, output: `${result.stdout ?? ""}\n${result.stderr ?? ""}` };
-};
+const withNodeServices = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>) =>
+  effect.pipe(Effect.provide(NodeServices.layer));
 
 describe("root readable spacing policy", () => {
-  it("rejects condensed code, fixes it through the root plugin, and converges with Oxfmt", () => {
-    mkdirSync(probeRoot, { recursive: true });
+  it.effect(
+    "rejects condensed code, fixes it through the root plugin, and converges with Oxfmt",
+    () =>
+      withNodeServices(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fileSystem = yield* FileSystem.FileSystem;
+            const probeRoot = yield* makeOxlintPolicyProbeDirectory(".generated-spacing-probe-");
+            const file = join(probeRoot, "spacing.ts");
+            yield* fileSystem.writeFileString(
+              file,
+              "export const firstSpacingProbe = 1;\n/** Keep this attached. */\nexport const secondSpacingProbe = 2;\n",
+            );
 
-    const file = join(probeRoot, "spacing.ts");
+            const rejected = yield* runSpacingProbeCommand("lint", file);
 
-    writeFileSync(
-      file,
-      "export const firstSpacingProbe = 1;\n/** Keep this attached. */\nexport const secondSpacingProbe = 2;\n",
-    );
+            expect(rejected.status, rejected.output).not.toBe(ChildProcessSpawner.ExitCode(0));
+            expect(rejected.output).toContain("require-readable-spacing");
 
-    try {
-      const rejected = runSpacingProbeCommand("lint", file);
+            const fixed = yield* runSpacingProbeCommand("lint", "--fix", file);
 
-      expect(rejected.status, rejected.output).not.toBe(0);
-      expect(rejected.output).toContain("require-readable-spacing");
+            expect(fixed.status, fixed.output).toBe(ChildProcessSpawner.ExitCode(0));
+            expect(yield* fileSystem.readFileString(file)).toContain(
+              "1;\n\n/** Keep this attached. */",
+            );
 
-      const fixed = runSpacingProbeCommand("lint", "--fix", file);
+            const formatted = yield* runSpacingProbeCommand("fmt", file);
 
-      expect(fixed.status, fixed.output).toBe(0);
-      expect(readFileSync(file, "utf8")).toContain("1;\n\n/** Keep this attached. */");
+            expect(formatted.status, formatted.output).toBe(ChildProcessSpawner.ExitCode(0));
 
-      const formatted = runSpacingProbeCommand("fmt", file);
+            const stable = yield* fileSystem.readFileString(file);
+            const clean = yield* runSpacingProbeCommand("lint", file);
 
-      expect(formatted.status, formatted.output).toBe(0);
+            expect(clean.status, clean.output).toBe(ChildProcessSpawner.ExitCode(0));
 
-      const stable = readFileSync(file, "utf8");
-      const clean = runSpacingProbeCommand("lint", file);
+            const fixedAgain = yield* runSpacingProbeCommand("lint", "--fix", file);
+            const formattedAgain = yield* runSpacingProbeCommand("fmt", file);
 
-      expect(clean.status, clean.output).toBe(0);
+            expect(fixedAgain.status, fixedAgain.output).toBe(ChildProcessSpawner.ExitCode(0));
+            expect(formattedAgain.status, formattedAgain.output).toBe(
+              ChildProcessSpawner.ExitCode(0),
+            );
+            expect(yield* fileSystem.readFileString(file)).toBe(stable);
+          }),
+        ),
+      ),
+    30_000,
+  );
 
-      const fixedAgain = runSpacingProbeCommand("lint", "--fix", file);
-      const formattedAgain = runSpacingProbeCommand("fmt", file);
+  it.effect("ships identical spacing code, license, and provenance in both maintained copies", () =>
+    withNodeServices(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
 
-      expect(fixedAgain.status, fixedAgain.output).toBe(0);
-      expect(formattedAgain.status, formattedAgain.output).toBe(0);
-      expect(readFileSync(file, "utf8")).toBe(stable);
-    } finally {
-      rmSync(probeRoot, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  it("ships identical spacing code, license, and provenance in both maintained copies", () => {
-    for (const file of [
-      "rules/require-readable-spacing.ts",
-      "vendor/eslint-stylistic/padding-line-between-statements.ts",
-      "vendor/eslint-stylistic/padding-line-ast.ts",
-      "vendor/eslint-stylistic/padding-line-options.d.ts",
-      "vendor/eslint-stylistic/LICENSE",
-      "vendor/eslint-stylistic/UPSTREAM.md",
-    ]) {
-      expect(readFileSync(join("tools/oxlint/anti-slop", file), "utf8")).toBe(
-        readFileSync(join(".agents/skills/install-anti-slop/assets/anti-slop", file), "utf8"),
-      );
-    }
-  });
+        for (const file of [
+          "rules/require-readable-spacing.ts",
+          "vendor/eslint-stylistic/padding-line-between-statements.ts",
+          "vendor/eslint-stylistic/padding-line-ast.ts",
+          "vendor/eslint-stylistic/padding-line-options.d.ts",
+          "vendor/eslint-stylistic/LICENSE",
+          "vendor/eslint-stylistic/UPSTREAM.md",
+        ]) {
+          expect(yield* fileSystem.readFileString(join("tools/oxlint/anti-slop", file))).toBe(
+            yield* fileSystem.readFileString(
+              join(".agents/skills/install-anti-slop/assets/anti-slop", file),
+            ),
+          );
+        }
+      }),
+    ),
+  );
 });

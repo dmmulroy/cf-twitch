@@ -1,4 +1,4 @@
-import { Clock, Context, Crypto, Effect, Layer, Option, Schema, Semaphore } from "effect";
+import { Clock, Context, Crypto, Effect, Encoding, Layer, Option, Schema, Semaphore } from "effect";
 import { EventId, RedemptionId, SpotifyTrackId } from "@cf-twitch/contracts/identity";
 import { DomainEvent, RaffleRollEvent } from "@cf-twitch/contracts/domain-event";
 import { RaffleRecordResult } from "@cf-twitch/contracts/raffle";
@@ -121,7 +121,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
     const bytes = digest.slice(0, 16);
     bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
     bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
-    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const hex = Encoding.encodeHex(bytes);
 
     return EventId.make(
       `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
@@ -503,12 +503,10 @@ export const makeWorkflowExecution = Effect.gen(function* () {
     );
   });
 
-  const resume = Effect.fn("WorkflowExecution.resume")(() =>
-    permit.withPermits(1)(resumeUnlocked()),
-  );
+  const resume = Effect.fn("WorkflowExecution.resume")(() => permit.withPermit(resumeUnlocked()));
 
   const start = Effect.fn("WorkflowExecution.start")((input: WorkflowInput) =>
-    permit.withPermits(1)(journal.initialize(input).pipe(Effect.andThen(resumeUnlocked()))),
+    permit.withPermit(journal.initialize(input).pipe(Effect.andThen(resumeUnlocked()))),
   );
 
   return WorkflowExecution.of({ start, resume, getStatus: journal.getStatus });

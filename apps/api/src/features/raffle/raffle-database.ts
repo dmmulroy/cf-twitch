@@ -1,5 +1,5 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Effect, Layer, Option, Schema, SchemaGetter } from "effect";
 import { SqlClient, type SqlError } from "effect/unstable/sql";
 import { RedemptionId } from "@cf-twitch/contracts/identity";
 import {
@@ -21,9 +21,26 @@ const RaffleStoredRow = Schema.Struct({
   isNewRecord: Schema.Literals([0, 1]),
 });
 
-const parseStoredRolls = Schema.decodeUnknownEffect(Schema.Array(RaffleStoredRow));
+const StoredRaffleRoll = Schema.toEncoded(RaffleStoredRow).pipe(
+  Schema.decodeTo(RaffleRoll, {
+    decode: SchemaGetter.transform((row) => ({
+      ...row,
+      isWinner: row.isWinner === 1,
+      isNewRecord: row.isNewRecord === 1,
+    })),
+    encode: SchemaGetter.transform((roll) => ({
+      ...roll,
+      isWinner: roll.isWinner ? 1 : 0,
+      isNewRecord: roll.isNewRecord ? 1 : 0,
+    })),
+  }),
+);
 
-const refineStoredRoll = Schema.decodeEffect(RaffleRoll);
+const parseStoredRolls = Schema.decodeUnknownEffect(Schema.Array(StoredRaffleRoll));
+
+const encodeStoredRoll = Schema.encodeEffect(StoredRaffleRoll);
+
+const recordRaffleRollEquivalence = Schema.toEquivalence(RecordRaffleRoll);
 
 const parseLeaderboard = Schema.decodeUnknownEffect(Schema.Array(RaffleLeaderboardEntry));
 
@@ -93,17 +110,7 @@ export const makeRaffle = Effect.gen(function* () {
       yield* sql`SELECT id,user_id AS userId,display_name AS displayName,roll,winning_number AS winningNumber,distance,is_winner AS isWinner,is_new_record AS isNewRecord,rolled_at AS rolledAt FROM raffle_roll_receipts WHERE id=${id}`,
     );
 
-    const row = rows[0];
-
-    if (!row) return Option.none<RaffleRoll>();
-
-    return Option.some(
-      yield* refineStoredRoll({
-        ...row,
-        isWinner: row.isWinner === 1,
-        isNewRecord: row.isNewRecord === 1,
-      }),
-    );
+    return Option.fromUndefinedOr(rows[0]);
   });
 
   const ensureNotCompensated = Effect.fn("Raffle.ensureNotCompensated")(function* (
@@ -140,16 +147,18 @@ export const makeRaffle = Effect.gen(function* () {
       isNewRecord,
     });
 
+    const storedRoll = yield* encodeStoredRoll(roll);
+
     const values = {
-      id: roll.id,
-      user_id: roll.userId,
-      display_name: roll.displayName,
-      roll: roll.roll,
-      winning_number: roll.winningNumber,
-      distance,
-      is_winner: roll.isWinner ? 1 : 0,
-      is_new_record: isNewRecord ? 1 : 0,
-      rolled_at: roll.rolledAt,
+      id: storedRoll.id,
+      user_id: storedRoll.userId,
+      display_name: storedRoll.displayName,
+      roll: storedRoll.roll,
+      winning_number: storedRoll.winningNumber,
+      distance: storedRoll.distance,
+      is_winner: storedRoll.isWinner,
+      is_new_record: storedRoll.isNewRecord,
+      rolled_at: storedRoll.rolledAt,
     };
 
     yield* sql`INSERT INTO rolls ${sql.insert(values)}`;
@@ -166,13 +175,7 @@ export const makeRaffle = Effect.gen(function* () {
         if (Option.isSome(existing)) {
           const roll = existing.value;
 
-          if (
-            roll.userId !== input.userId ||
-            roll.displayName !== input.displayName ||
-            roll.roll !== input.roll ||
-            roll.winningNumber !== input.winningNumber ||
-            roll.rolledAt !== input.rolledAt
-          )
+          if (!recordRaffleRollEquivalence(roll, input))
             return yield* new RaffleError({
               operation: "recordRoll",
               reason: "idempotency_conflict",
@@ -274,5 +277,5 @@ export const makeRaffle = Effect.gen(function* () {
 /** Provides raffle persistence with explicit SQL and secure randomness requirements. */
 export const raffleLayerWithoutDependencies = Layer.effect(Raffle, makeRaffle);
 
-/** Provides raffle persistence with Web Crypto; SQL remains instance scoped. */
+/** Provides raffle persistence and exact draw policy; Crypto and SQL remain explicitly required. */
 export const raffleLayer = raffleLayerWithoutDependencies.pipe(Layer.provide(raffleRandomLayer));

@@ -1,38 +1,46 @@
-import { Context, Effect, Layer } from "effect";
+import { Cause, Context, Crypto, Effect, Layer } from "effect";
 import { RaffleError, RaffleNumber } from "@cf-twitch/contracts/raffle";
+
+const raffleRandomUpperBound = Math.floor(0x1_0000_0000 / 10_000) * 10_000;
+
+const randomnessUnavailable = () =>
+  new RaffleError({ operation: "drawNumber", reason: "randomness_unavailable" });
 
 /** Cryptographic raffle draws are independent and uniform over the inclusive 1–10,000 range. */
 export interface IRaffleRandom {
   readonly drawNumber: () => Effect.Effect<RaffleNumber, RaffleError>;
 }
 
-/** Randomness authority is separate from persisted one-roll-per-redemption policy. */
+/** Randomness authority retains exact raffle rejection sampling over Effect Crypto bytes. */
 export class RaffleRandom extends Context.Service<RaffleRandom, IRaffleRandom>()(
   "@cf-twitch/RaffleRandom",
 ) {}
 
-/** Rejects the incomplete final bucket of Uint32 values rather than introducing modulo bias. */
-export const makeRaffleRandom = Effect.sync(() =>
-  RaffleRandom.of({
-    drawNumber: Effect.fn("RaffleRandom.drawNumber")(() =>
-      Effect.try({
-        try: () => {
-          const upperBound = Math.floor(0x1_0000_0000 / 10_000) * 10_000;
-          const words = new Uint32Array(1);
+/** Constructs exact raffle draws from cryptographic bytes without swallowing interruption. */
+export const makeRaffleRandom = Effect.gen(function* () {
+  const crypto = yield* Crypto.Crypto;
 
-          while (true) {
-            crypto.getRandomValues(words);
-            const word = words[0];
+  const drawNumber = Effect.fn("RaffleRandom.drawNumber")(
+    function* () {
+      while (true) {
+        const bytes = yield* crypto.randomBytes(4);
+        const word = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0);
 
-            if (word !== undefined && word < upperBound)
-              return RaffleNumber.make(1 + (word % 10_000));
-          }
-        },
-        catch: () => new RaffleError({ operation: "drawNumber", reason: "randomness_unavailable" }),
-      }),
-    ),
-  }),
-);
+        if (word < raffleRandomUpperBound) return RaffleNumber.make(1 + (word % 10_000));
+      }
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.mapError(randomnessUnavailable),
+        Effect.catchCauseIf(
+          (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
+          () => Effect.fail(randomnessUnavailable()),
+        ),
+      ),
+  );
 
-/** Provides Web Crypto rejection sampling; never Effect's deterministic pseudo-random generator. */
+  return RaffleRandom.of({ drawNumber });
+});
+
+/** Provides exact raffle rejection sampling while leaving platform Crypto selection explicit. */
 export const raffleRandomLayer = Layer.effect(RaffleRandom, makeRaffleRandom);

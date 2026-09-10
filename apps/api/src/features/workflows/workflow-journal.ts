@@ -444,16 +444,17 @@ export const makeWorkflowJournal = Effect.gen(function* () {
       yield* sql`UPDATE saga_steps SET attempt=${attempt},next_retry_at=NULL WHERE saga_id=${run.id} AND step_name=${name}`;
 
       const outcome = yield* operation.pipe(
-        Effect.timeout(policy.timeoutMs),
-        Effect.catchTag("TimeoutError", () =>
-          Effect.fail(
-            new WorkflowStepFailure({
-              kind: policy.safety === "non-idempotent" ? "unknown" : "retryable",
-              message: "Workflow step timed out",
-              retryAfterMs: Option.none(),
-            }),
-          ),
-        ),
+        Effect.timeoutOrElse({
+          duration: policy.timeoutMs,
+          orElse: () =>
+            Effect.fail(
+              new WorkflowStepFailure({
+                kind: policy.safety === "non-idempotent" ? "unknown" : "retryable",
+                message: "Workflow step timed out",
+                retryAfterMs: Option.none(),
+              }),
+            ),
+        }),
         Effect.result,
       );
 

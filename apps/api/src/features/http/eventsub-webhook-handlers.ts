@@ -1,4 +1,4 @@
-import { Clock, Effect, Encoding, Redacted, Schema, Stream } from "effect";
+import { Clock, Crypto, Effect, Encoding, Redacted, Schema, Stream } from "effect";
 import { EventSubHeaders } from "@cf-twitch/contracts/eventsub";
 import { IsoTimestamp } from "@cf-twitch/contracts/identity";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -54,6 +54,7 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(
     const configuration = yield* TwitchConfiguration;
     const receipts = yield* EventSubReceipts;
     const correlation = yield* HttpRequestCorrelation;
+    const effectCrypto = yield* Crypto.Crypto;
     const request = yield* HttpServerRequest.HttpServerRequest;
 
     const headers = yield* parseHeaders(request.headers).pipe(
@@ -83,11 +84,15 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(
     const signedBytes = new Uint8Array(prefix.length + bodyBytes.length);
     signedBytes.set(prefix);
     signedBytes.set(bodyBytes, prefix.length);
-    const signature = new Uint8Array(32);
-    const hex = headers["twitch-eventsub-message-signature"].slice(7);
 
-    for (let index = 0; index < signature.length; index++)
-      signature[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+    const signature = yield* Effect.fromResult(
+      Encoding.decodeHex(headers["twitch-eventsub-message-signature"].slice(7)),
+    ).pipe(
+      Effect.map((bytes) => new Uint8Array(bytes)),
+      Effect.mapError(
+        () => new HttpBoundaryError({ status: 400, error: "Invalid EventSub headers" }),
+      ),
+    );
 
     const authenticated = yield* Effect.tryPromise({
       try: async () => {
@@ -129,12 +134,12 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(
         contentType: "text/plain; charset=UTF-8",
       });
 
-    const contentDigest = yield* Effect.tryPromise({
-      try: async () =>
-        Encoding.encodeHex(new Uint8Array(await crypto.subtle.digest("SHA-256", signedBytes))),
-      catch: () =>
-        new HttpBoundaryError({ status: 503, error: "EventSub durable acceptance failed" }),
-    });
+    const contentDigest = yield* effectCrypto.digest("SHA-256", signedBytes).pipe(
+      Effect.map(Encoding.encodeHex),
+      Effect.mapError(
+        () => new HttpBoundaryError({ status: 503, error: "EventSub durable acceptance failed" }),
+      ),
+    );
 
     const receivedAt = yield* parseTimestamp(new Date(now).toISOString()).pipe(Effect.orDie);
     yield* receipts

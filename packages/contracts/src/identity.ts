@@ -82,7 +82,7 @@ export const IsoTimestamp = Schema.String.check(
 export type IsoTimestamp = typeof IsoTimestamp.Type;
 
 /** Non-negative safe integer used for counts and offsets. */
-export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+export const NonNegativeInt = Schema.Natural;
 
 /** Parsed non-negative count or offset. */
 export type NonNegativeInt = typeof NonNegativeInt.Type;

@@ -1,7 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { HttpEffect } from "alchemy/Http";
-import { Effect, Layer, Option } from "effect";
+import { Crypto, Effect, Layer, Option } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { StreamLifecycleError } from "@cf-twitch/contracts/stream";
@@ -48,6 +48,7 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
   const eventPublisher = yield* EventPublisher;
   const twitch = yield* TwitchService;
   const configuration = yield* TwitchConfiguration;
+  const crypto = yield* Crypto.Crypto;
 
   const streamAlarm = StreamAlarm.of({
     scheduleAt: (timestamp) =>
@@ -91,6 +92,7 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
     Layer.provide(viewerLayer),
     Layer.provide(Layer.succeed(ProviderAccessTokens, accessTokens)),
     Layer.provide(Layer.succeed(EventPublisher, eventPublisher)),
+    Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
   );
 
   const handlersLayer = streamLifecycleHttpHandlersLayer.pipe(Layer.provide(applicationLayer));
@@ -103,7 +105,7 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
 
     const fetch = yield* HttpRouter.toHttpEffect(apiLayer);
     const processor = yield* StreamProcessor;
-    yield* Effect.result(processor.resumeTransitionEffects());
+    yield* processor.resumeTransitionEffects().pipe(Effect.ignore);
     yield* processor.rebuildAlarm();
 
     return {
@@ -115,7 +117,7 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
 
 /** Hosts StreamLifecycleDO while leaving every outgoing application capability visible. */
 export const streamLifecycleServerLayerWithoutDependencies = StreamLifecycleServer.make<
-  ProviderAccessTokens | EventPublisher | TwitchService | TwitchConfiguration
+  ProviderAccessTokens | EventPublisher | TwitchService | TwitchConfiguration | Crypto.Crypto
 >(makeStreamLifecycleServer.pipe(Effect.orDie));
 
 /** Ready Stream Lifecycle server selects the production provider and Event Bus graph. */

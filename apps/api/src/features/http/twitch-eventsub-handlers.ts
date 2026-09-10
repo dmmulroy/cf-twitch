@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Crypto, Effect, Option, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { BroadcasterId } from "@cf-twitch/contracts/identity";
@@ -58,6 +58,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const configuration = yield* TwitchConfiguration;
+      const crypto = yield* Crypto.Crypto;
       const twitch = yield* TwitchService;
       const receipts = yield* EventSubReceipts;
 
@@ -74,6 +75,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
           handleEventSubWebhook().pipe(
             Effect.provideService(TwitchConfiguration, configuration),
             Effect.provideService(EventSubReceipts, receipts),
+            Effect.provideService(Crypto.Crypto, crypto),
           ),
         )
         .handleRaw("listSubscriptions", () =>

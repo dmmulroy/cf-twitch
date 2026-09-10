@@ -8,6 +8,7 @@ import {
 } from "@cf-twitch/contracts/oauth";
 import type { ProviderError, ProviderTokens } from "@cf-twitch/contracts/provider";
 import { Clock, Context, Crypto, Effect, Layer, Redacted } from "effect";
+import { UrlParams } from "effect/unstable/http";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
 import { providerAccessTokensLayer } from "../providers/provider-token-client.ts";
@@ -78,22 +79,23 @@ export const makeOAuthAuthorization = Effect.gen(function* () {
       expiresAtMs: now + 600_000,
     });
 
-    const authorizationUrl = new URL(
+    const authorizationEndpoint =
       input.provider === "spotify"
         ? "https://accounts.spotify.com/authorize"
-        : "https://id.twitch.tv/oauth2/authorize",
-    );
+        : "https://id.twitch.tv/oauth2/authorize";
 
-    authorizationUrl.searchParams.set("client_id", configuration[input.provider].clientId);
-    authorizationUrl.searchParams.set("response_type", "code");
-    authorizationUrl.searchParams.set("redirect_uri", input.redirectUri);
-    authorizationUrl.searchParams.set(
-      "scope",
-      providerAuthorizationScopes[input.provider].join(" "),
-    );
-    authorizationUrl.searchParams.set("state", Redacted.value(state));
+    const query = UrlParams.toString({
+      client_id: configuration[input.provider].clientId,
+      response_type: "code",
+      redirect_uri: input.redirectUri,
+      scope: providerAuthorizationScopes[input.provider].join(" "),
+      state: Redacted.value(state),
+    });
 
-    return { state, authorizationUrl: Redacted.make(authorizationUrl.toString()) };
+    return {
+      state,
+      authorizationUrl: Redacted.make(`${authorizationEndpoint}?${query}`),
+    };
   });
 
   const consumeAuthorizationState = Effect.fn("OAuthAuthorization.consumeAuthorizationState")(

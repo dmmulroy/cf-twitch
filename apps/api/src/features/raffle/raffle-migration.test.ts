@@ -1,3 +1,4 @@
+import { NodeCrypto } from "@effect/platform-node";
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { expect, it } from "@effect/vitest";
 import { Effect, Option } from "effect";
@@ -44,6 +45,6 @@ it.effect(
             Effect.flip,
           ))._tag,
         ).toBe("SqlError");
-      }).pipe(Effect.provide(raffleLayer));
+      }).pipe(Effect.provide(raffleLayer), Effect.provide(NodeCrypto.layer));
     }).pipe(Effect.provide(SqliteClient.layer({ filename: ":memory:" }))),
 );

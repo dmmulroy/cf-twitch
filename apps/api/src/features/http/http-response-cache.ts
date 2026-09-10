@@ -18,9 +18,6 @@ export class HttpResponseCache extends Context.Service<HttpResponseCache, IHttpR
 const cacheFailure = () =>
   new HttpBoundaryError({ status: 502, error: "Invalid service response" });
 
-const ignoreCacheFailure = <A, E>(effect: Effect.Effect<A, E>) =>
-  effect.pipe(Effect.catch(() => Effect.void));
-
 /** Cache binding is acquired by the root, not read from ambient globals inside handlers. */
 export const httpResponseCacheLayer = (
   cache: Pick<Cache, "match" | "put" | "delete">,
@@ -52,9 +49,10 @@ export const httpResponseCacheLayer = (
           );
 
           if (Option.isSome(decoded)) return decoded.value;
-          yield* ignoreCacheFailure(
-            Effect.tryPromise({ try: () => cache.delete(request), catch: cacheFailure }),
-          );
+          yield* Effect.tryPromise({
+            try: () => cache.delete(request),
+            catch: cacheFailure,
+          }).pipe(Effect.ignore);
         }
 
         const value = yield* input.load;
@@ -64,18 +62,16 @@ export const httpResponseCacheLayer = (
         );
 
         // Await the bounded Cache API write so it survives request completion without a detached fiber.
-        yield* ignoreCacheFailure(
-          Effect.tryPromise({
-            try: () =>
-              cache.put(
-                request,
-                Response.json(encoded, {
-                  headers: { "Cache-Control": "public, max-age=60", Vary: "Accept-Encoding" },
-                }),
-              ),
-            catch: cacheFailure,
-          }),
-        );
+        yield* Effect.tryPromise({
+          try: () =>
+            cache.put(
+              request,
+              Response.json(encoded, {
+                headers: { "Cache-Control": "public, max-age=60", Vary: "Accept-Encoding" },
+              }),
+            ),
+          catch: cacheFailure,
+        }).pipe(Effect.ignore);
 
         return value;
       }),

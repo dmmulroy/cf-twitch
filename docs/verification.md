@@ -68,6 +68,8 @@ For a new native fault journey, record request/trace correlation, controlled mut
 
 ## Recorded verification
 
+Effect API reuse implementation (**2026-09-10**): root `pnpm verify` passed formatting, root lint, architecture (194 source files), OpenAPI inspection (38 paths / 40 operations), strict root/workspace types, 427 unit/tooling tests, and four local-workerd tests. No workerd/miniflare processes or generated policy-probe directories remained afterward. The [implementation ledger](effect-api-implementation.md#verification-and-remaining-gates) records suite counts, review evidence, conditional non-adoptions, and remaining gates. This supersedes the test counts below, not production or outstanding-native acceptance requirements.
+
 Compatibility update (`2026-09-08`): all four Worker declarations use this date, with workerd overridden to `1.20260908.1`. Alchemy's pinned `1.20260704.1` binary rejects the date (maximum supported: `2026-07-11`); the updated binary passes all three native journeys without dependency patches.
 
 Patch-removal regression: the published `alchemy@2.0.0-beta.76` Worker bridge with `effect@4.0.0-rc.112` fails all three native tests at compatibility date `2026-01-13` with `TypeError: t.once is not a function`. Changing all four Worker declarations to Alchemy's default date, `2026-03-17`, makes all three pass without a dependency patch. Verify installed source against the npm tarball when testing patch removal: reinstalling after removing patch registration left patched source behind in the local installation during diagnosis. The snapshot below predates this compatibility correction.

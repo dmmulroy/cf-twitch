@@ -113,6 +113,9 @@ const providerScenarioSpotifyConnectResponse = (
   request: HttpClientRequest.HttpClientRequest,
   mode: string,
 ): HttpClientResponse.HttpClientResponse => {
+  if (mode === "connect-error")
+    return makeProviderScenarioReply(request)({ error: "Connect unavailable" }, 503);
+
   if (request.method !== "PUT") return providerScenarioNoContent(request);
 
   const track = {

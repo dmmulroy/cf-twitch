@@ -1,7 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
-import { Context, Effect, Layer, Option, Ref, Schema } from "effect";
+import { Cause, Context, Effect, Layer, Option, Ref, Schema } from "effect";
 import { FastCheck, TestClock } from "effect/testing";
 import {
   AchievementDefinition,
@@ -102,6 +102,7 @@ interface TestObservations {
   readonly raffleEntries: Ref.Ref<readonly RaffleLeaderboardEntry[]>;
   readonly songCount: Ref.Ref<number>;
   readonly failedProviders: Ref.Ref<readonly ("song" | "raffle" | "achievements")[]>;
+  readonly interruptedProviders: Ref.Ref<readonly ("song" | "raffle" | "achievements")[]>;
   readonly metrics: Ref.Ref<readonly ChatCommandMetric[]>;
   readonly lookups: Ref.Ref<readonly string[]>;
 }
@@ -119,10 +120,17 @@ const providerTestLayer = Layer.unwrap(
     const raffleEntries = yield* Ref.make<readonly RaffleLeaderboardEntry[]>([]);
     const songCount = yield* Ref.make(0);
     const failedProviders = yield* Ref.make<readonly ("song" | "raffle" | "achievements")[]>([]);
+
+    const interruptedProviders = yield* Ref.make<readonly ("song" | "raffle" | "achievements")[]>(
+      [],
+    );
+
     const metrics = yield* Ref.make<readonly ChatCommandMetric[]>([]);
     const lookups = yield* Ref.make<readonly string[]>([]);
 
     const songFailure = Effect.gen(function* () {
+      if ((yield* Ref.get(interruptedProviders)).includes("song")) return yield* Effect.interrupt;
+
       if ((yield* Ref.get(failedProviders)).includes("song"))
         return yield* new SongQueueError({
           operation: "command lookup",
@@ -154,6 +162,7 @@ const providerTestLayer = Layer.unwrap(
         raffleEntries,
         songCount,
         failedProviders,
+        interruptedProviders,
         metrics,
         lookups,
       }),
@@ -269,6 +278,21 @@ describe("Chat command preparation through real registry and executor", () => {
           "ignored",
         ]);
       }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("preserves dependency interruption without recording a command error metric", () =>
+    Effect.gen(function* () {
+      const executor = yield* ChatCommandExecutor;
+      const observations = yield* CommandTestObservations;
+      yield* Ref.set(observations.interruptedProviders, ["song"]);
+
+      const exit = yield* executor.prepare(input("!song")).pipe(Effect.exit);
+
+      expect(exit._tag).toBe("Failure");
+
+      if (exit._tag === "Failure") expect(Cause.hasInterrupts(exit.cause)).toBe(true);
+      expect(yield* Ref.get(observations.metrics)).toEqual([]);
+    }).pipe(Effect.provide(testLayer)),
   );
 
   it.effect(

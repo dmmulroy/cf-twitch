@@ -519,11 +519,24 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
         expect(yield* inbox.getReceiptStatus()).toMatchObject({
           value: { status: "pending", attempts: 1, chatCommandDelivery: Option.some("sending") },
         });
+
+        const sameServiceAcceptanceCompleted = yield* Ref.make(false);
+
+        const sameServiceAcceptance = yield* inbox.accept(chatReceipt).pipe(
+          Effect.tap(() => Ref.set(sameServiceAcceptanceCompleted, true)),
+          Effect.forkChild,
+        );
+
+        yield* Effect.yieldNow;
+        expect(yield* Ref.get(sameServiceAcceptanceCompleted)).toBe(false);
         // A separately reconstructed service has no shared semaphore; the persisted lease alone prevents a second send.
         const concurrent = yield* controls.acquire;
         yield* concurrent.accept(chatReceipt);
         expect(yield* Ref.get(controls.sends)).toBe(1);
         yield* Fiber.interrupt(fiber);
+        yield* Fiber.join(sameServiceAcceptance);
+        expect(yield* Ref.get(sameServiceAcceptanceCompleted)).toBe(true);
+
         const restarted = yield* controls.acquire;
         yield* restarted.recover();
         expect(yield* restarted.getReceiptStatus()).toMatchObject({ value: { status: "pending" } });

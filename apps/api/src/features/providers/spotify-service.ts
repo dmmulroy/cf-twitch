@@ -224,19 +224,16 @@ export const makeSpotifyService = Effect.gen(function* () {
     SpotifyPlayback,
     ProviderError
   > {
-    const [queue, playingResult] = yield* Effect.all(
-      [getQueue(), getPlaying().pipe(Effect.result)],
+    const [queue, playingOption] = yield* Effect.all(
+      [getQueue(), getPlaying().pipe(Effect.option)],
       { concurrency: "unbounded" },
     );
 
-    const playing =
-      playingResult._tag === "Success"
-        ? playingResult.success
-        : {
-            currentlyPlaying: queue.currentlyPlaying,
-            isPlaying: Option.isSome(queue.currentlyPlaying),
-            progressMs: 0,
-          };
+    const playing = Option.getOrElse(playingOption, () => ({
+      currentlyPlaying: queue.currentlyPlaying,
+      isPlaying: Option.isSome(queue.currentlyPlaying),
+      progressMs: 0,
+    }));
 
     return { ...playing, queue: queue.queue };
   });
@@ -361,10 +358,7 @@ export const makeSpotifyService = Effect.gen(function* () {
         }),
       );
 
-    const state = yield* getConnectState(device.value.id).pipe(
-      Effect.map(Option.some),
-      Effect.catchTag("ProviderError", () => Effect.succeed(Option.none<SpotifyConnectState>())),
-    );
+    const state = yield* getConnectState(device.value.id).pipe(Effect.option);
 
     if (Option.isNone(state)) return false;
     const trackUri = `spotify:track:${trackId}`;

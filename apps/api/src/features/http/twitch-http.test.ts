@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Option, Redacted } from "effect";
 import { HttpRouter } from "effect/unstable/http";
@@ -82,6 +83,7 @@ const withHttp = <A, E, R>(
         twitchHttpApiLayer.pipe(
           Layer.provide(testLayers(settings)),
           Layer.provide(cloudflareHttpServerLayer),
+          Layer.provide(NodeCrypto.layer),
         ),
         { disableLogger: true },
       ),
@@ -333,6 +335,23 @@ describe("Worker HTTP compatibility boundary", () => {
           expect(yield* Effect.promise(() => authorizedBody.json())).toEqual({
             error: "Invalid JSON body",
           });
+
+          for (const overflowBody of ["1e400", '{"nested":1e400}']) {
+            const overflow = yield* Effect.promise(() =>
+              fetch(
+                request("/api/admin/commands", {
+                  method: "POST",
+                  body: overflowBody,
+                  headers: { ...adminHeaders, "content-type": "application/json" },
+                }),
+              ),
+            );
+
+            expect(overflow.status, overflowBody).toBe(400);
+            expect(yield* Effect.promise(() => overflow.json())).toEqual({
+              error: "Invalid JSON body",
+            });
+          }
         }),
       ),
   );

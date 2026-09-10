@@ -132,6 +132,10 @@ const administratorSecurity = OpenApi.annotations({
   override: { security: administratorSecurityRequirements },
 });
 
+const administratorSecurityTransform = OpenApi.annotations({
+  transform: (operation) => ({ ...operation, security: administratorSecurityRequirements }),
+});
+
 const setupSecurity = OpenApi.annotations({ override: { security: [{ OAuthSetupHeader: [] }] } });
 
 const json = { success: Schema.Json, error: errors };
@@ -469,7 +473,8 @@ export const TwitchAdminApi = HttpApiGroup.make("admin")
       success: viewerStatsResponse,
       params: user,
     }),
-  );
+  )
+  .annotateEndpointsMerge(administratorSecurityTransform);
 
 /** Stream reconciliation and diagnostics retain their existing authenticated URLs. */
 export const TwitchDebugApi = HttpApiGroup.make("debug")
@@ -493,7 +498,8 @@ export const TwitchDebugApi = HttpApiGroup.make("debug")
   )
   .add(
     HttpApiEndpoint.get("debugStatus", "/api/debug/status", { ...json, success: statusResponse }),
-  );
+  )
+  .annotateEndpointsMerge(administratorSecurityTransform);
 
 /** Provider OAuth callbacks use durable one-use state, never a query setup secret. */
 export const TwitchOAuthApi = HttpApiGroup.make("oauth")
@@ -587,33 +593,9 @@ export class TwitchHttpApi extends HttpApi.make("TwitchHttpApi")
     }),
   ) {}
 
-const openApiMethodNames = [
-  "get",
-  "put",
-  "post",
-  "delete",
-  "options",
-  "head",
-  "patch",
-  "trace",
-] satisfies ReadonlyArray<OpenApi.OpenAPISpecMethodName>;
-
-const addAdministratorOpenApiSecurity = (openApi: OpenApi.OpenAPISpec): void => {
-  for (const [path, pathItem] of Object.entries(openApi.paths)) {
-    if (!path.startsWith("/api/admin/") && !path.startsWith("/api/debug/")) continue;
-
-    for (const method of openApiMethodNames) {
-      const operation = pathItem[method];
-
-      if (operation !== undefined) operation.security = administratorSecurityRequirements;
-    }
-  }
-};
-
 /** Generates the public OpenAPI document while preserving all framework-generated metadata. */
 export const generateTwitchOpenApi = (): OpenApi.OpenAPISpec => {
   const openApi = OpenApi.fromApi(TwitchHttpApi);
-  addAdministratorOpenApiSecurity(openApi);
 
   return {
     ...openApi,

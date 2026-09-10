@@ -1,5 +1,12 @@
 import { Schema } from "effect";
-import { EventId, IsoTimestamp, PageSize, ViewerId } from "./identity.ts";
+import {
+  EventId,
+  IsoTimestamp,
+  NonNegativeInt,
+  PageSize,
+  PositiveInt,
+  ViewerId,
+} from "./identity.ts";
 
 /** Stable achievement identity includes the thirteen historical definitions. */
 export const AchievementId = Schema.NonEmptyString.pipe(Schema.brand("AchievementId"));
@@ -33,7 +40,7 @@ export const AchievementDefinition = Schema.Struct({
   description: Schema.NonEmptyString,
   icon: Schema.NonEmptyString,
   category: AchievementCategory,
-  threshold: Schema.OptionFromNullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+  threshold: Schema.OptionFromNullOr(PositiveInt),
   triggerEvent: AchievementTriggerEvent,
   scope: Schema.Literals(["session", "cumulative"]),
 });
@@ -62,7 +69,7 @@ export const ViewerAchievementProgress = Schema.Struct({
   icon: Schema.NonEmptyString,
   category: AchievementCategory,
   threshold: AchievementDefinition.fields.threshold,
-  progress: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  progress: NonNegativeInt,
   unlocked: Schema.Boolean,
   unlockedAt: Schema.OptionFromNullOr(IsoTimestamp),
 });
@@ -75,7 +82,7 @@ export interface ViewerAchievementProgress extends Schema.Schema.Type<
 /** Ranking counts unlocked achievements, not cumulative progress. */
 export const AchievementLeaderboardEntry = Schema.Struct({
   userDisplayName: Schema.NonEmptyString,
-  count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  count: NonNegativeInt,
 });
 
 /** Viewer achievement rank. */
@@ -99,7 +106,7 @@ export const AchievementEventInput = Schema.Struct({
   userDisplayName: Schema.NonEmptyString,
   event: AchievementTriggerEvent,
   eventId: EventId,
-  increment: Schema.Int.check(Schema.isGreaterThan(0)),
+  increment: PositiveInt,
   metadata: Schema.OptionFromNullOr(Schema.Record(Schema.String, Schema.Json)),
 });
 

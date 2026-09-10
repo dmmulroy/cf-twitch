@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Predicate, Schema } from "effect";
+import { Cause, Effect, Exit, Fiber, Layer, Predicate, Schema } from "effect";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter } from "effect/unstable/http";
 import { TwitchStatsApi } from "@cf-twitch/contracts/twitch-api";
@@ -9,23 +9,38 @@ import { SongQueue } from "../song-queue/song-queue.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { twitchStatsHandlersLayer } from "./twitch-stats-handlers.ts";
-import { httpResponseCacheLayer } from "./http-response-cache.ts";
+import { HttpResponseCache, httpResponseCacheLayer } from "./http-response-cache.ts";
 
 // A recording Cache API fixture, not a replacement TTL policy. Cache-Control expiry is Cloudflare-owned.
 class RecordingWebCache {
   readonly entries = new Map<string, Response>();
+  readonly putStarted = Promise.withResolvers<void>();
+
+  constructor(private readonly failure?: "match" | "delete" | "put" | "block-put") {}
   readonly deleted: string[] = [];
   readonly stored: string[] = [];
   readonly key = (request: RequestInfo | URL): string =>
     Predicate.isString(request) ? request : request instanceof URL ? request.href : request.url;
-  readonly match = async (request: RequestInfo | URL): Promise<Response | undefined> =>
-    this.entries.get(this.key(request))?.clone();
+  readonly match = async (request: RequestInfo | URL): Promise<Response | undefined> => {
+    if (this.failure === "match") throw new Error("Controlled cache match failure");
+
+    return this.entries.get(this.key(request))?.clone();
+  };
   readonly delete = async (request: RequestInfo | URL): Promise<boolean> => {
+    if (this.failure === "delete") throw new Error("Controlled cache delete failure");
     this.deleted.push(this.key(request));
 
     return this.entries.delete(this.key(request));
   };
   readonly put = async (request: RequestInfo | URL, response: Response): Promise<void> => {
+    if (this.failure === "put") throw new Error("Controlled cache put failure");
+
+    if (this.failure === "block-put") {
+      this.putStarted.resolve();
+
+      return new Promise<void>(() => undefined);
+    }
+
     this.stored.push(this.key(request));
     this.entries.set(this.key(request), response.clone());
   };
@@ -85,6 +100,55 @@ describe("HTTP statistics edge cache", () => {
         expect(cache.stored).toEqual([canonicalKey]);
         expect(cache.entries.get(canonicalKey)?.headers.get("vary")).toBe("Accept-Encoding");
       }),
+  );
+
+  it.effect("ignores rejected cache operations and still returns the fresh value", () =>
+    Effect.gen(function* () {
+      const key = "https://stats.internal/api/stats/top-requesters?limit=10";
+
+      for (const operation of ["match", "delete", "put"] as const) {
+        const cache = new RecordingWebCache(operation);
+
+        if (operation === "delete") cache.entries.set(key, Response.json({ malformed: true }));
+
+        const value = yield* Effect.gen(function* () {
+          const responseCache = yield* HttpResponseCache;
+
+          return yield* responseCache.readThrough({
+            key,
+            schema: Schema.Array(Schema.String),
+            load: Effect.succeed(["fresh"]),
+          });
+        }).pipe(Effect.provide(httpResponseCacheLayer(cache)));
+
+        expect(value, operation).toEqual(["fresh"]);
+      }
+    }),
+  );
+
+  it.effect("preserves interruption while a cache write is pending", () =>
+    Effect.gen(function* () {
+      const cache = new RecordingWebCache("block-put");
+
+      const read = Effect.gen(function* () {
+        const responseCache = yield* HttpResponseCache;
+
+        return yield* responseCache.readThrough({
+          key: "https://stats.internal/api/stats/top-requesters?limit=10",
+          schema: Schema.Array(Schema.String),
+          load: Effect.succeed(["fresh"]),
+        });
+      }).pipe(Effect.provide(httpResponseCacheLayer(cache)));
+
+      const fiber = yield* read.pipe(Effect.forkChild);
+      yield* Effect.promise(() => cache.putStarted.promise);
+      yield* Fiber.interrupt(fiber);
+      const exit = yield* Fiber.await(fiber);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      if (Exit.isFailure(exit)) expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+    }),
   );
 
   it.effect("does not cache transport failures or malformed fresh response identities", () =>

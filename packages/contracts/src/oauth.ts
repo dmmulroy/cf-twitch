@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { NonNegativeInt, PositiveInt } from "./identity.ts";
 import { OAuthProvider } from "./provider.ts";
 
 /** OAuth state is a redacted UUID, bound to provider and exact redirect URI for ten minutes. */
@@ -88,8 +89,8 @@ export interface AuthorizationStarted extends Schema.Schema.Type<typeof Authoriz
 /** Persisted OAuth attempt has source timestamps in Unix milliseconds. */
 export const OAuthAuthorizationAttempt = Schema.Struct({
   ...ConsumeAuthorizationState.fields,
-  createdAtMs: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  expiresAtMs: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
+  createdAtMs: NonNegativeInt,
+  expiresAtMs: PositiveInt,
 });
 
 /** Persisted OAuth attempt input. */

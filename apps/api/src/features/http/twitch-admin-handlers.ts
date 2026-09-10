@@ -46,8 +46,6 @@ const parseUpdateCommand = Schema.decodeEffect(Schema.toCodecJson(UpdateChatComm
   onExcessProperty: "error",
 });
 
-const parseCommandJson = Schema.decodeUnknownEffect(Schema.Json);
-
 const parseEventId = Schema.decodeEffect(EventId);
 
 const failure = (error: string) => () => new HttpBoundaryError({ status: 500, error });
@@ -76,14 +74,9 @@ const deadLetterFailure = (operation: "replay" | "delete") => (error: EventBusEr
         : `Failed to ${operation} DLQ item`,
   });
 
-const readCommandJson = Effect.gen(function* () {
-  const request = yield* HttpServerRequest.HttpServerRequest;
-
-  return yield* request.json.pipe(
-    Effect.flatMap(parseCommandJson),
-    Effect.mapError(() => new HttpBoundaryError({ status: 400, error: "Invalid JSON body" })),
-  );
-});
+const readCommandJson = HttpServerRequest.schemaBodyJson(Schema.Json).pipe(
+  Effect.mapError(() => new HttpBoundaryError({ status: 400, error: "Invalid JSON body" })),
+);
 
 /** Administrative handlers authenticate before body parsing and preserve conflict/not-found status codes. */
 export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "admin", (handlers) =>

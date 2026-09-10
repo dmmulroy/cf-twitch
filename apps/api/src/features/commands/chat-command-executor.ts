@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Random, Result } from "effect";
+import { Clock, Context, Effect, Layer, Option, Random } from "effect";
 import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
 import {
   ChatCommandInput,
@@ -125,35 +125,38 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
   const prepare: IChatCommandExecutor["prepare"] = Effect.fn("ChatCommandExecutor.prepare")(
     function* (input) {
       const startedAt = yield* Clock.currentTimeMillis;
-      const result = yield* prepareResponse(input).pipe(Effect.result);
-
-      if (Result.isFailure(result)) {
-        const command = "commandName" in result.failure ? result.failure.commandName : "invalid";
-        yield* analytics.writeChatCommandMetric({
-          command,
-          userId: input.viewer.userId,
-          userName: input.viewer.displayName,
-          status: "error",
-          durationMs: Math.max(0, (yield* Clock.currentTimeMillis) - startedAt),
-          error: Option.some(result.failure._tag),
-        });
-
-        return yield* result.failure;
-      }
-
-      if (result.success._tag === "ChatCommandIgnored" && result.success.reason !== "not_command") {
-        yield* analytics.writeChatCommandMetric({
-          command: Option.getOrElse(result.success.commandName, () => "unknown"),
-          userId: input.viewer.userId,
-          userName: input.viewer.displayName,
-          status: "ignored",
-          durationMs: Math.max(0, (yield* Clock.currentTimeMillis) - startedAt),
-          error: Option.none(),
-        });
-      }
 
       // The durable receipt owner records success or send failure only after provider I/O.
-      return result.success;
+      return yield* prepareResponse(input).pipe(
+        Effect.tapError((error) => {
+          const command = "commandName" in error ? error.commandName : "invalid";
+
+          return Effect.gen(function* () {
+            yield* analytics.writeChatCommandMetric({
+              command,
+              userId: input.viewer.userId,
+              userName: input.viewer.displayName,
+              status: "error",
+              durationMs: Math.max(0, (yield* Clock.currentTimeMillis) - startedAt),
+              error: Option.some(error._tag),
+            });
+          });
+        }),
+        Effect.tap((preparation) =>
+          preparation._tag === "ChatCommandIgnored" && preparation.reason !== "not_command"
+            ? Effect.gen(function* () {
+                yield* analytics.writeChatCommandMetric({
+                  command: Option.getOrElse(preparation.commandName, () => "unknown"),
+                  userId: input.viewer.userId,
+                  userName: input.viewer.displayName,
+                  status: "ignored",
+                  durationMs: Math.max(0, (yield* Clock.currentTimeMillis) - startedAt),
+                  error: Option.none(),
+                });
+              })
+            : Effect.void,
+        ),
+      );
     },
   );
 

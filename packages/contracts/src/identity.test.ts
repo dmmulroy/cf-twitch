@@ -1,11 +1,44 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema, SchemaIssue } from "effect";
 import { FastCheck } from "effect/testing";
-import { IsoTimestamp } from "./identity.ts";
+import { IsoTimestamp, NonNegativeInt, PositiveInt } from "./identity.ts";
 
 const parseIsoTimestamp = Schema.decodeEffect(IsoTimestamp);
 
 const parseCalendarTimestamp = Schema.decodeUnknownOption(IsoTimestamp);
+
+const parseNonNegativeInt = Schema.decodeUnknownResult(NonNegativeInt);
+
+const parsePositiveInt = Schema.decodeUnknownResult(PositiveInt);
+
+const parseLegacyNonNegativeInt = Schema.decodeUnknownResult(
+  Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+);
+
+const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
+
+describe("integer count compatibility", () => {
+  it("preserves accepted values and diagnostics when NonNegativeInt uses Schema.Natural", () => {
+    for (const value of [0, 1, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN, 2 ** 53]) {
+      const current = parseNonNegativeInt(value);
+      const legacy = parseLegacyNonNegativeInt(value);
+
+      expect(Result.isSuccess(current)).toBe(Result.isSuccess(legacy));
+
+      if (Result.isFailure(current) && Result.isFailure(legacy))
+        expect(formatSchemaIssue(current.failure.issue)).toBe(
+          formatSchemaIssue(legacy.failure.issue),
+        );
+    }
+  });
+
+  it("retains the existing strictly positive integer alias", () => {
+    expect(Result.isSuccess(parsePositiveInt(1))).toBe(true);
+
+    for (const value of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN, 2 ** 53])
+      expect(Result.isFailure(parsePositiveInt(value))).toBe(true);
+  });
+});
 
 describe("ISO timestamp calendar compatibility", () => {
   it("accepts every generated UTC instant with its explicit offset", () => {

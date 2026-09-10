@@ -18,7 +18,7 @@ export interface IProviderTokenExchange {
     readonly provider: OAuthProvider;
     readonly refreshToken: Redacted.Redacted<string>;
   }) => Effect.Effect<ProviderTokens, ProviderError>;
-  readonly getTwitchAppToken: () => Effect.Effect<Redacted.Redacted<string>, ProviderError>;
+  readonly getTwitchAppToken: () => Effect.Effect<ProviderTokens, ProviderError>;
 }
 
 /** OAuth provider endpoint authority keeps refresh cycles out of user-token clients. */
@@ -125,9 +125,7 @@ export const makeProviderTokenExchange = Effect.gen(function* () {
       ),
     ),
     getTwitchAppToken: Effect.fn("ProviderTokenExchange.getTwitchAppToken")(() =>
-      exchange("twitch", { grant_type: "client_credentials" }).pipe(
-        Effect.map((token) => token.accessToken),
-      ),
+      exchange("twitch", { grant_type: "client_credentials" }),
     ),
   });
 });

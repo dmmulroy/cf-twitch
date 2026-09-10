@@ -48,9 +48,11 @@ Alchemy constructors have two phases:
 1. **Outer initialization** runs during planning and runtime cold start. It registers bindings and captures stable application services. It must not query SQL, migrate tables, or touch storage.
 2. **Durable runtime initialization** acquires the DO's real state and SQLite client, validates legacy authority, runs migrations, and reconstructs alarms before returning handlers.
 
-Captured outer services are bridged into inner Layers using `Layer.succeed`. The app never moves an infrastructure-backed Layer into the runtime phase merely to satisfy a type error.
+Captured outer services are bridged into inner Layers using `Layer.succeed`. The app never moves an infrastructure-backed Layer into the runtime phase merely to satisfy a type error. Cryptographic operations use Effect `Crypto`; outer roots select `NodeCrypto.layer`, and Stream/Raffle servers capture and bridge that service rather than choosing a platform implementation inside the Durable Object runtime.
 
 Worker routing and DO client acquisition use `makeExecutionMemo`. Generated clients are created inside suspended Effects, in the current invocation's scope. Namespace stubs, HTTP clients, SQL handles, and native cache operations must not escape their owning lifetime. The Worker cache opens lazily during I/O, not during planning.
+
+Twitch app-token lookup caching also belongs to `makeExecutionMemo`: its capacity-one cache and in-flight exchange are invocation-owned, expiry-buffered, and do not retain failed lookups. An unauthorized app request invalidates the token without automatically retrying the operation. This is separate from durable, stream-aware user-token refresh; sharing token values does not authorize sharing an in-flight HTTP request across invocation scopes.
 
 [Runtime Layer type tests](../apps/api/src/runtime/twitch-layer-types.test.ts) check that storage and invocation scopes do not leak into planning requirements. The [verification guide](verification.md) identifies runtime evidence beyond this type gate.
 

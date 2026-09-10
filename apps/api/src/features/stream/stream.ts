@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Context, Crypto, Effect, Encoding, Layer, Option, Schema, Semaphore } from "effect";
 import { type DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import { StreamLifecycleError, type StreamTransitionCheckpoint } from "@cf-twitch/contracts/stream";
@@ -65,27 +65,33 @@ const nextAlarmTimestamp = (delay: number) =>
   Clock.currentTimeMillis.pipe(Effect.flatMap((now) => timestampAt(now + delay)));
 
 /** Deterministically derive a UUID from accepted transition evidence for stable replay identity. */
-export const deriveLifecycleEventId = (input: {
-  readonly transition: "online" | "offline";
-  readonly streamId: StreamId;
-  readonly transitionAt: IsoTimestamp;
-}): Effect.Effect<EventId> =>
-  Effect.promise(async () => {
-    const bytes = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(
-        `cf-twitch:stream-lifecycle:${input.transition}:${input.streamId}:${input.transitionAt}`,
-      ),
+export const deriveLifecycleEventId = Effect.fn("StreamLifecycle.deriveLifecycleEventId")(
+  function* (input: {
+    readonly transition: "online" | "offline";
+    readonly streamId: StreamId;
+    readonly transitionAt: IsoTimestamp;
+  }) {
+    const crypto = yield* Crypto.Crypto;
+
+    const digest = yield* crypto
+      .digest(
+        "SHA-256",
+        new TextEncoder().encode(
+          `cf-twitch:stream-lifecycle:${input.transition}:${input.streamId}:${input.transitionAt}`,
+        ),
+      )
+      .pipe(Effect.orDie);
+
+    const uuidBytes = digest.slice(0, 16);
+    uuidBytes[6] = ((uuidBytes[6] ?? 0) & 0x0f) | 0x50;
+    uuidBytes[8] = ((uuidBytes[8] ?? 0) & 0x3f) | 0x80;
+    const hex = Encoding.encodeHex(uuidBytes);
+
+    return EventId.make(
+      `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
     );
-
-    const value = Array.from(new Uint8Array(bytes).slice(0, 16));
-    value[6] = ((value[6] ?? 0) & 0x0f) | 0x50;
-    value[8] = ((value[8] ?? 0) & 0x3f) | 0x80;
-    const hex = value.map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    const uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-
-    return EventId.make(uuid);
-  });
+  },
+);
 
 const lifecycleEvent = (checkpoint: StreamTransitionCheckpoint): DomainEvent =>
   checkpoint.transition === "online"
@@ -117,6 +123,8 @@ export const makeStreamLifecycle = Effect.gen(function* () {
   const events = yield* EventPublisher;
   const alarm = yield* StreamAlarm;
   const viewerProvider = yield* StreamViewerProvider;
+  const crypto = yield* Crypto.Crypto;
+  const mutationSemaphore = yield* Semaphore.make(1);
 
   const saveEffectCheckpoint = Effect.fn("StreamLifecycle.saveEffectCheckpoint")(function* (
     state: PersistedStreamState,
@@ -129,73 +137,73 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     return updated;
   });
 
-  const resumeTransitionEffects = Effect.fn("StreamLifecycle.resumeTransitionEffects")(
-    function* () {
-      let state = yield* database.getState();
-      const initialCheckpoint = state.transitionCheckpoint;
+  const resumeTransitionEffectsWithoutPermit = Effect.fn(
+    "StreamLifecycle.resumeTransitionEffectsWithoutPermit",
+  )(function* () {
+    let state = yield* database.getState();
+    const initialCheckpoint = state.transitionCheckpoint;
 
-      if (initialCheckpoint === null) return;
+    if (initialCheckpoint === null) return;
 
-      if (!initialCheckpoint.spotifyTokenNotified) {
-        yield* (
-          initialCheckpoint.transition === "online"
-            ? accessTokens.onStreamOnline("spotify")
-            : accessTokens.onStreamOffline("spotify")
-        ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
-        state = yield* saveEffectCheckpoint(state, initialCheckpoint, "spotifyTokenNotified");
+    if (!initialCheckpoint.spotifyTokenNotified) {
+      yield* (
+        initialCheckpoint.transition === "online"
+          ? accessTokens.onStreamOnline("spotify")
+          : accessTokens.onStreamOffline("spotify")
+      ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
+      state = yield* saveEffectCheckpoint(state, initialCheckpoint, "spotifyTokenNotified");
+    }
+
+    const twitchCheckpoint = state.transitionCheckpoint;
+
+    if (twitchCheckpoint !== null && !twitchCheckpoint.twitchTokenNotified) {
+      yield* (
+        twitchCheckpoint.transition === "online"
+          ? accessTokens.onStreamOnline("twitch")
+          : accessTokens.onStreamOffline("twitch")
+      ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
+      state = yield* saveEffectCheckpoint(state, twitchCheckpoint, "twitchTokenNotified");
+    }
+
+    const eventCheckpoint = state.transitionCheckpoint;
+
+    if (eventCheckpoint !== null && !eventCheckpoint.lifecycleEventPublished) {
+      yield* events
+        .publish(lifecycleEvent(eventCheckpoint))
+        .pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
+      state = yield* saveEffectCheckpoint(state, eventCheckpoint, "lifecycleEventPublished");
+    }
+
+    const pollingCheckpoint = state.transitionCheckpoint;
+
+    if (pollingCheckpoint !== null && !pollingCheckpoint.viewerPollingUpdated) {
+      if (pollingCheckpoint.transition === "online") {
+        const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
+        yield* alarm.scheduleAt(dueAt);
+
+        const withSchedule =
+          state._tag === "LiveStream"
+            ? {
+                ...state,
+                viewerPollScheduleId: dueAt,
+                transitionCheckpoint: { ...pollingCheckpoint, viewerPollScheduleId: dueAt },
+              }
+            : state;
+
+        state = completeTransitionEffect(
+          withSchedule,
+          pollingCheckpoint.eventId,
+          "viewerPollingUpdated",
+        );
+        yield* database.saveState(state);
+      } else {
+        yield* alarm.clear();
+        state = yield* saveEffectCheckpoint(state, pollingCheckpoint, "viewerPollingUpdated");
       }
+    }
 
-      const twitchCheckpoint = state.transitionCheckpoint;
-
-      if (twitchCheckpoint !== null && !twitchCheckpoint.twitchTokenNotified) {
-        yield* (
-          twitchCheckpoint.transition === "online"
-            ? accessTokens.onStreamOnline("twitch")
-            : accessTokens.onStreamOffline("twitch")
-        ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
-        state = yield* saveEffectCheckpoint(state, twitchCheckpoint, "twitchTokenNotified");
-      }
-
-      const eventCheckpoint = state.transitionCheckpoint;
-
-      if (eventCheckpoint !== null && !eventCheckpoint.lifecycleEventPublished) {
-        yield* events
-          .publish(lifecycleEvent(eventCheckpoint))
-          .pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
-        state = yield* saveEffectCheckpoint(state, eventCheckpoint, "lifecycleEventPublished");
-      }
-
-      const pollingCheckpoint = state.transitionCheckpoint;
-
-      if (pollingCheckpoint !== null && !pollingCheckpoint.viewerPollingUpdated) {
-        if (pollingCheckpoint.transition === "online") {
-          const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
-          yield* alarm.scheduleAt(dueAt);
-
-          const withSchedule =
-            state._tag === "LiveStream"
-              ? {
-                  ...state,
-                  viewerPollScheduleId: dueAt,
-                  transitionCheckpoint: { ...pollingCheckpoint, viewerPollScheduleId: dueAt },
-                }
-              : state;
-
-          state = completeTransitionEffect(
-            withSchedule,
-            pollingCheckpoint.eventId,
-            "viewerPollingUpdated",
-          );
-          yield* database.saveState(state);
-        } else {
-          yield* alarm.clear();
-          state = yield* saveEffectCheckpoint(state, pollingCheckpoint, "viewerPollingUpdated");
-        }
-      }
-
-      yield* database.saveState(clearCompletedTransition(state));
-    },
-  );
+    yield* database.saveState(clearCompletedTransition(state));
+  });
 
   const getState: IStreamLifecycleClient["getState"] = Effect.fn("StreamLifecycle.getState")(
     function* () {
@@ -203,30 +211,34 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     },
   );
 
+  const markOnlineWithoutPermit = Effect.fn("StreamLifecycle.markOnlineWithoutPermit")(function* (
+    input: Parameters<IStreamLifecycleClient["markOnline"]>[0],
+  ) {
+    yield* resumeTransitionEffectsWithoutPermit();
+    const current = yield* database.getState();
+
+    const eventId = yield* deriveLifecycleEventId({
+      transition: "online",
+      streamId: input.streamId,
+      transitionAt: input.startedAt,
+    }).pipe(Effect.provideService(Crypto.Crypto, crypto));
+
+    const accepted = acceptOnlineTransition(current, { ...input, eventId });
+
+    if (accepted !== current) yield* database.saveState(accepted);
+    yield* resumeTransitionEffectsWithoutPermit();
+
+    return toStreamLifecycleState(yield* database.getState());
+  });
+
   const markOnline: IStreamLifecycleClient["markOnline"] = Effect.fn("StreamLifecycle.markOnline")(
-    function* (input) {
-      yield* resumeTransitionEffects();
-      const current = yield* database.getState();
-
-      const eventId = yield* deriveLifecycleEventId({
-        transition: "online",
-        streamId: input.streamId,
-        transitionAt: input.startedAt,
-      });
-
-      const accepted = acceptOnlineTransition(current, { ...input, eventId });
-
-      if (accepted !== current) yield* database.saveState(accepted);
-      yield* resumeTransitionEffects();
-
-      return toStreamLifecycleState(yield* database.getState());
-    },
+    (input) => mutationSemaphore.withPermit(markOnlineWithoutPermit(input)),
   );
 
-  const markOffline: IStreamLifecycleClient["markOffline"] = Effect.fn(
-    "StreamLifecycle.markOffline",
-  )(function* (input) {
-    yield* resumeTransitionEffects();
+  const markOfflineWithoutPermit = Effect.fn("StreamLifecycle.markOfflineWithoutPermit")(function* (
+    input: Parameters<IStreamLifecycleClient["markOffline"]>[0],
+  ) {
+    yield* resumeTransitionEffectsWithoutPermit();
     const current = yield* database.getState();
 
     const streamId =
@@ -238,19 +250,23 @@ export const makeStreamLifecycle = Effect.gen(function* () {
       transition: "offline",
       streamId,
       transitionAt: input.endedAt,
-    });
+    }).pipe(Effect.provideService(Crypto.Crypto, crypto));
 
     const accepted = acceptOfflineTransition(current, { ...input, eventId });
 
     if (accepted !== current) yield* database.saveState(accepted);
-    yield* resumeTransitionEffects();
+    yield* resumeTransitionEffectsWithoutPermit();
 
     return toStreamLifecycleState(yield* database.getState());
   });
 
-  const recordViewerCount: IStreamLifecycleClient["recordViewerCount"] = Effect.fn(
-    "StreamLifecycle.recordViewerCount",
-  )(function* (input) {
+  const markOffline: IStreamLifecycleClient["markOffline"] = Effect.fn(
+    "StreamLifecycle.markOffline",
+  )((input) => mutationSemaphore.withPermit(markOfflineWithoutPermit(input)));
+
+  const recordViewerCountWithoutPermit = Effect.fn(
+    "StreamLifecycle.recordViewerCountWithoutPermit",
+  )(function* (input: Parameters<IStreamLifecycleClient["recordViewerCount"]>[0]) {
     const state = yield* database.getState();
     yield* database.recordViewerCount({
       state,
@@ -259,38 +275,47 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     });
   });
 
+  const recordViewerCount: IStreamLifecycleClient["recordViewerCount"] = Effect.fn(
+    "StreamLifecycle.recordViewerCount",
+  )((input) => mutationSemaphore.withPermit(recordViewerCountWithoutPermit(input)));
+
   const reconcile: IStreamLifecycleClient["reconcile"] = Effect.fn("StreamLifecycle.reconcile")(
-    function* (input) {
-      const before = yield* getState();
-      let action: "noop" | "marked_online" | "marked_offline" | "recorded_viewer_count" = "noop";
+    (input) =>
+      mutationSemaphore.withPermit(
+        Effect.gen(function* () {
+          const before = yield* getState();
 
-      if (Option.isSome(input.stream)) {
-        const state = yield* database.getState();
+          let action: "noop" | "marked_online" | "marked_offline" | "recorded_viewer_count" =
+            "noop";
 
-        if (state._tag === "OfflineStream") {
-          yield* markOnline({
-            streamId: input.stream.value.id,
-            startedAt: input.stream.value.startedAt,
-          });
-          action = "marked_online";
-        } else {
-          yield* recordViewerCount({
-            count: input.stream.value.viewerCount,
-            recordedAt: input.observedAt,
-          });
-          action = "recorded_viewer_count";
-        }
-      } else {
-        const state = yield* database.getState();
+          if (Option.isSome(input.stream)) {
+            const state = yield* database.getState();
 
-        if (state._tag === "LiveStream") {
-          yield* markOffline({ endedAt: input.observedAt });
-          action = "marked_offline";
-        }
-      }
+            if (state._tag === "OfflineStream") {
+              yield* markOnlineWithoutPermit({
+                streamId: input.stream.value.id,
+                startedAt: input.stream.value.startedAt,
+              });
+              action = "marked_online";
+            } else {
+              yield* recordViewerCountWithoutPermit({
+                count: input.stream.value.viewerCount,
+                recordedAt: input.observedAt,
+              });
+              action = "recorded_viewer_count";
+            }
+          } else {
+            const state = yield* database.getState();
 
-      return { action, before, after: yield* getState() };
-    },
+            if (state._tag === "LiveStream") {
+              yield* markOfflineWithoutPermit({ endedAt: input.observedAt });
+              action = "marked_offline";
+            }
+          }
+
+          return { action, before, after: yield* getState() };
+        }),
+      ),
   );
 
   const client = StreamLifecycleClient.of({
@@ -323,59 +348,80 @@ export const makeStreamLifecycle = Effect.gen(function* () {
         viewerSnapshotCount: yield* database.getViewerSnapshotCount(),
       };
     }),
-    reset: Effect.fn("StreamLifecycle.reset")(function* () {
-      yield* database.reset();
-      yield* alarm.clear();
-    }),
+    reset: Effect.fn("StreamLifecycle.reset")(() =>
+      mutationSemaphore.withPermit(
+        Effect.gen(function* () {
+          yield* database.reset();
+          yield* alarm.clear();
+        }),
+      ),
+    ),
   });
 
-  const rebuildAlarm = Effect.fn("StreamLifecycle.rebuildAlarm")(function* () {
-    const state = yield* database.getState();
+  const rebuildAlarmWithoutPermit = Effect.fn("StreamLifecycle.rebuildAlarmWithoutPermit")(
+    function* () {
+      const state = yield* database.getState();
 
-    if (state.transitionCheckpoint !== null) {
-      yield* alarm.scheduleAt(yield* nextAlarmTimestamp(1_000));
-    } else if (state._tag === "LiveStream") {
-      const dueAt =
-        state.viewerPollScheduleId === null
-          ? yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS)
-          : yield* Schema.decodeEffect(IsoTimestamp)(state.viewerPollScheduleId).pipe(
-              Effect.mapError(() => streamError("resumeTransitionEffects", "stored_state_invalid")),
-            );
+      if (state.transitionCheckpoint !== null) {
+        yield* alarm.scheduleAt(yield* nextAlarmTimestamp(1_000));
+      } else if (state._tag === "LiveStream") {
+        const dueAt =
+          state.viewerPollScheduleId === null
+            ? yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS)
+            : yield* Schema.decodeEffect(IsoTimestamp)(state.viewerPollScheduleId).pipe(
+                Effect.mapError(() =>
+                  streamError("resumeTransitionEffects", "stored_state_invalid"),
+                ),
+              );
 
-      yield* alarm.scheduleAt(dueAt);
-    } else {
-      yield* alarm.clear();
-    }
-  });
+        yield* alarm.scheduleAt(dueAt);
+      } else {
+        yield* alarm.clear();
+      }
+    },
+  );
+
+  const rebuildAlarm = Effect.fn("StreamLifecycle.rebuildAlarm")(() =>
+    mutationSemaphore.withPermit(rebuildAlarmWithoutPermit()),
+  );
 
   const processAlarm = Effect.fn("StreamLifecycle.processAlarm")(function* () {
-    yield* resumeTransitionEffects();
-    let state = yield* database.getState();
+    return yield* mutationSemaphore.withPermit(
+      Effect.gen(function* () {
+        yield* resumeTransitionEffectsWithoutPermit();
+        let state = yield* database.getState();
 
-    if (state._tag === "OfflineStream") {
-      yield* alarm.clear();
+        if (state._tag === "OfflineStream") {
+          yield* alarm.clear();
 
-      return;
-    }
+          return;
+        }
 
-    const count = yield* viewerProvider.getViewerCount();
+        const count = yield* viewerProvider.getViewerCount();
 
-    if (Option.isSome(count)) {
-      const recordedAt = yield* nextAlarmTimestamp(0);
-      state = yield* database.recordViewerCount({ state, count: count.value, recordedAt });
-    }
+        if (Option.isSome(count)) {
+          const recordedAt = yield* nextAlarmTimestamp(0);
+          state = yield* database.recordViewerCount({ state, count: count.value, recordedAt });
+        }
 
-    const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
-    yield* alarm.scheduleAt(dueAt);
+        const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
+        yield* alarm.scheduleAt(dueAt);
 
-    if (state._tag === "LiveStream") {
-      yield* database.saveState({ ...state, viewerPollScheduleId: dueAt });
-    }
+        if (state._tag === "LiveStream") {
+          yield* database.saveState({ ...state, viewerPollScheduleId: dueAt });
+        }
+      }),
+    );
   });
 
   return {
     client,
-    processor: StreamProcessor.of({ resumeTransitionEffects, rebuildAlarm, processAlarm }),
+    processor: StreamProcessor.of({
+      resumeTransitionEffects: () =>
+        mutationSemaphore.withPermit(resumeTransitionEffectsWithoutPermit()),
+      rebuildAlarm,
+      processAlarm,
+    }),
   };
 });
 

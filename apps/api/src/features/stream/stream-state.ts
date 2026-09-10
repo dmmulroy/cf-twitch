@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { DateTime, Effect, Option, Order, Schema } from "effect";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import {
   StreamLifecycleError,
@@ -256,7 +256,26 @@ export const toStreamLifecycleState = (state: PersistedStreamState): StreamLifec
         peakViewerCount: state.peakViewerCount,
       };
 
-/** Latest source timestamp used to reject stale lifecycle evidence. */
+// IsoTimestamp validates calendar existence and Date.parse compatibility before this pure domain code.
+const streamTimestampInstant = (timestamp: IsoTimestamp): DateTime.Utc =>
+  DateTime.makeUnsafe(timestamp);
+
+const streamTimestampFraction = (timestamp: IsoTimestamp): string => {
+  const fraction = /\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/.exec(timestamp)?.[1] ?? "";
+
+  return fraction.replace(/0+$/, "");
+};
+
+// DateTime uses host millisecond precision, so exact accepted fractions break instant ties.
+const compareStreamTimestampInstants: Order.Order<IsoTimestamp> = Order.combine(
+  Order.mapInput(DateTime.Order, streamTimestampInstant),
+  Order.mapInput(Order.String, streamTimestampFraction),
+);
+
+const streamTimestampIsBefore = (self: IsoTimestamp, that: IsoTimestamp): boolean =>
+  compareStreamTimestampInstants(self, that) < 0;
+
+/** Latest source timestamp used to reject stale lifecycle evidence by instant. */
 const latestTransitionAt = (state: PersistedStreamState): IsoTimestamp | null => {
   if (state._tag === "LiveStream") return state.startedAt;
 
@@ -264,7 +283,9 @@ const latestTransitionAt = (state: PersistedStreamState): IsoTimestamp | null =>
 
   if (state.endedAt === null) return state.lastStartedAt;
 
-  return state.lastStartedAt < state.endedAt ? state.endedAt : state.lastStartedAt;
+  return streamTimestampIsBefore(state.lastStartedAt, state.endedAt)
+    ? state.endedAt
+    : state.lastStartedAt;
 };
 
 /** Accept an online transition and atomically create all incomplete effect checkpoints. */
@@ -278,7 +299,9 @@ export const acceptOnlineTransition = (
 ): PersistedStreamState => {
   const latest = latestTransitionAt(state);
 
-  if (latest !== null && input.startedAt <= latest) return state;
+  if (latest !== null && compareStreamTimestampInstants(input.startedAt, latest) <= 0) {
+    return state;
+  }
 
   if (state._tag === "LiveStream") return state;
 
@@ -309,7 +332,7 @@ export const acceptOfflineTransition = (
 ): PersistedStreamState => {
   const latest = latestTransitionAt(state);
 
-  if (latest !== null && input.endedAt < latest) return state;
+  if (latest !== null && streamTimestampIsBefore(input.endedAt, latest)) return state;
 
   if (state._tag === "OfflineStream") return state;
 

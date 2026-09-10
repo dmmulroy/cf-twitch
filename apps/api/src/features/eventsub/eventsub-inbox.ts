@@ -381,7 +381,7 @@ export const makeEventSubInbox = Effect.gen(function* () {
 
   const accept = Effect.fn("EventSubInbox.accept")((input: AcceptedEventSubReceipt) =>
     permit
-      .withPermits(1)(
+      .withPermit(
         Effect.gen(function* () {
           const receipt = input;
 
@@ -447,9 +447,7 @@ export const makeEventSubInbox = Effect.gen(function* () {
     }));
   }, catchEventSubInboxBoundaryErrors("get-status"));
 
-  const recover = Effect.fn("EventSubInbox.recover")(() =>
-    permit.withPermits(1)(recoverUnlocked()),
-  );
+  const recover = Effect.fn("EventSubInbox.recover")(() => permit.withPermit(recoverUnlocked()));
 
   return EventSubInbox.of({ accept, getReceiptStatus, recover, restoreAlarm });
 });

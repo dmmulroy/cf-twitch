@@ -1,5 +1,17 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import { Clock, Effect, Layer, Option, Schema } from "effect";
+import {
+  Cause,
+  Clock,
+  Crypto,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  PlatformError,
+  Schema,
+  Tracer,
+} from "effect";
 import { TestClock } from "effect/testing";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter } from "effect/unstable/http";
@@ -84,12 +96,24 @@ const withWebhook = <A, E, R>(
   test: (
     fetch: (request: Request) => Promise<Response>,
     receipts: readonly AcceptedEventSubReceipt[],
+    spans: readonly Tracer.NativeSpan[],
   ) => Effect.Effect<A, E, R>,
   twitch: Partial<ITwitchService> = {},
+  cryptoLayer: Layer.Layer<Crypto.Crypto> = NodeCrypto.layer,
 ) =>
   Effect.gen(function* () {
     const clock = yield* Clock.Clock;
     const receipts: AcceptedEventSubReceipt[] = [];
+    const spans: Tracer.NativeSpan[] = [];
+
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+
+        return span;
+      },
+    });
 
     const receiptLayer = Layer.mock(EventSubReceipts, {
       accept: (receipt) =>
@@ -111,15 +135,17 @@ const withWebhook = <A, E, R>(
       Layer.provide([
         Layer.succeed(Clock.Clock, clock),
         Layer.succeed(TwitchConfiguration, configuration),
+        cryptoLayer,
         Layer.mock(TwitchService, twitch),
         receiptLayer,
         cloudflareHttpServerLayer,
       ]),
+      Layer.provideMerge(Layer.succeed(Tracer.Tracer, tracer)),
     );
 
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
-      ({ handler }) => test(handler, receipts),
+      ({ handler }) => test(handler, receipts, spans),
       ({ dispose }) => Effect.promise(dispose),
     );
   });
@@ -166,6 +192,81 @@ describe("authenticated EventSub HTTP ingress", () => {
     }),
   );
 
+  it.effect("returns a safe failure without accepting a receipt when SHA-256 is unavailable", () =>
+    Effect.gen(function* () {
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(timestamp));
+
+      const digestFailure = PlatformError.systemError({
+        module: "Crypto",
+        method: "digest",
+        _tag: "Unknown",
+        description: "Controlled digest failure",
+      });
+
+      const cryptoLayer = Layer.succeed(
+        Crypto.Crypto,
+        Crypto.make({
+          randomBytes: (size) => new Uint8Array(size),
+          digest: () => Effect.fail(digestFailure),
+        }),
+      );
+
+      yield* withWebhook(
+        (fetch, receipts) =>
+          Effect.gen(function* () {
+            const request = yield* Effect.promise(() => signedRequest({ timestamp }));
+            const response = yield* Effect.promise(() => fetch(request));
+
+            expect(response.status).toBe(503);
+            expect(yield* Effect.promise(() => response.json())).toEqual({
+              error: "EventSub durable acceptance failed",
+            });
+            expect(receipts).toHaveLength(0);
+          }),
+        {},
+        cryptoLayer,
+      );
+    }),
+  );
+
+  it.effect("preserves digest interruption without accepting a receipt", () =>
+    Effect.gen(function* () {
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(timestamp));
+
+      const cryptoLayer = Layer.succeed(
+        Crypto.Crypto,
+        Crypto.make({
+          randomBytes: (size) => new Uint8Array(size),
+          digest: () => Effect.interrupt,
+        }),
+      );
+
+      yield* withWebhook(
+        (fetch, receipts, spans) =>
+          Effect.gen(function* () {
+            const request = yield* Effect.promise(() => signedRequest({ timestamp }));
+            const response = yield* Effect.promise(() => fetch(request));
+            const requestSpan = spans.find((span) => span.name === "HTTP request");
+
+            expect(response.status).toBe(503);
+            expect(yield* Effect.promise(() => response.text())).not.toBe(
+              JSON.stringify({ error: "EventSub durable acceptance failed" }),
+            );
+            expect(
+              requestSpan?.status._tag === "Ended" && Exit.isFailure(requestSpan.status.exit)
+                ? Cause.hasInterruptsOnly(requestSpan.status.exit.cause)
+                : false,
+            ).toBe(true);
+            expect(receipts).toHaveLength(0);
+          }),
+        {},
+        cryptoLayer,
+      );
+    }),
+  );
+
   it.live(
     "rejects missing/malformed headers, stale/future timestamps and invalid signatures before receipt intake",
     () =>
@@ -185,6 +286,9 @@ describe("authenticated EventSub HTTP ingress", () => {
             [{ timestamp: "invalid" }, 400],
             [{ timestamp: "2020-01-01T00:00:00Z" }, 403],
             [{ timestamp: "2099-01-01T00:00:00Z" }, 403],
+            [{ signature: "sha512=" + "0".repeat(64) }, 400],
+            [{ signature: `sha256=${"0".repeat(62)}` }, 400],
+            [{ signature: `sha256=${"g".repeat(64)}` }, 400],
             [{ signature: `sha256=${"0".repeat(64)}` }, 403],
           ] as const) {
             const request = yield* Effect.promise(() => signedRequest(input));

@@ -1,12 +1,13 @@
+import { NodeCrypto } from "@effect/platform-node";
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Crypto, Effect, Layer, Option, Schema } from "effect";
 import * as FastCheck from "effect/testing/FastCheck";
 import { SqlClient } from "effect/unstable/sql";
 import { HttpRouter } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { IsoTimestamp, PageSize, RedemptionId, ViewerId } from "@cf-twitch/contracts/identity";
-import { RaffleNumber, RecordRaffleRoll } from "@cf-twitch/contracts/raffle";
+import { RaffleNumber, RaffleRecordResult, RecordRaffleRoll } from "@cf-twitch/contracts/raffle";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { Raffle } from "./raffle-service.ts";
 import { raffleLayer } from "./raffle-database.ts";
@@ -19,7 +20,12 @@ type RaffleHttpTestPayload = typeof RaffleHttpTestPayload.Type;
 
 const parseRaffleHttpTestPayload = Schema.decodeUnknownEffect(RaffleHttpTestPayload);
 
-const database = raffleLayer.pipe(Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })));
+const raffleRecordResultEquivalence = Schema.toEquivalence(RaffleRecordResult);
+
+const database = raffleLayer.pipe(
+  Layer.provide(NodeCrypto.layer),
+  Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })),
+);
 
 const rollInput = (
   id: string,
@@ -54,7 +60,7 @@ describe("Raffle real SQLite authority", () => {
           expect((yield* restored.getOrCreateRoll(draw).pipe(Effect.flip)).reason).toBe(
             "compensated",
           );
-        }).pipe(Effect.provide(Layer.fresh(raffleLayer)));
+        }).pipe(Effect.provide(Layer.fresh(raffleLayer).pipe(Layer.provide(NodeCrypto.layer))));
       }).pipe(Effect.provide(database)),
   );
   it.effect(
@@ -67,18 +73,26 @@ describe("Raffle real SQLite authority", () => {
         yield* raffle.recordRoll(rollInput("better", 9_999));
         expect(yield* raffle.recordRoll(input)).toEqual(first);
 
-        const conflict = yield* raffle
-          .recordRoll({
+        const conflicts: ReadonlyArray<RecordRaffleRoll> = [
+          rollInput("once", 9_950, 10_000, "different-viewer"),
+          rollInput("once", 9_950, 10_000, "viewer", "Different Viewer"),
+          rollInput("once", 8_000),
+          rollInput("once", 9_950, 9_999),
+          RecordRaffleRoll.make({
             id: input.id,
             userId: input.userId,
             displayName: input.displayName,
-            roll: RaffleNumber.make(8_000),
+            roll: input.roll,
             winningNumber: input.winningNumber,
-            rolledAt: input.rolledAt,
-          })
-          .pipe(Effect.flip);
+            rolledAt: IsoTimestamp.make("2026-04-07T14:17:00.000Z"),
+          }),
+        ];
 
-        expect(conflict.reason).toBe("idempotency_conflict");
+        for (const changed of conflicts) {
+          const conflict = yield* raffle.recordRoll(changed).pipe(Effect.flip);
+          expect(conflict.reason).toBe("idempotency_conflict");
+        }
+
         yield* raffle.deleteRollById({ rollId: input.id });
         yield* raffle.deleteRollById({ rollId: input.id });
         expect(yield* raffle.recordRoll(input)).toEqual(first);
@@ -99,12 +113,10 @@ describe("Raffle real SQLite authority", () => {
           { concurrency: "unbounded" },
         );
 
-        expect(
-          results.every((result) => JSON.stringify(result) === JSON.stringify(results[0])),
-        ).toBe(true);
-        const first = results[0];
-        expect(first?.roll.roll).toBeGreaterThanOrEqual(1);
-        expect(first?.roll.roll).toBeLessThanOrEqual(10_000);
+        const first = Option.getOrThrow(Option.fromUndefinedOr(results[0]));
+        expect(results.every((result) => raffleRecordResultEquivalence(result, first))).toBe(true);
+        expect(first.roll.roll).toBeGreaterThanOrEqual(1);
+        expect(first.roll.roll).toBeLessThanOrEqual(10_000);
         expect(
           Option.getOrThrow(yield* raffle.getUserStats({ userId: input.userId })).totalRolls,
         ).toBe(1);
@@ -113,6 +125,38 @@ describe("Raffle real SQLite authority", () => {
         expect(Option.isNone(yield* raffle.getUserStats({ userId: input.userId }))).toBe(true);
       }).pipe(Effect.provide(database)),
   );
+  it.effect("uses two independent Crypto byte draws and never redraws an existing receipt", () => {
+    let randomByteCalls = 0;
+    const words = [0, 9_999];
+
+    const crypto = Crypto.make({
+      randomBytes: () => {
+        const word = words[randomByteCalls++] ?? 0xffff_ffff;
+        const bytes = new Uint8Array(4);
+        new DataView(bytes.buffer).setUint32(0, word);
+
+        return bytes;
+      },
+      digest: (_algorithm, data) => Effect.succeed(data),
+    });
+
+    const controlledDatabase = raffleLayer.pipe(
+      Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
+      Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })),
+    );
+
+    return Effect.gen(function* () {
+      const raffle = yield* Raffle;
+      const { roll: _roll, winningNumber: _winningNumber, ...input } = rollInput("controlled");
+      const first = yield* raffle.getOrCreateRoll(input);
+
+      expect(first.roll).toMatchObject({ roll: 1, winningNumber: 10_000 });
+      expect(randomByteCalls).toBe(2);
+      expect(yield* raffle.getOrCreateRoll(input)).toEqual(first);
+      expect(randomByteCalls).toBe(2);
+    }).pipe(Effect.provide(controlledDatabase));
+  });
+
   it.effect(
     "strict global non-winning records exclude ties/winners and ranking follows latest names",
     () =>
@@ -182,15 +226,50 @@ describe("Raffle real SQLite authority", () => {
       expect(invalid._tag).toBe("SqlError");
     }).pipe(Effect.provide(database)),
   );
-  it.effect("rejects a stored receipt whose derived evidence contradicts its draw", () =>
+  it.effect("round-trips both persisted raffle boolean flags through the stored-row codec", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const raffle = yield* Raffle;
+      const nonWinnerInput = rollInput("codec-non-winner", 9_999, 10_000);
+      const winnerInput = rollInput("codec-winner", 10_000, 10_000);
+      const nonWinner = yield* raffle.recordRoll(nonWinnerInput);
+      const winner = yield* raffle.recordRoll(winnerInput);
+
+      expect(
+        yield* sql`SELECT id,is_winner,is_new_record FROM raffle_roll_receipts ORDER BY id`,
+      ).toEqual([
+        { id: "codec-non-winner", is_winner: 0, is_new_record: 1 },
+        { id: "codec-winner", is_winner: 1, is_new_record: 0 },
+      ]);
+      expect(yield* raffle.recordRoll(nonWinnerInput)).toEqual(nonWinner);
+      expect(yield* raffle.recordRoll(winnerInput)).toEqual(winner);
+    }).pipe(Effect.provide(database)),
+  );
+  it.effect("rejects each independent contradictory stored derived field", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const raffle = yield* Raffle;
+
+      const corruptRows = [
+        { id: "bad-distance", roll: 1, winningNumber: 2, distance: 2, isWinner: 0, isNewRecord: 1 },
+        { id: "bad-winner", roll: 1, winningNumber: 2, distance: 1, isWinner: 1, isNewRecord: 0 },
+        { id: "bad-record", roll: 1, winningNumber: 1, distance: 0, isWinner: 1, isNewRecord: 1 },
+        { id: "bad-flag", roll: 1, winningNumber: 2, distance: 1, isWinner: 2, isNewRecord: 0 },
+      ] as const;
+
       yield* sql`PRAGMA ignore_check_constraints = ON`;
-      yield* sql`INSERT INTO raffle_roll_receipts(id,user_id,display_name,roll,winning_number,distance,is_winner,is_new_record,rolled_at) VALUES ('corrupt','viewer','Viewer',1,1,3,0,1,'2026-04-07T14:16:00.000Z')`;
+
+      for (const row of corruptRows)
+        yield* sql`INSERT INTO raffle_roll_receipts(id,user_id,display_name,roll,winning_number,distance,is_winner,is_new_record,rolled_at) VALUES (${row.id},'viewer','Viewer',${row.roll},${row.winningNumber},${row.distance},${row.isWinner},${row.isNewRecord},'2026-04-07T14:16:00.000Z')`;
       yield* sql`PRAGMA ignore_check_constraints = OFF`;
-      const error = yield* raffle.recordRoll(rollInput("corrupt", 1, 1)).pipe(Effect.flip);
-      expect(error.reason).toBe("invalid_stored_data");
+
+      for (const row of corruptRows) {
+        const error = yield* raffle
+          .recordRoll(rollInput(row.id, row.roll, row.winningNumber))
+          .pipe(Effect.flip);
+
+        expect(error.reason).toBe("invalid_stored_data");
+      }
     }).pipe(Effect.provide(database)),
   );
   it.effect("a failed receipt write rolls back the active roll atomically", () =>

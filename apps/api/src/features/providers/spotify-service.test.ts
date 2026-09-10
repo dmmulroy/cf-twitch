@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { SpotifyTrackId } from "@cf-twitch/contracts/identity";
-import { Effect, Layer, Option, Redacted } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Redacted } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
 import {
   providerLocalAccessTokensLayer,
@@ -137,6 +138,53 @@ it.effect(
         { method: "POST", path: "/v1/me/player/next" },
       ]);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("Spotify current-playing absence conversion preserves interruption", () =>
+  Effect.gen(function* () {
+    const interruptingTransport = HttpClient.make((request, url) => {
+      if (url.pathname === "/v1/me/player/currently-playing") return Effect.interrupt;
+
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          Response.json({
+            currently_playing: providerScenarioTrack,
+            queue: [providerScenarioTrack],
+          }),
+        ),
+      );
+    });
+
+    const interruptingLayer = spotifyServiceLayerWithoutDependencies.pipe(
+      Layer.provideMerge(providerLocalAccessTokensLayer),
+      Layer.provide([providerLocalConfigurationLayer, providerLocalCryptoLayer]),
+      Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, interruptingTransport)),
+    );
+
+    const exit = yield* Effect.gen(function* () {
+      yield* seed("normal");
+      const spotify = yield* SpotifyService;
+
+      return yield* spotify.getPlayback();
+    }).pipe(Effect.provide(interruptingLayer), Effect.exit);
+
+    expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
+  }),
+);
+
+it.effect("Spotify Connect lookup failure becomes a refused compensation without mutation", () =>
+  Effect.gen(function* () {
+    yield* seed("connect-error");
+    const spotify = yield* SpotifyService;
+    expect(yield* spotify.removeFromQueue(trackId)).toBe(false);
+    const transcript = yield* ProviderScenarioTranscript;
+    expect(
+      (yield* transcript.readRequests()).filter(
+        (request) => request.path.includes("/player/command/") && request.method === "POST",
+      ),
+    ).toHaveLength(0);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("Spotify internal compensation removes a uniquely identifiable queued track", () =>

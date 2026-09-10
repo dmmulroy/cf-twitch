@@ -1,11 +1,15 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { Effect, Layer, Option, Schema } from "effect";
 import * as FastCheck from "effect/testing/FastCheck";
 import { SqlClient } from "effect/unstable/sql";
 import { HttpRouter } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { AchievementEventInput } from "@cf-twitch/contracts/achievement";
+import {
+  type AchievementDefinition,
+  type AchievementError,
+  AchievementEventInput,
+} from "@cf-twitch/contracts/achievement";
 import { RaffleDistance, RaffleNumber } from "@cf-twitch/contracts/raffle";
 import {
   EventId,
@@ -24,7 +28,7 @@ import {
 } from "@cf-twitch/contracts/domain-event";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { Achievements } from "./achievements-service.ts";
-import { achievementsLayer } from "./achievements-database.ts";
+import { achievementsLayer, makeAchievements } from "./achievements-database.ts";
 import { AchievementsHttpApi } from "./achievements-http-api.ts";
 import { achievementsHttpHandlersLayer } from "./achievements-http-handlers.ts";
 
@@ -111,6 +115,47 @@ const parseOutbox = Schema.decodeUnknownEffect(
 );
 
 describe("Achievements real SQLite authority", () => {
+  it("keeps schema-backed reads behind the achievement service contract", () => {
+    expectTypeOf<Effect.Success<typeof makeAchievements>>().toEqualTypeOf<
+      Achievements["Service"]
+    >();
+    expectTypeOf<ReturnType<Achievements["Service"]["getDefinitions"]>>().toEqualTypeOf<
+      Effect.Effect<ReadonlyArray<AchievementDefinition>, AchievementError>
+    >();
+  });
+  it.effect("treats an absent Stream Session as ordinary absence", () =>
+    Effect.gen(function* () {
+      const service = yield* Achievements;
+      yield* service.handleEvent(request(1));
+      expect(
+        (yield* service.getUnlockedAchievements({ userDisplayName: "Viewer" })).map(
+          (achievement) => achievement.id,
+        ),
+      ).not.toContain("stream_opener");
+      expect(
+        (yield* service.getUserAchievements({ userDisplayName: "Viewer" })).find(
+          (achievement) => achievement.achievementId === "first_request",
+        ),
+      ).toMatchObject({ progress: 1, unlocked: true });
+    }).pipe(Effect.provide(database)),
+  );
+  it.effect("rejects a corrupt stored Stream Session and rolls back event intake", () =>
+    Effect.gen(function* () {
+      const service = yield* Achievements;
+      const sql = yield* SqlClient.SqlClient;
+      yield* service.handleEvent(online(100, 0));
+      yield* sql`UPDATE achievement_stream_session SET transition_at='not-an-instant'`;
+
+      expect((yield* service.handleEvent(request(1)).pipe(Effect.flip)).reason).toBe(
+        "invalid_stored_data",
+      );
+      expect(yield* service.getDebugTableCounts()).toMatchObject({
+        eventHistory: 1,
+        userAchievements: 0,
+        userStreaks: 0,
+      });
+    }).pipe(Effect.provide(database)),
+  );
   it.effect(
     "invalid direct streak metadata rolls back inbox instead of persisting invalid progress",
     () =>

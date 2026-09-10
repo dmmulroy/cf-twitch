@@ -1,7 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
-import { Effect, Layer, Option, Ref, Schema } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/unstable/sql";
 import { recordingTwitchAnalyticsLayer } from "../../../test/support/recording-twitch-analytics.ts";
@@ -342,6 +342,62 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
                 "spotify-add",
                 Schema.Null,
                 Ref.update(calls, (n) => n + 1).pipe(Effect.as(null)),
+                unsafe,
+              )
+              .pipe(Effect.result);
+          }),
+        ),
+      ).toMatchObject({ failure: { reason: "unknown" } });
+      expect(yield* Ref.get(calls)).toBe(1);
+    }).pipe(Effect.provide(testSql)),
+  );
+
+  it.effect("preserves external interruption as unknown after finalization without retry", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const finalized = yield* Ref.make(false);
+      const calls = yield* Ref.make(0);
+
+      yield* withJournal(
+        Effect.gen(function* () {
+          const journal = yield* WorkflowJournal;
+          yield* journal.initialize(input);
+
+          const fiber = yield* journal
+            .checkpoint(
+              "uncertain-send",
+              Schema.Null,
+              Ref.update(calls, (count) => count + 1).pipe(
+                Effect.andThen(Deferred.succeed(started, undefined)),
+                Effect.andThen(Effect.never),
+                Effect.ensuring(Ref.set(finalized, true)),
+              ),
+              unsafe,
+            )
+            .pipe(Effect.forkChild);
+
+          yield* Deferred.await(started);
+          yield* Fiber.interrupt(fiber);
+
+          const interruptedExit = yield* Fiber.await(fiber);
+          expect(Exit.isFailure(interruptedExit)).toBe(true);
+
+          if (Exit.isFailure(interruptedExit))
+            expect(Cause.hasInterrupts(interruptedExit.cause)).toBe(true);
+        }),
+      );
+
+      expect(yield* Ref.get(finalized)).toBe(true);
+      expect(
+        yield* withJournal(
+          Effect.gen(function* () {
+            const journal = yield* WorkflowJournal;
+
+            return yield* journal
+              .checkpoint(
+                "uncertain-send",
+                Schema.Null,
+                Ref.update(calls, (count) => count + 1).pipe(Effect.as(null)),
                 unsafe,
               )
               .pipe(Effect.result);

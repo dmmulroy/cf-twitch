@@ -172,6 +172,10 @@ Live state requires session identity and authoritative start time. Transition an
 
 Online source `started_at` is authoritative; signed EventSub time orders offline fallback. Live polling is every 60 seconds, preserving unique monotonic snapshot timestamps and peak viewer count. Reconciliation resumes same-state pending effects without replacing authoritative start time. Legacy representations and schedule evidence are documented in the [storage inventory](production-cutover.md#stream-and-event-bus-legacy-authority).
 
+Local [transition tests](../apps/api/src/features/stream/stream-state.test.ts) cover instant ordering across offsets and precision representations while retaining source timestamp strings and strict-online/inclusive-offline equality. This does not establish native restart between checkpoints.
+
+**Open history-query gap:** viewer history still uses lexical SQL timestamp bounds/order. A `julianday` replacement was rejected because SQLite excludes valid domain offsets beyond fourteen hours and differs in fractional precision. See the [implementation disposition](effect-api-implementation.md#rejected-sql-history-pilot); the lifecycle comparison correction does not close this separate query requirement.
+
 ## Event Bus
 
 Route `song_request_success`, `raffle_roll`, `stream_online`, and `stream_offline` to Achievements. Stable delivered receipts suppress producer retries and reconcile stale pending/DLQ copies. Receipt insertion and pending/DLQ cleanup are transactional.

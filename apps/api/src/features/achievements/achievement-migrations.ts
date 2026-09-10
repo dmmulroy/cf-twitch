@@ -22,7 +22,9 @@ const achievementSchemaStatements = [
 const adoptAchievementSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  for (const statement of achievementSchemaStatements) yield* sql.unsafe(statement);
+  yield* Effect.forEach(achievementSchemaStatements, (statement) => sql.unsafe(statement), {
+    discard: true,
+  });
   // Baseline SQL is authoritative; never import the Agent JSON projection.
   yield* sql`SELECT user_id,announcement_state FROM user_achievements LIMIT 0`;
   yield* sql`CREATE TABLE IF NOT EXISTS achievement_outbox_retry (effect_id TEXT PRIMARY KEY NOT NULL, next_attempt_at INTEGER NOT NULL)`;

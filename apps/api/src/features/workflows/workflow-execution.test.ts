@@ -85,6 +85,7 @@ const recordingServices = Effect.gen(function* () {
   const unknownChat = yield* Ref.make(false);
   const slowChat = yield* Ref.make(false);
   const chatStarted = yield* Deferred.make<void>();
+  const chatFinalized = yield* Ref.make(false);
   const record = (name: string) => Ref.update(calls, (values) => [...values, name]);
 
   const dependencies = Layer.mergeAll(
@@ -112,7 +113,8 @@ const recordingServices = Effect.gen(function* () {
           yield* record("chat");
           yield* Deferred.succeed(chatStarted, undefined);
 
-          if (yield* Ref.get(slowChat)) return yield* Effect.never;
+          if (yield* Ref.get(slowChat))
+            return yield* Effect.never.pipe(Effect.ensuring(Ref.set(chatFinalized, true)));
 
           if (yield* Ref.get(unknownChat)) return yield* providerError("outcome-unknown", "chat");
         }),
@@ -186,6 +188,7 @@ const recordingServices = Effect.gen(function* () {
     unknownChat,
     slowChat,
     chatStarted,
+    chatFinalized,
     start,
     resume,
     executionLayer,
@@ -258,19 +261,36 @@ describe("Workflow execution public service with real SQLite restarts", () => {
           },
         });
 
-        const completed = yield* Ref.make(false);
+        const result = yield* Effect.gen(function* () {
+          const execution = yield* WorkflowExecution;
+          const completed = yield* Ref.make(false);
+          const duplicateCompleted = yield* Ref.make(false);
 
-        const fiber = yield* controls.start(input).pipe(
-          Effect.tap(() => Ref.set(completed, true)),
-          Effect.forkChild,
-        );
+          const fiber = yield* execution.start(input).pipe(
+            Effect.tap(() => Ref.set(completed, true)),
+            Effect.forkChild,
+          );
 
-        yield* Deferred.await(controls.chatStarted);
-        yield* TestClock.adjust("9 seconds");
-        expect(yield* Ref.get(completed)).toBe(false);
-        yield* TestClock.adjust("1 second");
-        expect(yield* Fiber.join(fiber)).toMatchObject({ value: { status: "OUTCOME_UNKNOWN" } });
-        yield* controls.start(input);
+          yield* Deferred.await(controls.chatStarted);
+
+          const duplicate = yield* execution.start(input).pipe(
+            Effect.tap(() => Ref.set(duplicateCompleted, true)),
+            Effect.forkChild,
+          );
+
+          yield* Effect.yieldNow;
+          expect(yield* Ref.get(duplicateCompleted)).toBe(false);
+          yield* TestClock.adjust("9 seconds");
+          expect(yield* Ref.get(completed)).toBe(false);
+          yield* TestClock.adjust("1 second");
+          yield* Fiber.join(fiber);
+          yield* Fiber.join(duplicate);
+
+          return yield* execution.getStatus();
+        }).pipe(Effect.provide(controls.executionLayer, { local: true }));
+
+        expect(result).toMatchObject({ value: { status: "OUTCOME_UNKNOWN" } });
+        expect(yield* Ref.get(controls.chatFinalized)).toBe(true);
         expect(yield* Ref.get(controls.calls)).toEqual(["chat"]);
       }).pipe(Effect.provide(sqlite)),
   );
@@ -367,6 +387,24 @@ describe("Workflow execution public service with real SQLite restarts", () => {
           },
         ]);
       }).pipe(Effect.provide(sqlite)),
+  );
+
+  it.effect("preserves a leading-zero deterministic workflow event identity vector", () =>
+    Effect.gen(function* () {
+      if (song._tag !== "SongRequest") return;
+
+      const services = yield* recordingServices;
+
+      const vectorInput = Schema.decodeUnknownSync(WorkflowInput)({
+        ...song,
+        redemption: { ...song.redemption, id: "vector-49" },
+      });
+
+      yield* services.start(vectorInput);
+      expect(yield* Ref.get(services.events)).toMatchObject([
+        { id: "0031595e-11f3-5357-a933-6811faeee12f", sagaId: "vector-49" },
+      ]);
+    }).pipe(Effect.provide(sqlite)),
   );
 
   it.effect(
