@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Clock, Effect, Layer, Option, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter } from "effect/unstable/http";
 import {
@@ -87,6 +88,7 @@ const withWebhook = <A, E, R>(
   twitch: Partial<ITwitchService> = {},
 ) =>
   Effect.gen(function* () {
+    const clock = yield* Clock.Clock;
     const receipts: AcceptedEventSubReceipt[] = [];
 
     const receiptLayer = Layer.mock(EventSubReceipts, {
@@ -107,6 +109,7 @@ const withWebhook = <A, E, R>(
       Layer.provide(twitchEventSubHandlersLayer),
       Layer.provide(twitchHttpCorrelationLayer),
       Layer.provide([
+        Layer.succeed(Clock.Clock, clock),
         Layer.succeed(TwitchConfiguration, configuration),
         Layer.mock(TwitchService, twitch),
         receiptLayer,
@@ -122,6 +125,47 @@ const withWebhook = <A, E, R>(
   });
 
 describe("authenticated EventSub HTTP ingress", () => {
+  it.effect("preserves fixed lowercase receipt digests including leading zero bytes", () =>
+    Effect.gen(function* () {
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(timestamp));
+
+      // Fixed SHA-256 and HMAC-SHA256 vectors computed independently with Python hashlib/hmac.
+      const vectors = [
+        {
+          messageId: "digest-hex-ascii-424",
+          text: JSON.stringify(envelope()),
+          signature: "sha256=6ca2f7b9787eabb9e27d988077fbca07cce069a052702d32ce8b9625a2261522",
+          contentDigest: "00f4004f3d76c6f441a84878471411cd1e39d6a2a5a0ad645b6cb9c0296e8c48",
+        },
+        {
+          messageId: "digest-hex-unicode-bom-316",
+          text: `\uFEFF${JSON.stringify(envelope("unknown.subscription", { message: "🎵 café" }))} \n`,
+          signature: "sha256=703473f8f95fbc58daa53d649e644709eb3cd8287268312165da6a078874ec50",
+          contentDigest: "0012a28211a1b8691ce68b8d3d921f088d523bb0fcdb057d513c7b1a00c414d3",
+        },
+      ];
+
+      yield* withWebhook((fetch, receipts) =>
+        Effect.gen(function* () {
+          for (const { messageId, text, signature } of vectors) {
+            const request = yield* Effect.promise(() =>
+              signedRequest({ messageId, text, signature, timestamp }),
+            );
+
+            const response = yield* Effect.promise(() => fetch(request));
+            expect(response.status).toBe(200);
+            expect(yield* Effect.promise(() => response.json())).toEqual({ success: true });
+          }
+
+          expect(
+            receipts.map(({ messageId, contentDigest }) => ({ messageId, contentDigest })),
+          ).toEqual(vectors.map(({ messageId, contentDigest }) => ({ messageId, contentDigest })));
+        }),
+      );
+    }),
+  );
+
   it.live(
     "rejects missing/malformed headers, stale/future timestamps and invalid signatures before receipt intake",
     () =>

@@ -1,8 +1,8 @@
 import { cfTwitchInfrastructureStageConfig } from "@cf-twitch/shared-infrastructure";
-import { expect } from "@effect/vitest";
+import { expect, it } from "@effect/vitest";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Test from "alchemy/Test/Vitest";
-import { Effect, Option, Redacted, Schedule, Schema } from "effect";
+import { Effect, Encoding, Option, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
 
@@ -107,9 +107,9 @@ const signEventSubRequest = async (input: {
     ["sign"],
   );
 
-  const signature = Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, signed)))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  const signature = Encoding.encodeHex(
+    new Uint8Array(await crypto.subtle.sign("HMAC", key, signed)),
+  );
 
   return new Request(`${input.url}/webhooks/twitch`, {
     method: "POST",
@@ -145,6 +145,41 @@ const authorizeProvider = async (url: string, provider: "spotify" | "twitch") =>
 
   expect(callback.status).toBe(200);
 };
+
+it.effect("preserves fixed lowercase EventSub signatures including leading zero bytes", () =>
+  Effect.gen(function* () {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+
+    // Fixed HMAC-SHA256 vectors computed independently with Python hmac and webhook-secret.
+    const vectors = [
+      {
+        messageId: EventSubMessageId.make("signature-hex-ascii-54"),
+        body: '{"message":"hello"}',
+        signature: "sha256=00340372532c5056bc375809ac7b1efcf0f23622bf8ed9aa0340f70f4d70ba1b",
+      },
+      {
+        messageId: EventSubMessageId.make("signature-hex-unicode-161"),
+        body: ' {"message":"🎵 café"}\n',
+        signature: "sha256=008dade1c2a23fd03446266026afe1ee7e253d038b597ece28fcc81c4de936b8",
+      },
+    ];
+
+    for (const { messageId, body, signature } of vectors) {
+      const request = yield* Effect.promise(() =>
+        signEventSubRequest({
+          url: "https://worker.test",
+          body,
+          messageId,
+          timestamp,
+          subscriptionType: "unknown.subscription",
+        }),
+      );
+
+      expect(request.headers.get("twitch-eventsub-message-signature")).toBe(signature);
+      expect(yield* Effect.promise(() => request.text())).toBe(body);
+    }
+  }),
+);
 
 test.provider(
   "runs native OAuth state through a real local Worker and Durable Object",

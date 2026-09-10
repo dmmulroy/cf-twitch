@@ -1,4 +1,4 @@
-import { Clock, Effect, Redacted, Schema, Stream } from "effect";
+import { Clock, Effect, Encoding, Redacted, Schema, Stream } from "effect";
 import { EventSubHeaders } from "@cf-twitch/contracts/eventsub";
 import { IsoTimestamp } from "@cf-twitch/contracts/identity";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -131,9 +131,7 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(
 
     const contentDigest = yield* Effect.tryPromise({
       try: async () =>
-        Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", signedBytes)), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join(""),
+        Encoding.encodeHex(new Uint8Array(await crypto.subtle.digest("SHA-256", signedBytes))),
       catch: () =>
         new HttpBoundaryError({ status: 503, error: "EventSub durable acceptance failed" }),
     });
