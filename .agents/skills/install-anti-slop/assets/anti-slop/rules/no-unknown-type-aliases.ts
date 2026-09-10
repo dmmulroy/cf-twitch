@@ -3,6 +3,7 @@ import { defineRule } from "@oxlint/plugins";
 import type { ESTree } from "@oxlint/plugins";
 
 import {
+	collectTypeEnvironmentNode,
 	createTypeAliasEnvironment,
 	resolvedTypeMatches,
 	type TypeAliasEnvironment,
@@ -22,10 +23,10 @@ export const noUnknownTypeAliasesRule = defineRule({
 		},
 	},
 	createOnce(context) {
-		let environment: TypeAliasEnvironment | null = null;
+		const environment: TypeAliasEnvironment = createTypeAliasEnvironment();
+		const pendingAliases: ESTree.TSTypeAliasDeclaration[] = [];
 
 		const resolvesToUnknown = (type: ESTree.TSType): boolean =>
-			environment !== null &&
 			resolvedTypeMatches(type, environment, (resolved, matches) => {
 				if (resolved.type === "TSUnknownKeyword") return true;
 				if (resolved.type === "TSParenthesizedType") {
@@ -35,19 +36,27 @@ export const noUnknownTypeAliasesRule = defineRule({
 			});
 
 		return {
-			Program(node) {
-				environment = createTypeAliasEnvironment(
-					node,
-					context.sourceCode.visitorKeys,
-				);
-			},
 			TSTypeAliasDeclaration(node) {
-				if (!resolvesToUnknown(node.typeAnnotation)) return;
-				context.report({
-					node: node.id,
-					messageId: "unknownAlias",
-					data: { alias: node.id.name },
-				});
+				collectTypeEnvironmentNode(node, environment);
+				pendingAliases.push(node);
+			},
+			TSInterfaceDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+			TSEnumDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+			ClassDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+			ClassExpression: (node) => collectTypeEnvironmentNode(node, environment),
+			ImportSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+			ImportDefaultSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+			ImportNamespaceSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+			TSInferType: (node) => collectTypeEnvironmentNode(node, environment),
+			"Program:exit"() {
+				for (const node of pendingAliases) {
+					if (!resolvesToUnknown(node.typeAnnotation)) continue;
+					context.report({
+						node: node.id,
+						messageId: "unknownAlias",
+						data: { alias: node.id.name },
+					});
+				}
 			},
 		};
 	},

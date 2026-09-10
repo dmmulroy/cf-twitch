@@ -1,29 +1,46 @@
 {
-	"name": "cf-twitch",
-	"version": "0.0.1",
-	"private": true,
-	"type": "module",
-	"scripts": {
-		"build": "vp run --filter \"./apps/*\" build",
-		"dev": "vp run --filter cf-twitch-api dev",
-		"deploy": "vp run --filter \"./apps/*\" deploy",
-		"typecheck": "vp run --filter \"./apps/*\" typecheck",
-		"lint": "vp lint .",
-		"lint:fix": "vp lint --fix .",
-		"fmt": "vp fmt .",
-		"fmt:check": "vp fmt --check .",
-		"architecture": "vp run --filter \"./apps/*\" architecture",
-		"check": "vp check && vp run --filter \"./apps/*\" architecture && vp run --filter \"./apps/*\" typecheck"
-	},
-	"devDependencies": {
-		"@oxlint/plugins": "1.78.0",
-		"@types/node": "^24.13.3",
-		"oxlint": "1.78.0",
-		"tsx": "4.21.0",
-		"typescript": "^5.7.2",
-		"vite": "catalog:",
-		"vite-plus": "catalog:",
-		"wrangler": "^4.60.0"
-	},
-	"packageManager": "pnpm@10.33.0"
+  "name": "cf-twitch",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "architecture": "node tools/architecture/check-cf-twitch-architecture.ts",
+    "build": "pnpm --recursive --if-present run build",
+    "check": "pnpm run verify",
+    "dev": "vp run @cf-twitch/api#dev",
+    "fmt": "vp fmt .",
+    "fmt:check": "vp fmt --check .",
+    "inspect:api": "node apps/api/scripts/inspect-api.ts",
+    "lint": "vp lint .",
+    "ready": "pnpm run verify",
+    "test": "pnpm run test:unit",
+    "test:alchemy:local": "pnpm run test:e2e:local",
+    "test:e2e:local": "vp run --no-cache @cf-twitch/api#test:e2e:local",
+    "test:tooling": "vp test run --config vite.config.ts --mode unit tools/architecture/check-cf-twitch-architecture.test.ts tools/oxlint/anti-slop/anti-slop-rules.test.ts tools/oxlint/complexity-policy.test.ts tools/oxlint/readable-spacing-policy.test.ts",
+    "test:unit": "pnpm run test:tooling && pnpm --recursive --if-present run test:unit",
+    "typecheck": "tsc --noEmit && pnpm --recursive --if-present run typecheck",
+    "verify": "node tools/verification/run-cf-twitch-verification.ts"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.0-rc.112",
+    "@effect/vitest": "4.0.0-rc.112",
+    "@oxlint/plugins": "1.80.0",
+    "@types/node": "26.3.0",
+    "effect": "4.0.0-rc.112",
+    "oxc-parser": "0.146.0",
+    "oxlint": "1.80.0",
+    "typescript": "7.0.2",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
+    "vite-plus": "0.3.0"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.21.0",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
 }

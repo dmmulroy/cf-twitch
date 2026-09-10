@@ -7,6 +7,7 @@ import {
 	functionParameterTypeAnnotation,
 } from "../shared/function-parameters.ts";
 import {
+	collectTypeEnvironmentNode,
 	createTypeAliasEnvironment,
 	resolvedTypeMatches,
 	type TypeAliasEnvironment,
@@ -34,10 +35,10 @@ export const noObjectParametersRule = defineRule({
 		},
 	},
 	createOnce(context) {
-		let environment: TypeAliasEnvironment | null = null;
+		const environment: TypeAliasEnvironment = createTypeAliasEnvironment();
+		const pendingOwners: ParameterOwner[] = [];
 
 		const resolvesToObject = (type: ESTree.TSType): boolean =>
-			environment !== null &&
 			resolvedTypeMatches(type, environment, (resolved, matches) => {
 				if (resolved.type === "TSObjectKeyword") return true;
 				if (resolved.type === "TSParenthesizedType") {
@@ -62,22 +63,28 @@ export const noObjectParametersRule = defineRule({
 		};
 
 		return {
-			Program(node) {
-				environment = createTypeAliasEnvironment(
-					node,
-					context.sourceCode.visitorKeys,
-				);
+			ArrowFunctionExpression: (node) => pendingOwners.push(node),
+			FunctionDeclaration: (node) => pendingOwners.push(node),
+			FunctionExpression: (node) => pendingOwners.push(node),
+			TSCallSignatureDeclaration: (node) => pendingOwners.push(node),
+			TSConstructSignatureDeclaration: (node) => pendingOwners.push(node),
+			TSConstructorType: (node) => pendingOwners.push(node),
+			TSDeclareFunction: (node) => pendingOwners.push(node),
+			TSEmptyBodyFunctionExpression: (node) => pendingOwners.push(node),
+			TSFunctionType: (node) => pendingOwners.push(node),
+			TSMethodSignature: (node) => pendingOwners.push(node),
+			TSTypeAliasDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+			TSInterfaceDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+			TSEnumDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+			ClassDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+			ClassExpression: (node) => collectTypeEnvironmentNode(node, environment),
+			ImportSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+			ImportDefaultSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+			ImportNamespaceSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+			TSInferType: (node) => collectTypeEnvironmentNode(node, environment),
+			"Program:exit"() {
+				for (const owner of pendingOwners) checkParameters(owner);
 			},
-			ArrowFunctionExpression: checkParameters,
-			FunctionDeclaration: checkParameters,
-			FunctionExpression: checkParameters,
-			TSCallSignatureDeclaration: checkParameters,
-			TSConstructSignatureDeclaration: checkParameters,
-			TSConstructorType: checkParameters,
-			TSDeclareFunction: checkParameters,
-			TSEmptyBodyFunctionExpression: checkParameters,
-			TSFunctionType: checkParameters,
-			TSMethodSignature: checkParameters,
 		};
 	},
 });

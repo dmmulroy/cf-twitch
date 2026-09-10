@@ -3,6 +3,7 @@ import { defineRule } from "@oxlint/plugins";
 import {
 	classifyUnsafeDictionary,
 	classifyUnsafeDictionaryValue,
+	collectDictionaryTypeEnvironmentNode,
 	createTypeEnvironment,
 	type TypeEnvironment,
 } from "../shared/dictionary-types.ts";
@@ -115,39 +116,47 @@ export const noUnsafeDictionaryTypeRule = defineRule({
 		},
 	},
 	createOnce(context) {
-		let environment: TypeEnvironment | null = null;
+		const environment: TypeEnvironment = createTypeEnvironment();
+		const pendingTypes: ESTree.TSType[] = [];
+		const pendingIndexSignatures: ESTree.TSIndexSignature[] = [];
 		const report = (node: ESTree.Node, value: string) => {
 			context.report({ node, messageId: "unsafeDictionary", data: { value } });
 		};
 		const reportIfUnsafe = (node: ESTree.TSType) => {
-			if (environment === null || !shouldReportType(node, environment)) return;
+			if (!shouldReportType(node, environment)) return;
 			const unsafe = classifyUnsafeDictionary(node, environment);
 			if (unsafe === null) return;
 			report(node, unsafe.unsafeValue);
 		};
 
 		return {
-			Program(node) {
-				environment = createTypeEnvironment(
-					node,
-					context.sourceCode.visitorKeys,
-				);
-			},
-			TSTypeReference: reportIfUnsafe,
-			TSTypeLiteral: reportIfUnsafe,
-			TSMappedType: reportIfUnsafe,
-			TSIndexSignature(node) {
-				if (
-					environment === null ||
-					node.typeAnnotation === null ||
-					node.parent.type === "TSTypeLiteral"
-				)
-					return;
-				const unsafe = classifyUnsafeDictionaryValue(
-					node.typeAnnotation.typeAnnotation,
-					environment,
-				);
-				if (unsafe !== null) report(node, unsafe.unsafeValue);
+			TSTypeReference: (node) => pendingTypes.push(node),
+			TSTypeLiteral: (node) => pendingTypes.push(node),
+			TSMappedType: (node) => pendingTypes.push(node),
+			TSIndexSignature: (node) => pendingIndexSignatures.push(node),
+			TSTypeAliasDeclaration: (node) =>
+				collectDictionaryTypeEnvironmentNode(node, environment),
+			TSInterfaceDeclaration: (node) =>
+				collectDictionaryTypeEnvironmentNode(node, environment),
+			TSEnumDeclaration: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
+			ClassDeclaration: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
+			ClassExpression: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
+			ImportSpecifier: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
+			ImportDefaultSpecifier: (node) =>
+				collectDictionaryTypeEnvironmentNode(node, environment),
+			ImportNamespaceSpecifier: (node) =>
+				collectDictionaryTypeEnvironmentNode(node, environment),
+			TSInferType: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
+			"Program:exit"() {
+				for (const node of pendingTypes) reportIfUnsafe(node);
+				for (const node of pendingIndexSignatures) {
+					if (node.typeAnnotation === null || node.parent.type === "TSTypeLiteral") continue;
+					const unsafe = classifyUnsafeDictionaryValue(
+						node.typeAnnotation.typeAnnotation,
+						environment,
+					);
+					if (unsafe !== null) report(node, unsafe.unsafeValue);
+				}
 			},
 		};
 	},

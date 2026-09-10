@@ -3,6 +3,7 @@ import { defineRule } from "@oxlint/plugins";
 import type { ESTree } from "@oxlint/plugins";
 
 import {
+  collectTypeEnvironmentNode,
   createTypeAliasEnvironment,
   resolvedTypeMatches,
   type TypeAliasEnvironment,
@@ -31,10 +32,10 @@ export const noUnknownReturnsRule = defineRule({
     },
   },
   createOnce(context) {
-    let environment: TypeAliasEnvironment | null = null;
+    const environment: TypeAliasEnvironment = createTypeAliasEnvironment();
+    const pendingFunctions: FunctionWithReturnType[] = [];
 
     const resolvesToUnknown = (type: ESTree.TSType): boolean =>
-      environment !== null &&
       resolvedTypeMatches(type, environment, (resolved, matches) => {
         if (resolved.type === "TSUnknownKeyword") return true;
         if (resolved.type === "TSParenthesizedType") {
@@ -61,22 +62,28 @@ export const noUnknownReturnsRule = defineRule({
     };
 
     return {
-      Program(node) {
-        environment = createTypeAliasEnvironment(
-          node,
-          context.sourceCode.visitorKeys,
-        );
+      ArrowFunctionExpression: (node) => pendingFunctions.push(node),
+      FunctionDeclaration: (node) => pendingFunctions.push(node),
+      FunctionExpression: (node) => pendingFunctions.push(node),
+      TSCallSignatureDeclaration: (node) => pendingFunctions.push(node),
+      TSConstructSignatureDeclaration: (node) => pendingFunctions.push(node),
+      TSConstructorType: (node) => pendingFunctions.push(node),
+      TSDeclareFunction: (node) => pendingFunctions.push(node),
+      TSEmptyBodyFunctionExpression: (node) => pendingFunctions.push(node),
+      TSFunctionType: (node) => pendingFunctions.push(node),
+      TSMethodSignature: (node) => pendingFunctions.push(node),
+      TSTypeAliasDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+      TSInterfaceDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+      TSEnumDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+      ClassDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
+      ClassExpression: (node) => collectTypeEnvironmentNode(node, environment),
+      ImportSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+      ImportDefaultSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+      ImportNamespaceSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
+      TSInferType: (node) => collectTypeEnvironmentNode(node, environment),
+      "Program:exit"() {
+        for (const owner of pendingFunctions) checkReturnType(owner);
       },
-      ArrowFunctionExpression: checkReturnType,
-      FunctionDeclaration: checkReturnType,
-      FunctionExpression: checkReturnType,
-      TSCallSignatureDeclaration: checkReturnType,
-      TSConstructSignatureDeclaration: checkReturnType,
-      TSConstructorType: checkReturnType,
-      TSDeclareFunction: checkReturnType,
-      TSEmptyBodyFunctionExpression: checkReturnType,
-      TSFunctionType: checkReturnType,
-      TSMethodSignature: checkReturnType,
     };
   },
 });
