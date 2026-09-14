@@ -1,4 +1,4 @@
-import { Option, Predicate, Schema, type SchemaAST, type SchemaIssue } from "effect";
+import { Match, Option, Predicate, Schema, type SchemaAST, type SchemaIssue } from "effect";
 
 const issuePath = Schema.Array(Schema.Union([Schema.String, Schema.Number]));
 
@@ -332,22 +332,26 @@ function formatAnyOfCommandIssue(
   ];
 }
 
-function formatFilterCommandIssue(
+type FilterMetadata = typeof filterMetadata.Type;
+
+type FilterOrigin = "array" | "number" | "string";
+
+const filterOrigin = (parentAst: SchemaAST.AST | undefined): FilterOrigin => {
+  if (Predicate.isTagged(parentAst, "Arrays")) return "array";
+
+  if (Predicate.isTagged(parentAst, "Number")) return "number";
+
+  return "string";
+};
+
+function formatKnownFilterMetadata(
+  value: FilterMetadata,
   issue: SchemaIssue.Filter,
   input: CommandInputValue,
   path: IssuePath,
-  parentAst?: SchemaAST.AST,
+  parentAst: SchemaAST.AST | undefined,
 ): readonly PublicIssue[] {
-  if (path[0] === "createdAt") return [datetimeIssue(path)];
-  const metadata = parseFilterMetadata(issue.filter.annotations?.representation);
-
-  if (Option.isNone(metadata)) return formatCommandIssue(issue.issue, input, path, parentAst);
-  const value = metadata.value;
-
-  let origin: "array" | "number" | "string" = "string";
-
-  if (Predicate.isTagged(parentAst, "Arrays")) origin = "array";
-  else if (Predicate.isTagged(parentAst, "Number")) origin = "number";
+  const origin = filterOrigin(parentAst);
 
   switch (value.id) {
     case "effect/schema/isMinLength":
@@ -381,52 +385,70 @@ function formatFilterCommandIssue(
   }
 }
 
+function formatFilterCommandIssue(
+  issue: SchemaIssue.Filter,
+  input: CommandInputValue,
+  path: IssuePath,
+  parentAst?: SchemaAST.AST,
+): readonly PublicIssue[] {
+  if (path[0] === "createdAt") return [datetimeIssue(path)];
+  const metadata = parseFilterMetadata(issue.filter.annotations?.representation);
+
+  return Option.isNone(metadata)
+    ? formatCommandIssue(issue.issue, input, path, parentAst)
+    : formatKnownFilterMetadata(metadata.value, issue, input, path, parentAst);
+}
+
+function formatPointerCommandIssue(
+  issue: SchemaIssue.Pointer,
+  input: CommandInputValue,
+  path: IssuePath,
+  parentAst: SchemaAST.AST | undefined,
+): readonly PublicIssue[] {
+  const key = issue.path[0];
+
+  const childAst = Predicate.isTagged(parentAst, "Objects")
+    ? parentAst.propertySignatures.find((field) => field.name === key)?.type
+    : undefined;
+
+  return formatCommandIssue(
+    issue.issue,
+    issue.path.reduce(getInputKey, input),
+    [...path, ...issue.path.map((part) => (Predicate.isSymbol(part) ? String(part) : part))],
+    childAst,
+  );
+}
+
 function formatCommandIssue(
   issue: SchemaIssue.Issue,
   input: CommandInputValue,
   path: IssuePath,
   parentAst?: SchemaAST.AST,
 ): readonly PublicIssue[] {
-  if (Predicate.isTagged(issue, "Pointer")) {
-    const key = issue.path[0];
-
-    const childAst = Predicate.isTagged(parentAst, "Objects")
-      ? parentAst.propertySignatures.find((field) => field.name === key)?.type
-      : undefined;
-
-    return formatCommandIssue(
-      issue.issue,
-      issue.path.reduce(getInputKey, input),
-      [...path, ...issue.path.map((part) => (Predicate.isSymbol(part) ? String(part) : part))],
-      childAst,
-    );
-  }
-
-  if (Predicate.isTagged(issue, "Composite"))
-    return formatCompositeCommandIssue(issue, input, path);
-
-  if (Predicate.isTagged(issue, "AnyOf")) return formatAnyOfCommandIssue(issue, input, path);
-
-  if (Predicate.isTagged(issue, "InvalidType")) return [expectedIssue(issue.ast, input, path)];
-
-  if (Predicate.isTagged(issue, "MissingKey")) return [expectedIssue(parentAst, undefined, path)];
-
-  if (Predicate.isTagged(issue, "Encoding"))
-    return formatCommandIssue(issue.issue, input, path, issue.ast);
-
-  if (Predicate.isTagged(issue, "Filter"))
-    return formatFilterCommandIssue(issue, input, path, parentAst);
-
-  if (Predicate.isTagged(issue, "InvalidValue"))
-    return [
-      {
-        code: "custom",
-        path,
-        message: Option.getOrElse(parseMessage(issue.annotations?.message), () => "Invalid input"),
-      },
-    ];
-
-  return [{ code: "custom", path, message: "Invalid input" }];
+  return Match.value(issue).pipe(
+    Match.tags({
+      Pointer: (pointer) => formatPointerCommandIssue(pointer, input, path, parentAst),
+      Composite: (composite) => formatCompositeCommandIssue(composite, input, path),
+      AnyOf: (anyOf) => formatAnyOfCommandIssue(anyOf, input, path),
+      InvalidType: (invalidType) => [expectedIssue(invalidType.ast, input, path)],
+      MissingKey: () => [expectedIssue(parentAst, undefined, path)],
+      Encoding: (encoding) => formatCommandIssue(encoding.issue, input, path, encoding.ast),
+      Filter: (filter) => formatFilterCommandIssue(filter, input, path, parentAst),
+      InvalidValue: (invalidValue) => [
+        {
+          code: "custom",
+          path,
+          message: Option.getOrElse(
+            parseMessage(invalidValue.annotations?.message),
+            () => "Invalid input",
+          ),
+        } satisfies PublicIssue,
+      ],
+    }),
+    Match.orElse((): readonly PublicIssue[] => [
+      { code: "custom", path, message: "Invalid input" },
+    ]),
+  );
 }
 
 /** Format only the concrete command schemas' failure nodes into their historical HTTP issue envelopes. */

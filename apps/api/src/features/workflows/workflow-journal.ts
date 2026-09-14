@@ -363,62 +363,85 @@ export const makeWorkflowJournal = Effect.gen(function* () {
       const halt = (reason: WorkflowStepHalt["reason"], message: string) =>
         new WorkflowStepHalt({ stepName: name, reason, message });
 
+      const replayCompletedCheckpoint = Effect.fn("WorkflowJournal.replayCompletedCheckpoint")(
+        function* (step: typeof StoredWorkflowStep.Type) {
+          const completed =
+            step.state === "SUCCEEDED" ||
+            step.state === "COMPENSATED" ||
+            step.state === "COMPENSATION_PENDING";
+
+          if (!completed) return Option.none<A>();
+
+          if (Option.isNone(step.result_json))
+            return yield* new WorkflowError({
+              operation: name,
+              reason: "corrupt",
+            });
+          const result = yield* decode(step.result_json.value);
+
+          if (!policy.rollback) return Option.some(result);
+
+          if (Option.isNone(step.undo_json))
+            return yield* new WorkflowError({
+              operation: name,
+              reason: "corrupt",
+            });
+          yield* decode(step.undo_json.value);
+
+          return Option.some(result);
+        },
+      );
+
+      const haltFailedCheckpoint = Effect.fn("WorkflowJournal.haltFailedCheckpoint")(function* (
+        step: typeof StoredWorkflowStep.Type,
+      ) {
+        if (step.state !== "FAILED") return;
+
+        return yield* halt(
+          Option.getOrNull(step.last_error) === "unknown" ? "unknown" : "failed",
+          Option.getOrElse(step.last_error, () => "Workflow step retry budget exhausted"),
+        );
+      });
+
+      const protectInterruptedCheckpoint = Effect.fn(
+        "WorkflowJournal.protectInterruptedCheckpoint",
+      )(function* (step: typeof StoredWorkflowStep.Type) {
+        const interruptedNonIdempotent =
+          policy.safety === "non-idempotent" &&
+          Option.isNone(step.next_retry_at) &&
+          step.attempt > 0;
+
+        if (!interruptedNonIdempotent) return;
+        yield* sql`UPDATE saga_steps SET state='FAILED',last_error='unknown' WHERE saga_id=${run.id} AND step_name=${name}`;
+
+        return yield* halt(
+          "unknown",
+          "Workflow non-idempotent effect interrupted before durable success evidence",
+        );
+      });
+
+      const deferEarlyCheckpointRetry = Effect.fn("WorkflowJournal.deferEarlyCheckpointRetry")(
+        function* (step: typeof StoredWorkflowStep.Type) {
+          if (Option.isNone(step.next_retry_at)) return;
+          const retryAt = Date.parse(step.next_retry_at.value);
+
+          if (retryAt <= (yield* Clock.currentTimeMillis)) return;
+          yield* alarm.set(Option.some(retryAt));
+
+          return yield* halt("retry", "Workflow retry is not due yet");
+        },
+      );
+
       const replayStoredCheckpoint = Effect.fn("WorkflowJournal.replayStoredCheckpoint")(
         function* () {
           if (Option.isNone(existing)) return Option.none<A>();
           const step = existing.value;
+          const completed = yield* replayCompletedCheckpoint(step);
 
-          if (
-            step.state === "SUCCEEDED" ||
-            step.state === "COMPENSATED" ||
-            step.state === "COMPENSATION_PENDING"
-          ) {
-            if (Option.isNone(step.result_json))
-              return yield* new WorkflowError({
-                operation: name,
-                reason: "corrupt",
-              });
-            const result = yield* decode(step.result_json.value);
-
-            if (policy.rollback) {
-              if (Option.isNone(step.undo_json))
-                return yield* new WorkflowError({
-                  operation: name,
-                  reason: "corrupt",
-                });
-              yield* decode(step.undo_json.value);
-            }
-
-            return Option.some(result);
-          }
-
-          if (step.state === "FAILED")
-            return yield* halt(
-              Option.getOrNull(step.last_error) === "unknown" ? "unknown" : "failed",
-              Option.getOrElse(step.last_error, () => "Workflow step retry budget exhausted"),
-            );
-
-          if (
-            policy.safety === "non-idempotent" &&
-            Option.isNone(step.next_retry_at) &&
-            step.attempt > 0
-          ) {
-            yield* sql`UPDATE saga_steps SET state='FAILED',last_error='unknown' WHERE saga_id=${run.id} AND step_name=${name}`;
-
-            return yield* halt(
-              "unknown",
-              "Workflow non-idempotent effect interrupted before durable success evidence",
-            );
-          }
-
-          if (
-            Option.isSome(step.next_retry_at) &&
-            Date.parse(step.next_retry_at.value) > (yield* Clock.currentTimeMillis)
-          ) {
-            yield* alarm.set(Option.some(Date.parse(step.next_retry_at.value)));
-
-            return yield* halt("retry", "Workflow retry is not due yet");
-          }
+          if (Option.isSome(completed)) return completed;
+          yield* haltFailedCheckpoint(step);
+          yield* protectInterruptedCheckpoint(step);
+          yield* deferEarlyCheckpointRetry(step);
 
           return Option.none<A>();
         },

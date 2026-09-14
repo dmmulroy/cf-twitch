@@ -145,7 +145,7 @@ const emptyCommandsSnapshot: CommandsSnapshot = {
   appliedMigrations: [],
 };
 
-const parseCommandReferences = Effect.fn("Commands.parseCommandReferences")(function* (
+const validateCommandDefinitions = Effect.fn("Commands.validateCommandDefinitions")(function* (
   state: CommandsSnapshot,
 ) {
   const aliases = new Map<string, string>();
@@ -176,14 +176,27 @@ const parseCommandReferences = Effect.fn("Commands.parseCommandReferences")(func
         reason: `Chat command missing source: ${source}`,
       });
   }
+});
 
-  for (const name of [...Object.keys(state.valuesByName), ...Object.keys(state.countersByName)]) {
+const validateCommandValueOwners = Effect.fn("Commands.validateCommandValueOwners")(function* (
+  state: CommandsSnapshot,
+) {
+  const valueNames = [...Object.keys(state.valuesByName), ...Object.keys(state.countersByName)];
+
+  for (const name of valueNames) {
     if (!Object.hasOwn(state.commandsByName, name))
       return yield* new CommandInvalidDefinitionError({
         commandName: name,
         reason: "Chat command stored value or counter has no command",
       });
   }
+});
+
+const parseCommandReferences = Effect.fn("Commands.parseCommandReferences")(function* (
+  state: CommandsSnapshot,
+) {
+  yield* validateCommandDefinitions(state);
+  yield* validateCommandValueOwners(state);
 });
 
 const pruneCommandState = (state: CommandsSnapshot): CommandsSnapshot => {

@@ -155,6 +155,24 @@ const parseLegacyState = Schema.decodeUnknownEffect(
 const songQueueMigrations = SqliteMigrator.fromRecord({
   "1_adopt_song_queue_tables": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
+    const importLegacySongQueueCoordination = Effect.fn(
+      "SongQueueMigration.importLegacyCoordination",
+    )(function* () {
+      const legacyTables = yield* parseStoredCount(
+        yield* sql`SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_state'`,
+      );
+
+      if ((legacyTables[0]?.count ?? 0) === 0) return;
+
+      const legacy = (yield* parseLegacyState(
+        yield* sql`SELECT state FROM cf_agents_state WHERE id = 'cf_state_row_id'`,
+      ))[0]?.state;
+
+      if (legacy === undefined) return;
+      yield* sql`UPDATE song_queue_coordination SET last_sync_at = ${legacy.lastSyncAt === null ? null : Date.parse(legacy.lastSyncAt)}, refresh_due_at = ${legacy.refreshDueAt === null ? 0 : Date.parse(legacy.refreshDueAt)}, cleanup_due_at = ${legacy.cleanupDueAt === null ? 0 : Date.parse(legacy.cleanupDueAt)}, consecutive_sync_failures = ${legacy.consecutiveSyncFailures} WHERE singleton = 1`;
+    });
+
     yield* sql`CREATE TABLE IF NOT EXISTS pending_requests (event_id TEXT PRIMARY KEY NOT NULL, track_id TEXT NOT NULL, track_name TEXT NOT NULL, artists TEXT NOT NULL, album TEXT NOT NULL, album_cover_url TEXT, requester_user_id TEXT NOT NULL, requester_display_name TEXT NOT NULL, requested_at TEXT NOT NULL, first_seen_in_spotify_at TEXT, last_seen_in_spotify_at TEXT)`;
     yield* sql`CREATE TABLE IF NOT EXISTS request_history (event_id TEXT PRIMARY KEY NOT NULL, track_id TEXT NOT NULL, track_name TEXT NOT NULL, artists TEXT NOT NULL, album TEXT NOT NULL, album_cover_url TEXT, requester_user_id TEXT NOT NULL, requester_display_name TEXT NOT NULL, requested_at TEXT NOT NULL, fulfilled_at TEXT NOT NULL)`;
     yield* sql`CREATE TABLE IF NOT EXISTS spotify_queue_snapshot (position INTEGER PRIMARY KEY NOT NULL, track_id TEXT NOT NULL, track_name TEXT NOT NULL, artists TEXT NOT NULL, album TEXT NOT NULL, album_cover_url TEXT, synced_at TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'autoplay', event_id TEXT, requester_user_id TEXT, requester_display_name TEXT, requested_at TEXT)`;
@@ -164,30 +182,42 @@ const songQueueMigrations = SqliteMigrator.fromRecord({
       yield* sql`PRAGMA table_info(pending_requests)`,
     );
 
-    if (!pendingColumns.some((column) => column.name === "first_seen_in_spotify_at"))
-      yield* sql`ALTER TABLE pending_requests ADD COLUMN first_seen_in_spotify_at TEXT`;
-
-    if (!pendingColumns.some((column) => column.name === "last_seen_in_spotify_at"))
-      yield* sql`ALTER TABLE pending_requests ADD COLUMN last_seen_in_spotify_at TEXT`;
+    for (const [name, addColumn] of [
+      [
+        "first_seen_in_spotify_at",
+        sql`ALTER TABLE pending_requests ADD COLUMN first_seen_in_spotify_at TEXT`,
+      ],
+      [
+        "last_seen_in_spotify_at",
+        sql`ALTER TABLE pending_requests ADD COLUMN last_seen_in_spotify_at TEXT`,
+      ],
+    ] as const) {
+      if (!pendingColumns.some((column) => column.name === name)) yield* addColumn;
+    }
 
     const snapshotColumns = yield* parseTableColumns(
       yield* sql`PRAGMA table_info(spotify_queue_snapshot)`,
     );
 
-    if (!snapshotColumns.some((column) => column.name === "source"))
-      yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN source TEXT NOT NULL DEFAULT 'autoplay'`;
+    for (const [name, addColumn] of [
+      [
+        "source",
+        sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN source TEXT NOT NULL DEFAULT 'autoplay'`,
+      ],
+      ["event_id", sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN event_id TEXT`],
+      [
+        "requester_user_id",
+        sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requester_user_id TEXT`,
+      ],
+      [
+        "requester_display_name",
+        sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requester_display_name TEXT`,
+      ],
+      ["requested_at", sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requested_at TEXT`],
+    ] as const) {
+      if (!snapshotColumns.some((column) => column.name === name)) yield* addColumn;
+    }
 
-    if (!snapshotColumns.some((column) => column.name === "event_id"))
-      yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN event_id TEXT`;
-
-    if (!snapshotColumns.some((column) => column.name === "requester_user_id"))
-      yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requester_user_id TEXT`;
-
-    if (!snapshotColumns.some((column) => column.name === "requester_display_name"))
-      yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requester_display_name TEXT`;
-
-    if (!snapshotColumns.some((column) => column.name === "requested_at"))
-      yield* sql`ALTER TABLE spotify_queue_snapshot ADD COLUMN requested_at TEXT`;
     yield* sql`CREATE INDEX IF NOT EXISTS idx_request_history_fulfilled_at ON request_history(fulfilled_at)`;
     yield* sql`CREATE INDEX IF NOT EXISTS idx_request_history_requester ON request_history(requester_user_id)`;
     yield* sql`CREATE INDEX IF NOT EXISTS idx_request_history_track ON request_history(track_id)`;
@@ -196,19 +226,7 @@ const songQueueMigrations = SqliteMigrator.fromRecord({
     yield* sql`CREATE TABLE song_queue_coordination (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), last_sync_at REAL, refresh_due_at REAL NOT NULL, cleanup_due_at REAL NOT NULL, consecutive_sync_failures INTEGER NOT NULL)`;
     yield* sql`INSERT INTO song_queue_coordination VALUES (1, (SELECT (julianday(MAX(synced_at))-2440587.5)*86400000 FROM spotify_queue_snapshot), 0, 0, 0)`;
 
-    const legacyTables = yield* parseStoredCount(
-      yield* sql`SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_state'`,
-    );
-
-    if ((legacyTables[0]?.count ?? 0) > 0) {
-      const legacy = (yield* parseLegacyState(
-        yield* sql`SELECT state FROM cf_agents_state WHERE id = 'cf_state_row_id'`,
-      ))[0]?.state;
-
-      if (legacy !== undefined) {
-        yield* sql`UPDATE song_queue_coordination SET last_sync_at = ${legacy.lastSyncAt === null ? null : Date.parse(legacy.lastSyncAt)}, refresh_due_at = ${legacy.refreshDueAt === null ? 0 : Date.parse(legacy.refreshDueAt)}, cleanup_due_at = ${legacy.cleanupDueAt === null ? 0 : Date.parse(legacy.cleanupDueAt)}, consecutive_sync_failures = ${legacy.consecutiveSyncFailures} WHERE singleton = 1`;
-      }
-    }
+    yield* importLegacySongQueueCoordination();
   }),
 });
 
@@ -251,6 +269,19 @@ const storedOccurrence = (
         },
 });
 
+const completedRequestEventId = (
+  previous: readonly SongQueueOccurrence[],
+  attributed: readonly SongQueueOccurrence[],
+): RedemptionId | null => {
+  const previousCurrent = previous.find((item) => item.position === 0)?.track;
+  const nextCurrent = attributed.find((item) => item.position === 0)?.track;
+
+  return previousCurrent?.source === "user" &&
+    (nextCurrent?.source !== "user" || previousCurrent.eventId !== nextCurrent.eventId)
+    ? previousCurrent.eventId
+    : null;
+};
+
 const storedHistory = (
   row: Schema.Schema.Type<typeof StoredHistoryRequest>,
 ): RequestHistoryItem => ({
@@ -291,6 +322,29 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
       yield* sql`SELECT * FROM spotify_queue_snapshot ORDER BY position`,
     )).map(storedOccurrence);
   });
+
+  const completePlayedRequest = Effect.fn("SongQueueDatabase.completePlayedRequest")(function* (
+    eventId: RedemptionId | null,
+    syncedAt: IsoTimestamp,
+  ) {
+    if (eventId === null) return;
+    yield* sql`INSERT OR IGNORE INTO request_history (event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at, fulfilled_at) SELECT event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at, ${syncedAt} FROM pending_requests WHERE event_id = ${eventId}`;
+    yield* sql`DELETE FROM pending_requests WHERE event_id = ${eventId}`;
+  });
+
+  const replaceOccurrenceSnapshot = Effect.fn("SongQueueDatabase.replaceOccurrenceSnapshot")(
+    function* (attributed: readonly SongQueueOccurrence[], syncedAt: IsoTimestamp) {
+      yield* sql`DELETE FROM spotify_queue_snapshot`;
+
+      for (const { position, track } of attributed) {
+        const eventId = track.source === "user" ? track.eventId : null;
+        yield* sql`INSERT INTO spotify_queue_snapshot (position, track_id, track_name, artists, album, album_cover_url, synced_at, source, event_id, requester_user_id, requester_display_name, requested_at) VALUES (${position}, ${track.id}, ${track.name}, ${JSON.stringify(track.artists)}, ${track.album}, ${Option.getOrNull(track.albumCoverUrl)}, ${syncedAt}, ${track.source}, ${eventId}, ${track.source === "user" ? track.requesterUserId : null}, ${track.source === "user" ? track.requesterDisplayName : null}, ${track.source === "user" ? track.requestedAt : null})`;
+
+        if (eventId !== null)
+          yield* sql`UPDATE pending_requests SET first_seen_in_spotify_at = COALESCE(first_seen_in_spotify_at, ${syncedAt}), last_seen_in_spotify_at = ${syncedAt} WHERE event_id = ${eventId}`;
+      }
+    },
+  );
 
   const getTrackStatistics = Effect.fn("SongQueueDatabase.getTrackStatistics")(function* (
     userId: Option.Option<ViewerId>,
@@ -468,26 +522,8 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
             upcoming,
           });
 
-          const previousCurrent = previous.find((item) => item.position === 0)?.track;
-          const nextCurrent = attributed.find((item) => item.position === 0)?.track;
-
-          if (
-            previousCurrent?.source === "user" &&
-            (nextCurrent?.source !== "user" || previousCurrent.eventId !== nextCurrent.eventId)
-          ) {
-            yield* sql`INSERT OR IGNORE INTO request_history (event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at, fulfilled_at) SELECT event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at, ${syncedAt} FROM pending_requests WHERE event_id = ${previousCurrent.eventId}`;
-            yield* sql`DELETE FROM pending_requests WHERE event_id = ${previousCurrent.eventId}`;
-          }
-
-          yield* sql`DELETE FROM spotify_queue_snapshot`;
-
-          for (const { position, track } of attributed) {
-            const eventId = track.source === "user" ? track.eventId : null;
-            yield* sql`INSERT INTO spotify_queue_snapshot (position, track_id, track_name, artists, album, album_cover_url, synced_at, source, event_id, requester_user_id, requester_display_name, requested_at) VALUES (${position}, ${track.id}, ${track.name}, ${JSON.stringify(track.artists)}, ${track.album}, ${Option.getOrNull(track.albumCoverUrl)}, ${syncedAt}, ${track.source}, ${eventId}, ${track.source === "user" ? track.requesterUserId : null}, ${track.source === "user" ? track.requesterDisplayName : null}, ${track.source === "user" ? track.requestedAt : null})`;
-
-            if (eventId !== null)
-              yield* sql`UPDATE pending_requests SET first_seen_in_spotify_at = COALESCE(first_seen_in_spotify_at, ${syncedAt}), last_seen_in_spotify_at = ${syncedAt} WHERE event_id = ${eventId}`;
-          }
+          yield* completePlayedRequest(completedRequestEventId(previous, attributed), syncedAt);
+          yield* replaceOccurrenceSnapshot(attributed, syncedAt);
 
           yield* sql`DELETE FROM pending_requests WHERE first_seen_in_spotify_at IS NOT NULL AND event_id NOT IN (SELECT event_id FROM spotify_queue_snapshot WHERE event_id IS NOT NULL)`;
           yield* sql`DELETE FROM pending_requests WHERE julianday(requested_at) < julianday(${syncedAt}) - (1.0 / 24)`;

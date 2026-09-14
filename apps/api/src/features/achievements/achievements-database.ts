@@ -17,6 +17,7 @@ import { Achievements } from "./achievements-service.ts";
 import { achievementMigrationLoader } from "./achievement-migrations.ts";
 import {
   acceptsAchievementTransition,
+  achievementStreamOpenerStart,
   achievementTriggersForEvent,
   evaluateAchievementProgress,
   type AchievementProgressDecision,
@@ -291,17 +292,13 @@ export const makeAchievements = Effect.gen(function* () {
      VALUES (${event.userId},${event.userDisplayName},${nextStreak},${Math.max(streaks[0]?.longestStreak ?? 0, nextStreak)},${timestamp},${Option.isSome(session) ? Option.getOrNull(session.value.startedAt) : null})
      ON CONFLICT(user_id) DO UPDATE SET user_display_name=excluded.user_display_name,session_streak=excluded.session_streak,longest_streak=excluded.longest_streak,last_request_at=excluded.last_request_at`;
 
-    if (
-      Option.isNone(session) ||
-      session.value.status !== "online" ||
-      Option.isNone(session.value.startedAt) ||
-      Date.parse(event.timestamp) <= Date.parse(session.value.startedAt.value)
-    )
-      return { nextStreak, streamOpener: false };
+    const sessionStartedAt = achievementStreamOpenerStart(session, event);
+
+    if (Option.isNone(sessionStartedAt)) return { nextStreak, streamOpener: false };
 
     // Strict source-time comparison includes offset timestamps; current request is excluded from the inbox count.
     const count = yield* parseCount(
-      yield* sql`SELECT COUNT(*) count FROM event_history WHERE event_type='song_request_success' AND julianday(timestamp)>julianday(${session.value.startedAt.value}) AND event_id<>${event.id}`,
+      yield* sql`SELECT COUNT(*) count FROM event_history WHERE event_type='song_request_success' AND julianday(timestamp)>julianday(${sessionStartedAt.value}) AND event_id<>${event.id}`,
     );
 
     return { nextStreak, streamOpener: (count[0]?.count ?? 0) === 0 };

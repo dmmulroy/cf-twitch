@@ -3,6 +3,7 @@ import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
 import {
   ChatCommandInput,
   ChatCommandRenderError,
+  type ChatCommandDefinition,
   CommandInputParseError,
   parseChatCommandName,
   type ChatCommandError,
@@ -39,6 +40,24 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
   const commands = yield* Commands;
   const computed = yield* ComputedChatCommands;
   const analytics = yield* TwitchAnalytics;
+
+  const renderCommandResponse = Effect.fn("ChatCommandExecutor.renderCommandResponse")(function* (
+    command: ChatCommandDefinition,
+    input: ChatCommandInput,
+    arg: Option.Option<string>,
+  ) {
+    if (command.responseType === "computed") return yield* computed.render({ command, input, arg });
+    const value = yield* commands.getCommandValue({ name: command.name });
+
+    if (Option.isNone(value) || value.value.length === 0) return command.emptyResponse;
+    const emote = yield* Random.choice(commandEmotes);
+
+    const rendered = value.value
+      .replaceAll("${user}", input.viewer.displayName)
+      .replaceAll("${random.emote}", emote);
+
+    return command.outputTemplate.replaceAll("{value}", rendered);
+  });
 
   const prepareResponse: IChatCommandExecutor["prepare"] = Effect.fn(
     "ChatCommandExecutor.prepareResponse",
@@ -84,24 +103,7 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
         commandName: Option.some(command.name),
       });
     const arg = args.length === 0 ? Option.none<string>() : Option.some(args.join(" "));
-    let message: string;
-
-    if (command.responseType === "computed")
-      message = yield* computed.render({ command, input, arg });
-    else {
-      const value = yield* commands.getCommandValue({ name: command.name });
-
-      if (Option.isNone(value) || value.value.length === 0) message = command.emptyResponse;
-      else {
-        const emote = yield* Random.choice(commandEmotes);
-
-        const rendered = value.value
-          .replaceAll("${user}", input.viewer.displayName)
-          .replaceAll("${random.emote}", emote);
-
-        message = command.outputTemplate.replaceAll("{value}", rendered);
-      }
-    }
+    const message = yield* renderCommandResponse(command, input, arg);
 
     if (Array.from(message).length > 500)
       return yield* new ChatCommandRenderError({

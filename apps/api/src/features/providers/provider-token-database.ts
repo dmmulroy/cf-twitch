@@ -119,6 +119,61 @@ export const makeProviderTokenDatabase = Effect.gen(function* () {
       retryAfterMs: Option.none(),
     });
 
+  const readLegacyRefreshSchedule = Effect.fn("ProviderTokenDatabase.readLegacyRefreshSchedule")(
+    function* (scheduleId: Option.Option<string>) {
+      if (Option.isNone(scheduleId)) return Option.none<number>();
+
+      const tables =
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_schedules'`;
+
+      if (tables.length === 0) return yield* Effect.fail(failure());
+
+      const schedules =
+        yield* sql`SELECT callback, type, time FROM cf_agents_schedules WHERE id = ${scheduleId.value}`.pipe(
+          Effect.flatMap(parseLegacySchedules),
+        );
+
+      const schedule = schedules[0];
+
+      if (schedule === undefined) return yield* Effect.fail(failure());
+
+      return Option.some(schedule.time * 1000);
+    },
+  );
+
+  const translateLegacyProviderTokenState = (
+    legacy: typeof LegacyAgentTokenState.Type,
+    referencedScheduleAtMs: Option.Option<number>,
+    now: number,
+  ): ProviderTokenState => {
+    const authorizationStatus =
+      legacy.authorizationStatus ?? (Option.isSome(legacy.token) ? "authorized" : "not-configured");
+
+    const token = Option.map(legacy.token, (stored) => ({
+      accessToken: stored.accessToken,
+      refreshToken: Option.some(stored.refreshToken),
+      tokenType: stored.tokenType,
+      expiresIn: stored.expiresIn,
+      scopes: [],
+      expiresAtMs: Date.parse(stored.expiresAt),
+    }));
+
+    const nextRefreshAtMs =
+      legacy.isStreamLive && authorizationStatus === "authorized" && Option.isSome(token)
+        ? Option.orElse(referencedScheduleAtMs, () =>
+            Option.some(Math.max(now + 1000, token.value.expiresAtMs - 300_000)),
+          )
+        : Option.none<number>();
+
+    return {
+      token,
+      isStreamLive: legacy.isStreamLive,
+      authorizationStatus,
+      refreshRetryCount: legacy.refreshRetryCount,
+      nextRefreshAtMs,
+    };
+  };
+
   // agents@0.9.0 stores cf_state_row_id as JSON; schedule.time is Unix SECONDS.
   // Parse all source evidence before creating destination tables. Never invoke Agent.state,
   // whose malformed-JSON recovery overwrites historical credentials with initialState.
@@ -148,54 +203,10 @@ export const makeProviderTokenDatabase = Effect.gen(function* () {
       // An Agent table without its application row cannot establish safe token lifecycle state.
       if (rows[0] === undefined) return yield* Effect.fail(failure());
       const legacy = rows[0].state;
-
-      const authorizationStatus =
-        legacy.authorizationStatus ??
-        (Option.isSome(legacy.token) ? "authorized" : "not-configured");
-
-      const token = Option.map(legacy.token, (stored) => ({
-        accessToken: stored.accessToken,
-        refreshToken: Option.some(stored.refreshToken),
-        tokenType: stored.tokenType,
-        expiresIn: stored.expiresIn,
-        scopes: [],
-        expiresAtMs: Date.parse(stored.expiresAt),
-      }));
-
+      const referencedScheduleAtMs = yield* readLegacyRefreshSchedule(legacy.refreshScheduleId);
       const now = yield* Clock.currentTimeMillis;
-      let referencedScheduleAtMs = Option.none<number>();
 
-      if (Option.isSome(legacy.refreshScheduleId)) {
-        const tables =
-          yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_schedules'`;
-
-        if (tables.length === 0) return yield* Effect.fail(failure());
-
-        const schedules =
-          yield* sql`SELECT callback, type, time FROM cf_agents_schedules WHERE id = ${legacy.refreshScheduleId.value}`.pipe(
-            Effect.flatMap(parseLegacySchedules),
-          );
-
-        const schedule = schedules[0];
-
-        if (schedule === undefined) return yield* Effect.fail(failure());
-        referencedScheduleAtMs = Option.some(schedule.time * 1000);
-      }
-
-      const nextRefreshAtMs =
-        legacy.isStreamLive && authorizationStatus === "authorized" && Option.isSome(token)
-          ? Option.orElse(referencedScheduleAtMs, () =>
-              Option.some(Math.max(now + 1000, token.value.expiresAtMs - 300_000)),
-            )
-          : Option.none<number>();
-
-      return Option.some({
-        token,
-        isStreamLive: legacy.isStreamLive,
-        authorizationStatus,
-        refreshRetryCount: legacy.refreshRetryCount,
-        nextRefreshAtMs,
-      });
+      return Option.some(translateLegacyProviderTokenState(legacy, referencedScheduleAtMs, now));
     },
     Effect.mapError(
       () =>

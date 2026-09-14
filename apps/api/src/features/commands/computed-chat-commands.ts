@@ -9,6 +9,7 @@ import {
   type ChatCommandPermission,
 } from "@cf-twitch/contracts/chat-command";
 import { PageSize } from "@cf-twitch/contracts/identity";
+import type { RaffleLeaderboardEntry } from "@cf-twitch/contracts/raffle";
 import { SongQueueLimit } from "@cf-twitch/contracts/song-queue";
 import { Commands } from "./commands.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
@@ -40,6 +41,34 @@ const easternTimeFormatter = new Intl.DateTimeFormat("en-US", {
   hour12: true,
   timeZoneName: "short",
 });
+
+const viewerHasNoStatistics = (
+  self: boolean,
+  songCount: number,
+  achievementsAvailable: boolean,
+  unlockedAchievementCount: number,
+  raffleStats: Option.Option<RaffleLeaderboardEntry>,
+): boolean =>
+  !self &&
+  songCount === 0 &&
+  achievementsAvailable &&
+  unlockedAchievementCount === 0 &&
+  Option.isNone(raffleStats);
+
+const raffleStatsMessage = (stats: Option.Option<RaffleLeaderboardEntry>): string =>
+  Option.match(stats, {
+    onNone: () => "0 rolls",
+    onSome: (entry) => {
+      const extras = [
+        ...Option.toArray(Option.map(entry.closestDistance, (distance) => `closest: ${distance}`)),
+        ...(entry.totalWins > 0
+          ? [`${entry.totalWins} win${entry.totalWins > 1 ? "s" : ""}!`]
+          : []),
+      ];
+
+      return `${entry.totalRolls} rolls${extras.length > 0 ? ` (${extras.join(", ")})` : ""}`;
+    },
+  });
 
 const writePermissionMessage = (required: ChatCommandPermission, commandName: string): string => {
   switch (required) {
@@ -170,10 +199,11 @@ export const makeComputedChatCommands = Effect.gen(function* () {
       { concurrency: "unbounded" },
     );
 
-    const achievementStats =
-      Result.isSuccess(unlocked) && Result.isSuccess(definitions)
-        ? `${unlocked.success.length}/${definitions.success.length}`
-        : "?/?";
+    const achievementsAvailable = Result.isSuccess(unlocked) && Result.isSuccess(definitions);
+
+    const achievementStats = achievementsAvailable
+      ? `${unlocked.success.length}/${definitions.success.length}`
+      : "?/?";
 
     const [songs, raffleStats] = yield* Effect.all(
       [
@@ -199,31 +229,20 @@ export const makeComputedChatCommands = Effect.gen(function* () {
         commandName: "stats",
       });
 
+    const unlockedAchievementCount = Result.isSuccess(unlocked) ? unlocked.success.length : 0;
+
     if (
-      !self &&
-      songs.success === 0 &&
-      Result.isSuccess(unlocked) &&
-      unlocked.success.length === 0 &&
-      Result.isSuccess(definitions) &&
-      Option.isNone(raffleStats.success)
+      viewerHasNoStatistics(
+        self,
+        songs.success,
+        achievementsAvailable,
+        unlockedAchievementCount,
+        raffleStats.success,
+      )
     )
       return `No records found for @${target} yet — no songs, achievements, or raffle stats.`;
 
-    const rolls = Option.match(raffleStats.success, {
-      onNone: () => "0 rolls",
-      onSome: (entry) => {
-        const extras = [
-          ...Option.toArray(
-            Option.map(entry.closestDistance, (distance) => `closest: ${distance}`),
-          ),
-          ...(entry.totalWins > 0
-            ? [`${entry.totalWins} win${entry.totalWins > 1 ? "s" : ""}!`]
-            : []),
-        ];
-
-        return `${entry.totalRolls} rolls${extras.length > 0 ? ` (${extras.join(", ")})` : ""}`;
-      },
-    });
+    const rolls = raffleStatsMessage(raffleStats.success);
 
     return `@${target} — Songs: ${songs.success} | Achievements: ${achievementStats} | Raffles: ${rolls}`;
   });
@@ -260,42 +279,48 @@ export const makeComputedChatCommands = Effect.gen(function* () {
     return sections.join(" | ");
   });
 
+  const renderTime = Effect.fn("ComputedChatCommands.time")(function* () {
+    return `Current time is: ${easternTimeFormatter.format(new Date(yield* Clock.currentTimeMillis))}`;
+  });
+
+  const renderSkillIssue = Effect.fn("ComputedChatCommands.skillIssue")(function* (
+    context: ComputedCommandContext,
+  ) {
+    const result = yield* commands
+      .incrementCommandCounter({
+        name: ChatCommandName.make("skillissue"),
+        increment: 1,
+        operationId: Option.some(context.input.messageId),
+      })
+      .pipe(Effect.result);
+
+    return Result.isFailure(result)
+      ? "Couldn't count that skill issue right now."
+      : `@dillon has ${result.success} SkillIssue so far`;
+  });
+
+  const computedCommandRenderers = new Map<string, IComputedChatCommands["render"]>([
+    ["update", renderUpdate],
+    ["song", renderSong],
+    ["queue", renderQueue],
+    ["achievements", renderAchievements],
+    ["raffle-leaderboard", renderRaffleLeaderboard],
+    ["stats", renderStats],
+    ["commands", renderCommands],
+    ["time", renderTime],
+    ["skillissue", renderSkillIssue],
+  ]);
+
   const render: IComputedChatCommands["render"] = Effect.fn("ComputedChatCommands.render")(
     function* (context) {
-      switch (context.command.handlerKey) {
-        case "update":
-          return yield* renderUpdate(context);
-        case "song":
-          return yield* renderSong();
-        case "queue":
-          return yield* renderQueue();
-        case "achievements":
-          return yield* renderAchievements(context);
-        case "raffle-leaderboard":
-          return yield* renderRaffleLeaderboard();
-        case "stats":
-          return yield* renderStats(context);
-        case "commands":
-          return yield* renderCommands(context);
-        case "time":
-          return `Current time is: ${easternTimeFormatter.format(new Date(yield* Clock.currentTimeMillis))}`;
-        case "skillissue": {
-          const result = yield* commands
-            .incrementCommandCounter({
-              name: ChatCommandName.make("skillissue"),
-              increment: 1,
-              operationId: Option.some(context.input.messageId),
-            })
-            .pipe(Effect.result);
+      const renderer =
+        context.command.handlerKey === null
+          ? undefined
+          : computedCommandRenderers.get(context.command.handlerKey);
 
-          return Result.isFailure(result)
-            ? "Couldn't count that skill issue right now."
-            : `@dillon has ${result.success} SkillIssue so far`;
-        }
-
-        default:
-          return `!${context.command.name} is configured but has no live handler.`;
-      }
+      return renderer === undefined
+        ? `!${context.command.name} is configured but has no live handler.`
+        : yield* renderer(context);
     },
   );
 

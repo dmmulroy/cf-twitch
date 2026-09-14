@@ -148,71 +148,95 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     return updated;
   });
 
+  const resumeProviderTokenNotification = Effect.fn(
+    "StreamLifecycle.resumeProviderTokenNotification",
+  )(function* (
+    state: PersistedStreamState,
+    provider: "spotify" | "twitch",
+    effect: "spotifyTokenNotified" | "twitchTokenNotified",
+  ) {
+    const checkpoint = state.transitionCheckpoint;
+
+    if (checkpoint === null || checkpoint[effect]) return state;
+    yield* (
+      checkpoint.transition === "online"
+        ? accessTokens.onStreamOnline(provider)
+        : accessTokens.onStreamOffline(provider)
+    ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
+
+    return yield* saveEffectCheckpoint(state, checkpoint, effect);
+  });
+
+  const resumeLifecycleEventPublication = Effect.fn(
+    "StreamLifecycle.resumeLifecycleEventPublication",
+  )(function* (state: PersistedStreamState) {
+    const checkpoint = state.transitionCheckpoint;
+
+    if (checkpoint === null || checkpoint.lifecycleEventPublished) return state;
+    yield* events
+      .publish(lifecycleEvent(checkpoint))
+      .pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
+
+    return yield* saveEffectCheckpoint(state, checkpoint, "lifecycleEventPublished");
+  });
+
+  const resumeViewerPollingUpdate = Effect.fn("StreamLifecycle.resumeViewerPollingUpdate")(
+    function* (state: PersistedStreamState) {
+      const checkpoint = state.transitionCheckpoint;
+
+      if (checkpoint === null || checkpoint.viewerPollingUpdated) return state;
+
+      if (checkpoint.transition === "offline") {
+        yield* alarm.clear();
+
+        return yield* saveEffectCheckpoint(state, checkpoint, "viewerPollingUpdated");
+      }
+
+      const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
+      yield* alarm.scheduleAt(dueAt);
+
+      const withSchedule = Predicate.isTagged("LiveStream")(state)
+        ? {
+            ...state,
+            viewerPollScheduleId: dueAt,
+            transitionCheckpoint: { ...checkpoint, viewerPollScheduleId: dueAt },
+          }
+        : state;
+
+      const updated = completeTransitionEffect(
+        withSchedule,
+        checkpoint.eventId,
+        "viewerPollingUpdated",
+      );
+
+      yield* database.saveState(updated);
+
+      return updated;
+    },
+  );
+
   const resumeTransitionEffectsWithoutPermit = Effect.fn(
     "StreamLifecycle.resumeTransitionEffectsWithoutPermit",
   )(function* () {
-    let state = yield* database.getState();
-    const initialCheckpoint = state.transitionCheckpoint;
+    const initial = yield* database.getState();
 
-    if (initialCheckpoint === null) return;
+    if (initial.transitionCheckpoint === null) return;
 
-    if (!initialCheckpoint.spotifyTokenNotified) {
-      yield* (
-        initialCheckpoint.transition === "online"
-          ? accessTokens.onStreamOnline("spotify")
-          : accessTokens.onStreamOffline("spotify")
-      ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
-      state = yield* saveEffectCheckpoint(state, initialCheckpoint, "spotifyTokenNotified");
-    }
+    const spotifyNotified = yield* resumeProviderTokenNotification(
+      initial,
+      "spotify",
+      "spotifyTokenNotified",
+    );
 
-    const twitchCheckpoint = state.transitionCheckpoint;
+    const twitchNotified = yield* resumeProviderTokenNotification(
+      spotifyNotified,
+      "twitch",
+      "twitchTokenNotified",
+    );
 
-    if (twitchCheckpoint !== null && !twitchCheckpoint.twitchTokenNotified) {
-      yield* (
-        twitchCheckpoint.transition === "online"
-          ? accessTokens.onStreamOnline("twitch")
-          : accessTokens.onStreamOffline("twitch")
-      ).pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
-      state = yield* saveEffectCheckpoint(state, twitchCheckpoint, "twitchTokenNotified");
-    }
-
-    const eventCheckpoint = state.transitionCheckpoint;
-
-    if (eventCheckpoint !== null && !eventCheckpoint.lifecycleEventPublished) {
-      yield* events
-        .publish(lifecycleEvent(eventCheckpoint))
-        .pipe(Effect.mapError(() => streamError("resumeTransitionEffects", "effects_pending")));
-      state = yield* saveEffectCheckpoint(state, eventCheckpoint, "lifecycleEventPublished");
-    }
-
-    const pollingCheckpoint = state.transitionCheckpoint;
-
-    if (pollingCheckpoint !== null && !pollingCheckpoint.viewerPollingUpdated) {
-      if (pollingCheckpoint.transition === "online") {
-        const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
-        yield* alarm.scheduleAt(dueAt);
-
-        const withSchedule = Predicate.isTagged("LiveStream")(state)
-          ? {
-              ...state,
-              viewerPollScheduleId: dueAt,
-              transitionCheckpoint: { ...pollingCheckpoint, viewerPollScheduleId: dueAt },
-            }
-          : state;
-
-        state = completeTransitionEffect(
-          withSchedule,
-          pollingCheckpoint.eventId,
-          "viewerPollingUpdated",
-        );
-        yield* database.saveState(state);
-      } else {
-        yield* alarm.clear();
-        state = yield* saveEffectCheckpoint(state, pollingCheckpoint, "viewerPollingUpdated");
-      }
-    }
-
-    yield* database.saveState(clearCompletedTransition(state));
+    const eventPublished = yield* resumeLifecycleEventPublication(twitchNotified);
+    const pollingUpdated = yield* resumeViewerPollingUpdate(eventPublished);
+    yield* database.saveState(clearCompletedTransition(pollingUpdated));
   });
 
   const getState: IStreamLifecycleClient["getState"] = Effect.fn("StreamLifecycle.getState")(

@@ -8,6 +8,42 @@ export interface SongQueueOccurrence {
   readonly track: QueuedTrack;
 }
 
+interface CurrentSongQueueRequestSelection {
+  readonly request: PendingSongRequest | undefined;
+  readonly promotedEventId: string | undefined;
+}
+
+const selectCurrentSongQueueRequest = (
+  previousCurrent: QueuedTrack | undefined,
+  previousUpcoming: readonly SongQueueOccurrence[],
+  pendingById: ReadonlyMap<string, PendingSongRequest>,
+  currentlyPlaying: Option.Option<SpotifyTrack>,
+  upcoming: readonly SpotifyTrack[],
+): CurrentSongQueueRequestSelection => {
+  if (Option.isNone(currentlyPlaying)) return { request: undefined, promotedEventId: undefined };
+  const currentTrack = currentlyPlaying.value;
+  const oldCount = previousUpcoming.filter((item) => item.track.id === currentTrack.id).length;
+  const newCount = upcoming.filter((track) => track.id === currentTrack.id).length;
+
+  const promotable = previousUpcoming.find(
+    (item) => item.track.id === currentTrack.id && item.track.source === "user",
+  )?.track;
+
+  if (newCount < oldCount && promotable?.source === "user")
+    return {
+      request: pendingById.get(promotable.eventId),
+      promotedEventId: promotable.eventId,
+    };
+
+  return {
+    request:
+      previousCurrent?.source === "user" && previousCurrent.id === currentTrack.id
+        ? pendingById.get(previousCurrent.eventId)
+        : undefined,
+    promotedEventId: undefined,
+  };
+};
+
 /** Attribute repeated track occurrences without stealing an already-playing autoplay track. */
 export function attributeSongQueueOccurrences(input: {
   readonly previous: readonly SongQueueOccurrence[];
@@ -23,28 +59,17 @@ export function attributeSongQueueOccurrences(input: {
     .toSorted((a, b) => a.position - b.position);
 
   const pendingById = new Map(pending.map((request) => [request.eventId, request]));
-  let currentRequest: PendingSongRequest | undefined;
-  let promoted: PendingSongRequest | undefined;
 
-  if (Option.isSome(currentlyPlaying)) {
-    const currentTrack = currentlyPlaying.value;
-    const oldCount = previousUpcoming.filter((item) => item.track.id === currentTrack.id).length;
-    const newCount = upcoming.filter((track) => track.id === currentTrack.id).length;
-
-    const promotable = previousUpcoming.find(
-      (item) => item.track.id === currentTrack.id && item.track.source === "user",
-    )?.track;
-
-    if (newCount < oldCount && promotable?.source === "user") {
-      promoted = pendingById.get(promotable.eventId);
-      currentRequest = promoted;
-    } else if (previousCurrent?.source === "user" && previousCurrent.id === currentTrack.id) {
-      currentRequest = pendingById.get(previousCurrent.eventId);
-    }
-  }
+  const current = selectCurrentSongQueueRequest(
+    previousCurrent,
+    previousUpcoming,
+    pendingById,
+    currentlyPlaying,
+    upcoming,
+  );
 
   const reusable = previousUpcoming.flatMap(({ track }) => {
-    if (track.source !== "user" || track.eventId === promoted?.eventId) return [];
+    if (track.source !== "user" || track.eventId === current.promotedEventId) return [];
     const request = pendingById.get(track.eventId);
 
     return request === undefined ? [] : [request];
@@ -55,7 +80,7 @@ export function attributeSongQueueOccurrences(input: {
   );
 
   const unassigned = pending.filter((request) => !previouslyAttributed.has(request.eventId));
-  const assigned = new Set(currentRequest === undefined ? [] : [currentRequest.eventId]);
+  const assigned = new Set(current.request === undefined ? [] : [current.request.eventId]);
 
   const occurrence = (
     track: SpotifyTrack,
@@ -77,7 +102,7 @@ export function attributeSongQueueOccurrences(input: {
   });
 
   const result: SongQueueOccurrence[] = Option.isSome(currentlyPlaying)
-    ? [occurrence(currentlyPlaying.value, 0, currentRequest)]
+    ? [occurrence(currentlyPlaying.value, 0, current.request)]
     : [];
 
   for (const [index, track] of upcoming.entries()) {
