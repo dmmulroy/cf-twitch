@@ -9,7 +9,7 @@ import { ChannelPointRedemption } from "@cf-twitch/contracts/redemption";
 import { RaffleError } from "@cf-twitch/contracts/raffle";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
-import type { WorkflowInput } from "@cf-twitch/contracts/workflow";
+import { WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { recordingTwitchAnalyticsLayer } from "../support/recording-twitch-analytics.ts";
 import {
   WorkflowExecution,
@@ -120,7 +120,13 @@ describe("Independent command-owner workflow review regressions", () => {
       () =>
         Effect.gen(function* () {
           const services = yield* reviewServices;
-          yield* services.start({ _tag: kind, redemption });
+
+          const input =
+            kind === "SongRequest"
+              ? WorkflowInput.cases.SongRequest.make({ redemption })
+              : WorkflowInput.cases.KeyboardRaffle.make({ redemption });
+
+          yield* services.start(input);
           yield* TestClock.adjust("2 seconds");
           yield* services.resume();
           // Safe implementations either compensate by the already-known redemption ID, or hold the uncertain run.
@@ -141,10 +147,11 @@ describe("Independent command-owner workflow review regressions", () => {
         yield* sql`CREATE TRIGGER reject_compensation_transition BEFORE UPDATE ON saga_runs WHEN NEW.status='COMPENSATING' BEGIN SELECT RAISE(FAIL,'review transition outage'); END`;
         expect(
           yield* services
-            .start({
-              _tag: "SongRequest",
-              redemption: { ...redemption, userInput: "invalid input" },
-            })
+            .start(
+              WorkflowInput.cases.SongRequest.make({
+                redemption: { ...redemption, userInput: "invalid input" },
+              }),
+            )
             .pipe(Effect.result),
         ).toMatchObject({ failure: { reason: "storage" } });
         yield* sql`DROP TRIGGER reject_compensation_transition`;

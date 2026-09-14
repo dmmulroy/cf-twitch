@@ -3,7 +3,6 @@ import { defineRule } from "@oxlint/plugins";
 import {
 	classifyUnsafeDictionaryValue,
 	classifyWideningTarget,
-	collectDictionaryTypeEnvironmentNode,
 	createTypeEnvironment,
 	isKnownEvidenceExpression,
 	type TypeEnvironment,
@@ -14,8 +13,9 @@ import {
 	functionParameterBindingName,
 	functionParameterTypeAnnotation,
 } from "../shared/function-parameters.ts";
+import { resolveVariable } from "../shared/scope.ts";
 
-import type { ESTree, Scope, SourceCode, Variable } from "@oxlint/plugins";
+import type { ESTree, SourceCode, Variable } from "@oxlint/plugins";
 
 type FunctionExpression = ESTree.ArrowFunctionExpression | ESTree.Function;
 
@@ -31,19 +31,6 @@ function unwrapExpression(expression: ESTree.Expression): ESTree.Expression {
 		current = current.expression;
 	}
 	return current;
-}
-
-function resolveVariable(
-	sourceCode: SourceCode,
-	identifier: ESTree.IdentifierReference,
-): Variable | null {
-	let scope: Scope | null = sourceCode.getScope(identifier);
-	while (scope !== null) {
-		const variable = scope.set.get(identifier.name);
-		if (variable !== undefined) return variable;
-		scope = scope.upper;
-	}
-	return null;
 }
 
 function variableDeclarator(variable: Variable): ESTree.VariableDeclarator | null {
@@ -285,8 +272,7 @@ export const noKnownValueWideningRule = defineRule({
 		},
 	},
 	createOnce(context) {
-		const environment: TypeEnvironment = createTypeEnvironment();
-		const pendingChecks: Array<() => void> = [];
+		let environment: TypeEnvironment | null = null;
 
 		const reportFlow = (
 			expression: ESTree.Expression,
@@ -309,95 +295,120 @@ export const noKnownValueWideningRule = defineRule({
 		};
 
 		const targetFromAnnotation = (annotation: ESTree.TSTypeAnnotation | null | undefined) =>
-			annotationTarget(annotation, environment);
+			environment === null ? null : annotationTarget(annotation, environment);
 
 		return {
+			Program(node) {
+				environment = createTypeEnvironment(
+					node,
+					context.sourceCode.visitorKeys,
+				);
+			},
 			VariableDeclarator(node) {
-				pendingChecks.push(() => {
-					if (node.init === null || node.id.type !== "Identifier") return;
-					reportFlow(node.init, targetFromAnnotation(node.id.typeAnnotation), `binding \`${node.id.name}\``);
-				});
+				if (node.init === null || node.id.type !== "Identifier") return;
+				reportFlow(
+					node.init,
+					targetFromAnnotation(node.id.typeAnnotation),
+					`binding \`${node.id.name}\``,
+				);
 			},
 			PropertyDefinition(node) {
-				pendingChecks.push(() => {
-					if (node.value === null) return;
-					reportFlow(node.value, targetFromAnnotation(node.typeAnnotation), `property \`${sourceKeyName(context.sourceCode, node.key)}\``);
-				});
+				if (node.value === null) return;
+				reportFlow(
+					node.value,
+					targetFromAnnotation(node.typeAnnotation),
+					`property \`${sourceKeyName(context.sourceCode, node.key)}\``,
+				);
 			},
 			AccessorProperty(node) {
-				pendingChecks.push(() => {
-					if (node.value === null) return;
-					reportFlow(node.value, targetFromAnnotation(node.typeAnnotation), `property \`${sourceKeyName(context.sourceCode, node.key)}\``);
-				});
+				if (node.value === null) return;
+				reportFlow(
+					node.value,
+					targetFromAnnotation(node.typeAnnotation),
+					`property \`${sourceKeyName(context.sourceCode, node.key)}\``,
+				);
 			},
 			AssignmentExpression(node) {
-				pendingChecks.push(() => {
-					if (node.operator !== "=" || node.left.type !== "Identifier") return;
-					const variable = resolveVariable(context.sourceCode, node.left);
-					if (variable === null) return;
-					const declarator = variableDeclarator(variable);
-					if (declarator === null || declarator.id.type !== "Identifier") return;
-					reportFlow(node.right, targetFromAnnotation(declarator.id.typeAnnotation), `binding \`${declarator.id.name}\``);
-				});
+				if (node.operator !== "=" || node.left.type !== "Identifier") return;
+				const variable = resolveVariable(context.sourceCode, node.left);
+				if (variable === null) return;
+				const declarator = variableDeclarator(variable);
+				if (declarator === null || declarator.id.type !== "Identifier") return;
+				reportFlow(
+					node.right,
+					targetFromAnnotation(declarator.id.typeAnnotation),
+					`binding \`${declarator.id.name}\``,
+				);
 			},
 			CallExpression(node) {
-				pendingChecks.push(() => {
-					const owner = localFunctionForCall(context.sourceCode, node.callee);
-					if (owner === null) return;
-					const parameterIndex = typePredicateSubjectIndex(context.sourceCode, owner);
-					if (parameterIndex === null) return;
-					const parameter = owner.params[parameterIndex];
-					const argument = node.arguments[parameterIndex];
-					if (parameter === undefined || argument === undefined || argument.type === "SpreadElement") return;
-					const parameterAnnotation = functionParameterTypeAnnotation(parameter);
-					if (parameterAnnotation === null || parameterAnnotation === undefined || !containsUnknownType(parameterAnnotation.typeAnnotation)) return;
-					if (!hasKnownCallArgumentEvidence(context.sourceCode, argument, environment)) return;
-					context.report({
-						node: argument,
-						messageId: "widening",
-						data: {
-							subject: `argument for parameter \`${functionParameterBindingName(parameter, context.sourceCode)}\` of \`${functionName(context.sourceCode, owner)}\``,
-							target: "unknown",
-						},
-					});
+				if (environment === null) return;
+				const owner = localFunctionForCall(context.sourceCode, node.callee);
+				if (owner === null) return;
+				const parameterIndex = typePredicateSubjectIndex(context.sourceCode, owner);
+				if (parameterIndex === null) return;
+				const parameter = owner.params[parameterIndex];
+				const argument = node.arguments[parameterIndex];
+				if (parameter === undefined || argument === undefined || argument.type === "SpreadElement") {
+					return;
+				}
+				const parameterAnnotation = functionParameterTypeAnnotation(parameter);
+				if (
+					parameterAnnotation === null ||
+					parameterAnnotation === undefined ||
+					!containsUnknownType(parameterAnnotation.typeAnnotation)
+				) {
+					return;
+				}
+				if (
+					!hasKnownCallArgumentEvidence(
+						context.sourceCode,
+						argument,
+						environment,
+					)
+				) {
+					return;
+				}
+				context.report({
+					node: argument,
+					messageId: "widening",
+					data: {
+						subject: `argument for parameter \`${functionParameterBindingName(parameter, context.sourceCode)}\` of \`${functionName(context.sourceCode, owner)}\``,
+						target: "unknown",
+					},
 				});
 			},
 			ReturnStatement(node) {
-				pendingChecks.push(() => {
-					if (node.argument === null) return;
-					const owner = enclosingFunction(node);
-					reportFlow(node.argument, targetFromAnnotation(owner?.returnType), `return value of \`${functionName(context.sourceCode, owner)}\``);
-				});
+				if (node.argument === null) return;
+				const owner = enclosingFunction(node);
+				reportFlow(
+					node.argument,
+					targetFromAnnotation(owner?.returnType),
+					`return value of \`${functionName(context.sourceCode, owner)}\``,
+				);
 			},
 			ArrowFunctionExpression(node) {
-				pendingChecks.push(() => {
-					if (node.body.type === "BlockStatement") return;
-					reportFlow(node.body, targetFromAnnotation(node.returnType), `return value of \`${functionName(context.sourceCode, node)}\``);
-				});
+				if (node.body.type === "BlockStatement") return;
+				reportFlow(
+					node.body,
+					targetFromAnnotation(node.returnType),
+					`return value of \`${functionName(context.sourceCode, node)}\``,
+				);
 			},
 			TSAsExpression(node) {
-				pendingChecks.push(() => {
-					if (hasParentAssertion(node)) return;
-					reportFlow(node.expression, classifyWideningTarget(node.typeAnnotation, environment), "assertion");
-				});
+				if (environment === null || hasParentAssertion(node)) return;
+				reportFlow(
+					node.expression,
+					classifyWideningTarget(node.typeAnnotation, environment),
+					"assertion",
+				);
 			},
 			TSTypeAssertion(node) {
-				pendingChecks.push(() => {
-					if (hasParentAssertion(node)) return;
-					reportFlow(node.expression, classifyWideningTarget(node.typeAnnotation, environment), "assertion");
-				});
-			},
-			TSTypeAliasDeclaration: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			TSInterfaceDeclaration: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			TSEnumDeclaration: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			ClassDeclaration: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			ClassExpression: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			ImportSpecifier: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			ImportDefaultSpecifier: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			ImportNamespaceSpecifier: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			TSInferType: (node) => collectDictionaryTypeEnvironmentNode(node, environment),
-			"Program:exit"() {
-				for (const check of pendingChecks) check();
+				if (environment === null || hasParentAssertion(node)) return;
+				reportFlow(
+					node.expression,
+					classifyWideningTarget(node.typeAnnotation, environment),
+					"assertion",
+				);
 			},
 		};
 	},

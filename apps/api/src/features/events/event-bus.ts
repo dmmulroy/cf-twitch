@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Schema, Semaphore } from "effect";
+import { Clock, Context, Effect, Layer, Option, Result, Schema, Semaphore } from "effect";
 import {
   encodeDomainEventJson,
   parseDomainEventJson,
@@ -156,7 +156,7 @@ export const makeEventBus = Effect.gen(function* () {
     const attempt = pending.attempts + 1;
     const decodedEvent = yield* Effect.result(parseDomainEventJson(pending.event));
 
-    if (decodedEvent._tag === "Failure") {
+    if (Result.isFailure(decodedEvent)) {
       const { now, after: expiresAt } = yield* nowAndAfter(DLQ_RETENTION_MS);
       yield* database.moveToDeadLetter({
         pending,
@@ -171,7 +171,7 @@ export const makeEventBus = Effect.gen(function* () {
 
     const result = yield* Effect.result(deliver(decodedEvent.success, "retryDue"));
 
-    if (result._tag === "Success") {
+    if (Result.isSuccess(result)) {
       yield* recordSuccess(decodedEvent.success.id, "retryDue");
 
       return;
@@ -236,7 +236,7 @@ export const makeEventBus = Effect.gen(function* () {
 
       const delivery = yield* Effect.result(deliver(event, "publish"));
 
-      if (delivery._tag === "Success") yield* recordSuccess(event.id, "publish");
+      if (Result.isSuccess(delivery)) yield* recordSuccess(event.id, "publish");
       yield* rebuildAlarm();
     }),
   };
@@ -298,7 +298,7 @@ export const makeEventBus = Effect.gen(function* () {
 
       const delivery = yield* Effect.result(deliver(event, "replayDeadLetter"));
 
-      if (delivery._tag === "Success") {
+      if (Result.isSuccess(delivery)) {
         yield* recordSuccess(event.id, "replayDeadLetter");
         yield* rebuildAlarm();
 

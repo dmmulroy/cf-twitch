@@ -1,12 +1,18 @@
 import { describe, it } from "@effect/vitest";
 import { RuleTester } from "oxlint/plugins-dev";
 
+import { noManualEffectErrorTagRule } from "./effect/rules/no-manual-effect-error-tag.ts";
+import { noManualTagComparisonRule } from "./effect/rules/no-manual-tag-comparison.ts";
+import { noManualTaggedConstructionRule } from "./effect/rules/no-manual-tagged-construction.ts";
 import { noServiceConstructorImportsRule } from "./effect/rules/no-service-constructor-imports.ts";
+import { preferEffectMatchRule } from "./effect/rules/prefer-effect-match.ts";
+import { noArrayFilterMapRule } from "./rules/no-array-filter-map.ts";
 import { noChainedTypeAssertionsRule } from "./rules/no-chained-type-assertions.ts";
 import { noConditionalEmptyObjectSpreadRule } from "./rules/no-conditional-empty-object-spread.ts";
 import { noKnownValueWideningRule } from "./rules/no-known-value-widening.ts";
 import { noModuleMockingRule } from "./rules/no-module-mocking.ts";
 import { noObjectParametersRule } from "./rules/no-object-parameters.ts";
+import { noReduceAccumulatorCopyRule } from "./rules/no-reduce-accumulator-copy.ts";
 import { noReflectApplyRule } from "./rules/no-reflect-apply.ts";
 import { noReflectGetRule } from "./rules/no-reflect-get.ts";
 import { noRuntimeTypeofRule } from "./rules/no-runtime-typeof.ts";
@@ -23,6 +29,26 @@ RuleTester.it = it;
 
 const typescriptRuleTester = new RuleTester({
   languageOptions: { parserOptions: { lang: "ts" }, sourceType: "module" },
+});
+
+typescriptRuleTester.run("no-array-filter-map", noArrayFilterMapRule, {
+  valid: ["const users = []; users.values().filter(active).map(email).toArray();"],
+  invalid: [
+    {
+      code: "const users = []; users.filter(active).map(email);",
+      errors: [{ messageId: "arrayFilterMap" }],
+    },
+  ],
+});
+
+typescriptRuleTester.run("no-reduce-accumulator-copy", noReduceAccumulatorCopyRule, {
+  valid: ["items.reduce((acc, item) => { acc.push(item); return acc; }, []);"],
+  invalid: [
+    {
+      code: "items.reduce((acc, item) => Object.assign({}, acc, item), {});",
+      errors: [{ messageId: "accumulatorCopy" }],
+    },
+  ],
 });
 
 typescriptRuleTester.run("no-chained-type-assertions", noChainedTypeAssertionsRule, {
@@ -117,10 +143,10 @@ typescriptRuleTester.run("no-runtime-typeof", noRuntimeTypeofRule, {
 });
 
 typescriptRuleTester.run("no-shape-in-symbol-names", noForbiddenTermInSymbolNamesRule, {
-  valid: ["const value = external['shape'];"],
+  valid: ["const value = external.shape;"],
   invalid: [
     {
-      code: "const value = external.shape;",
+      code: "const shape = external['shape'];",
       errors: [{ messageId: "forbiddenSymbolName" }],
     },
   ],
@@ -199,6 +225,46 @@ typescriptRuleTester.run(
     ],
   },
 );
+
+typescriptRuleTester.run("no-manual-effect-error-tag", noManualEffectErrorTagRule, {
+  valid: ['Effect.catchTag("NotFound", recover);'],
+  invalid: [
+    {
+      code: 'Effect.catchAll((error) => error._tag === "NotFound" ? recover : fail);',
+      errors: [{ messageId: "tag" }],
+    },
+  ],
+});
+
+typescriptRuleTester.run("no-manual-tag-comparison", noManualTagComparisonRule, {
+  valid: ['Predicate.isTagged("Ready")(value);'],
+  invalid: [
+    {
+      code: 'value._tag === "Ready";',
+      errors: [{ messageId: "manualComparison" }],
+    },
+  ],
+});
+
+typescriptRuleTester.run("no-manual-tagged-construction", noManualTaggedConstructionRule, {
+  valid: ["Ready.make({ value });"],
+  invalid: [
+    {
+      code: 'const value = { _tag: "Ready", payload };',
+      errors: [{ messageId: "manualConstruction" }],
+    },
+  ],
+});
+
+typescriptRuleTester.run("prefer-effect-match", preferEffectMatchRule, {
+  valid: ['kind === "a" ? first : fallback;'],
+  invalid: [
+    {
+      code: 'kind === "a" ? first : kind === "b" ? second : fallback;',
+      errors: [{ messageId: "preferMatch" }],
+    },
+  ],
+});
 
 typescriptRuleTester.run("no-service-constructor-imports", noServiceConstructorImportsRule, {
   valid: [

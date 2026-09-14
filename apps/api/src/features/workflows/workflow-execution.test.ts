@@ -15,7 +15,8 @@ import { DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { ProviderError } from "@cf-twitch/contracts/provider";
 import { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
-import { WorkflowInput } from "@cf-twitch/contracts/workflow";
+import { RaidShoutoutInput, WorkflowInput } from "@cf-twitch/contracts/workflow";
+import { ChannelPointRedemption } from "@cf-twitch/contracts/redemption";
 import { RaffleRecordResult } from "@cf-twitch/contracts/raffle";
 import { EventPublisher } from "../events/event-publisher.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
@@ -29,19 +30,28 @@ import {
   workflowExecutionLayerWithoutDependencies,
 } from "./workflow-execution.ts";
 
-const song = Schema.decodeUnknownSync(WorkflowInput)({
-  _tag: "SongRequest",
-  redemption: {
-    id: "redemption-1",
-    broadcasterId: "broadcaster",
-    userId: "viewer",
-    userLogin: "viewer",
-    userDisplayName: "Viewer",
-    userInput: "spotify:track:abc",
-    reward: { id: "reward", title: "Song", cost: 100, prompt: "" },
-    redeemedAt: "2026-01-01T00:00:00Z",
-  },
+const songRedemption = Schema.decodeUnknownSync(ChannelPointRedemption)({
+  id: "redemption-1",
+  broadcasterId: "broadcaster",
+  userId: "viewer",
+  userLogin: "viewer",
+  userDisplayName: "Viewer",
+  userInput: "spotify:track:abc",
+  reward: { id: "reward", title: "Song", cost: 100, prompt: "" },
+  redeemedAt: "2026-01-01T00:00:00Z",
 });
+
+const song = WorkflowInput.cases.SongRequest.make({ redemption: songRedemption });
+
+const makeRaidInput = (messageId: string) =>
+  WorkflowInput.cases.RaidShoutout.make({
+    raid: Schema.decodeUnknownSync(RaidShoutoutInput)({
+      messageId,
+      receivedAt: "2026-01-01T00:00:00Z",
+      raider: { userId: "raider", login: "raider", displayName: "Raider" },
+      viewers: 42,
+    }),
+  });
 
 const track = Schema.decodeUnknownSync(SpotifyTrack)({
   id: "abc",
@@ -159,7 +169,7 @@ const recordingServices = Effect.gen(function* () {
   const use = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowExecution>) =>
     effect.pipe(Effect.provide(executionLayer, { local: true }));
 
-  const start = (input = song) =>
+  const start = (input: WorkflowInput = song) =>
     use(
       Effect.gen(function* () {
         const execution = yield* WorkflowExecution;
@@ -226,15 +236,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
     Effect.gen(function* () {
       const controls = yield* recordingServices;
 
-      const input = Schema.decodeUnknownSync(WorkflowInput)({
-        _tag: "RaidShoutout",
-        raid: {
-          messageId: "raid-success",
-          receivedAt: "2026-01-01T00:00:00Z",
-          raider: { userId: "raider", login: "raider", displayName: "Raider" },
-          viewers: 42,
-        },
-      });
+      const input = makeRaidInput("raid-success");
 
       expect(yield* controls.start(input)).toMatchObject({
         value: { sagaId: "raid-success", status: "COMPLETED" },
@@ -251,15 +253,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
         const controls = yield* recordingServices;
         yield* Ref.set(controls.slowChat, true);
 
-        const input = Schema.decodeUnknownSync(WorkflowInput)({
-          _tag: "RaidShoutout",
-          raid: {
-            messageId: "raid-timeout",
-            receivedAt: "2026-01-01T00:00:00Z",
-            raider: { userId: "raider", login: "raider", displayName: "Raider" },
-            viewers: 42,
-          },
-        });
+        const input = makeRaidInput("raid-timeout");
 
         const result = yield* Effect.gen(function* () {
           const execution = yield* WorkflowExecution;
@@ -299,7 +293,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
     "roundtrips durable workflow start/status/conflict through generated HTTP client and real SQL handlers",
     () =>
       Effect.gen(function* () {
-        if (song._tag !== "SongRequest") return;
+        if (!WorkflowInput.guards.SongRequest(song)) return;
         const controls = yield* recordingServices;
         const sql = yield* SqlClient.SqlClient;
 
@@ -340,7 +334,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
           expect(yield* client.workflow.getStatus()).toEqual(Option.none());
           yield* client.workflow.start({ payload: song });
           expect(yield* client.workflow.getStatus()).toMatchObject({
-            value: { status: "COMPLETED", fulfilledAt: { _tag: "Some" } },
+            value: { status: "COMPLETED", fulfilledAt: Option.some(expect.any(String)) },
           });
           yield* client.workflow.start({ payload: song });
           expect(
@@ -352,7 +346,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
                 },
               })
               .pipe(Effect.result),
-          ).toMatchObject({ failure: { _tag: "WorkflowError", reason: "conflict" } });
+          ).toMatchObject({ failure: { reason: "conflict" } });
           expect(
             (yield* Ref.get(controls.calls)).filter((call) => call === "spotify-add"),
           ).toHaveLength(1);
@@ -366,7 +360,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
       Effect.gen(function* () {
         const services = yield* recordingServices;
         expect(yield* services.start()).toMatchObject({
-          value: { status: "COMPLETED", fulfilledAt: { _tag: "Some" } },
+          value: { status: "COMPLETED", fulfilledAt: Option.some(expect.any(String)) },
         });
         expect(yield* services.start()).toMatchObject({ value: { status: "COMPLETED" } });
         expect(yield* services.resume()).toMatchObject({ value: { status: "COMPLETED" } });
@@ -391,7 +385,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
 
   it.effect("preserves a leading-zero deterministic workflow event identity vector", () =>
     Effect.gen(function* () {
-      if (song._tag !== "SongRequest") return;
+      if (!WorkflowInput.guards.SongRequest(song)) return;
 
       const services = yield* recordingServices;
 
@@ -425,7 +419,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
         yield* Ref.set(services.rejectRemove, false);
         yield* TestClock.adjust("2 seconds");
         expect(yield* services.resume()).toMatchObject({
-          value: { status: "FAILED", fulfilledAt: { _tag: "None" } },
+          value: { status: "FAILED", fulfilledAt: Option.none() },
         });
         expect(yield* Ref.get(services.calls)).toEqual([
           "track",
@@ -459,7 +453,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
         }
 
         expect(yield* services.resume()).toMatchObject({
-          value: { status: "POST_COMMIT_FAILED", fulfilledAt: { _tag: "Some" } },
+          value: { status: "POST_COMMIT_FAILED", fulfilledAt: Option.some(expect.any(String)) },
         });
         const calls = yield* Ref.get(services.calls);
         expect(calls.filter((call) => call === "publish")).toHaveLength(5);
@@ -503,9 +497,13 @@ describe("Workflow execution public service with real SQLite restarts", () => {
 
   it.effect("persists raffle result, fulfills, publishes and chats once across restart", () =>
     Effect.gen(function* () {
-      if (song._tag !== "SongRequest") return;
+      if (!WorkflowInput.guards.SongRequest(song)) return;
       const services = yield* recordingServices;
-      const raffleInput: WorkflowInput = { _tag: "KeyboardRaffle", redemption: song.redemption };
+
+      const raffleInput = WorkflowInput.cases.KeyboardRaffle.make({
+        redemption: song.redemption,
+      });
+
       expect(yield* services.start(raffleInput)).toMatchObject({ value: { status: "COMPLETED" } });
       yield* services.start(raffleInput);
       expect(yield* Ref.get(services.calls)).toEqual([
@@ -525,15 +523,7 @@ describe("Workflow execution public service with real SQLite restarts", () => {
       const services = yield* recordingServices;
       yield* Ref.set(services.unknownChat, true);
 
-      const input = Schema.decodeUnknownSync(WorkflowInput)({
-        _tag: "RaidShoutout",
-        raid: {
-          messageId: "raid-1",
-          receivedAt: "2026-01-01T00:00:00Z",
-          raider: { userId: "raider", login: "raider", displayName: "Raider" },
-          viewers: 42,
-        },
-      });
+      const input = makeRaidInput("raid-1");
 
       expect(yield* services.start(input)).toMatchObject({ value: { status: "OUTCOME_UNKNOWN" } });
       yield* services.start(input);

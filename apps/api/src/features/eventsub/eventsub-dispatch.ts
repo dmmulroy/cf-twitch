@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Schema } from "effect";
+import { Context, Effect, Layer, Match, Option, Predicate, Schema } from "effect";
 import { AcceptedEventSubReceipt, EventSubReceiptError } from "@cf-twitch/contracts/eventsub";
 import { ChatCommandName } from "@cf-twitch/contracts/chat-command";
 import { ChatMessageText } from "@cf-twitch/contracts/provider";
@@ -44,99 +44,100 @@ export const makeEventSubDispatch = Effect.gen(function* () {
       // Signed source time is stable across redelivery; receivedAt is only first server-ingestion metadata.
       const sourceTimestamp = receipt.headers["twitch-eventsub-message-timestamp"];
 
-      switch (message._tag) {
-        case "EventSubChallenge":
-          return Option.none();
-        case "EventSubRevocation":
-          yield* Effect.logWarning("EventSub subscription revoked", {
-            subscriptionType: message.subscription.type,
-            status: message.subscription.status,
-          });
+      return yield* Match.value(message).pipe(
+        Match.tagsExhaustive({
+          EventSubChallenge: () => Effect.succeed(Option.none<EventSubChatResponse>()),
+          EventSubRevocation: (revocation) =>
+            Effect.logWarning("EventSub subscription revoked", {
+              subscriptionType: revocation.subscription.type,
+              status: revocation.subscription.status,
+            }).pipe(Effect.as(Option.none<EventSubChatResponse>())),
+          UnhandledEventSubNotification: (notification) =>
+            Effect.logWarning("EventSub subscription type is unhandled", {
+              subscriptionType: notification.subscription.type,
+            }).pipe(Effect.as(Option.none<EventSubChatResponse>())),
+          StreamOnlineNotification: (notification) =>
+            stream
+              .markOnline({
+                streamId: StreamId.make(notification.event.id),
+                startedAt: notification.event.started_at,
+              })
+              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+          StreamOfflineNotification: () =>
+            stream
+              .markOffline({ endedAt: sourceTimestamp })
+              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+          RaidNotification: (notification) =>
+            workflows
+              .startRaidShoutout({
+                messageId: receipt.messageId,
+                receivedAt: sourceTimestamp,
+                raider: {
+                  userId: notification.event.from_broadcaster_user_id,
+                  login: notification.event.from_broadcaster_user_login,
+                  displayName: notification.event.from_broadcaster_user_name,
+                },
+                viewers: notification.event.viewers,
+              })
+              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+          RewardRedemptionNotification: (notification) =>
+            Effect.gen(function* () {
+              const event = notification.event;
 
-          return Option.none();
-        case "UnhandledEventSubNotification":
-          yield* Effect.logWarning("EventSub subscription type is unhandled", {
-            subscriptionType: message.subscription.type,
-          });
+              const redemption = {
+                id: event.id,
+                broadcasterId: event.broadcaster_user_id,
+                userId: event.user_id,
+                userLogin: event.user_login,
+                userDisplayName: event.user_name,
+                userInput: event.user_input,
+                reward: event.reward,
+                redeemedAt: event.redeemed_at,
+              };
 
-          return Option.none();
-        case "StreamOnlineNotification":
-          yield* stream.markOnline({
-            streamId: StreamId.make(message.event.id),
-            startedAt: message.event.started_at,
-          });
+              if (event.reward.id === configuration.rewardRouting.songRequestRewardId)
+                yield* workflows.startSongRequest(redemption);
+              else if (event.reward.id === configuration.rewardRouting.keyboardRaffleRewardId)
+                yield* workflows.startKeyboardRaffle(redemption);
 
-          return Option.none();
-        case "StreamOfflineNotification":
-          yield* stream.markOffline({ endedAt: sourceTimestamp });
+              return Option.none<EventSubChatResponse>();
+            }),
+          ChatMessageNotification: (notification) =>
+            Effect.gen(function* () {
+              const event = notification.event;
+              const permission = getChatCommandPermission(event.badges);
 
-          return Option.none();
-        case "RaidNotification":
-          yield* workflows.startRaidShoutout({
-            messageId: receipt.messageId,
-            receivedAt: sourceTimestamp,
-            raider: {
-              userId: message.event.from_broadcaster_user_id,
-              login: message.event.from_broadcaster_user_login,
-              displayName: message.event.from_broadcaster_user_name,
-            },
-            viewers: message.event.viewers,
-          });
+              const prepared = yield* commands.prepare({
+                messageId: event.message_id,
+                text: event.message.text.trim(),
+                receivedAt: sourceTimestamp,
+                viewer: {
+                  userId: event.chatter_user_id,
+                  displayName: event.chatter_user_name,
+                  permission,
+                },
+              });
 
-          return Option.none();
-        case "RewardRedemptionNotification": {
-          const event = message.event;
+              if (
+                Predicate.isTagged(prepared, "ChatCommandIgnored") ||
+                Option.isNone(prepared.message)
+              )
+                return Option.none<EventSubChatResponse>();
 
-          const redemption = {
-            id: event.id,
-            broadcasterId: event.broadcaster_user_id,
-            userId: event.user_id,
-            userLogin: event.user_login,
-            userDisplayName: event.user_name,
-            userInput: event.user_input,
-            reward: event.reward,
-            redeemedAt: event.redeemed_at,
-          };
+              const chatMessage = yield* ChatMessageText.makeEffect(prepared.message.value).pipe(
+                Effect.mapError(
+                  () =>
+                    new EventSubReceiptError({
+                      operation: "prepare-chat",
+                      reason: "invalid",
+                    }),
+                ),
+              );
 
-          if (event.reward.id === configuration.rewardRouting.songRequestRewardId)
-            yield* workflows.startSongRequest(redemption);
-          else if (event.reward.id === configuration.rewardRouting.keyboardRaffleRewardId)
-            yield* workflows.startKeyboardRaffle(redemption);
-
-          return Option.none();
-        }
-
-        case "ChatMessageNotification": {
-          const event = message.event;
-          const permission = getChatCommandPermission(event.badges);
-
-          const prepared = yield* commands.prepare({
-            messageId: event.message_id,
-            text: event.message.text.trim(),
-            receivedAt: sourceTimestamp,
-            viewer: {
-              userId: event.chatter_user_id,
-              displayName: event.chatter_user_name,
-              permission,
-            },
-          });
-
-          if (prepared._tag === "ChatCommandIgnored" || Option.isNone(prepared.message))
-            return Option.none();
-
-          const chatMessage = yield* ChatMessageText.makeEffect(prepared.message.value).pipe(
-            Effect.mapError(
-              () =>
-                new EventSubReceiptError({
-                  operation: "prepare-chat",
-                  reason: "invalid",
-                }),
-            ),
-          );
-
-          return Option.some({ commandName: prepared.commandName, message: chatMessage });
-        }
-      }
+              return Option.some({ commandName: prepared.commandName, message: chatMessage });
+            }),
+        }),
+      );
     },
     Effect.mapError(
       () =>

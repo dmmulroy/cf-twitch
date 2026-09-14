@@ -18,12 +18,10 @@ export const ProviderTokenState = Schema.Struct({
   refreshRetryCount: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   nextRefreshAtMs: Schema.OptionFromNullOr(Schema.Number),
 }).check(
-  Schema.makeFilter((state) =>
-    state.authorizationStatus === "authorized"
-      ? Option.isSome(state.token)
-      : state.authorizationStatus === "not-configured"
-        ? Option.isNone(state.token)
-        : true,
+  Schema.makeFilter(
+    (state) =>
+      (state.authorizationStatus !== "authorized" || Option.isSome(state.token)) &&
+      (state.authorizationStatus !== "not-configured" || Option.isNone(state.token)),
   ),
 );
 
@@ -73,11 +71,8 @@ const LegacyAgentTokenState = Schema.Struct({
   Schema.makeFilter(
     (state) =>
       (state.version === undefined || state.authorizationStatus !== undefined) &&
-      (state.authorizationStatus === "authorized"
-        ? Option.isSome(state.token)
-        : state.authorizationStatus === "not-configured"
-          ? Option.isNone(state.token)
-          : true),
+      (state.authorizationStatus !== "authorized" || Option.isSome(state.token)) &&
+      (state.authorizationStatus !== "not-configured" || Option.isNone(state.token)),
   ),
 );
 

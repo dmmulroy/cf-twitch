@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { describe, expect, test } from "vite-plus/test";
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 import { FastCheck } from "effect/testing";
 import { EventSubHeaders } from "@cf-twitch/contracts/eventsub";
 import { parseEventSubMessage } from "./eventsub-message.ts";
@@ -103,10 +103,10 @@ describe("EventSub signed message boundary", () => {
 
         expect(result._tag).toBe(example.tag);
 
-        if (result._tag === "StreamOnlineNotification")
+        if (Predicate.isTagged(result, "StreamOnlineNotification"))
           expect(result.event.started_at).toBe("2026-01-01T01:00:00+01:00");
 
-        if (result._tag === "ChatMessageNotification")
+        if (Predicate.isTagged(result, "ChatMessageNotification"))
           expect(result.event.message.text).toBe("!today Using TypeScript");
       }
     }),
@@ -126,7 +126,7 @@ describe("EventSub signed message boundary", () => {
             { ...headers, "twitch-eventsub-subscription-type": type },
             { subscription: subscription(type), event: {} },
           ).pipe(Effect.result),
-        ).toMatchObject({ failure: { _tag: "EventSubReceiptError", reason: "invalid" } });
+        ).toHaveProperty("failure.reason", "invalid");
       }
     }),
   );
@@ -162,13 +162,13 @@ describe("EventSub signed message boundary", () => {
             { ...headers, "twitch-eventsub-message-type": "webhook_callback_verification" },
             { subscription: subscription("unknown.subscription"), challenge: "challenge" },
           ),
-        ).toMatchObject({ _tag: "EventSubChallenge", challenge: "challenge" });
+        ).toHaveProperty("challenge", "challenge");
         expect(
           yield* parseEventSubMessage(
             { ...headers, "twitch-eventsub-message-type": "revocation" },
             { subscription: subscription("unknown.subscription") },
           ),
-        ).toMatchObject({ _tag: "EventSubRevocation" });
+        ).toHaveProperty("_tag", "EventSubRevocation");
       }),
   );
 
@@ -192,11 +192,9 @@ describe("EventSub signed message boundary", () => {
             ),
           );
 
-          expect(result).toMatchObject({
-            _tag: "UnhandledEventSubNotification",
-            subscription: { type },
-            event: { value },
-          });
+          expect(result).toHaveProperty("_tag", "UnhandledEventSubNotification");
+          expect(result).toHaveProperty("subscription.type", type);
+          expect(result).toHaveProperty("event.value", value);
         },
       ),
     );

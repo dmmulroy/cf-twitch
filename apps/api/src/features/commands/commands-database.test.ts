@@ -101,7 +101,7 @@ describe("Commands SQL authority", () => {
         yield* commands.deleteCommand({ name: name("constructor") });
         expect(
           yield* commands.getCommand({ name: name("constructor") }).pipe(Effect.result),
-        ).toMatchObject({ failure: { _tag: "CommandNotFoundError" } });
+        ).toHaveProperty("failure._tag", "CommandNotFoundError");
       }).pipe(Effect.provide(commandsLayer)),
   );
   it.effect("bootstraps all 37 exact defaults, alias and shared topic source", () =>
@@ -206,7 +206,7 @@ describe("Commands SQL authority", () => {
         const commands = yield* Commands;
         const before = yield* commands.getDebugSnapshot();
         const duplicate = yield* commands.createCommand(dynamicInput("df")).pipe(Effect.result);
-        expect(duplicate).toMatchObject({ failure: { _tag: "CommandAlreadyExistsError" } });
+        expect(duplicate).toHaveProperty("failure._tag", "CommandAlreadyExistsError");
 
         for (const aliases of [
           [name("keyboard")],
@@ -218,7 +218,7 @@ describe("Commands SQL authority", () => {
             yield* commands
               .updateCommand({ name: name("today"), patch: { aliases } })
               .pipe(Effect.result),
-          ).toMatchObject({ failure: { _tag: "CommandAliasConflictError" } });
+          ).toHaveProperty("failure._tag", "CommandAliasConflictError");
         }
 
         const missing = yield* commands
@@ -230,7 +230,7 @@ describe("Commands SQL authority", () => {
           })
           .pipe(Effect.result);
 
-        expect(missing).toMatchObject({ failure: { _tag: "CommandInvalidDefinitionError" } });
+        expect(missing).toHaveProperty("failure._tag", "CommandInvalidDefinitionError");
         expect(yield* commands.getDebugSnapshot()).toEqual(before);
       }).pipe(Effect.provide(commandsLayer)),
   );
@@ -244,7 +244,7 @@ describe("Commands SQL authority", () => {
           yield* commands
             .updateCommand({ name: name("today"), patch: { responseType: "computed" } })
             .pipe(Effect.result),
-        ).toMatchObject({ failure: { _tag: "CommandInvalidDefinitionError" } });
+        ).toHaveProperty("failure._tag", "CommandInvalidDefinitionError");
         yield* commands.deleteCommand({ name: name("project") });
         yield* commands.updateCommand({
           name: name("today"),
@@ -277,18 +277,18 @@ describe("Commands SQL authority", () => {
         name: name("today"),
         patch: { writePermission: "broadcaster" },
       });
-      expect(
-        yield* commands
-          .updateCommandValue({
-            name: name("today"),
-            value: "denied",
-            actor,
-            operationId: operation("denied"),
-          })
-          .pipe(Effect.result),
-      ).toMatchObject({
-        failure: { _tag: "CommandUpdatePermissionDeniedError", requiredPermission: "broadcaster" },
-      });
+
+      const denied = yield* commands
+        .updateCommandValue({
+          name: name("today"),
+          value: "denied",
+          actor,
+          operationId: operation("denied"),
+        })
+        .pipe(Effect.result);
+
+      expect(denied).toHaveProperty("failure._tag", "CommandUpdatePermissionDeniedError");
+      expect(denied).toHaveProperty("failure.requiredPermission", "broadcaster");
       expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(Option.some(""));
       yield* commands.updateCommandValue({
         name: name("today"),
@@ -308,7 +308,7 @@ describe("Commands SQL authority", () => {
             operationId: Option.none(),
           })
           .pipe(Effect.result),
-      ).toMatchObject({ failure: { _tag: "CommandNotUpdateableError" } });
+      ).toHaveProperty("failure._tag", "CommandNotUpdateableError");
     }).pipe(Effect.provide(commandsLayer)),
   );
 
@@ -335,13 +335,13 @@ describe("Commands SQL authority", () => {
         );
         expect(
           yield* commands.deleteCommand({ name: name("df") }).pipe(Effect.result),
-        ).toMatchObject({ failure: { _tag: "CommandNotFoundError" } });
+        ).toHaveProperty("failure._tag", "CommandNotFoundError");
         yield* commands.deleteCommand({ name: name("today") });
 
         for (const missing of ["today", "project", "grandchild", "counter-child"])
           expect(
             yield* commands.getCommand({ name: name(missing) }).pipe(Effect.result),
-          ).toMatchObject({ failure: { _tag: "CommandNotFoundError" } });
+          ).toHaveProperty("failure._tag", "CommandNotFoundError");
       }).pipe(Effect.provide(commandsLayer)),
   );
 
@@ -389,7 +389,7 @@ describe("Commands SQL authority", () => {
         ).toEqual([1, 1]);
         expect(
           yield* commands.incrementCommandCounter({ ...input, increment: 2 }).pipe(Effect.result),
-        ).toMatchObject({ failure: { _tag: "CommandInputParseError" } });
+        ).toHaveProperty("failure._tag", "CommandInputParseError");
         expect(
           yield* commands
             .updateCommandValue({
@@ -399,7 +399,7 @@ describe("Commands SQL authority", () => {
               operationId: input.operationId,
             })
             .pipe(Effect.result),
-        ).toMatchObject({ failure: { _tag: "CommandInputParseError" } });
+        ).toHaveProperty("failure._tag", "CommandInputParseError");
         expect(yield* commands.getCommandCounter({ name: name("skillissue") })).toBe(1);
       }).pipe(Effect.provide(commandsLayer)),
   );
@@ -433,7 +433,7 @@ describe("Commands SQL authority", () => {
         );
         expect(
           yield* commands.updateCommandValue({ ...input, value: "tampered" }).pipe(Effect.result),
-        ).toMatchObject({ failure: { _tag: "CommandInputParseError" } });
+        ).toHaveProperty("failure._tag", "CommandInputParseError");
       }).pipe(Effect.provide(commandsLayer)),
   );
 
@@ -574,9 +574,10 @@ describe("Commands SQL authority", () => {
         const commands = yield* Commands;
         const sql = yield* SqlClient.SqlClient;
         yield* sql`UPDATE commands_snapshot SET state = '{broken' WHERE singleton = 1`;
-        expect(yield* commands.getAllCommands().pipe(Effect.result)).toMatchObject({
-          failure: { _tag: "CommandsStateParseError" },
-        });
+        expect(yield* commands.getAllCommands().pipe(Effect.result)).toHaveProperty(
+          "failure._tag",
+          "CommandsStateParseError",
+        );
       }).pipe(Effect.provide(commandsDatabaseLayerWithoutDependencies));
     }).pipe(Effect.provide(sqliteLayer)),
   );

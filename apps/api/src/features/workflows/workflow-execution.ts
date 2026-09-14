@@ -187,7 +187,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
   });
 
   const execute = Effect.fn("WorkflowExecution.execute")(function* (input: WorkflowInput) {
-    if (input._tag === "RaidShoutout") {
+    if (WorkflowInput.guards.RaidShoutout(input)) {
       const raid = input.raid;
 
       const sendThanks = Effect.gen(function* () {
@@ -236,7 +236,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       readPolicy,
     );
 
-    if (input._tag === "SongRequest") {
+    if (WorkflowInput.guards.SongRequest(input)) {
       const trackId = yield* journal.checkpoint(
         "parse-spotify-url",
         SpotifyTrackId,
@@ -386,10 +386,10 @@ export const makeWorkflowExecution = Effect.gen(function* () {
     input: WorkflowInput,
     originalError: Option.Option<string>,
   ) {
-    if (input._tag === "RaidShoutout") return;
+    if (WorkflowInput.guards.RaidShoutout(input)) return;
     const redemption = input.redemption;
 
-    if (input._tag === "SongRequest") {
+    if (WorkflowInput.guards.SongRequest(input)) {
       // Strict reverse ordering: confirmed Spotify removal, attribution deletion, then points refund.
       yield* journal.compensate(
         "add-to-spotify-queue",
@@ -439,7 +439,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       { ...fulfillmentPolicy, attempts: 5 },
     );
 
-    if (input._tag === "SongRequest") {
+    if (WorkflowInput.guards.SongRequest(input)) {
       const invalid = Option.getOrNull(originalError) === "Workflow Spotify track input is invalid";
       yield* chat(
         "send-failure-message",
@@ -494,7 +494,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           if (Option.isSome(latest) && Option.isSome(latest.value.fulfilledAt))
             return yield* journal.transition("POST_COMMIT_FAILED", Option.some(halt.message));
 
-          if (input.value._tag === "RaidShoutout")
+          if (WorkflowInput.guards.RaidShoutout(input.value))
             return yield* journal.transition("FAILED", Option.some(halt.message));
           yield* journal.transition("COMPENSATING", Option.some(halt.message));
           yield* recoverCompensation(input.value, Option.some(halt.message));

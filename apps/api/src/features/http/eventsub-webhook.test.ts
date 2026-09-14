@@ -7,6 +7,7 @@ import {
   Effect,
   Exit,
   Layer,
+  Match,
   Option,
   PlatformError,
   Schema,
@@ -197,10 +198,9 @@ describe("authenticated EventSub HTTP ingress", () => {
       const timestamp = "2026-01-01T00:00:00.000Z";
       yield* TestClock.setTime(Date.parse(timestamp));
 
-      const digestFailure = PlatformError.systemError({
+      const digestFailure = PlatformError.badArgument({
         module: "Crypto",
         method: "digest",
-        _tag: "Unknown",
         description: "Controlled digest failure",
       });
 
@@ -432,12 +432,14 @@ const managedSubscription = (type: string, id = type) =>
     type,
     version: "1",
     status: "webhook_callback_verification_pending",
-    condition:
-      type === "channel.raid"
-        ? { to_broadcaster_user_id: "12345" }
-        : type === "channel.chat.message"
-          ? { broadcaster_user_id: "12345", user_id: "12345" }
-          : { broadcaster_user_id: "12345" },
+    condition: Match.value(type).pipe(
+      Match.when("channel.raid", () => ({ to_broadcaster_user_id: "12345" })),
+      Match.when("channel.chat.message", () => ({
+        broadcaster_user_id: "12345",
+        user_id: "12345",
+      })),
+      Match.orElse(() => ({ broadcaster_user_id: "12345" })),
+    ),
     transport: { method: "webhook", callback: Option.some("https://worker.test/webhooks/twitch") },
   }) satisfies ProviderEventSubSubscription;
 

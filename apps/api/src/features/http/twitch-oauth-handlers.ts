@@ -1,4 +1,4 @@
-import { Effect, Option, Redacted, Schema } from "effect";
+import { Effect, Option, Predicate, Redacted, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
@@ -121,25 +121,36 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
       const tokens = yield* authorization
         .exchangeAuthorizationCode({ provider, redirectUri, code: Redacted.make(code) })
         .pipe(
-          Effect.mapError(
-            (failure) =>
-              new HttpBoundaryError({
-                status:
-                  failure._tag === "ProviderError" && failure.kind === "persistence" ? 503 : 500,
-                error:
-                  failure._tag === "ProviderError" && failure.kind === "persistence"
-                    ? `${providerName(provider)} tokens could not be stored`
-                    : failure.message,
-                code:
-                  failure._tag === "ProviderError"
-                    ? failure.kind === "invalid-response"
-                      ? `${providerName(provider)}ParseError`
-                      : failure.kind === "persistence"
-                        ? "ProviderAccessTokenError"
-                        : `${providerName(provider)}TokenExchangeError`
-                    : failure._tag,
-              }),
-          ),
+          Effect.mapError((failure) => {
+            if (!Predicate.isTagged(failure, "ProviderError"))
+              return new HttpBoundaryError({
+                status: 500,
+                error: failure.message,
+                code: failure._tag,
+              });
+
+            const persistenceFailure = failure.kind === "persistence";
+            let code: string;
+
+            switch (failure.kind) {
+              case "invalid-response":
+                code = `${providerName(provider)}ParseError`;
+                break;
+              case "persistence":
+                code = "ProviderAccessTokenError";
+                break;
+              default:
+                code = `${providerName(provider)}TokenExchangeError`;
+            }
+
+            return new HttpBoundaryError({
+              status: persistenceFailure ? 503 : 500,
+              error: persistenceFailure
+                ? `${providerName(provider)} tokens could not be stored`
+                : failure.message,
+              code,
+            });
+          }),
         );
 
       return HttpServerResponse.jsonUnsafe({

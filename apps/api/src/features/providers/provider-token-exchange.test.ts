@@ -1,7 +1,7 @@
 import { it, expect } from "@effect/vitest";
 import { BroadcasterId, RewardId } from "@cf-twitch/contracts/identity";
 import { OAuthRedirectUri } from "@cf-twitch/contracts/oauth";
-import { Effect, Layer, Option, Redacted } from "effect";
+import { Effect, Layer, Option, Redacted, Result } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import {
@@ -147,7 +147,7 @@ for (const provider of ["spotify", "twitch"] as const) {
 
           expect(result._tag).toBe("Failure");
 
-          if (result._tag === "Failure") {
+          if (Result.isFailure(result)) {
             expect(result.failure.kind).toBe(
               status === 429
                 ? "rate-limited"
@@ -232,7 +232,7 @@ for (const provider of ["spotify", "twitch"] as const) {
 
           expect(result._tag).toBe("Failure");
 
-          if (result._tag === "Failure") {
+          if (Result.isFailure(result)) {
             expect(result.failure.kind).toBe("invalid-response");
             expect(JSON.stringify(result.failure)).not.toContain("leaked-invalid");
           }

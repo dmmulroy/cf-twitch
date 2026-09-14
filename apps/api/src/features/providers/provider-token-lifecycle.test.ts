@@ -37,10 +37,10 @@ for (const provider of ["spotify", "twitch"] as const) {
         yield* lifecycle.setTokens(tokenInput("scenario-refresh"));
         expect(Redacted.value(yield* lifecycle.getValidToken())).toBe("scenario:normal");
         yield* TestClock.adjust("55 minutes");
-        expect(yield* lifecycle.getValidToken().pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { kind: "offline" },
-        });
+        expect(yield* lifecycle.getValidToken().pipe(Effect.result)).toHaveProperty(
+          "failure.kind",
+          "offline",
+        );
         expect(yield* transcript.readRequestCount()).toBe(0);
         const sql = yield* SqlClient.SqlClient;
         expect(yield* sql`SELECT due_at_ms FROM local_token_alarm`).toEqual([]);
@@ -130,7 +130,7 @@ for (const provider of ["spotify", "twitch"] as const) {
             index === 0 ? lifecycle.onStreamOnline() : lifecycle.refreshTokenTick()
           ).pipe(Effect.result);
 
-          expect(result).toMatchObject({ _tag: "Failure", failure: { kind: "network" } });
+          expect(result).toHaveProperty("failure.kind", "network");
           const now = yield* Clock.currentTimeMillis;
           expect(yield* sql`SELECT due_at_ms FROM local_token_alarm`).toEqual([
             { due_at_ms: now + delay },
@@ -149,7 +149,7 @@ for (const provider of ["spotify", "twitch"] as const) {
         const sql = yield* SqlClient.SqlClient;
         yield* lifecycle.setTokens(tokenInput("scenario-malformed", 1));
         const result = yield* lifecycle.onStreamOnline().pipe(Effect.result);
-        expect(result).toMatchObject({ _tag: "Failure", failure: { kind: "invalid-response" } });
+        expect(result).toHaveProperty("failure.kind", "invalid-response");
         expect(JSON.stringify(result)).not.toContain("scenario-invalid");
         const now = yield* Clock.currentTimeMillis;
         expect(yield* sql`SELECT due_at_ms FROM local_token_alarm`).toEqual([
@@ -166,16 +166,16 @@ for (const provider of ["spotify", "twitch"] as const) {
         const database = yield* ProviderTokenDatabase;
         const transcript = yield* ProviderScenarioTranscript;
         yield* lifecycle.setTokens(tokenInput("scenario-revoked", 1));
-        expect(yield* lifecycle.onStreamOnline().pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { kind: "reauthorization-required" },
-        });
+        expect(yield* lifecycle.onStreamOnline().pipe(Effect.result)).toHaveProperty(
+          "failure.kind",
+          "reauthorization-required",
+        );
         expect((yield* database.readState()).authorizationStatus).toBe("reauthorization-required");
         expect((yield* database.readState()).nextRefreshAtMs).toEqual(Option.none());
-        expect(yield* lifecycle.getValidToken().pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { kind: "reauthorization-required" },
-        });
+        expect(yield* lifecycle.getValidToken().pipe(Effect.result)).toHaveProperty(
+          "failure.kind",
+          "reauthorization-required",
+        );
         yield* lifecycle.refreshTokenTick();
         expect(yield* transcript.readRequestCount()).toBe(1);
       }).pipe(Effect.provide(layer)),
@@ -187,15 +187,15 @@ for (const provider of ["spotify", "twitch"] as const) {
       Effect.gen(function* () {
         const lifecycle = yield* ProviderTokenLifecycle;
         const database = yield* ProviderTokenDatabase;
-        expect(yield* lifecycle.getValidToken().pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { kind: "not-configured" },
-        });
+        expect(yield* lifecycle.getValidToken().pipe(Effect.result)).toHaveProperty(
+          "failure.kind",
+          "not-configured",
+        );
         expect(
           yield* lifecycle
             .setTokens({ ...tokenInput("unused"), refreshToken: Option.none() })
             .pipe(Effect.result),
-        ).toMatchObject({ _tag: "Failure", failure: { kind: "reauthorization-required" } });
+        ).toHaveProperty("failure.kind", "reauthorization-required");
         expect((yield* database.readState()).authorizationStatus).toBe("reauthorization-required");
         yield* lifecycle.setTokens(tokenInput("new-consent-refresh"));
         expect((yield* database.readState()).authorizationStatus).toBe("authorized");

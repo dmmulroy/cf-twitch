@@ -1,5 +1,5 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { Effect, Layer, Option, Schema, SchemaGetter } from "effect";
+import { Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter } from "effect";
 import { SqlClient, type SqlError } from "effect/unstable/sql";
 import { RedemptionId } from "@cf-twitch/contracts/identity";
 import {
@@ -91,11 +91,13 @@ const raffleMigrationLoader = SqliteMigrator.fromRecord({
 
 const raffleFailure = (operation: string) =>
   Effect.mapError((error: Schema.SchemaError | SqlError.SqlError | RaffleError) =>
-    error._tag === "RaffleError"
+    Predicate.isTagged("RaffleError")(error)
       ? error
       : new RaffleError({
           operation,
-          reason: error._tag === "SchemaError" ? "invalid_stored_data" : "persistence_unavailable",
+          reason: Predicate.isTagged("SchemaError")(error)
+            ? "invalid_stored_data"
+            : "persistence_unavailable",
         }),
   );
 
@@ -239,12 +241,11 @@ export const makeRaffle = Effect.gen(function* () {
       );
     }, raffleFailure("deleteRollById")),
     getLeaderboard: Effect.fn("Raffle.getLeaderboard")(function* (input) {
-      const order =
-        input.sortBy === "rolls"
-          ? sql.literal("total_rolls DESC")
-          : input.sortBy === "wins"
-            ? sql.literal("total_wins DESC")
-            : sql.literal("closest_distance ASC NULLS LAST");
+      const order = Match.value(input.sortBy).pipe(
+        Match.when("rolls", () => sql.literal("total_rolls DESC")),
+        Match.when("wins", () => sql.literal("total_wins DESC")),
+        Match.orElse(() => sql.literal("closest_distance ASC NULLS LAST")),
+      );
 
       return yield* parseLeaderboard(
         yield* sql`SELECT ${leaderboardColumns} FROM raffle_leaderboard ORDER BY ${order}, user_id ASC LIMIT ${Option.getOrElse(input.limit, () => 10)}`,

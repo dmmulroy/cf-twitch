@@ -1,4 +1,15 @@
-import { Clock, Context, Crypto, Effect, Encoding, Layer, Option, Schema, Semaphore } from "effect";
+import {
+  Clock,
+  Context,
+  Crypto,
+  Effect,
+  Encoding,
+  Layer,
+  Option,
+  Predicate,
+  Schema,
+  Semaphore,
+} from "effect";
 import { type DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import { StreamLifecycleError, type StreamTransitionCheckpoint } from "@cf-twitch/contracts/stream";
@@ -181,14 +192,13 @@ export const makeStreamLifecycle = Effect.gen(function* () {
         const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
         yield* alarm.scheduleAt(dueAt);
 
-        const withSchedule =
-          state._tag === "LiveStream"
-            ? {
-                ...state,
-                viewerPollScheduleId: dueAt,
-                transitionCheckpoint: { ...pollingCheckpoint, viewerPollScheduleId: dueAt },
-              }
-            : state;
+        const withSchedule = Predicate.isTagged("LiveStream")(state)
+          ? {
+              ...state,
+              viewerPollScheduleId: dueAt,
+              transitionCheckpoint: { ...pollingCheckpoint, viewerPollScheduleId: dueAt },
+            }
+          : state;
 
         state = completeTransitionEffect(
           withSchedule,
@@ -241,8 +251,9 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     yield* resumeTransitionEffectsWithoutPermit();
     const current = yield* database.getState();
 
-    const streamId =
-      current._tag === "LiveStream" ? current.streamId : current.transitionCheckpoint?.streamId;
+    const streamId = Predicate.isTagged("LiveStream")(current)
+      ? current.streamId
+      : current.transitionCheckpoint?.streamId;
 
     if (streamId === undefined) return toStreamLifecycleState(current);
 
@@ -291,7 +302,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
           if (Option.isSome(input.stream)) {
             const state = yield* database.getState();
 
-            if (state._tag === "OfflineStream") {
+            if (Predicate.isTagged("OfflineStream")(state)) {
               yield* markOnlineWithoutPermit({
                 streamId: input.stream.value.id,
                 startedAt: input.stream.value.startedAt,
@@ -307,7 +318,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
           } else {
             const state = yield* database.getState();
 
-            if (state._tag === "LiveStream") {
+            if (Predicate.isTagged("LiveStream")(state)) {
               yield* markOfflineWithoutPermit({ endedAt: input.observedAt });
               action = "marked_offline";
             }
@@ -343,7 +354,9 @@ export const makeStreamLifecycle = Effect.gen(function* () {
 
       return {
         state: toStreamLifecycleState(state),
-        activeStreamId: state._tag === "LiveStream" ? Option.some(state.streamId) : Option.none(),
+        activeStreamId: Predicate.isTagged("LiveStream")(state)
+          ? Option.some(state.streamId)
+          : Option.none(),
         transitionCheckpoint: Option.fromNullOr(state.transitionCheckpoint),
         viewerSnapshotCount: yield* database.getViewerSnapshotCount(),
       };
@@ -364,7 +377,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
 
       if (state.transitionCheckpoint !== null) {
         yield* alarm.scheduleAt(yield* nextAlarmTimestamp(1_000));
-      } else if (state._tag === "LiveStream") {
+      } else if (Predicate.isTagged("LiveStream")(state)) {
         const dueAt =
           state.viewerPollScheduleId === null
             ? yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS)
@@ -391,7 +404,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
         yield* resumeTransitionEffectsWithoutPermit();
         let state = yield* database.getState();
 
-        if (state._tag === "OfflineStream") {
+        if (Predicate.isTagged("OfflineStream")(state)) {
           yield* alarm.clear();
 
           return;
@@ -407,7 +420,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
         const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);
         yield* alarm.scheduleAt(dueAt);
 
-        if (state._tag === "LiveStream") {
+        if (Predicate.isTagged("LiveStream")(state)) {
           yield* database.saveState({ ...state, viewerPollScheduleId: dueAt });
         }
       }),

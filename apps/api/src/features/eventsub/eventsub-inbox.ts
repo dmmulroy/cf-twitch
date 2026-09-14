@@ -1,5 +1,15 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { Clock, Context, Effect, Layer, Option, Schema, Semaphore } from "effect";
+import {
+  Clock,
+  Context,
+  Effect,
+  Layer,
+  Option,
+  Predicate,
+  Result,
+  Schema,
+  Semaphore,
+} from "effect";
 import { SqlClient, SqlError } from "effect/unstable/sql";
 import type { SchemaError } from "effect/Schema";
 import {
@@ -146,7 +156,7 @@ export const makeEventSubInbox = Effect.gen(function* () {
     if (Option.isNone(receipt.chatResponse)) return;
     const message = yield* parseEventSubMessage(receipt.receipt.headers, receipt.receipt.body);
 
-    if (message._tag !== "ChatMessageNotification") return;
+    if (!Predicate.isTagged(message, "ChatMessageNotification")) return;
     const identity = `${receipt.attempts}:${status}:${Option.getOrElse(receipt.chatDelivery, () => "refused")}`;
 
     const claimed =
@@ -293,7 +303,7 @@ export const makeEventSubInbox = Effect.gen(function* () {
       yield* saveReceipt(receipt, receipt.generation);
       const sent = yield* twitch.sendChatMessage({ message: response.message }).pipe(Effect.result);
 
-      if (sent._tag === "Failure") {
+      if (Result.isFailure(sent)) {
         const kind = sent.failure.kind;
         providerRetryAfterMs = Option.getOrElse(sent.failure.retryAfterMs, () => 0);
 
@@ -342,13 +352,19 @@ export const makeEventSubInbox = Effect.gen(function* () {
       Effect.result,
     );
 
-    if (outcome._tag === "Success") return yield* complete(receipt);
+    if (Result.isSuccess(outcome)) return yield* complete(receipt);
 
     // Parse and persistence failures never overwrite newer or corrupt evidence with the stale in-memory copy.
-    if (outcome.failure._tag !== "EventSubReceiptError" && outcome.failure._tag !== "TimeoutError")
+    if (
+      !Predicate.isTagged(outcome.failure, "EventSubReceiptError") &&
+      !Predicate.isTagged(outcome.failure, "TimeoutError")
+    )
       return yield* Effect.fail(outcome.failure);
 
-    if (outcome.failure._tag === "EventSubReceiptError" && outcome.failure.reason !== "dispatch")
+    if (
+      Predicate.isTagged(outcome.failure, "EventSubReceiptError") &&
+      outcome.failure.reason !== "dispatch"
+    )
       return yield* outcome.failure;
 
     if (Option.getOrNull(receipt.chatDelivery) === "sending") {

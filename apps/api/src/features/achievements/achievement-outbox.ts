@@ -1,4 +1,4 @@
-import { Context, DateTime, Effect, Layer, Option, Schema } from "effect";
+import { Context, DateTime, Effect, Layer, Option, Predicate, Schema } from "effect";
 import { SqlClient, type SqlError } from "effect/unstable/sql";
 import {
   AchievementCategory,
@@ -45,7 +45,9 @@ const outboxFailure = (operation: string) =>
     (error: Schema.SchemaError | SqlError.SqlError) =>
       new AchievementError({
         operation,
-        reason: error._tag === "SchemaError" ? "invalid_stored_data" : "persistence_unavailable",
+        reason: Predicate.isTagged("SchemaError")(error)
+          ? "invalid_stored_data"
+          : "persistence_unavailable",
       }),
   );
 

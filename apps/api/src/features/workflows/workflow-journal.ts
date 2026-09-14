@@ -1,5 +1,5 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Context, Effect, Layer, Match, Option, Result, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/unstable/sql";
 import type { SchemaError } from "effect/Schema";
 import { IsoTimestamp, NonNegativeInt } from "@cf-twitch/contracts/identity";
@@ -167,12 +167,11 @@ export const makeWorkflowJournal = Effect.gen(function* () {
 
     if (claimed.length === 0) return;
     yield* analytics.writeSagaLifecycleMetric({
-      sagaType:
-        input._tag === "SongRequest"
-          ? "song-request-saga"
-          : input._tag === "KeyboardRaffle"
-            ? "keyboard-raffle-saga"
-            : "raid-shoutout-saga",
+      sagaType: WorkflowInput.match(input, {
+        SongRequest: () => "song-request-saga" as const,
+        KeyboardRaffle: () => "keyboard-raffle-saga" as const,
+        RaidShoutout: () => "raid-shoutout-saga" as const,
+      }),
       sagaId: run.id,
       event,
       stepName,
@@ -246,7 +245,11 @@ export const makeWorkflowJournal = Effect.gen(function* () {
 
   const initialize = Effect.fn("WorkflowJournal.initialize")(function* (input: WorkflowInput) {
     const id = WorkflowId.make(
-      input._tag === "RaidShoutout" ? input.raid.messageId : input.redemption.id,
+      WorkflowInput.match<string>(input, {
+        SongRequest: ({ redemption }) => redemption.id,
+        KeyboardRaffle: ({ redemption }) => redemption.id,
+        RaidShoutout: ({ raid }) => raid.messageId,
+      }),
     );
 
     const json = yield* encodeWorkflowInput(input);
@@ -296,7 +299,11 @@ export const makeWorkflowJournal = Effect.gen(function* () {
     if (status === "COMPLETED" || status === "FAILED" || status === "COMPENSATING")
       yield* emitLifecycle(
         run,
-        status === "COMPLETED" ? "completed" : status === "FAILED" ? "failed" : "compensating",
+        Match.value(status).pipe(
+          Match.when("COMPLETED", () => "completed" as const),
+          Match.when("FAILED", () => "failed" as const),
+          Match.orElse(() => "compensating" as const),
+        ),
         status,
         Option.none(),
         error,
@@ -458,7 +465,7 @@ export const makeWorkflowJournal = Effect.gen(function* () {
         Effect.result,
       );
 
-      if (outcome._tag === "Failure") {
+      if (Result.isFailure(outcome)) {
         const error = outcome.failure;
 
         if (error.kind === "retryable" && attempt < policy.attempts) {

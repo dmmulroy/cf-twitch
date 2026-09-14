@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Match, Option, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
@@ -50,20 +50,29 @@ const parseEventId = Schema.decodeEffect(EventId);
 
 const failure = (error: string) => () => new HttpBoundaryError({ status: 500, error });
 
-const commandFailure = (operation: "create" | "update" | "delete") => (error: CommandsError) => {
-  switch (error._tag) {
-    case "CommandAlreadyExistsError":
-    case "CommandAliasConflictError":
-      return new HttpBoundaryError({ status: 409, error: error.message, code: error._tag });
-    case "CommandNotFoundError":
-      return new HttpBoundaryError({ status: 404, error: error.message, code: error._tag });
-    case "CommandInputParseError":
-    case "CommandInvalidDefinitionError":
-      return new HttpBoundaryError({ status: 400, error: error.message, code: error._tag });
-    default:
-      return new HttpBoundaryError({ status: 500, error: `Failed to ${operation} command` });
-  }
-};
+const commandFailure = (operation: "create" | "update" | "delete") => (error: CommandsError) =>
+  Match.value(error).pipe(
+    Match.tag(
+      "CommandAlreadyExistsError",
+      "CommandAliasConflictError",
+      (failure) =>
+        new HttpBoundaryError({ status: 409, error: failure.message, code: failure._tag }),
+    ),
+    Match.tag(
+      "CommandNotFoundError",
+      (failure) =>
+        new HttpBoundaryError({ status: 404, error: failure.message, code: failure._tag }),
+    ),
+    Match.tag(
+      "CommandInputParseError",
+      "CommandInvalidDefinitionError",
+      (failure) =>
+        new HttpBoundaryError({ status: 400, error: failure.message, code: failure._tag }),
+    ),
+    Match.orElse(
+      () => new HttpBoundaryError({ status: 500, error: `Failed to ${operation} command` }),
+    ),
+  );
 
 const deadLetterFailure = (operation: "replay" | "delete") => (error: EventBusError) =>
   new HttpBoundaryError({

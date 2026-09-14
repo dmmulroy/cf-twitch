@@ -166,7 +166,7 @@ it.effect(
         Effect.result,
       );
 
-      expect(result).toMatchObject({ _tag: "Failure", failure: { kind: "invalid-response" } });
+      expect(result).toHaveProperty("failure.kind", "invalid-response");
       expect(pages).toBe(100);
     }),
 );
@@ -309,14 +309,14 @@ it.effect(
 
       yield* Effect.gen(function* () {
         const twitch = yield* TwitchService;
-        expect(yield* twitch.getStreamInfo("failure").pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { kind: "network" },
-        });
-        expect(yield* twitch.getStreamInfo("revoked").pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { kind: "unauthorized" },
-        });
+        expect(yield* twitch.getStreamInfo("failure").pipe(Effect.result)).toHaveProperty(
+          "failure.kind",
+          "network",
+        );
+        expect(yield* twitch.getStreamInfo("revoked").pipe(Effect.result)).toHaveProperty(
+          "failure.kind",
+          "unauthorized",
+        );
         yield* twitch.getStreamInfo("recovered");
       }).pipe(
         Effect.provide(
@@ -363,10 +363,10 @@ it.effect("Twitch pagination invalidates a revoked app token without retrying it
 
     yield* Effect.gen(function* () {
       const twitch = yield* TwitchService;
-      expect(yield* twitch.listEventSubSubscriptions().pipe(Effect.result)).toMatchObject({
-        _tag: "Failure",
-        failure: { kind: "unauthorized" },
-      });
+      expect(yield* twitch.listEventSubSubscriptions().pipe(Effect.result)).toHaveProperty(
+        "failure.kind",
+        "unauthorized",
+      );
       yield* twitch.getStreamInfo("after-revocation");
     }).pipe(
       Effect.provide(
@@ -442,10 +442,8 @@ it.effect(
         Effect.result,
       );
 
-      expect(result).toMatchObject({
-        _tag: "Failure",
-        failure: { kind: "outcome-unknown", status: 200 },
-      });
+      expect(result).toHaveProperty("failure.kind", "outcome-unknown");
+      expect(result).toHaveProperty("failure.status", 200);
     }),
 );
 
@@ -483,7 +481,7 @@ it.effect(
         Effect.result,
       );
 
-      expect(result).toMatchObject({ _tag: "Failure", failure: { kind: "network" } });
+      expect(result).toHaveProperty("failure.kind", "network");
       expect(JSON.stringify(result)).not.toContain("do-not-leak");
     }),
 );

@@ -1,17 +1,42 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { makeStreamDatabase } from "./stream-database.ts";
 
-const legacyState = {
-  _tag: "LiveStream",
+type LegacyTransitionIntent = Data.TaggedEnum<{
+  readonly StreamOnlineIntent: {
+    readonly eventId: string;
+    readonly streamSessionId: string;
+    readonly transitionAt: string;
+    readonly viewerPollScheduleId: string | null;
+    readonly spotifyTokenNotified: boolean;
+    readonly twitchTokenNotified: boolean;
+    readonly lifecycleEventPublished: boolean;
+    readonly viewerPollingUpdated: boolean;
+  };
+}>;
+
+const LegacyTransitionIntent = Data.taggedEnum<LegacyTransitionIntent>();
+
+type LegacyStreamState = Data.TaggedEnum<{
+  readonly LiveStream: {
+    readonly streamSessionId: string;
+    readonly startedAt: string;
+    readonly peakViewerCount: number;
+    readonly viewerPollScheduleId: string | null;
+    readonly transitionIntent: LegacyTransitionIntent;
+  };
+}>;
+
+const LegacyStreamState = Data.taggedEnum<LegacyStreamState>();
+
+const legacyState = LegacyStreamState.LiveStream({
   streamSessionId: "stream-123",
   startedAt: "2026-01-30T11:55:00.000Z",
   peakViewerCount: 41,
   viewerPollScheduleId: "viewer-poll-1",
-  transitionIntent: {
-    _tag: "StreamOnlineIntent",
+  transitionIntent: LegacyTransitionIntent.StreamOnlineIntent({
     eventId: "550e8400-e29b-41d4-a716-446655440002",
     streamSessionId: "stream-123",
     transitionAt: "2026-01-30T11:55:00.000Z",
@@ -20,45 +45,17 @@ const legacyState = {
     twitchTokenNotified: false,
     lifecycleEventPublished: false,
     viewerPollingUpdated: false,
-  },
-};
-
-const corruptCurrentState = JSON.stringify({
-  _tag: "OfflineStream",
-  lastStartedAt: "2026-01-30T11:55:00.000Z",
-  endedAt: "2026-01-30T14:00:00.000Z",
-  peakViewerCount: 41,
-  transitionCheckpoint: {
-    eventId: "550e8400-e29b-41d4-a716-446655440002",
-    streamId: "stream-123",
-    transition: "online",
-    transitionAt: "2026-01-30T14:00:00.000Z",
-    viewerPollScheduleId: null,
-    spotifyTokenNotified: true,
-    twitchTokenNotified: false,
-    lifecycleEventPublished: false,
-    viewerPollingUpdated: false,
-  },
+  }),
 });
 
-const incompleteCurrentState = JSON.stringify({
-  _tag: "OfflineStream",
-  lastStartedAt: null,
-  endedAt: null,
-  peakViewerCount: 0,
-});
+const corruptCurrentState =
+  '{"_tag":"OfflineStream","lastStartedAt":"2026-01-30T11:55:00.000Z","endedAt":"2026-01-30T14:00:00.000Z","peakViewerCount":41,"transitionCheckpoint":{"eventId":"550e8400-e29b-41d4-a716-446655440002","streamId":"stream-123","transition":"online","transitionAt":"2026-01-30T14:00:00.000Z","viewerPollScheduleId":null,"spotifyTokenNotified":true,"twitchTokenNotified":false,"lifecycleEventPublished":false,"viewerPollingUpdated":false}}';
 
-const corruptHybridLegacyState = JSON.stringify({
-  _tag: "OfflineStream",
-  lastStartedAt: "2026-01-30T11:55:00.000Z",
-  endedAt: "2026-01-30T14:00:00.000Z",
-  peakViewerCount: 41,
-  transitionIntent: { _tag: "MalformedTransitionIntent" },
-  isLive: false,
-  startedAt: "2026-01-30T11:55:00.000Z",
-  streamSessionId: null,
-  viewerPollScheduleId: null,
-});
+const incompleteCurrentState =
+  '{"_tag":"OfflineStream","lastStartedAt":null,"endedAt":null,"peakViewerCount":0}';
+
+const corruptHybridLegacyState =
+  '{"_tag":"OfflineStream","lastStartedAt":"2026-01-30T11:55:00.000Z","endedAt":"2026-01-30T14:00:00.000Z","peakViewerCount":41,"transitionIntent":{"_tag":"MalformedTransitionIntent"},"isLive":false,"startedAt":"2026-01-30T11:55:00.000Z","streamSessionId":null,"viewerPollScheduleId":null}';
 
 describe("Stream Lifecycle database migration", () => {
   it.effect("preserves baseline viewer evidence and partial Agent checkpoints", () => {
@@ -74,8 +71,9 @@ describe("Stream Lifecycle database migration", () => {
       yield* sql`INSERT INTO cf_agents_schedules VALUES ('viewer-poll-1','pollViewerCountTick','scheduled',1769774400)`;
 
       const database = yield* makeStreamDatabase;
-      expect(yield* database.getState()).toMatchObject({
-        _tag: "LiveStream",
+      const state = yield* database.getState();
+      expect(state._tag).toBe("LiveStream");
+      expect(state).toMatchObject({
         streamId: "stream-123",
         peakViewerCount: 41,
         viewerPollScheduleId: "2026-01-30T12:00:00.000Z",

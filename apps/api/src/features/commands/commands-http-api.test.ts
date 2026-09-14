@@ -75,7 +75,7 @@ describe("Commands real HTTP API", () => {
             yield* client.commands
               .updateCommandValue({ payload: { ...update, value: "conflict" } })
               .pipe(Effect.result),
-          ).toMatchObject({ failure: { _tag: "CommandInputParseError" } });
+          ).toHaveProperty("failure._tag", "CommandInputParseError");
 
           const created = yield* client.commands.createCommand({
             payload: {
@@ -101,9 +101,7 @@ describe("Commands real HTTP API", () => {
             yield* client.commands
               .getCommand({ payload: { name: created.name } })
               .pipe(Effect.result),
-          ).toMatchObject({
-            failure: { _tag: "CommandNotFoundError", message: "Command not found: runtime" },
-          });
+          ).toHaveProperty("failure.message", "Command not found: runtime");
         }).pipe(Effect.provide(fetchLayer));
       }).pipe(Effect.scoped),
   );

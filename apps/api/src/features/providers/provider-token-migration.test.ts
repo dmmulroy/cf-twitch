@@ -128,10 +128,8 @@ for (const provider of ["spotify", "twitch"] as const) {
               Effect.result,
             );
 
-            expect(result).toMatchObject({
-              _tag: "Failure",
-              failure: { operation: "LegacyAgentStateImportRequired", kind: "persistence" },
-            });
+            expect(result).toHaveProperty("failure.operation", "LegacyAgentStateImportRequired");
+            expect(result).toHaveProperty("failure.kind", "persistence");
             expect(yield* sql`SELECT state FROM cf_agents_state`).toEqual([{ state }]);
             expect(
               yield* sql`SELECT name FROM sqlite_master WHERE name = 'provider_token_state'`,

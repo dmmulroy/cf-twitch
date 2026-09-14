@@ -97,7 +97,7 @@ describe("Provider token real SQLite persistence", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`INSERT INTO provider_token_state VALUES (1, '{"secret":"must-not-leak"}')`;
         const result = yield* database.readState().pipe(Effect.result);
-        expect(result).toMatchObject({ _tag: "Failure", failure: { kind: "persistence" } });
+        expect(result).toHaveProperty("failure.kind", "persistence");
         expect(JSON.stringify(result)).not.toContain("must-not-leak");
         const rows = yield* sql`SELECT state_json FROM provider_token_state`;
         expect(rows).toEqual([{ state_json: '{"secret":"must-not-leak"}' }]);
@@ -117,7 +117,7 @@ describe("Provider token real SQLite persistence", () => {
           .writeState({ ...authorizedState, isStreamLive: false })
           .pipe(Effect.result);
 
-        expect(result).toMatchObject({ _tag: "Failure", failure: { kind: "persistence" } });
+        expect(result).toHaveProperty("failure.kind", "persistence");
         expect((yield* database.readState()).isStreamLive).toBe(true);
       }).pipe(Effect.provide(databaseLayer)),
   );
@@ -157,10 +157,8 @@ for (const state of [
           Effect.result,
         );
 
-        expect(result).toMatchObject({
-          _tag: "Failure",
-          failure: { operation: "LegacyAgentStateImportRequired", kind: "persistence" },
-        });
+        expect(result).toHaveProperty("failure.operation", "LegacyAgentStateImportRequired");
+        expect(result).toHaveProperty("failure.kind", "persistence");
         expect(yield* sql`SELECT state FROM cf_agents_state`).toEqual([{ state }]);
         expect(yield* sql`SELECT callback FROM cf_agents_schedules`).toEqual([
           { callback: "refreshTokenTick" },

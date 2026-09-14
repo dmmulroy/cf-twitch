@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, Layer, Ref, type Schema } from "effect";
+import { Context, Deferred, Effect, Layer, Predicate, Ref, type Schema } from "effect";
 import {
   HttpClient,
   HttpClientError,
@@ -205,7 +205,9 @@ export const providerScenarioTransportLayer = Layer.effectContext(
       const reply = makeProviderScenarioReply(request);
 
       const form = new URLSearchParams(
-        request.body._tag === "Uint8Array" ? new TextDecoder().decode(request.body.body) : "",
+        Predicate.isTagged(request.body, "Uint8Array")
+          ? new TextDecoder().decode(request.body.body)
+          : "",
       );
 
       const grant = form.get("grant_type");

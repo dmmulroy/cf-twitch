@@ -1,7 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
-import { Cause, Context, Effect, Layer, Option, Ref, Schema } from "effect";
+import { Cause, Context, Effect, Exit, Layer, Option, Predicate, Ref, Schema } from "effect";
 import { FastCheck, TestClock } from "effect/testing";
 import {
   AchievementDefinition,
@@ -246,7 +246,7 @@ const response = Effect.fn("CommandTest.response")(function* (
   const result = yield* executor.prepare(input(text, permission, messageId));
   expect(result._tag).toBe("ChatCommandPrepared");
 
-  return result._tag === "ChatCommandPrepared"
+  return Predicate.isTagged(result, "ChatCommandPrepared")
     ? Option.getOrElse(result.message, () => "")
     : "ignored";
 });
@@ -259,10 +259,10 @@ describe("Chat command preparation through real registry and executor", () => {
         const executor = yield* ChatCommandExecutor;
         const commands = yield* Commands;
         const observations = yield* CommandTestObservations;
-        expect(yield* executor.prepare(input("hello"))).toMatchObject({
-          _tag: "ChatCommandIgnored",
-          reason: "not_command",
-        });
+        const ignored = yield* executor.prepare(input("hello"));
+
+        expect(ignored).toHaveProperty("_tag", "ChatCommandIgnored");
+        expect(ignored).toHaveProperty("reason", "not_command");
         expect(yield* executor.prepare(input("!"))).toMatchObject({ reason: "not_command" });
         expect(yield* executor.prepare(input("!unknown"))).toMatchObject({
           reason: "unknown_command",
@@ -290,7 +290,7 @@ describe("Chat command preparation through real registry and executor", () => {
 
       expect(exit._tag).toBe("Failure");
 
-      if (exit._tag === "Failure") expect(Cause.hasInterrupts(exit.cause)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true);
       expect(yield* Ref.get(observations.metrics)).toEqual([]);
     }).pipe(Effect.provide(testLayer)),
   );
@@ -481,19 +481,15 @@ describe("Chat command preparation through real registry and executor", () => {
       expect(yield* response("!stats")).toContain("Achievements: ?/?");
       const executor = yield* ChatCommandExecutor;
       yield* Ref.set(observations.failedProviders, ["song"]);
-      expect(yield* executor.prepare(input("!stats")).pipe(Effect.result)).toMatchObject({
-        failure: {
-          _tag: "ChatCommandExecutionError",
-          commandName: "stats",
-        },
-      });
+      expect(yield* executor.prepare(input("!stats")).pipe(Effect.result)).toHaveProperty(
+        "failure.commandName",
+        "stats",
+      );
       yield* Ref.set(observations.failedProviders, ["raffle"]);
-      expect(yield* executor.prepare(input("!stats")).pipe(Effect.result)).toMatchObject({
-        failure: {
-          _tag: "ChatCommandExecutionError",
-          commandName: "stats",
-        },
-      });
+      expect(yield* executor.prepare(input("!stats")).pipe(Effect.result)).toHaveProperty(
+        "failure.commandName",
+        "stats",
+      );
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -539,9 +535,10 @@ describe("Chat command preparation through real registry and executor", () => {
           name: name("unicode"),
           patch: { outputTemplate: "x{value}" },
         });
-        expect(yield* executor.prepare(input("!unicode")).pipe(Effect.result)).toMatchObject({
-          failure: { _tag: "ChatCommandRenderError" },
-        });
+        expect(yield* executor.prepare(input("!unicode")).pipe(Effect.result)).toHaveProperty(
+          "failure._tag",
+          "ChatCommandRenderError",
+        );
         expect((yield* Ref.get(observations.metrics)).map((metric) => metric.status)).toEqual([
           "error",
         ]);
@@ -549,9 +546,10 @@ describe("Chat command preparation through real registry and executor", () => {
           track: Option.some({ ...track, name: "x".repeat(501) }),
           position: 0,
         } satisfies NowPlaying);
-        expect(yield* executor.prepare(input("!song")).pipe(Effect.result)).toMatchObject({
-          failure: { _tag: "ChatCommandRenderError" },
-        });
+        expect(yield* executor.prepare(input("!song")).pipe(Effect.result)).toHaveProperty(
+          "failure._tag",
+          "ChatCommandRenderError",
+        );
         // Successful preparation has no success metric: the receipt owner must first confirm delivery.
       }).pipe(Effect.provide(testLayer)),
   );

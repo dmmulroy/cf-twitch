@@ -3,11 +3,7 @@ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cache, Effect, Layer } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import type { EventSubMessageId, RedemptionId } from "@cf-twitch/contracts/identity";
-import {
-  WorkflowError,
-  type WorkflowInput,
-  type WorkflowLookup,
-} from "@cf-twitch/contracts/workflow";
+import { WorkflowError, WorkflowInput, WorkflowLookup } from "@cf-twitch/contracts/workflow";
 import { WorkflowStarters } from "./workflow-starters.ts";
 import { WorkflowHttpApi } from "./workflow-http-api.ts";
 import workflowServersLayer, {
@@ -71,27 +67,21 @@ export const makeWorkflowStarters = Effect.gen(function* () {
     raidClients.pipe(Effect.flatMap((cache) => Cache.get(cache, messageId)));
 
   const start = Effect.fn("WorkflowStarters.start")(
-    function* (input: WorkflowInput) {
-      switch (input._tag) {
-        case "SongRequest": {
-          const client = yield* songClientFor(input.redemption.id);
-
-          return yield* client.workflow.start({ payload: input });
-        }
-
-        case "KeyboardRaffle": {
-          const client = yield* raffleClientFor(input.redemption.id);
-
-          return yield* client.workflow.start({ payload: input });
-        }
-
-        case "RaidShoutout": {
-          const client = yield* raidClientFor(input.raid.messageId);
-
-          return yield* client.workflow.start({ payload: input });
-        }
-      }
-    },
+    (input: WorkflowInput) =>
+      WorkflowInput.match(input, {
+        SongRequest: (songRequest) =>
+          songClientFor(songRequest.redemption.id).pipe(
+            Effect.flatMap((client) => client.workflow.start({ payload: songRequest })),
+          ),
+        KeyboardRaffle: (keyboardRaffle) =>
+          raffleClientFor(keyboardRaffle.redemption.id).pipe(
+            Effect.flatMap((client) => client.workflow.start({ payload: keyboardRaffle })),
+          ),
+        RaidShoutout: (raidShoutout) =>
+          raidClientFor(raidShoutout.raid.messageId).pipe(
+            Effect.flatMap((client) => client.workflow.start({ payload: raidShoutout })),
+          ),
+      }),
     Effect.catchTags({
       HttpClientError: () =>
         Effect.fail(
@@ -111,27 +101,21 @@ export const makeWorkflowStarters = Effect.gen(function* () {
   );
 
   const getStatus = Effect.fn("WorkflowStarters.getStatus")(
-    function* (input: WorkflowLookup) {
-      switch (input._tag) {
-        case "SongRequest": {
-          const client = yield* songClientFor(input.redemptionId);
-
-          return yield* client.workflow.getStatus();
-        }
-
-        case "KeyboardRaffle": {
-          const client = yield* raffleClientFor(input.redemptionId);
-
-          return yield* client.workflow.getStatus();
-        }
-
-        case "RaidShoutout": {
-          const client = yield* raidClientFor(input.messageId);
-
-          return yield* client.workflow.getStatus();
-        }
-      }
-    },
+    (input: WorkflowLookup) =>
+      WorkflowLookup.match(input, {
+        SongRequest: (songRequest) =>
+          songClientFor(songRequest.redemptionId).pipe(
+            Effect.flatMap((client) => client.workflow.getStatus()),
+          ),
+        KeyboardRaffle: (keyboardRaffle) =>
+          raffleClientFor(keyboardRaffle.redemptionId).pipe(
+            Effect.flatMap((client) => client.workflow.getStatus()),
+          ),
+        RaidShoutout: (raidShoutout) =>
+          raidClientFor(raidShoutout.messageId).pipe(
+            Effect.flatMap((client) => client.workflow.getStatus()),
+          ),
+      }),
     Effect.catchTags({
       HttpClientError: () =>
         Effect.fail(
@@ -152,13 +136,13 @@ export const makeWorkflowStarters = Effect.gen(function* () {
 
   return WorkflowStarters.of({
     startSongRequest: Effect.fn("WorkflowStarters.startSongRequest")((redemption) =>
-      start({ _tag: "SongRequest", redemption }),
+      start(WorkflowInput.cases.SongRequest.make({ redemption })),
     ),
     startKeyboardRaffle: Effect.fn("WorkflowStarters.startKeyboardRaffle")((redemption) =>
-      start({ _tag: "KeyboardRaffle", redemption }),
+      start(WorkflowInput.cases.KeyboardRaffle.make({ redemption })),
     ),
     startRaidShoutout: Effect.fn("WorkflowStarters.startRaidShoutout")((raid) =>
-      start({ _tag: "RaidShoutout", raid }),
+      start(WorkflowInput.cases.RaidShoutout.make({ raid })),
     ),
     getStatus,
   });

@@ -1,6 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { SpotifyTrackId } from "@cf-twitch/contracts/identity";
-import { Cause, Effect, Exit, Layer, Option, Redacted } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Redacted, Result } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
 import {
@@ -84,10 +84,10 @@ for (const [mode, kind] of [
       Effect.gen(function* () {
         yield* seed(mode);
         const spotify = yield* SpotifyService;
-        expect(yield* spotify.getPlayback().pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { kind },
-        });
+        expect(yield* spotify.getPlayback().pipe(Effect.result)).toHaveProperty(
+          "failure.kind",
+          kind,
+        );
       }).pipe(Effect.provide(layer)),
   );
 }
@@ -101,9 +101,9 @@ for (const [mode, kind] of [
       yield* seed(mode);
       const spotify = yield* SpotifyService;
       const result = yield* spotify.getTrack(trackId).pipe(Effect.result);
-      expect(result).toMatchObject({ _tag: "Failure", failure: { kind } });
+      expect(result).toHaveProperty("failure.kind", kind);
 
-      if (result._tag === "Failure" && mode === "rate-limited")
+      if (Result.isFailure(result) && mode === "rate-limited")
         expect(result.failure.retryAfterMs).toEqual(Option.some(12_000));
     }).pipe(Effect.provide(layer)),
   );
@@ -114,10 +114,10 @@ it.effect("Spotify mutations execute once and an unknown queue outcome is never 
     yield* seed("unknown");
     const spotify = yield* SpotifyService;
     const transcript = yield* ProviderScenarioTranscript;
-    expect(yield* spotify.addToQueue(trackId).pipe(Effect.result)).toMatchObject({
-      _tag: "Failure",
-      failure: { kind: "outcome-unknown" },
-    });
+    expect(yield* spotify.addToQueue(trackId).pipe(Effect.result)).toHaveProperty(
+      "failure.kind",
+      "outcome-unknown",
+    );
     expect(yield* transcript.readRequests()).toEqual([
       { method: "POST", path: "/v1/me/player/queue" },
     ]);

@@ -5,7 +5,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Schema } from
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/unstable/sql";
 import { recordingTwitchAnalyticsLayer } from "../../../test/support/recording-twitch-analytics.ts";
-import { WorkflowInput } from "@cf-twitch/contracts/workflow";
+import { RaidShoutoutInput, WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { WorkflowAlarm, WorkflowAlarmError } from "./workflow-alarm.ts";
 import {
   WorkflowJournal,
@@ -14,14 +14,13 @@ import {
   type WorkflowStepPolicy,
 } from "./workflow-journal.ts";
 
-const input = Schema.decodeUnknownSync(WorkflowInput)({
-  _tag: "RaidShoutout",
-  raid: {
+const input = WorkflowInput.cases.RaidShoutout.make({
+  raid: Schema.decodeUnknownSync(RaidShoutoutInput)({
     messageId: "receipt-1",
     receivedAt: "2026-01-01T00:00:00Z",
     raider: { userId: "raider", login: "raider", displayName: "Raider" },
     viewers: 42,
-  },
+  }),
 });
 
 const safe: WorkflowStepPolicy = {
@@ -142,7 +141,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
         const journal = yield* WorkflowJournal;
         yield* journal.initialize(input);
 
-        if (input._tag !== "RaidShoutout") return;
+        if (!WorkflowInput.guards.RaidShoutout(input)) return;
         expect(
           yield* journal
             .initialize({ ...input, raid: { ...input.raid, viewers: 99 } })
@@ -414,9 +413,8 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
       yield* journal.initialize(input);
       yield* journal.checkpoint("reserve", Schema.String, Effect.succeed("reservation"), rollback);
       yield* journal.checkpoint("fulfill-redemption", Schema.Null, Effect.succeed(null), safe);
-      expect(yield* journal.getStatus()).toMatchObject({
-        value: { fulfilledAt: { _tag: "Some" } },
-      });
+      const status = yield* journal.getStatus();
+      expect(Option.isSome(status) && Option.isSome(status.value.fulfilledAt)).toBe(true);
       expect(
         yield* journal
           .compensate("reserve", Schema.String, () => Effect.void, "idempotent")

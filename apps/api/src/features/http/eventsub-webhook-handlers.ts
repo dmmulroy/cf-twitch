@@ -1,4 +1,4 @@
-import { Clock, Crypto, Effect, Encoding, Redacted, Schema, Stream } from "effect";
+import { Clock, Crypto, Effect, Encoding, Predicate, Redacted, Schema, Stream } from "effect";
 import { EventSubHeaders } from "@cf-twitch/contracts/eventsub";
 import { IsoTimestamp } from "@cf-twitch/contracts/identity";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -129,7 +129,7 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(
       ),
     );
 
-    if (message._tag === "EventSubChallenge")
+    if (Predicate.isTagged(message, "EventSubChallenge"))
       return HttpServerResponse.text(message.challenge, {
         contentType: "text/plain; charset=UTF-8",
       });

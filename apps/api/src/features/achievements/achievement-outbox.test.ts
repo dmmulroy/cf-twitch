@@ -16,6 +16,7 @@ import {
   type ControlledTwitchProviderMode,
 } from "../../../test/support/controlled-twitch-service.ts";
 import {
+  RecordedTwitchAnalyticsCall,
   recordingTwitchAnalyticsLayer,
   TwitchAnalyticsRecording,
 } from "../../../test/support/recording-twitch-analytics.ts";
@@ -103,8 +104,7 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
         yield* outbox.flush();
         expect(yield* transcript.readRequestCount()).toBe(1);
         expect(yield* analytics.readRecordedTwitchAnalyticsCalls()).toEqual([
-          {
-            _tag: "AchievementUnlockMetric",
+          RecordedTwitchAnalyticsCall.AchievementUnlockMetric({
             metric: {
               effectId: `${request.id}:first_request`,
               user: "Viewer",
@@ -112,7 +112,7 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
               achievementName: "First Timer",
               category: "song_request",
             },
-          },
+          }),
         ]);
         expect(
           yield* sql`SELECT metric_state,announcement_state,announcement_attempts FROM achievement_unlock_outbox`,

@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Result } from "effect";
+import { Clock, Context, Effect, Layer, Match, Option, Result } from "effect";
 import {
   ChatCommandExecutionError,
   ChatCommandName,
@@ -88,14 +88,13 @@ export const makeComputedChatCommands = Effect.gen(function* () {
 
     if (Result.isSuccess(result)) return `Updated !${target}`;
 
-    switch (result.failure._tag) {
-      case "CommandNotUpdateableError":
-        return `!${target} is not updateable.`;
-      case "CommandUpdatePermissionDeniedError":
-        return writePermissionMessage(result.failure.requiredPermission, target);
-      default:
-        return "Sorry, couldn't update the command.";
-    }
+    return Match.value(result.failure).pipe(
+      Match.tag("CommandNotUpdateableError", () => `!${target} is not updateable.`),
+      Match.tag("CommandUpdatePermissionDeniedError", (failure) =>
+        writePermissionMessage(failure.requiredPermission, target),
+      ),
+      Match.orElse(() => "Sorry, couldn't update the command."),
+    );
   });
 
   const renderSong = Effect.fn("ComputedChatCommands.song")(function* () {

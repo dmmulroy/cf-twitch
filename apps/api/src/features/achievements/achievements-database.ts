@@ -1,5 +1,5 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { DateTime, Effect, Layer, Option, Schema } from "effect";
+import { DateTime, Effect, Layer, Option, Predicate, Schema } from "effect";
 import { SqlClient, SqlSchema, type SqlError } from "effect/unstable/sql";
 import {
   AchievementDefinition,
@@ -80,11 +80,13 @@ const streakIncrementFailure = Effect.mapError(
 
 const achievementFailure = (operation: string) =>
   Effect.mapError((error: Schema.SchemaError | SqlError.SqlError | AchievementError) =>
-    error._tag === "AchievementError"
+    Predicate.isTagged("AchievementError")(error)
       ? error
       : new AchievementError({
           operation,
-          reason: error._tag === "SchemaError" ? "invalid_stored_data" : "persistence_unavailable",
+          reason: Predicate.isTagged("SchemaError")(error)
+            ? "invalid_stored_data"
+            : "persistence_unavailable",
         }),
   );
 

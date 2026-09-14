@@ -248,13 +248,13 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
             value: { status: "completed", attempts: 1 },
           });
           expect(yield* client.receipts.getReceiptStatus()).toMatchObject({
-            value: { status: "completed", attempts: 1, chatCommandDelivery: { _tag: "None" } },
+            value: { status: "completed", attempts: 1, chatCommandDelivery: Option.none() },
           });
           expect(
             yield* client.receipts
               .accept({ payload: { ...receipt, contentDigest: "f".repeat(64) } })
               .pipe(Effect.result),
-          ).toMatchObject({ failure: { _tag: "EventSubReceiptConflict" } });
+          ).toHaveProperty("failure._tag", "EventSubReceiptConflict");
           expect(yield* Ref.get(controls.dispatches)).toBe(1);
         }).pipe(Effect.provide(fetchLayer));
       }).pipe(Effect.scoped, Effect.provide(sqlite)),
@@ -277,12 +277,14 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
         yield* inbox.accept(chatReceipt);
         const restarted = yield* controls.acquire;
         yield* restarted.recover();
-        expect(yield* controls.metrics.readRecordedTwitchAnalyticsCalls()).toMatchObject([
-          {
-            _tag: "ChatCommandMetric",
-            metric: { command: "today", status: "success", userId: "viewer" },
-          },
-        ]);
+        const metrics = yield* controls.metrics.readRecordedTwitchAnalyticsCalls();
+
+        expect(metrics).toHaveProperty("0._tag", "ChatCommandMetric");
+        expect(metrics[0]?.metric).toMatchObject({
+          command: "today",
+          status: "success",
+          userId: "viewer",
+        });
       }).pipe(Effect.provide(sqlite)),
   );
 
@@ -320,7 +322,7 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
       yield* inbox.recover();
       expect(
         yield* inbox.accept({ ...receipt, contentDigest: "b".repeat(64) }).pipe(Effect.result),
-      ).toMatchObject({ failure: { _tag: "EventSubReceiptConflict" } });
+      ).toHaveProperty("failure._tag", "EventSubReceiptConflict");
       expect(yield* Ref.get(controls.dispatches)).toBe(1);
       expect(yield* inbox.getReceiptStatus()).toMatchObject({ value: { status: "completed" } });
     }).pipe(Effect.provide(sqlite)),
@@ -408,7 +410,7 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
         yield* inbox.accept(receipt);
         yield* inbox.recover();
         expect(yield* inbox.getReceiptStatus()).toMatchObject({
-          value: { status: "pending", chatCommandDelivery: { _tag: "None" } },
+          value: { status: "pending", chatCommandDelivery: Option.none() },
         });
         yield* Ref.set(controls.sendFailure, Option.none());
         yield* TestClock.adjust("2 seconds");
@@ -548,9 +550,11 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
         yield* restarted.accept(chatReceipt);
         expect(yield* Ref.get(controls.sends)).toBe(1);
         expect(yield* Ref.get(controls.dispatches)).toBe(1);
-        expect(yield* controls.metrics.readRecordedTwitchAnalyticsCalls()).toMatchObject([
-          { _tag: "ChatCommandMetric", metric: { status: "error", error: { _tag: "Some" } } },
-        ]);
+        const metrics = yield* controls.metrics.readRecordedTwitchAnalyticsCalls();
+
+        expect(metrics).toHaveProperty("0._tag", "ChatCommandMetric");
+        expect(metrics).toHaveProperty("0.metric.status", "error");
+        expect(metrics).toHaveProperty("0.metric.error._tag", "Some");
       }).pipe(Effect.provide(sqlite)),
   );
 

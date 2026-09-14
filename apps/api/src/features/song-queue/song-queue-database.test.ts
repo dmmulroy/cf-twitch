@@ -314,10 +314,7 @@ describe("Song queue real SQLite persistence", () => {
           .reconcilePlayback(snapshot(Option.some(track("next")), [], 3))
           .pipe(Effect.result);
 
-        expect(result).toMatchObject({
-          _tag: "Failure",
-          failure: { reason: "storage_unavailable" },
-        });
+        expect(result).toHaveProperty("failure.reason", "storage_unavailable");
         expect((yield* database.getRequestHistory(historyQuery)).totalCount).toBe(0);
         expect(Option.getOrThrow((yield* database.getCurrentlyPlaying()).track)).toMatchObject({
           eventId: pending.eventId,
@@ -336,10 +333,10 @@ describe("Song queue real SQLite persistence", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* playRequest(request("corrupt"), 1);
         yield* sql`UPDATE request_history SET artists = 'not-json'`;
-        expect(yield* database.getRequestHistory(historyQuery).pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { reason: "stored_data_invalid" },
-        });
+        expect(yield* database.getRequestHistory(historyQuery).pipe(Effect.result)).toHaveProperty(
+          "failure.reason",
+          "stored_data_invalid",
+        );
       }).pipe(Effect.provide(databaseLayer)),
   );
 });

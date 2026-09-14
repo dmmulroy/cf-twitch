@@ -1,6 +1,17 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Crypto, Effect, Exit, Fiber, Layer, PlatformError, Schema } from "effect";
+import {
+  Cause,
+  Crypto,
+  Data,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  PlatformError,
+  Predicate,
+  Schema,
+} from "effect";
 import { EventId, IsoTimestamp, StreamId } from "@cf-twitch/contracts/identity";
 import { deriveLifecycleEventId } from "./stream.ts";
 import {
@@ -10,6 +21,7 @@ import {
   completeTransitionEffect,
   decodePersistedStreamState,
   initialStreamState,
+  OfflineStreamState,
   type PersistedStreamState,
 } from "./stream-state.ts";
 
@@ -24,6 +36,39 @@ const at = (value: string) => Schema.decodeUnknownSync(IsoTimestamp)(value);
 const startedAt = at("2026-01-30T11:55:00.000Z");
 
 const endedAt = at("2026-01-30T14:00:00.000Z");
+
+type TestSystemErrorReason = Data.TaggedEnum<{
+  readonly Unknown: { readonly module: string; readonly method: string };
+}>;
+
+const TestSystemErrorReason = Data.taggedEnum<TestSystemErrorReason>();
+
+type TestLegacyTransitionIntent = Data.TaggedEnum<{
+  readonly StreamOnlineIntent: {
+    readonly eventId: EventId;
+    readonly streamSessionId: StreamId;
+    readonly transitionAt: IsoTimestamp;
+    readonly viewerPollScheduleId: string | null;
+    readonly spotifyTokenNotified: boolean;
+    readonly twitchTokenNotified: boolean;
+    readonly lifecycleEventPublished: boolean;
+    readonly viewerPollingUpdated: boolean;
+  };
+}>;
+
+const TestLegacyTransitionIntent = Data.taggedEnum<TestLegacyTransitionIntent>();
+
+type TestLegacyStreamState = Data.TaggedEnum<{
+  readonly LiveStream: {
+    readonly streamSessionId: StreamId;
+    readonly startedAt: IsoTimestamp;
+    readonly peakViewerCount: number;
+    readonly viewerPollScheduleId: string | null;
+    readonly transitionIntent: TestLegacyTransitionIntent;
+  };
+}>;
+
+const TestLegacyStreamState = Data.taggedEnum<TestLegacyStreamState>();
 
 describe("Stream Lifecycle state", () => {
   it.effect("derives the stable lifecycle event identity from transition evidence", () =>
@@ -42,11 +87,12 @@ describe("Stream Lifecycle state", () => {
     Effect.gen(function* () {
       const input = { transition: "online" as const, streamId, transitionAt: startedAt };
 
-      const cryptoFailure = PlatformError.systemError({
-        _tag: "Unknown",
-        module: "TestCrypto",
-        method: "digest",
-      });
+      const cryptoFailure = PlatformError.systemError(
+        TestSystemErrorReason.Unknown({
+          module: "TestCrypto",
+          method: "digest",
+        }),
+      );
 
       const failingCrypto = Layer.succeed(
         Crypto.Crypto,
@@ -94,8 +140,8 @@ describe("Stream Lifecycle state", () => {
   it("accepts authoritative online source time with all four checkpoints incomplete", () => {
     const state = acceptOnlineTransition(initialStreamState(), { eventId, streamId, startedAt });
 
+    expect(state._tag).toBe("LiveStream");
     expect(state).toMatchObject({
-      _tag: "LiveStream",
       streamId,
       startedAt,
       transitionCheckpoint: {
@@ -127,13 +173,13 @@ describe("Stream Lifecycle state", () => {
   it("carries session and polling evidence into one offline transition checkpoint", () => {
     const online = acceptOnlineTransition(initialStreamState(), { eventId, streamId, startedAt });
 
-    if (online._tag !== "LiveStream") throw new Error("expected live state");
+    if (!Predicate.isTagged("LiveStream")(online)) throw new Error("expected live state");
     const withSchedule = { ...online, viewerPollScheduleId: "viewer-poll-1" };
 
     const offline = acceptOfflineTransition(withSchedule, { eventId: offlineEventId, endedAt });
 
+    expect(offline._tag).toBe("OfflineStream");
     expect(offline).toMatchObject({
-      _tag: "OfflineStream",
       lastStartedAt: startedAt,
       endedAt,
       transitionCheckpoint: {
@@ -161,8 +207,8 @@ describe("Stream Lifecycle state", () => {
       endedAt: laterEndedAt,
     });
 
+    expect(offline._tag).toBe("OfflineStream");
     expect(offline).toMatchObject({
-      _tag: "OfflineStream",
       lastStartedAt: offsetStartedAt,
       endedAt: laterEndedAt,
       transitionCheckpoint: { transitionAt: laterEndedAt },
@@ -180,9 +226,10 @@ describe("Stream Lifecycle state", () => {
       startedAt: earlier,
     });
 
-    expect(
-      acceptOfflineTransition(online, { eventId: offlineEventId, endedAt: later }),
-    ).toMatchObject({ _tag: "OfflineStream", endedAt: later });
+    const offline = acceptOfflineTransition(online, { eventId: offlineEventId, endedAt: later });
+
+    expect(offline._tag).toBe("OfflineStream");
+    expect(offline).toMatchObject({ endedAt: later });
   });
 
   it("orders arbitrary sub-millisecond fractions without normalizing source timestamps", () => {
@@ -195,9 +242,13 @@ describe("Stream Lifecycle state", () => {
       startedAt: earlier,
     });
 
-    expect(
-      acceptOfflineTransition(earlierOnline, { eventId: offlineEventId, endedAt: later }),
-    ).toMatchObject({ _tag: "OfflineStream", endedAt: later });
+    const offline = acceptOfflineTransition(earlierOnline, {
+      eventId: offlineEventId,
+      endedAt: later,
+    });
+
+    expect(offline._tag).toBe("OfflineStream");
+    expect(offline).toMatchObject({ endedAt: later });
 
     const laterOnline = acceptOnlineTransition(initialStreamState(), {
       eventId,
@@ -228,31 +279,32 @@ describe("Stream Lifecycle state", () => {
         startedAt: sameInstantAtUtc,
       }),
     ).toBe(online);
-    expect(
-      acceptOfflineTransition(online, { eventId: offlineEventId, endedAt: sameInstantAtUtc }),
-    ).toMatchObject({ _tag: "OfflineStream", endedAt: sameInstantAtUtc });
+
+    const offline = acceptOfflineTransition(online, {
+      eventId: offlineEventId,
+      endedAt: sameInstantAtUtc,
+    });
+
+    expect(offline._tag).toBe("OfflineStream");
+    expect(offline).toMatchObject({ endedAt: sameInstantAtUtc });
   });
 
   it("uses either exact offline watermark when fractions share one millisecond", () => {
     const candidate = at("2026-01-30T10:00:00.12345Z");
 
-    const baseState = {
-      _tag: "OfflineStream" as const,
+    const laterStart: PersistedStreamState = OfflineStreamState.make({
       peakViewerCount: 0,
       transitionCheckpoint: null,
-    };
-
-    const laterStart: PersistedStreamState = {
-      ...baseState,
       lastStartedAt: at("2026-01-30T10:00:00.1235Z"),
       endedAt: at("2026-01-30T10:00:00.1234Z"),
-    };
+    });
 
-    const laterEnd: PersistedStreamState = {
-      ...baseState,
+    const laterEnd: PersistedStreamState = OfflineStreamState.make({
+      peakViewerCount: 0,
+      transitionCheckpoint: null,
       lastStartedAt: at("2026-01-30T10:00:00.1234Z"),
       endedAt: at("2026-01-30T10:00:00.1235Z"),
-    };
+    });
 
     expect(acceptOnlineTransition(laterStart, { eventId, streamId, startedAt: candidate })).toBe(
       laterStart,
@@ -310,24 +362,24 @@ describe("Stream Lifecycle state", () => {
 
   it.effect("decodes historical tagged Agent state without losing a partial intent", () =>
     Effect.gen(function* () {
-      const decoded = yield* decodePersistedStreamState({
-        _tag: "LiveStream",
-        streamSessionId: streamId,
-        startedAt,
-        peakViewerCount: 41,
-        viewerPollScheduleId: "viewer-poll-1",
-        transitionIntent: {
-          _tag: "StreamOnlineIntent",
-          eventId,
+      const decoded = yield* decodePersistedStreamState(
+        TestLegacyStreamState.LiveStream({
           streamSessionId: streamId,
-          transitionAt: startedAt,
-          viewerPollScheduleId: null,
-          spotifyTokenNotified: true,
-          twitchTokenNotified: false,
-          lifecycleEventPublished: false,
-          viewerPollingUpdated: false,
-        },
-      });
+          startedAt,
+          peakViewerCount: 41,
+          viewerPollScheduleId: "viewer-poll-1",
+          transitionIntent: TestLegacyTransitionIntent.StreamOnlineIntent({
+            eventId,
+            streamSessionId: streamId,
+            transitionAt: startedAt,
+            viewerPollScheduleId: null,
+            spotifyTokenNotified: true,
+            twitchTokenNotified: false,
+            lifecycleEventPublished: false,
+            viewerPollingUpdated: false,
+          }),
+        }),
+      );
 
       expect(decoded.transitionCheckpoint).toMatchObject({
         eventId,

@@ -1,4 +1,4 @@
-import { Clock, Effect, Option, Schema } from "effect";
+import { Clock, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerResponse } from "effect/unstable/http";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
@@ -83,7 +83,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
               { concurrency: "unbounded" },
             );
 
-            if (beforeResult._tag === "Failure")
+            if (Result.isFailure(beforeResult))
               return yield* Effect.fail(
                 new HttpBoundaryError({
                   status: 500,
@@ -91,7 +91,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                 }),
               );
 
-            if (providerResult._tag === "Failure")
+            if (Result.isFailure(providerResult))
               return yield* Effect.fail(
                 new HttpBoundaryError({
                   status: 500,
@@ -126,7 +126,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
 
             if (action === "set_online") {
               const warmup = yield* queue.getCurrentlyPlaying().pipe(Effect.result);
-              queueWarmup = warmup._tag === "Success" ? "ok" : "error";
+              queueWarmup = Result.isSuccess(warmup) ? "ok" : "error";
             }
 
             const after = yield* stream.getState().pipe(Effect.result);
@@ -135,7 +135,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
               Effect.mapError(failure("Invalid service response")),
             );
 
-            if (after._tag === "Failure")
+            if (Result.isFailure(after))
               return HttpServerResponse.jsonUnsafe(
                 {
                   error: "Reconciliation completed but failed to read final state",
@@ -192,51 +192,48 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
 
             return HttpServerResponse.jsonUnsafe({
               timestamp: new Date(now).toISOString(),
-              stream:
-                state._tag === "Success"
-                  ? {
+              stream: Result.isSuccess(state)
+                ? {
+                    ok: true,
+                    isLive: state.success.isLive,
+                    startedAt: Option.getOrNull(state.success.startedAt),
+                    peakViewerCount: state.success.peakViewerCount,
+                    error: null,
+                  }
+                : {
+                    ok: false,
+                    isLive: null,
+                    startedAt: null,
+                    peakViewerCount: null,
+                    error: state.failure.message,
+                  },
+              twitch: Result.isSuccess(provider)
+                ? Option.match(provider.success, {
+                    onNone: () => ({
                       ok: true,
-                      isLive: state.success.isLive,
-                      startedAt: Option.getOrNull(state.success.startedAt),
-                      peakViewerCount: state.success.peakViewerCount,
-                      error: null,
-                    }
-                  : {
-                      ok: false,
-                      isLive: null,
-                      startedAt: null,
-                      peakViewerCount: null,
-                      error: state.failure.message,
-                    },
-              twitch:
-                provider._tag === "Success"
-                  ? Option.match(provider.success, {
-                      onNone: () => ({
-                        ok: true,
-                        isLive: false,
-                        startedAt: null,
-                        viewerCount: null,
-                        error: null,
-                      }),
-                      onSome: (value) => ({
-                        ok: true,
-                        isLive: true,
-                        startedAt: value.startedAt,
-                        viewerCount: value.viewerCount,
-                        error: null,
-                      }),
-                    })
-                  : {
-                      ok: false,
-                      isLive: null,
+                      isLive: false,
                       startedAt: null,
                       viewerCount: null,
-                      error: provider.failure.message,
-                    },
-              songQueue:
-                songs._tag === "Success"
-                  ? { ok: true, queueLength: songs.success.totalCount, error: null }
-                  : { ok: false, queueLength: null, error: songs.failure.message },
+                      error: null,
+                    }),
+                    onSome: (value) => ({
+                      ok: true,
+                      isLive: true,
+                      startedAt: value.startedAt,
+                      viewerCount: value.viewerCount,
+                      error: null,
+                    }),
+                  })
+                : {
+                    ok: false,
+                    isLive: null,
+                    startedAt: null,
+                    viewerCount: null,
+                    error: provider.failure.message,
+                  },
+              songQueue: Result.isSuccess(songs)
+                ? { ok: true, queueLength: songs.success.totalCount, error: null }
+                : { ok: false, queueLength: null, error: songs.failure.message },
             });
           }),
         ),

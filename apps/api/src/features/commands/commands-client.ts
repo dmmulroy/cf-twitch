@@ -1,6 +1,6 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Match, Schema } from "effect";
 import type { HttpClientError } from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import {
@@ -85,12 +85,12 @@ export const makeCommandsClient = Effect.gen(function* () {
       const client = (yield* httpClient).commands;
 
       // The generated client exposes one overload per union member, so discriminate before calling.
-      const request =
-        input.responseType === "static"
-          ? client.createCommand({ payload: input })
-          : input.responseType === "dynamic"
-            ? client.createCommand({ payload: input })
-            : client.createCommand({ payload: input });
+      const request = Match.value(input).pipe(
+        Match.when({ responseType: "static" }, (payload) => client.createCommand({ payload })),
+        Match.when({ responseType: "dynamic" }, (payload) => client.createCommand({ payload })),
+        Match.when({ responseType: "computed" }, (payload) => client.createCommand({ payload })),
+        Match.exhaustive,
+      );
 
       return yield* translateCommandsClientErrors(request, "createCommand");
     }),

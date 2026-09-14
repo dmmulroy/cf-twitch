@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { BroadcasterId, RedemptionId, RewardId } from "@cf-twitch/contracts/identity";
 import { ChatMessageText } from "@cf-twitch/contracts/provider";
-import { Effect, Layer, Option, Redacted } from "effect";
+import { Effect, Layer, Option, Redacted, Result } from "effect";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
 import {
   providerLocalAccessTokensLayer,
@@ -76,13 +76,13 @@ for (const [mode, kind] of [
         .sendChatMessage({ message: ChatMessageText.make("Private viewer message") })
         .pipe(Effect.result);
 
-      expect(result).toMatchObject({ _tag: "Failure", failure: { kind } });
+      expect(result).toHaveProperty("failure.kind", kind);
       expect(JSON.stringify(result)).not.toContain("Private viewer message");
       expect(JSON.stringify(result)).not.toContain(`scenario:${mode}`);
       const transcript = yield* ProviderScenarioTranscript;
       expect(yield* transcript.readRequestCount()).toBe(1);
 
-      if (result._tag === "Failure" && mode === "rate-limited")
+      if (Result.isFailure(result) && mode === "rate-limited")
         expect(result.failure.retryAfterMs).toEqual(Option.some(12_000));
     }).pipe(Effect.provide(layer)),
   );

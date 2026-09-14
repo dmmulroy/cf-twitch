@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Random } from "effect";
+import { Clock, Context, Effect, Layer, Option, Predicate, Random } from "effect";
 import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
 import {
   ChatCommandInput,
@@ -6,7 +6,7 @@ import {
   CommandInputParseError,
   parseChatCommandName,
   type ChatCommandError,
-  type ChatCommandPreparation,
+  ChatCommandPreparation,
 } from "@cf-twitch/contracts/chat-command";
 import { Commands } from "./commands.ts";
 import {
@@ -46,7 +46,10 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
     const [first, ...args] = input.text.trim().split(/\s+/);
 
     if (first === undefined || !first.startsWith("!") || first.length === 1)
-      return { _tag: "ChatCommandIgnored", reason: "not_command", commandName: Option.none() };
+      return ChatCommandPreparation.members[0].make({
+        reason: "not_command",
+        commandName: Option.none(),
+      });
 
     const name = yield* parseChatCommandName(first.slice(1).toLowerCase()).pipe(
       Effect.mapError(
@@ -63,26 +66,23 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
     );
 
     if (Option.isNone(found))
-      return {
-        _tag: "ChatCommandIgnored",
+      return ChatCommandPreparation.members[0].make({
         reason: "unknown_command",
         commandName: Option.some(name),
-      };
+      });
     const command = found.value;
 
     if (!command.enabled)
-      return {
-        _tag: "ChatCommandIgnored",
+      return ChatCommandPreparation.members[0].make({
         reason: "disabled",
         commandName: Option.some(command.name),
-      };
+      });
 
     if (!hasCommandPermission(input.viewer.permission, command.permission))
-      return {
-        _tag: "ChatCommandIgnored",
+      return ChatCommandPreparation.members[0].make({
         reason: "permission_denied",
         commandName: Option.some(command.name),
-      };
+      });
     const arg = args.length === 0 ? Option.none<string>() : Option.some(args.join(" "));
     let message: string;
 
@@ -115,11 +115,10 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
       }),
     );
 
-    return {
-      _tag: "ChatCommandPrepared",
+    return ChatCommandPreparation.members[1].make({
       commandName: command.name,
       message: Option.some(message),
-    };
+    });
   });
 
   const prepare: IChatCommandExecutor["prepare"] = Effect.fn("ChatCommandExecutor.prepare")(
@@ -143,7 +142,8 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
           });
         }),
         Effect.tap((preparation) =>
-          preparation._tag === "ChatCommandIgnored" && preparation.reason !== "not_command"
+          Predicate.isTagged(preparation, "ChatCommandIgnored") &&
+          preparation.reason !== "not_command"
             ? Effect.gen(function* () {
                 yield* analytics.writeChatCommandMetric({
                   command: Option.getOrElse(preparation.commandName, () => "unknown"),

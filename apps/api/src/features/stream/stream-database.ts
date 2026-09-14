@@ -1,5 +1,5 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { Context, Effect, Layer, Option, Schema } from "effect";
+import { Context, Effect, Layer, Option, Predicate, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/unstable/sql";
 import { IsoTimestamp, NonNegativeInt } from "@cf-twitch/contracts/identity";
 import {
@@ -122,7 +122,8 @@ export const makeStreamDatabase: Effect.Effect<
 
   const migrateLegacyViewerSchedule = Effect.fn("StreamDatabase.migrateLegacyViewerSchedule")(
     function* (state: PersistedStreamState) {
-      if (state._tag !== "LiveStream" || state.viewerPollScheduleId === null) return state;
+      if (!Predicate.isTagged("LiveStream")(state) || state.viewerPollScheduleId === null)
+        return state;
       const scheduleId = state.viewerPollScheduleId;
 
       const scheduleTable = yield* sql`

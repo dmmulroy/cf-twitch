@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Semaphore } from "effect";
+import { Clock, Context, Effect, Layer, Option, Result, Semaphore } from "effect";
 import { IsoTimestamp, NonNegativeInt } from "@cf-twitch/contracts/identity";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { SpotifyService } from "../providers/spotify-service.ts";
@@ -64,7 +64,7 @@ export const makeSongQueue = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const coordination = yield* database.getCoordination();
 
-    if (result._tag === "Success") {
+    if (Result.isSuccess(result)) {
       yield* database.setCoordination({
         cleanupDueAt: coordination.cleanupDueAt,
         lastSyncAt: Option.some(now),
@@ -92,7 +92,7 @@ export const makeSongQueue = Effect.gen(function* () {
 
     yield* armPolling();
 
-    if (result._tag === "Failure") return yield* result.failure;
+    if (Result.isFailure(result)) return yield* result.failure;
   });
 
   const ensureFresh = Effect.fn("SongQueue.ensureFresh")(function* () {

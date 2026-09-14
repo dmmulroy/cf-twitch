@@ -1,6 +1,7 @@
 import { NodeCrypto } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
 import { Cause, Crypto, Effect, Exit, Layer } from "effect";
+import { RaffleError } from "@cf-twitch/contracts/raffle";
 import { RaffleRandom, raffleRandomLayer } from "./raffle-random.ts";
 
 const uint32Bytes = (word: number): Uint8Array => {
@@ -67,11 +68,12 @@ it.effect("projects a throwing Crypto primitive as typed randomness unavailabili
 
   return Effect.gen(function* () {
     const random = yield* RaffleRandom;
-    expect(yield* random.drawNumber().pipe(Effect.flip)).toMatchObject({
-      _tag: "RaffleError",
-      operation: "drawNumber",
-      reason: "randomness_unavailable",
-    });
+    expect(yield* random.drawNumber().pipe(Effect.flip)).toMatchObject(
+      new RaffleError({
+        operation: "drawNumber",
+        reason: "randomness_unavailable",
+      }),
+    );
   }).pipe(
     Effect.provide(raffleRandomLayer.pipe(Layer.provide(Layer.succeed(Crypto.Crypto, crypto)))),
   );

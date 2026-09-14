@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Ref } from "effect";
+import { Context, Data, Effect, Layer, Ref } from "effect";
 
 import {
   TwitchAnalytics,
@@ -10,12 +10,16 @@ import {
 } from "../../src/runtime/twitch-analytics.ts";
 
 /** One analytics call recorded by the controlled scenario boundary. */
-export type RecordedTwitchAnalyticsCall =
-  | { readonly _tag: "AchievementUnlockMetric"; readonly metric: AchievementUnlockMetric }
-  | { readonly _tag: "ChatCommandMetric"; readonly metric: ChatCommandMetric }
-  | { readonly _tag: "SagaLifecycleMetric"; readonly metric: SagaLifecycleMetric }
-  | { readonly _tag: "SongRequestMetric"; readonly metric: SongRequestMetric }
-  | { readonly _tag: "RaffleRollMetric"; readonly metric: RaffleRollMetric };
+export type RecordedTwitchAnalyticsCall = Data.TaggedEnum<{
+  readonly AchievementUnlockMetric: { readonly metric: AchievementUnlockMetric };
+  readonly ChatCommandMetric: { readonly metric: ChatCommandMetric };
+  readonly SagaLifecycleMetric: { readonly metric: SagaLifecycleMetric };
+  readonly SongRequestMetric: { readonly metric: SongRequestMetric };
+  readonly RaffleRollMetric: { readonly metric: RaffleRollMetric };
+}>;
+
+/** Constructors for analytics calls recorded by the controlled scenario boundary. */
+export const RecordedTwitchAnalyticsCall = Data.taggedEnum<RecordedTwitchAnalyticsCall>();
 
 /** Test-only reader for analytics calls made through the production TwitchAnalytics interface. */
 export interface ITwitchAnalyticsRecording {
@@ -43,11 +47,15 @@ export const recordingTwitchAnalyticsLayer = Layer.effectContext(
 
     const analytics = TwitchAnalytics.of({
       writeAchievementUnlockMetric: (metric) =>
-        recordCall({ _tag: "AchievementUnlockMetric", metric }),
-      writeChatCommandMetric: (metric) => recordCall({ _tag: "ChatCommandMetric", metric }),
-      writeSagaLifecycleMetric: (metric) => recordCall({ _tag: "SagaLifecycleMetric", metric }),
-      writeSongRequestMetric: (metric) => recordCall({ _tag: "SongRequestMetric", metric }),
-      writeRaffleRollMetric: (metric) => recordCall({ _tag: "RaffleRollMetric", metric }),
+        recordCall(RecordedTwitchAnalyticsCall.AchievementUnlockMetric({ metric })),
+      writeChatCommandMetric: (metric) =>
+        recordCall(RecordedTwitchAnalyticsCall.ChatCommandMetric({ metric })),
+      writeSagaLifecycleMetric: (metric) =>
+        recordCall(RecordedTwitchAnalyticsCall.SagaLifecycleMetric({ metric })),
+      writeSongRequestMetric: (metric) =>
+        recordCall(RecordedTwitchAnalyticsCall.SongRequestMetric({ metric })),
+      writeRaffleRollMetric: (metric) =>
+        recordCall(RecordedTwitchAnalyticsCall.RaffleRollMetric({ metric })),
     });
 
     const recording = TwitchAnalyticsRecording.of({

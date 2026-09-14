@@ -57,7 +57,7 @@ it.effect(
         Effect.withTracerEnabled(true),
       );
 
-      expect(outcome).toMatchObject({ _tag: "Failure", failure: { kind: "invalid-response" } });
+      expect(outcome).toHaveProperty("failure.kind", "invalid-response");
 
       const recorded = JSON.stringify(
         spans.map((span) => ({

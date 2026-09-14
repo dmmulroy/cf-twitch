@@ -1,4 +1,4 @@
-import { DateTime, Effect, Option, Order, Schema } from "effect";
+import { DateTime, Effect, Match, Option, Order, Predicate, Schema } from "effect";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import {
   StreamLifecycleError,
@@ -19,8 +19,7 @@ const StreamTransitionCheckpointRecord = Schema.Struct({
 });
 
 /** Persisted state while no Stream Session is active. */
-export const OfflineStreamState = Schema.Struct({
-  _tag: Schema.Literal("OfflineStream"),
+export const OfflineStreamState = Schema.TaggedStruct("OfflineStream", {
   lastStartedAt: Schema.NullOr(IsoTimestamp),
   endedAt: Schema.NullOr(IsoTimestamp),
   peakViewerCount: NonNegativeInt,
@@ -28,8 +27,7 @@ export const OfflineStreamState = Schema.Struct({
 });
 
 /** Persisted state while one Stream Session is active. */
-export const LiveStreamState = Schema.Struct({
-  _tag: Schema.Literal("LiveStream"),
+export const LiveStreamState = Schema.TaggedStruct("LiveStream", {
   streamId: StreamId,
   startedAt: IsoTimestamp,
   peakViewerCount: NonNegativeInt,
@@ -45,7 +43,7 @@ export const PersistedStreamState = Schema.Union([OfflineStreamState, LiveStream
 
       if (checkpoint === null) return true;
 
-      return state._tag === "LiveStream"
+      return Predicate.isTagged("LiveStream")(state)
         ? checkpoint.transition === "online" &&
             checkpoint.streamId === state.streamId &&
             checkpoint.transitionAt === state.startedAt
@@ -73,15 +71,13 @@ const LegacyTransitionIntent = Schema.Struct({
 });
 
 const LegacyTaggedStreamState = Schema.Union([
-  Schema.Struct({
-    _tag: Schema.Literal("OfflineStream"),
+  Schema.TaggedStruct("OfflineStream", {
     lastStartedAt: Schema.NullOr(IsoTimestamp),
     endedAt: Schema.NullOr(IsoTimestamp),
     peakViewerCount: NonNegativeInt,
     transitionIntent: Schema.optionalKey(Schema.NullOr(LegacyTransitionIntent)),
   }),
-  Schema.Struct({
-    _tag: Schema.Literal("LiveStream"),
+  Schema.TaggedStruct("LiveStream", {
     streamSessionId: StreamId,
     startedAt: IsoTimestamp,
     peakViewerCount: NonNegativeInt,
@@ -118,13 +114,13 @@ const decodeLegacyBooleanStreamStateJson = Schema.decodeEffect(
 );
 
 /** Initial state used only when neither current nor legacy durable state exists. */
-export const initialStreamState = (): PersistedStreamState => ({
-  _tag: "OfflineStream",
-  lastStartedAt: null,
-  endedAt: null,
-  peakViewerCount: 0,
-  transitionCheckpoint: null,
-});
+export const initialStreamState = (): PersistedStreamState =>
+  OfflineStreamState.make({
+    lastStartedAt: null,
+    endedAt: null,
+    peakViewerCount: 0,
+    transitionCheckpoint: null,
+  });
 
 const persistenceError = () =>
   new StreamLifecycleError({
@@ -140,7 +136,7 @@ const checkpointFromLegacy = (
     : {
         eventId: intent.eventId,
         streamId: intent.streamSessionId,
-        transition: intent._tag === "StreamOnlineIntent" ? "online" : "offline",
+        transition: Predicate.isTagged("StreamOnlineIntent")(intent) ? "online" : "offline",
         transitionAt: intent.transitionAt,
         viewerPollScheduleId: intent.viewerPollScheduleId,
         spotifyTokenNotified: intent.spotifyTokenNotified,
@@ -154,7 +150,7 @@ const stateFromLegacyTagged = (
 ): Effect.Effect<PersistedStreamState, StreamLifecycleError> => {
   const checkpoint = checkpointFromLegacy(legacy.transitionIntent);
 
-  if (legacy._tag === "LiveStream") {
+  if (Predicate.isTagged("LiveStream")(legacy)) {
     if (
       checkpoint !== null &&
       (checkpoint.transition !== "online" ||
@@ -164,14 +160,15 @@ const stateFromLegacyTagged = (
       return Effect.fail(persistenceError());
     }
 
-    return Effect.succeed({
-      _tag: "LiveStream",
-      streamId: legacy.streamSessionId,
-      startedAt: legacy.startedAt,
-      peakViewerCount: legacy.peakViewerCount,
-      viewerPollScheduleId: legacy.viewerPollScheduleId,
-      transitionCheckpoint: checkpoint,
-    });
+    return Effect.succeed(
+      LiveStreamState.make({
+        streamId: legacy.streamSessionId,
+        startedAt: legacy.startedAt,
+        peakViewerCount: legacy.peakViewerCount,
+        viewerPollScheduleId: legacy.viewerPollScheduleId,
+        transitionCheckpoint: checkpoint,
+      }),
+    );
   }
 
   if (
@@ -183,13 +180,14 @@ const stateFromLegacyTagged = (
     return Effect.fail(persistenceError());
   }
 
-  return Effect.succeed({
-    _tag: "OfflineStream",
-    lastStartedAt: legacy.lastStartedAt,
-    endedAt: legacy.endedAt,
-    peakViewerCount: legacy.peakViewerCount,
-    transitionCheckpoint: checkpoint,
-  });
+  return Effect.succeed(
+    OfflineStreamState.make({
+      lastStartedAt: legacy.lastStartedAt,
+      endedAt: legacy.endedAt,
+      peakViewerCount: legacy.peakViewerCount,
+      transitionCheckpoint: checkpoint,
+    }),
+  );
 };
 
 const stateFromLegacyBoolean = (
@@ -200,23 +198,25 @@ const stateFromLegacyBoolean = (
       return Effect.fail(persistenceError());
     }
 
-    return Effect.succeed({
-      _tag: "LiveStream",
-      streamId: legacy.streamSessionId,
-      startedAt: legacy.startedAt,
-      peakViewerCount: legacy.peakViewerCount,
-      viewerPollScheduleId: legacy.viewerPollScheduleId,
-      transitionCheckpoint: null,
-    });
+    return Effect.succeed(
+      LiveStreamState.make({
+        streamId: legacy.streamSessionId,
+        startedAt: legacy.startedAt,
+        peakViewerCount: legacy.peakViewerCount,
+        viewerPollScheduleId: legacy.viewerPollScheduleId,
+        transitionCheckpoint: null,
+      }),
+    );
   }
 
-  return Effect.succeed({
-    _tag: "OfflineStream",
-    lastStartedAt: legacy.startedAt,
-    endedAt: legacy.endedAt,
-    peakViewerCount: legacy.peakViewerCount,
-    transitionCheckpoint: null,
-  });
+  return Effect.succeed(
+    OfflineStreamState.make({
+      lastStartedAt: legacy.startedAt,
+      endedAt: legacy.endedAt,
+      peakViewerCount: legacy.peakViewerCount,
+      transitionCheckpoint: null,
+    }),
+  );
 };
 
 /** Decode current state or either historical Agent representation without resetting corruption. */
@@ -242,19 +242,22 @@ export const decodePersistedStreamState = (
 
 /** Public projection of persisted tagged state. */
 export const toStreamLifecycleState = (state: PersistedStreamState): StreamLifecycleState =>
-  state._tag === "LiveStream"
-    ? {
+  Match.value(state).pipe(
+    Match.tagsExhaustive({
+      LiveStream: (live) => ({
         isLive: true,
-        startedAt: Option.some(state.startedAt),
+        startedAt: Option.some(live.startedAt),
         endedAt: Option.none(),
-        peakViewerCount: state.peakViewerCount,
-      }
-    : {
+        peakViewerCount: live.peakViewerCount,
+      }),
+      OfflineStream: (offline) => ({
         isLive: false,
-        startedAt: Option.fromNullOr(state.lastStartedAt),
-        endedAt: Option.fromNullOr(state.endedAt),
-        peakViewerCount: state.peakViewerCount,
-      };
+        startedAt: Option.fromNullOr(offline.lastStartedAt),
+        endedAt: Option.fromNullOr(offline.endedAt),
+        peakViewerCount: offline.peakViewerCount,
+      }),
+    }),
+  );
 
 // IsoTimestamp validates calendar existence and Date.parse compatibility before this pure domain code.
 const streamTimestampInstant = (timestamp: IsoTimestamp): DateTime.Utc =>
@@ -277,7 +280,7 @@ const streamTimestampIsBefore = (self: IsoTimestamp, that: IsoTimestamp): boolea
 
 /** Latest source timestamp used to reject stale lifecycle evidence by instant. */
 const latestTransitionAt = (state: PersistedStreamState): IsoTimestamp | null => {
-  if (state._tag === "LiveStream") return state.startedAt;
+  if (Predicate.isTagged("LiveStream")(state)) return state.startedAt;
 
   if (state.lastStartedAt === null) return state.endedAt;
 
@@ -303,10 +306,9 @@ export const acceptOnlineTransition = (
     return state;
   }
 
-  if (state._tag === "LiveStream") return state;
+  if (Predicate.isTagged("LiveStream")(state)) return state;
 
-  return {
-    _tag: "LiveStream",
+  return LiveStreamState.make({
     streamId: input.streamId,
     startedAt: input.startedAt,
     peakViewerCount: state.peakViewerCount,
@@ -322,7 +324,7 @@ export const acceptOnlineTransition = (
       lifecycleEventPublished: false,
       viewerPollingUpdated: false,
     },
-  };
+  });
 };
 
 /** Accept an offline transition and atomically create all incomplete effect checkpoints. */
@@ -334,10 +336,9 @@ export const acceptOfflineTransition = (
 
   if (latest !== null && streamTimestampIsBefore(input.endedAt, latest)) return state;
 
-  if (state._tag === "OfflineStream") return state;
+  if (Predicate.isTagged("OfflineStream")(state)) return state;
 
-  return {
-    _tag: "OfflineStream",
+  return OfflineStreamState.make({
     lastStartedAt: state.startedAt,
     endedAt: input.endedAt,
     peakViewerCount: state.peakViewerCount,
@@ -352,7 +353,7 @@ export const acceptOfflineTransition = (
       lifecycleEventPublished: false,
       viewerPollingUpdated: false,
     },
-  };
+  });
 };
 
 /** Mark one transition effect complete only for its stable event identity. */

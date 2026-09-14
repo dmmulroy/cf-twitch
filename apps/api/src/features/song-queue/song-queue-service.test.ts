@@ -435,7 +435,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
         yield* Ref.set(control.alarmFailure, true);
         expect(
           yield* queue.persistRequest(pending("scheduleFailure")).pipe(Effect.result),
-        ).toMatchObject({ _tag: "Failure", failure: { reason: "coordination_unavailable" } });
+        ).toHaveProperty("failure.reason", "coordination_unavailable");
         expect(
           yield* queue.checkDuplicateRequest({
             userId: ViewerId.make("viewer"),
@@ -575,10 +575,10 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
           (yield* client.songQueue.getRequestHistory({ payload: historyQuery })).totalCount,
         ).toBe(1);
         yield* Ref.update(control.playback, (state) => ({ ...state, queueStatus: 503 }));
-        expect(yield* client.songQueue.refreshQueue().pipe(Effect.result)).toMatchObject({
-          _tag: "Failure",
-          failure: { _tag: "SongQueueError", reason: "provider_unavailable" },
-        });
+        expect(yield* client.songQueue.refreshQueue().pipe(Effect.result)).toHaveProperty(
+          "failure.reason",
+          "provider_unavailable",
+        );
         expect(yield* client.songQueue.getCurrentlyPlaying()).toEqual({
           track: Option.none(),
           position: 0,

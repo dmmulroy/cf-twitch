@@ -1,4 +1,4 @@
-import { Crypto, Effect, Option, Schema } from "effect";
+import { Crypto, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { BroadcasterId } from "@cf-twitch/contracts/identity";
@@ -124,7 +124,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
               const callbackUrl = `${new URL(request.originalUrl).origin}/webhooks/twitch`;
               const existing = yield* twitch.listEventSubSubscriptions().pipe(Effect.result);
 
-              if (existing._tag === "Failure")
+              if (Result.isFailure(existing))
                 return HttpServerResponse.jsonUnsafe(
                   {
                     success: false,
@@ -168,7 +168,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                   })
                   .pipe(Effect.result);
 
-                if (result._tag === "Success") created.push(result.success);
+                if (Result.isSuccess(result)) created.push(result.success);
                 else
                   errors.push({
                     type: config.type,
@@ -227,7 +227,7 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                   .deleteEventSubSubscription(subscription.id)
                   .pipe(Effect.result);
 
-                if (result._tag === "Success") deleted++;
+                if (Result.isSuccess(result)) deleted++;
                 else failed++;
               }
 

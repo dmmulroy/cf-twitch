@@ -3,7 +3,6 @@ import { defineRule } from "@oxlint/plugins";
 import type { ESTree } from "@oxlint/plugins";
 
 import {
-	collectTypeEnvironmentNode,
 	createTypeAliasEnvironment,
 	resolvedTypeMatches,
 	type TypeAliasEnvironment,
@@ -23,10 +22,10 @@ export const noUnknownTypeAliasesRule = defineRule({
 		},
 	},
 	createOnce(context) {
-		const environment: TypeAliasEnvironment = createTypeAliasEnvironment();
-		const pendingAliases: ESTree.TSTypeAliasDeclaration[] = [];
+		let environment: TypeAliasEnvironment | null = null;
 
 		const resolvesToUnknown = (type: ESTree.TSType): boolean =>
+			environment !== null &&
 			resolvedTypeMatches(type, environment, (resolved, matches) => {
 				if (resolved.type === "TSUnknownKeyword") return true;
 				if (resolved.type === "TSParenthesizedType") {
@@ -36,27 +35,19 @@ export const noUnknownTypeAliasesRule = defineRule({
 			});
 
 		return {
-			TSTypeAliasDeclaration(node) {
-				collectTypeEnvironmentNode(node, environment);
-				pendingAliases.push(node);
+			Program(node) {
+				environment = createTypeAliasEnvironment(
+					node,
+					context.sourceCode.visitorKeys,
+				);
 			},
-			TSInterfaceDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
-			TSEnumDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
-			ClassDeclaration: (node) => collectTypeEnvironmentNode(node, environment),
-			ClassExpression: (node) => collectTypeEnvironmentNode(node, environment),
-			ImportSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
-			ImportDefaultSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
-			ImportNamespaceSpecifier: (node) => collectTypeEnvironmentNode(node, environment),
-			TSInferType: (node) => collectTypeEnvironmentNode(node, environment),
-			"Program:exit"() {
-				for (const node of pendingAliases) {
-					if (!resolvesToUnknown(node.typeAnnotation)) continue;
-					context.report({
-						node: node.id,
-						messageId: "unknownAlias",
-						data: { alias: node.id.name },
-					});
-				}
+			TSTypeAliasDeclaration(node) {
+				if (!resolvesToUnknown(node.typeAnnotation)) return;
+				context.report({
+					node: node.id,
+					messageId: "unknownAlias",
+					data: { alias: node.id.name },
+				});
 			},
 		};
 	},

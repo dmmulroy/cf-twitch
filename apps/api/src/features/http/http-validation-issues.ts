@@ -141,7 +141,14 @@ const boundsIssue = (
   bound: number,
   path: IssuePath,
 ): PublicIssue => {
-  const message = `${direction === "minimum" ? "Too small" : "Too big"}: expected ${origin}${origin === "number" ? " to be " : " to have "}${direction === "minimum" ? ">=" : "<="}${bound}${origin === "string" ? " characters" : origin === "array" ? " items" : ""}`;
+  const size = direction === "minimum" ? "Too small" : "Too big";
+  const relation = direction === "minimum" ? ">=" : "<=";
+  const verb = origin === "number" ? " to be " : " to have ";
+  let unit = "";
+
+  if (origin === "string") unit = " characters";
+  else if (origin === "array") unit = " items";
+  const message = `${size}: expected ${origin}${verb}${relation}${bound}${unit}`;
 
   return direction === "minimum"
     ? { origin, code: "too_small", minimum: bound, inclusive: true, path, message }
@@ -248,31 +255,29 @@ const expectedIssue = (
   input: CommandInputValue,
   path: IssuePath,
 ): PublicIssue => {
-  if (ast?._tag === "Union") {
-    const nonNull = ast.types.filter((member) => member._tag !== "Null");
+  if (Predicate.isTagged(ast, "Union")) {
+    const nonNull = ast.types.filter((member) => !Predicate.isTagged(member, "Null"));
 
     if (nonNull.length === 1) return expectedIssue(nonNull[0], input, path);
 
-    if (nonNull.every((member) => member._tag === "Literal"))
+    if (nonNull.every(Predicate.isTagged("Literal")))
       return enumIssue(
         nonNull.flatMap((member) =>
-          member._tag === "Literal" ? Option.toArray(parseLiteral(member.literal)) : [],
+          Predicate.isTagged(member, "Literal") ? Option.toArray(parseLiteral(member.literal)) : [],
         ),
         path,
       );
   }
 
-  if (ast?._tag === "Literal") return enumIssue(Option.toArray(parseLiteral(ast.literal)), path);
+  if (Predicate.isTagged(ast, "Literal"))
+    return enumIssue(Option.toArray(parseLiteral(ast.literal)), path);
 
-  return typeIssue(
-    ast?._tag === "Objects"
-      ? "object"
-      : ast?._tag === "Arrays"
-        ? "array"
-        : (ast?._tag.toLowerCase() ?? "string"),
-    input,
-    path,
-  );
+  let expected = ast?._tag.toLowerCase() ?? "string";
+
+  if (Predicate.isTagged(ast, "Objects")) expected = "object";
+  else if (Predicate.isTagged(ast, "Arrays")) expected = "array";
+
+  return typeIssue(expected, input, path);
 };
 
 function formatCompositeCommandIssue(
@@ -280,12 +285,13 @@ function formatCompositeCommandIssue(
   input: CommandInputValue,
   path: IssuePath,
 ): readonly PublicIssue[] {
-  if (path[0] === "createdAt" && issue.ast._tag === "String") return [datetimeIssue(path)];
+  if (path[0] === "createdAt" && Predicate.isTagged(issue.ast, "String"))
+    return [datetimeIssue(path)];
   const unexpected: string[] = [];
   const issues: PublicIssue[] = [];
 
   for (const child of issue.issues) {
-    if (child._tag === "Pointer" && child.issue._tag === "UnexpectedKey")
+    if (Predicate.isTagged(child, "Pointer") && Predicate.isTagged(child.issue, "UnexpectedKey"))
       unexpected.push(...child.path.map(String));
     else issues.push(...formatCommandIssue(child, input, path, issue.ast));
   }
@@ -302,7 +308,7 @@ function formatAnyOfCommandIssue(
 ): readonly PublicIssue[] {
   const first = issue.issues[0];
 
-  if (path.length > 0 || !issue.ast.types.every((member) => member._tag === "Objects")) {
+  if (path.length > 0 || !issue.ast.types.every(Predicate.isTagged("Objects"))) {
     if (issue.issues.length === 1 && first !== undefined)
       return formatCommandIssue(first, input, path, issue.ast);
 
@@ -338,8 +344,10 @@ function formatFilterCommandIssue(
   if (Option.isNone(metadata)) return formatCommandIssue(issue.issue, input, path, parentAst);
   const value = metadata.value;
 
-  const origin =
-    parentAst?._tag === "Arrays" ? "array" : parentAst?._tag === "Number" ? "number" : "string";
+  let origin: "array" | "number" | "string" = "string";
+
+  if (Predicate.isTagged(parentAst, "Arrays")) origin = "array";
+  else if (Predicate.isTagged(parentAst, "Number")) origin = "number";
 
   switch (value.id) {
     case "effect/schema/isMinLength":
@@ -379,49 +387,46 @@ function formatCommandIssue(
   path: IssuePath,
   parentAst?: SchemaAST.AST,
 ): readonly PublicIssue[] {
-  switch (issue._tag) {
-    case "Pointer": {
-      const key = issue.path[0];
+  if (Predicate.isTagged(issue, "Pointer")) {
+    const key = issue.path[0];
 
-      const childAst =
-        parentAst?._tag === "Objects"
-          ? parentAst.propertySignatures.find((field) => field.name === key)?.type
-          : undefined;
+    const childAst = Predicate.isTagged(parentAst, "Objects")
+      ? parentAst.propertySignatures.find((field) => field.name === key)?.type
+      : undefined;
 
-      return formatCommandIssue(
-        issue.issue,
-        issue.path.reduce(getInputKey, input),
-        [...path, ...issue.path.map((part) => (Predicate.isSymbol(part) ? String(part) : part))],
-        childAst,
-      );
-    }
-
-    case "Composite":
-      return formatCompositeCommandIssue(issue, input, path);
-    case "AnyOf":
-      return formatAnyOfCommandIssue(issue, input, path);
-    case "InvalidType":
-      return [expectedIssue(issue.ast, input, path)];
-    case "MissingKey":
-      return [expectedIssue(parentAst, undefined, path)];
-    case "Encoding":
-      return formatCommandIssue(issue.issue, input, path, issue.ast);
-    case "Filter":
-      return formatFilterCommandIssue(issue, input, path, parentAst);
-    case "InvalidValue":
-      return [
-        {
-          code: "custom",
-          path,
-          message: Option.getOrElse(
-            parseMessage(issue.annotations?.message),
-            () => "Invalid input",
-          ),
-        },
-      ];
-    default:
-      return [{ code: "custom", path, message: "Invalid input" }];
+    return formatCommandIssue(
+      issue.issue,
+      issue.path.reduce(getInputKey, input),
+      [...path, ...issue.path.map((part) => (Predicate.isSymbol(part) ? String(part) : part))],
+      childAst,
+    );
   }
+
+  if (Predicate.isTagged(issue, "Composite"))
+    return formatCompositeCommandIssue(issue, input, path);
+
+  if (Predicate.isTagged(issue, "AnyOf")) return formatAnyOfCommandIssue(issue, input, path);
+
+  if (Predicate.isTagged(issue, "InvalidType")) return [expectedIssue(issue.ast, input, path)];
+
+  if (Predicate.isTagged(issue, "MissingKey")) return [expectedIssue(parentAst, undefined, path)];
+
+  if (Predicate.isTagged(issue, "Encoding"))
+    return formatCommandIssue(issue.issue, input, path, issue.ast);
+
+  if (Predicate.isTagged(issue, "Filter"))
+    return formatFilterCommandIssue(issue, input, path, parentAst);
+
+  if (Predicate.isTagged(issue, "InvalidValue"))
+    return [
+      {
+        code: "custom",
+        path,
+        message: Option.getOrElse(parseMessage(issue.annotations?.message), () => "Invalid input"),
+      },
+    ];
+
+  return [{ code: "custom", path, message: "Invalid input" }];
 }
 
 /** Format only the concrete command schemas' failure nodes into their historical HTTP issue envelopes. */

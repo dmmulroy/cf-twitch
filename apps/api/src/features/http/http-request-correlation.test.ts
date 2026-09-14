@@ -35,13 +35,13 @@ const findResponseSpan = (spans: readonly Tracer.NativeSpan[], response: Respons
   spans.find((span) => span.traceId === response?.headers.get("x-trace-id"));
 
 const readSpanInterruptors = (span: Tracer.NativeSpan | undefined) =>
-  span?.status._tag === "Ended" && Exit.isFailure(span.status.exit)
+  Predicate.isTagged(span?.status, "Ended") && Exit.isFailure(span.status.exit)
     ? [...Cause.interruptors(span.status.exit.cause)]
     : [];
 
 const readExportedFailureExits = (spans: readonly Tracer.NativeSpan[]) =>
   spans.flatMap((span) =>
-    span.status._tag === "Ended" && Exit.isFailure(span.status.exit)
+    Predicate.isTagged(span.status, "Ended") && Exit.isFailure(span.status.exit)
       ? Cause.prettyErrors(span.status.exit.cause, { includeCauseInStack: true }).map((error) => ({
           name: error.name,
           message: error.message,
@@ -246,7 +246,8 @@ describe("safe HTTP trace export", () => {
         expect(readSpanInterruptors(mixedFailureSpan)).toEqual([777]);
         const interruptedSpan = findResponseSpan(serverSpans, responses[5]);
         expect(
-          interruptedSpan?.status._tag === "Ended" && Exit.isFailure(interruptedSpan.status.exit)
+          Predicate.isTagged(interruptedSpan?.status, "Ended") &&
+            Exit.isFailure(interruptedSpan.status.exit)
             ? Cause.hasInterruptsOnly(interruptedSpan.status.exit.cause)
             : false,
         ).toBe(true);
