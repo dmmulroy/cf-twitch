@@ -1,0 +1,403 @@
+import { ChatCommandName, type CreateChatCommandInput } from "@cf-twitch/contracts/chat-command";
+
+const DynamicCommandEmptyResponse = "No topic set for today.";
+
+const DynamicCommandOutputTemplate = "Working on: {value}";
+
+function createPlanCommandInput(now: string): typeof CreateChatCommandInput.Encoded {
+  return {
+    name: "plan",
+    description: "Shows Plannotator link",
+    category: "info",
+    responseType: "static",
+    permission: "everyone",
+    initialValue: "Plannotator: https://plannotator.ai",
+    createdAt: now,
+  };
+}
+
+function createHerdrCommandInput(now: string): typeof CreateChatCommandInput.Encoded {
+  return {
+    name: "herdr",
+    description: "Shows Herdr link",
+    category: "info",
+    responseType: "static",
+    permission: "everyone",
+    initialValue: "Herdr: https://herdr.dev/",
+    createdAt: now,
+  };
+}
+
+function createHexCommandInput(now: string): typeof CreateChatCommandInput.Encoded {
+  return {
+    name: "hex",
+    description: "Shows Hex link",
+    category: "info",
+    responseType: "static",
+    permission: "everyone",
+    initialValue: "I am using Hex by Kit Langton: https://hex.kitlangton.com/",
+    createdAt: now,
+  };
+}
+
+/** Additive default migrations applied exactly once, without overriding runtime edits. */
+export const defaultCommandMigrations = [
+  {
+    id: "2026-05-27-add-plan-command",
+    kind: "create",
+    createInput: createPlanCommandInput,
+  },
+  {
+    id: "2026-05-27-add-df-dotfiles-alias",
+    kind: "add-alias",
+    commandName: "dotfiles",
+    alias: ChatCommandName.make("df"),
+  },
+  {
+    id: "2026-06-25-add-herdr-command",
+    kind: "create",
+    createInput: createHerdrCommandInput,
+  },
+  {
+    id: "2026-07-24-add-hex-command",
+    kind: "create",
+    createInput: createHexCommandInput,
+  },
+] as const;
+
+/** Stable migration identities retained from the baseline registry. */
+export const defaultCommandMigrationIds = defaultCommandMigrations.map((migration) => migration.id);
+
+/** All 37 historical defaults in original presentation order; parsed before persistence. */
+export function createDefaultCommandInputs(
+  now: string,
+): readonly (typeof CreateChatCommandInput.Encoded)[] {
+  return [
+    {
+      name: "keyboard",
+      description: "Shows keyboard info and build video",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue:
+        "ZSA Voyager with Choc White switches: https://www.youtube.com/watch?v=WfIfxaXC_Q4",
+      createdAt: now,
+    },
+    {
+      name: "socials",
+      description: "Shows social media links",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "GitHub: github.com/dmmulroy | X: x.com/dillon_mulroy",
+      createdAt: now,
+    },
+    {
+      name: "github",
+      description: "Shows GitHub link",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "Follow me on GitHub! -> https://github.com/dmmulroy",
+      createdAt: now,
+    },
+    {
+      name: "twitter",
+      description: "Shows Twitter/X link",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "Follow me on Twitter (X)! -> https://twitter.com/dillon_mulroy",
+      createdAt: now,
+    },
+    {
+      name: "schedule",
+      description: "Shows stream schedule",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "My stream schedule -> https://www.twitch.tv/dmmulroy/schedule",
+      createdAt: now,
+    },
+    {
+      name: "font",
+      description: "Shows preferred coding font",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "MonoLisa - https://www.monolisa.dev",
+      createdAt: now,
+    },
+    {
+      name: "dotfiles",
+      description: "Shows dotfiles repository link",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      aliases: ["df"],
+      initialValue:
+        "My dotfiles can be found here: https://github.com/dmmulroy/.dotfiles !neovim for a youtube walkthrough of my neovim config.",
+      createdAt: now,
+    },
+    {
+      name: "today",
+      description: "Shows what's being worked on today",
+      category: "info",
+      responseType: "dynamic",
+      permission: "everyone",
+      outputTemplate: DynamicCommandOutputTemplate,
+      emptyResponse: DynamicCommandEmptyResponse,
+      writePermission: "moderator",
+      initialValue: "",
+      createdAt: now,
+    },
+    {
+      name: "project",
+      description: "Shows current project (alias for today)",
+      category: "info",
+      responseType: "dynamic",
+      permission: "everyone",
+      valueSourceName: "today",
+      outputTemplate: DynamicCommandOutputTemplate,
+      emptyResponse: DynamicCommandEmptyResponse,
+      writePermission: "moderator",
+      createdAt: now,
+    },
+    createPlanCommandInput(now),
+    createHerdrCommandInput(now),
+    createHexCommandInput(now),
+    {
+      name: "achievements",
+      description: "Shows user's unlocked achievements",
+      category: "stats",
+      responseType: "computed",
+      permission: "everyone",
+      handlerKey: "achievements",
+      createdAt: now,
+    },
+    {
+      name: "stats",
+      description: "Shows user's song/achievement/raffle stats",
+      category: "stats",
+      responseType: "computed",
+      permission: "everyone",
+      handlerKey: "stats",
+      createdAt: now,
+    },
+    {
+      name: "raffle-leaderboard",
+      description: "Shows top raffle winners",
+      category: "stats",
+      responseType: "computed",
+      permission: "everyone",
+      handlerKey: "raffle-leaderboard",
+      createdAt: now,
+    },
+    {
+      name: "commands",
+      description: "Lists available commands",
+      category: "meta",
+      responseType: "computed",
+      permission: "everyone",
+      handlerKey: "commands",
+      createdAt: now,
+    },
+    {
+      name: "update",
+      description: "Updates dynamic command values",
+      category: "meta",
+      responseType: "computed",
+      permission: "vip",
+      handlerKey: "update",
+      createdAt: now,
+    },
+    {
+      name: "song",
+      description: "Request a song via Spotify URL",
+      category: "music",
+      responseType: "computed",
+      permission: "everyone",
+      handlerKey: "song",
+      createdAt: now,
+    },
+    {
+      name: "queue",
+      description: "Shows current song queue",
+      category: "music",
+      responseType: "computed",
+      permission: "everyone",
+      handlerKey: "queue",
+      createdAt: now,
+    },
+    {
+      name: "functor",
+      description: "A fun one-liner response",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "Functor? I hardly know her!",
+      createdAt: now,
+    },
+    {
+      name: "location",
+      description: "Shows streamer timezone",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "I am in Eastern Standard Time!",
+      createdAt: now,
+    },
+    {
+      name: "ocaml",
+      description: "OCaml command response",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "dmmulrOCaml",
+      createdAt: now,
+    },
+    {
+      name: "lurk",
+      description: "Lurk acknowledgement command",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "${user} is here but they are Lurking! Thank you for watching! ${random.emote}",
+      createdAt: now,
+    },
+    {
+      name: "youtube",
+      description: "Shows YouTube channel link",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "Check out my youtube! https://www.youtube.com/@dmmulroy",
+      createdAt: now,
+    },
+    {
+      name: "unlurk",
+      description: "Unlurk acknowledgement command",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "${user} is back on the saddle! Thanks for coming back! ${random.emote}",
+      createdAt: now,
+    },
+    {
+      name: "errors",
+      description: "Error meme link",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "https://twitter.com/vitalyf/status/1582270207229251585",
+      createdAt: now,
+    },
+    {
+      name: "vibes",
+      description: "Vibes check command",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "Immaculate",
+      createdAt: now,
+    },
+    {
+      name: "neovim",
+      description: "Neovim config walkthrough link",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue:
+        "Here is a youtube video walkthrough of my neovim config: https://youtu.be/oo_I5lAmdi0",
+      createdAt: now,
+    },
+    {
+      name: "dict",
+      description: "Clip command",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "https://clips.twitch.tv/SlipperySarcasticMosquitoTwitchRPG-9V43D-1B4NjpX1B0",
+      createdAt: now,
+    },
+    {
+      name: "beam",
+      description: "BEAM slogan command",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "BEAM WORK MAKES THE DREAM WORK",
+      createdAt: now,
+    },
+    {
+      name: "linux",
+      description: "GNU/Linux copypasta command",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue:
+        "I'd just like to interject for a moment. What you're refering to as Linux, is in fact, GNU/Linux, or as I've recently taken to calling it, GNU plus Linux. Linux is not an operating system unto itself, but rather another free component of a fully functioning GNU system made useful by the GNU corelibs, shell utilities and vital system components comprising a full OS as defined by POSIX.",
+      createdAt: now,
+    },
+    {
+      name: "time",
+      description: "Shows current Eastern time",
+      category: "info",
+      responseType: "computed",
+      permission: "everyone",
+      handlerKey: "time",
+      createdAt: now,
+    },
+    {
+      name: "leak",
+      description: "Security leak meme command",
+      category: "meta",
+      responseType: "dynamic",
+      permission: "everyone",
+      writePermission: "vip",
+      initialValue:
+        "Dillon last leaked his keys on 23 Jan 2026 (before on 09 Dec 2025 ), admin secret on 16 Feb 2026",
+      createdAt: now,
+    },
+    {
+      name: "skillissue",
+      description: "Increments and shows skill issue count",
+      category: "stats",
+      responseType: "computed",
+      permission: "vip",
+      handlerKey: "skillissue",
+      counterSourceName: "skillissue",
+      initialCounter: 0,
+      createdAt: now,
+    },
+    {
+      name: "truth",
+      description: "Truth clip command",
+      category: "meta",
+      responseType: "static",
+      permission: "everyone",
+      initialValue:
+        "https://www.twitch.tv/dmmulroy/clip/RichObedientWalletKeyboardCat-UiKKTpgvCKHVyFHd",
+      createdAt: now,
+    },
+    {
+      name: "job",
+      description: "Shows current job",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue:
+        "I am Principal Engineer and Rockstar TypeScript Developer at Cloudflare 1.1.1.1",
+      createdAt: now,
+    },
+    {
+      name: "browser",
+      description: "Shows browser recommendation link",
+      category: "info",
+      responseType: "static",
+      permission: "everyone",
+      initialValue: "Helium Browser: https://helium.computer",
+      createdAt: now,
+    },
+  ];
+}

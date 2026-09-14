@@ -1,11 +1,10 @@
 {
-	"extends": "../../tsconfig.base.json",
-	"compilerOptions": {
-		"types": ["node", "vitest/globals", "@cloudflare/vitest-pool-workers/types"],
-		"paths": {
-			"~/*": ["./src/*"]
-		}
-	},
-	"include": ["src/**/*", "worker-configuration.d.ts"],
-	"exclude": ["node_modules", "dist", "opensrc", "src/__tests__"]
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["alchemy.run.ts", "scripts/**/*.ts", "src/**/*.ts", "test/**/*.ts", "vite.config.ts"]
 }
