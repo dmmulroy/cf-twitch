@@ -1,27 +1,26 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
-import { FastCheck } from "effect/testing";
+import { Effect } from "effect";
 import { SpotifyTrackId } from "./identity.ts";
 import { parseSpotifyTrackInput, spotifyTrackUri } from "./spotify-track.ts";
 
 describe("Spotify track input", () => {
-  it("preserves track identity across supported URI and localized URL forms", () => {
-    FastCheck.assert(
-      FastCheck.property(Schema.toArbitrary(SpotifyTrackId)(FastCheck), (trackId) => {
-        const inputs = [
-          spotifyTrackUri(trackId),
-          `https://open.spotify.com/track/${trackId}`,
-          `https://open.spotify.com/intl-de/track/${trackId}/?si=ignored#ignored`,
-          `  http://open.spotify.com/track/${trackId}  `,
-        ];
+  it.prop(
+    "preserves track identity across supported URI and localized URL forms",
+    [SpotifyTrackId],
+    ([trackId]) => {
+      const inputs = [
+        spotifyTrackUri(trackId),
+        `https://open.spotify.com/track/${trackId}`,
+        `https://open.spotify.com/intl-de/track/${trackId}/?si=ignored#ignored`,
+        `  http://open.spotify.com/track/${trackId}  `,
+      ];
 
-        for (const input of inputs) {
-          expect(Effect.runSync(parseSpotifyTrackInput(input))).toBe(trackId);
-        }
-      }),
-      { numRuns: 100 },
-    );
-  });
+      for (const input of inputs) {
+        expect(Effect.runSync(parseSpotifyTrackInput(input))).toBe(trackId);
+      }
+    },
+    { arbitrary: { runs: 100 } },
+  );
 
   it.effect("rejects non-track resources and lookalike hosts without echoing request text", () =>
     Effect.gen(function* () {

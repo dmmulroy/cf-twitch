@@ -4,7 +4,7 @@ import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
 import { Effect, Layer, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { ChannelPointRedemption } from "@cf-twitch/contracts/redemption";
 import { RaffleError } from "@cf-twitch/contracts/raffle";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";

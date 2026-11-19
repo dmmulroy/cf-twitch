@@ -7,8 +7,8 @@ import {
 } from "@cf-twitch/contracts/identity";
 import { PendingSongRequest } from "@cf-twitch/contracts/song-queue";
 import type { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
-import { Option } from "effect";
-import { FastCheck } from "effect/testing";
+import { Option, Schema } from "effect";
+import * as Arbitrary from "effect/Arbitrary";
 import { attributeSongQueueOccurrences } from "./song-queue-reconciliation.ts";
 
 const repeatTrack: SpotifyTrack = {
@@ -31,7 +31,7 @@ const makeRequest = (index: number, track = repeatTrack) =>
 describe("Song queue occurrence attribution properties", () => {
   it.prop(
     "repeated tracks promote exactly one FIFO occurrence and preserve remaining attribution",
-    { count: FastCheck.integer({ min: 1, max: 100 }) },
+    { count: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) },
     ({ count }) => {
       const pending = Array.from({ length: count }, (_, index) => makeRequest(index));
       const upcoming = pending.map((request) => request.track);
@@ -71,11 +71,11 @@ describe("Song queue occurrence attribution properties", () => {
   it.prop(
     "mixed duplicate tracks never assign one request identity to multiple occurrences",
     {
-      trackIds: FastCheck.array(FastCheck.constantFrom("a", "b", "c"), {
+      trackIds: Arbitrary.array(Arbitrary.schema(Schema.Literals(["a", "b", "c"])), {
         minLength: 0,
         maxLength: 100,
       }),
-      requestCount: FastCheck.integer({ min: 0, max: 100 }),
+      requestCount: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
     },
     ({ trackIds, requestCount }) => {
       const upcoming = trackIds.map((id) => ({ ...repeatTrack, id: SpotifyTrackId.make(id) }));
@@ -107,5 +107,7 @@ describe("Song queue occurrence attribution properties", () => {
         }),
       ).toEqual(result);
     },
+    // fast-check sized arrays up to an explicit maxLength; Effect's default size would cap them at 10.
+    { arbitrary: { size: 100 } },
   );
 });

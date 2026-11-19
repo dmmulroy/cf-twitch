@@ -1,6 +1,6 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
 import { Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter } from "effect";
-import { SqlClient, type SqlError } from "effect/unstable/sql";
+import { SqlClient, type SqlError } from "effect/sql";
 import { RedemptionId } from "@cf-twitch/contracts/identity";
 import {
   RaffleClosestRecord,
@@ -278,5 +278,5 @@ export const makeRaffle = Effect.gen(function* () {
 /** Provides raffle persistence with explicit SQL and secure randomness requirements. */
 export const raffleLayerWithoutDependencies = Layer.effect(Raffle, makeRaffle);
 
-/** Provides raffle persistence and exact draw policy; Crypto and SQL remain explicitly required. */
+/** Provides raffle persistence and exact draw policy; SecureRandom and SQL remain explicitly required. */
 export const raffleLayer = raffleLayerWithoutDependencies.pipe(Layer.provide(raffleRandomLayer));

@@ -1,6 +1,6 @@
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerResponse } from "effect/http";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
 import { nowPlayingOverlayHtml } from "./now-playing-overlay.ts";
 

@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { EventSubHttpApi } from "./eventsub-http-api.ts";
 import { EventSubInbox } from "./eventsub-inbox.ts";
 

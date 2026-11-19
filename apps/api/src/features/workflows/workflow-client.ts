@@ -1,7 +1,7 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cache, Effect, Layer } from "effect";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import { HttpApiClient } from "effect/http-api";
 import type { EventSubMessageId, RedemptionId } from "@cf-twitch/contracts/identity";
 import { WorkflowError, WorkflowInput, WorkflowLookup } from "@cf-twitch/contracts/workflow";
 import { WorkflowStarters } from "./workflow-starters.ts";

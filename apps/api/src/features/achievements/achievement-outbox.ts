@@ -1,5 +1,5 @@
 import { Context, DateTime, Effect, Layer, Option, Predicate, Schema } from "effect";
-import { SqlClient, type SqlError } from "effect/unstable/sql";
+import { SqlClient, type SqlError } from "effect/sql";
 import {
   AchievementCategory,
   AchievementError,

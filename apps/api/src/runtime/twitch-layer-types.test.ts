@@ -1,6 +1,7 @@
 import { expectTypeOf, it } from "@effect/vitest";
-import type * as Cloudflare from "alchemy/Cloudflare";
-import type { Crypto, Layer, Scope } from "effect";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
+import type { Layer, Scope } from "effect";
+import type { Digest, SecureRandom } from "effect/crypto";
 import type { achievementsServerLayerWithoutDependencies } from "../features/achievements/achievements-server.ts";
 import type { commandsServerLayerWithoutDependencies } from "../features/commands/commands-server.ts";
 import type { eventBusServerLayerWithoutDependencies } from "../features/events/event-bus-server.ts";
@@ -15,15 +16,16 @@ import type { twitchApiWorkerLayer } from "./twitch-worker.ts";
 
 type RuntimeOnlyRequirement = Cloudflare.DurableObjectState | Scope.Scope;
 
-it("provides cryptography at the Worker root without leaking it into the Stack", () => {
+// Alchemy beta.87 treats Digest and SecureRandom as Worker platform services: its workerd bridge provides them.
+it("leaves platform cryptography to the Alchemy Worker platform without leaking it into the Stack", () => {
   expectTypeOf<
-    Extract<Layer.Services<typeof raffleServerLayer>, Crypto.Crypto>
-  >().toEqualTypeOf<Crypto.Crypto>();
+    Extract<Layer.Services<typeof raffleServerLayer>, SecureRandom.SecureRandom>
+  >().toEqualTypeOf<never>();
   expectTypeOf<
-    Extract<Layer.Services<typeof streamLifecycleServerLayerWithoutDependencies>, Crypto.Crypto>
-  >().toEqualTypeOf<Crypto.Crypto>();
+    Extract<Layer.Services<typeof streamLifecycleServerLayerWithoutDependencies>, Digest.Digest>
+  >().toEqualTypeOf<never>();
   expectTypeOf<
-    Extract<Layer.Services<typeof twitchApiWorkerLayer>, Crypto.Crypto>
+    Extract<Layer.Services<typeof twitchApiWorkerLayer>, Digest.Digest | SecureRandom.SecureRandom>
   >().toEqualTypeOf<never>();
 });
 

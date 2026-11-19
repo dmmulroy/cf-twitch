@@ -1,8 +1,8 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Option, Redacted } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter } from "effect/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { RaffleError } from "@cf-twitch/contracts/raffle";
 import { TwitchStatsApi } from "@cf-twitch/contracts/twitch-api";

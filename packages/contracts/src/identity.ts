@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { isOpenApiPattern } from "./schema-pattern.ts";
 
 const boundedIdentity = Schema.String.check(
   Schema.isMinLength(1),
@@ -44,7 +45,7 @@ export type EventSubMessageId = typeof EventSubMessageId.Type;
 
 /** Spotify track identity; contains only the provider's base-62 alphabet. */
 export const SpotifyTrackId = Schema.String.check(
-  Schema.isPattern(/^[a-zA-Z0-9]+$/),
+  isOpenApiPattern(/^[a-zA-Z0-9]+$/),
   Schema.isMaxLength(128),
 ).pipe(Schema.brand("SpotifyTrackId"));
 
@@ -72,7 +73,7 @@ const calendarDateIsValid = (value: string): boolean => {
 
 /** ISO 8601 instant with UTC or numeric offset; minute precision is allowed and calendar dates must exist. */
 export const IsoTimestamp = Schema.String.check(
-  Schema.isPattern(isoTimestampPattern),
+  isOpenApiPattern(isoTimestampPattern),
   Schema.makeFilter(calendarDateIsValid, {
     message: "Timestamp must contain a valid calendar date",
   }),

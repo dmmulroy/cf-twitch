@@ -1,6 +1,6 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 const achievementSchemaStatements = [
   "CREATE TABLE IF NOT EXISTS `achievement_definitions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`name` text NOT NULL,\n\t`description` text NOT NULL,\n\t`icon` text NOT NULL,\n\t`category` text NOT NULL,\n\t`threshold` integer,\n\t`trigger_event` text NOT NULL,\n\t`scope` text DEFAULT 'cumulative' NOT NULL\n)",

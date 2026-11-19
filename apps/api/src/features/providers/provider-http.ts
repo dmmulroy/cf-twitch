@@ -1,6 +1,6 @@
 import { ProviderError, type OAuthProvider } from "@cf-twitch/contracts/provider";
 import { Clock, DateTime, Effect, Option, Schema } from "effect";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 /** Provider HTTP status and transport classification never retains secret requests or response bodies. */
 export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderRequest")(function* (

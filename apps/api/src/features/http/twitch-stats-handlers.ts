@@ -1,6 +1,6 @@
 import { Effect, Option, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerResponse } from "effect/http";
 import {
   TwitchHttpApi,
   TwitchStatsViewerId,

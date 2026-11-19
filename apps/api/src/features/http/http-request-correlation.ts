@@ -1,4 +1,5 @@
-import { Cause, Clock, Crypto, Data, Effect, ErrorReporter, Redacted } from "effect";
+import { Cause, Clock, Data, Effect, ErrorReporter, Redacted } from "effect";
+import { SecureRandom } from "effect/crypto";
 import {
   HttpEffect,
   HttpRouter,
@@ -6,7 +7,7 @@ import {
   HttpServerRequest,
   HttpServerRespondable,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { HttpRequestCorrelation } from "./http-boundary.ts";
 
 class HttpTraceFailure
@@ -43,7 +44,7 @@ export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
   handles: HttpServerError.HttpServerError;
 }>()(
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const secureRandom = yield* SecureRandom.SecureRandom;
 
     return (httpEffect) =>
       Effect.gen(function* () {
@@ -53,7 +54,7 @@ export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
 
         return yield* Effect.gen(function* () {
           const span = yield* Effect.currentSpan.pipe(Effect.orDie);
-          const requestId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+          const requestId = yield* secureRandom.uuidV4();
           const correlation = { requestId, traceId: span.traceId };
 
           const annotations = {

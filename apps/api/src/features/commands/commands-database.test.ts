@@ -2,7 +2,7 @@ import { SqliteClient } from "@effect/sql-sqlite-node";
 import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
 import { Effect, Layer, Option, Result, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { ChatCommandName, CreateChatCommandInput } from "@cf-twitch/contracts/chat-command";
 import { EventSubMessageId } from "@cf-twitch/contracts/identity";
 import { Commands } from "./commands.ts";

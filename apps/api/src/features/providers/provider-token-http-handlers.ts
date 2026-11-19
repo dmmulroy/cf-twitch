@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { ProviderTokenHttpApi } from "./provider-token-http-api.ts";
 import { ProviderTokenLifecycle } from "./provider-token-lifecycle.ts";
 

@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { OAuthRedirectUri } from "@cf-twitch/contracts/oauth";
 import { Effect, Layer, Redacted, Tracer } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { providerLocalConfigurationLayer } from "./provider-local-sql.test-support.ts";
 import {
   ProviderTokenExchange,

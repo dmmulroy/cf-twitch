@@ -1,7 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, FileSystem, Fiber, Option, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { join } from "node:path";
 
 import { cfTwitchMaximumCyclomaticComplexity } from "../../vite.config.ts";

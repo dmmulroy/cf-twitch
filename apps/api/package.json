@@ -17,6 +17,8 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@alchemy.run/cloudflare": "catalog:",
+    "@alchemy.run/test": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@effect/platform-node": "catalog:",
     "@effect/sql-sqlite-node": "catalog:",

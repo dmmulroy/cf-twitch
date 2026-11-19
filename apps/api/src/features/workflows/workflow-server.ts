@@ -1,9 +1,10 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
-import { Crypto, Effect, Layer } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { Effect, Layer } from "effect";
+import { Digest } from "effect/crypto";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { WorkflowError, type WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
@@ -55,7 +56,7 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
     const queue = yield* SongQueue;
     const raffle = yield* Raffle;
     const publisher = yield* EventPublisher;
-    const crypto = yield* Crypto.Crypto;
+    const digestService = yield* Digest.Digest;
     const analytics = yield* TwitchAnalytics;
 
     // Only stable capabilities are captured during planning. SQL, migration and alarm acquisition are runtime-only.
@@ -74,7 +75,7 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
           Layer.succeed(SongQueue, queue),
           Layer.succeed(Raffle, raffle),
           Layer.succeed(EventPublisher, publisher),
-          Layer.succeed(Crypto.Crypto, crypto),
+          Layer.succeed(Digest.Digest, digestService),
           Layer.succeed(TwitchAnalytics, analytics),
         ]),
       );

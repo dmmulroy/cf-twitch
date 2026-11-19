@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { WorkflowError, WorkflowInput, WorkflowRunStatus } from "@cf-twitch/contracts/workflow";
 
 /** Versioned workflow HTTP operations expose durable acceptance and safe status only. */

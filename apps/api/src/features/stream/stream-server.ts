@@ -1,9 +1,10 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
-import { Crypto, Effect, Layer, Option } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { Effect, Layer, Option } from "effect";
+import { Digest } from "effect/crypto";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { StreamLifecycleError } from "@cf-twitch/contracts/stream";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import {
@@ -48,7 +49,7 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
   const eventPublisher = yield* EventPublisher;
   const twitch = yield* TwitchService;
   const configuration = yield* TwitchConfiguration;
-  const crypto = yield* Crypto.Crypto;
+  const digestService = yield* Digest.Digest;
 
   const streamAlarm = StreamAlarm.of({
     scheduleAt: (timestamp) =>
@@ -92,7 +93,7 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
     Layer.provide(viewerLayer),
     Layer.provide(Layer.succeed(ProviderAccessTokens, accessTokens)),
     Layer.provide(Layer.succeed(EventPublisher, eventPublisher)),
-    Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
+    Layer.provide(Layer.succeed(Digest.Digest, digestService)),
   );
 
   const handlersLayer = streamLifecycleHttpHandlersLayer.pipe(Layer.provide(applicationLayer));
@@ -117,7 +118,12 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
 
 /** Hosts StreamLifecycleDO while leaving every outgoing application capability visible. */
 export const streamLifecycleServerLayerWithoutDependencies = StreamLifecycleServer.make<
-  ProviderAccessTokens | EventPublisher | TwitchService | TwitchConfiguration | Crypto.Crypto
+  | Cloudflare.DurableObjectState
+  | ProviderAccessTokens
+  | EventPublisher
+  | TwitchService
+  | TwitchConfiguration
+  | Digest.Digest
 >(makeStreamLifecycleServer.pipe(Effect.orDie));
 
 /** Ready Stream Lifecycle server selects the production provider and Event Bus graph. */

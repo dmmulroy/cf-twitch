@@ -4,11 +4,11 @@ import {
   type OAuthAuthorizationAttempt,
   type OAuthStateOutcome,
 } from "@cf-twitch/contracts/oauth";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cache, Context, Effect, Layer, Redacted, type Schema } from "effect";
-import type { HttpClientError } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import type { HttpClientError } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import { OAuthStateHttpApi } from "./oauth-state-http-api.ts";
 import oauthStateServerLayer, { OAuthStateServer } from "./oauth-state-server.ts";
 

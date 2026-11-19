@@ -24,13 +24,7 @@ import {
 import { StreamLifecycleState } from "./stream.ts";
 import { ProviderEventSubSubscription } from "./provider.ts";
 import { ViewerId } from "./identity.ts";
-import {
-  HttpApi,
-  HttpApiEndpoint,
-  HttpApiGroup,
-  HttpApiSchema,
-  OpenApi,
-} from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
 
 /** Existing public error envelope; status is selected by the HTTP boundary. */
 export const TwitchHttpError = Schema.Struct({

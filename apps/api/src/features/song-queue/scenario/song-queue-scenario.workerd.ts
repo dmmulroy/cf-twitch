@@ -1,7 +1,7 @@
 import { cfTwitchInfrastructureStageConfig } from "@cf-twitch/shared-infrastructure";
 import { expect } from "@effect/vitest";
-import * as Cloudflare from "alchemy/Cloudflare";
-import * as Test from "alchemy/Test/Vitest";
+import * as Cloudflare from "@alchemy.run/cloudflare";
+import * as Test from "@alchemy.run/test/Vitest";
 import {
   IsoTimestamp,
   RedemptionId,
@@ -10,8 +10,8 @@ import {
 } from "@cf-twitch/contracts/identity";
 import { Effect, Option } from "effect";
 import { RequestHistoryQuery, SongQueueLimit } from "@cf-twitch/contracts/song-queue";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import { SongQueueHttpApi } from "../song-queue-http-api.ts";
 import { songQueueScenarioStack } from "./song-queue-scenario-worker.ts";
 

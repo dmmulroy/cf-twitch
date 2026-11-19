@@ -1,12 +1,12 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { SpotifyTrackId } from "@cf-twitch/contracts/identity";
 import { ProviderError, type SpotifyConnectState } from "@cf-twitch/contracts/provider";
 import type { SpotifyPlayback, SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 import { Effect, Layer, Option, Ref } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../../runtime/cloudflare-http-server.ts";
 import { SpotifyService } from "../../providers/spotify-service.ts";
 import { SongQueue } from "../song-queue.ts";

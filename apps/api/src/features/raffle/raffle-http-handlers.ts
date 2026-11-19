@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { Raffle } from "./raffle-service.ts";
 import { RaffleHttpApi } from "./raffle-http-api.ts";
 

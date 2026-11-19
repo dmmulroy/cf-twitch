@@ -4,7 +4,7 @@ import {
   OAuthError,
   OAuthStateOutcome,
 } from "@cf-twitch/contracts/oauth";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 /** OAuth state HTTP contract exposes atomic creation and one-use consumption, not raw storage. */
 export class OAuthStateHttpApi extends HttpApi.make("OAuthStateHttpApi")

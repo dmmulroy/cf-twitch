@@ -5,7 +5,7 @@ import {
 } from "@cf-twitch/contracts/provider";
 import type { ExchangeAuthorizationCode } from "@cf-twitch/contracts/oauth";
 import { Context, Effect, Layer, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { decodeProviderResponse, executeProviderRequest } from "./provider-http.ts";
 

@@ -1,8 +1,8 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Effect, Layer, type Schema } from "effect";
-import type { HttpClientError } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import type { HttpClientError } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { SongQueue } from "./song-queue.ts";
 import { SongQueueHttpApi } from "./song-queue-http-api.ts";

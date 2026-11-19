@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@alchemy.run/cloudflare": "catalog:",
     "alchemy": "catalog:",
     "effect": "catalog:"
   },

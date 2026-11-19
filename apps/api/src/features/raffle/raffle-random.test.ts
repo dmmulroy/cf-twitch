@@ -1,6 +1,7 @@
 import { NodeCrypto } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
-import { Cause, Crypto, Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit, Layer } from "effect";
+import { SecureRandom } from "effect/crypto";
 import { RaffleError } from "@cf-twitch/contracts/raffle";
 import { RaffleRandom, raffleRandomLayer } from "./raffle-random.ts";
 
@@ -15,17 +16,14 @@ const sequenceCryptoLayer = (words: ReadonlyArray<number>, onDraw?: () => void) 
   let index = 0;
 
   return Layer.succeed(
-    Crypto.Crypto,
-    Crypto.make({
-      randomBytes: () => {
-        onDraw?.();
-        const word = words[index++];
+    SecureRandom.SecureRandom,
+    SecureRandom.make(() => {
+      onDraw?.();
+      const word = words[index++];
 
-        if (word === undefined) throw new Error("Raffle test entropy sequence exhausted");
+      if (word === undefined) throw new Error("Raffle test entropy sequence exhausted");
 
-        return uint32Bytes(word);
-      },
-      digest: (_algorithm, data) => Effect.succeed(data),
+      return uint32Bytes(word);
     }),
   );
 };
@@ -58,12 +56,9 @@ it.effect("maps accepted uint32 boundary words to inclusive raffle bounds", () =
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("projects a throwing Crypto primitive as typed randomness unavailability", () => {
-  const crypto = Crypto.make({
-    randomBytes: () => {
-      throw new Error("Controlled Crypto primitive failure");
-    },
-    digest: (_algorithm, data) => Effect.succeed(data),
+it.effect("projects a throwing SecureRandom primitive as typed randomness unavailability", () => {
+  const secureRandom = SecureRandom.make(() => {
+    throw new Error("Controlled SecureRandom primitive failure");
   });
 
   return Effect.gen(function* () {
@@ -75,17 +70,16 @@ it.effect("projects a throwing Crypto primitive as typed randomness unavailabili
       }),
     );
   }).pipe(
-    Effect.provide(raffleRandomLayer.pipe(Layer.provide(Layer.succeed(Crypto.Crypto, crypto)))),
+    Effect.provide(
+      raffleRandomLayer.pipe(Layer.provide(Layer.succeed(SecureRandom.SecureRandom, secureRandom))),
+    ),
   );
 });
 
-it.effect("preserves interruption from the Crypto byte source", () => {
-  const base = Crypto.make({
-    randomBytes: () => uint32Bytes(0),
-    digest: (_algorithm, data) => Effect.succeed(data),
-  });
+it.effect("preserves interruption from the SecureRandom byte source", () => {
+  const base = SecureRandom.make(() => uint32Bytes(0));
 
-  const crypto = Crypto.Crypto.of({
+  const secureRandom = SecureRandom.SecureRandom.of({
     ...base,
     randomBytes: () => Effect.interrupt,
   });
@@ -96,7 +90,9 @@ it.effect("preserves interruption from the Crypto byte source", () => {
 
     expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
   }).pipe(
-    Effect.provide(raffleRandomLayer.pipe(Layer.provide(Layer.succeed(Crypto.Crypto, crypto)))),
+    Effect.provide(
+      raffleRandomLayer.pipe(Layer.provide(Layer.succeed(SecureRandom.SecureRandom, secureRandom))),
+    ),
   );
 });
 

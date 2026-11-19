@@ -1,6 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Schema, SchemaIssue } from "effect";
-import { FastCheck } from "effect/testing";
 import { IsoTimestamp, NonNegativeInt, PositiveInt } from "./identity.ts";
 
 const parseIsoTimestamp = Schema.decodeEffect(IsoTimestamp);
@@ -41,18 +40,15 @@ describe("integer count compatibility", () => {
 });
 
 describe("ISO timestamp calendar compatibility", () => {
-  it("accepts every generated UTC instant with its explicit offset", () => {
-    FastCheck.assert(
-      FastCheck.property(
-        FastCheck.integer({ min: 0, max: 4_102_444_800_000 }),
-        (epochMilliseconds) => {
-          const timestamp = new Date(epochMilliseconds).toISOString();
-          expect(Effect.runSync(parseIsoTimestamp(timestamp))).toBe(timestamp);
-        },
-      ),
-      { numRuns: 200 },
-    );
-  });
+  it.prop(
+    "accepts every generated UTC instant with its explicit offset",
+    [Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4_102_444_800_000 }))],
+    ([epochMilliseconds]) => {
+      const timestamp = new Date(epochMilliseconds).toISOString();
+      expect(Effect.runSync(parseIsoTimestamp(timestamp))).toBe(timestamp);
+    },
+    { arbitrary: { runs: 200 } },
+  );
 
   it("preserves minute-precision instants accepted by the public API", () => {
     for (const timestamp of ["2026-01-01T12:30Z", "2026-01-01T12:30+05:30"]) {

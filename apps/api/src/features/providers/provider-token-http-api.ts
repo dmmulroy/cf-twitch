@@ -1,6 +1,6 @@
 import { ProviderError, ProviderTokens } from "@cf-twitch/contracts/provider";
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 /** Provider token HTTP API is internal-only; credentials never enter public Worker responses. */
 export class ProviderTokenHttpApi extends HttpApi.make("ProviderTokenHttpApi")

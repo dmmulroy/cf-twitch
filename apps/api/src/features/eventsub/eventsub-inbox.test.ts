@@ -3,14 +3,14 @@ import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
 import { Deferred, Effect, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import {
   recordingTwitchAnalyticsLayer,
   TwitchAnalyticsRecording,
 } from "../../../test/support/recording-twitch-analytics.ts";
 import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
-import { FetchHttpClient, HttpClient, HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder, HttpApiClient } from "effect/unstable/httpapi";
+import { FetchHttpClient, HttpClient, HttpRouter } from "effect/http";
+import { HttpApiBuilder, HttpApiClient } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { EventSubHttpApi } from "./eventsub-http-api.ts";
 import { eventSubHttpHandlersLayer } from "./eventsub-http-handlers.ts";

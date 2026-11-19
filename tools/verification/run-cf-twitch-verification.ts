@@ -1,6 +1,6 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Runtime, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const CfTwitchVerificationCommand = Schema.Literals([
   "architecture",

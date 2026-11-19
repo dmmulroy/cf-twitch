@@ -1,9 +1,10 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Crypto, Effect, ErrorReporter, Layer } from "effect";
-import { FetchHttpClient, HttpRouter } from "effect/unstable/http";
+import { Effect, ErrorReporter, Layer } from "effect";
+import { Digest, SecureRandom } from "effect/crypto";
+import { FetchHttpClient, HttpRouter } from "effect/http";
 import { achievementsClientLayer } from "../features/achievements/achievements-client.ts";
 import type { AchievementsServer } from "../features/achievements/achievements-server.ts";
 import { commandsClientLayer } from "../features/commands/commands-client.ts";
@@ -111,7 +112,8 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
   const songQueue = yield* SongQueue;
   const stream = yield* StreamLifecycleClient;
   const configuration = yield* TwitchConfiguration;
-  const crypto = yield* Crypto.Crypto;
+  const digestService = yield* Digest.Digest;
+  const secureRandom = yield* SecureRandom.SecureRandom;
   const errorReporters = yield* ErrorReporter.CurrentErrorReporters;
 
   const runtimeServices = Layer.mergeAll(
@@ -125,7 +127,8 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
     Layer.succeed(SongQueue, songQueue),
     Layer.succeed(StreamLifecycleClient, stream),
     Layer.succeed(TwitchConfiguration, configuration),
-    Layer.succeed(Crypto.Crypto, crypto),
+    Layer.succeed(Digest.Digest, digestService),
+    Layer.succeed(SecureRandom.SecureRandom, secureRandom),
   );
 
   // Router acquisition is scoped in Effect rc.112; never attach it to workerd's unclosed isolate scope.
@@ -150,8 +153,8 @@ export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDepen
   Effect.provide(twitchApplicationLayer),
   Effect.provide(twitchConfigurationLayer),
   Effect.provide(twitchTelemetryLayer),
-  // Provide the application's crypto requirement without acquiring unrelated Node services.
-  Effect.provide(NodeCrypto.layer),
+  // Provide the application's crypto requirements without acquiring unrelated Node services.
+  Effect.provide(Layer.mergeAll(NodeCrypto.layerDigest, NodeCrypto.layerSecureRandom)),
   Effect.orDie,
 );
 

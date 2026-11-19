@@ -2,7 +2,7 @@ import { EventSubReceiptStatus } from "@cf-twitch/contracts/eventsub";
 import { EventSubMessageId } from "@cf-twitch/contracts/identity";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { achievementsClientLayerWithoutDependencies } from "../../src/features/achievements/achievements-client.ts";
 import { achievementsServerLayerWithoutDependencies } from "../../src/features/achievements/achievements-server.ts";

@@ -1,4 +1,6 @@
-import { Clock, Context, Crypto, Effect, Encoding, Layer, Option, Schema, Semaphore } from "effect";
+import { Cause, Clock, Context, Effect, Layer, Option, Schema, Semaphore } from "effect";
+import { Digest } from "effect/crypto";
+import { Hex } from "effect/encoding";
 import { EventId, RedemptionId, SpotifyTrackId } from "@cf-twitch/contracts/identity";
 import { DomainEvent, RaffleRollEvent } from "@cf-twitch/contracts/domain-event";
 import { RaffleRecordResult } from "@cf-twitch/contracts/raffle";
@@ -107,21 +109,25 @@ export const makeWorkflowExecution = Effect.gen(function* () {
   const queue = yield* SongQueue;
   const raffle = yield* Raffle;
   const publisher = yield* EventPublisher;
-  const crypto = yield* Crypto.Crypto;
+  const digestService = yield* Digest.Digest;
   const analytics = yield* TwitchAnalytics;
   const permit = yield* Semaphore.make(1);
 
   const eventId = Effect.fn("WorkflowExecution.eventId")(function* (id: RedemptionId) {
-    const digest = yield* crypto
-      .digest("SHA-256", new TextEncoder().encode(`cf-twitch:saga-event:${id}`))
+    // Effect 4.1 Digest reports an unavailable SHA implementation as a defect, not a typed failure.
+    const digest = yield* digestService
+      .digest(Digest.sha256, new TextEncoder().encode(`cf-twitch:saga-event:${id}`))
       .pipe(
-        Effect.mapError(() => durableFailure({ message: "Workflow event identity digest failed" })),
+        Effect.catchCauseIf(
+          (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
+          () => Effect.fail(durableFailure({ message: "Workflow event identity digest failed" })),
+        ),
       );
 
     const bytes = digest.slice(0, 16);
     bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
     bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
-    const hex = Encoding.encodeHex(bytes);
+    const hex = Hex.encode(bytes);
 
     return EventId.make(
       `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,

@@ -3,7 +3,6 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   Cause,
   Clock,
-  Crypto,
   Effect,
   Exit,
   Layer,
@@ -13,9 +12,10 @@ import {
   Schema,
   Tracer,
 } from "effect";
+import { Digest, SecureRandom } from "effect/crypto";
 import { TestClock } from "effect/testing";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
+import { HttpRouter } from "effect/http";
 import {
   EventSubReceiptConflict,
   type AcceptedEventSubReceipt,
@@ -100,7 +100,7 @@ const withWebhook = <A, E, R>(
     spans: readonly Tracer.NativeSpan[],
   ) => Effect.Effect<A, E, R>,
   twitch: Partial<ITwitchService> = {},
-  cryptoLayer: Layer.Layer<Crypto.Crypto> = NodeCrypto.layer,
+  cryptoLayer: Layer.Layer<Digest.Digest | SecureRandom.SecureRandom> = NodeCrypto.layer,
 ) =>
   Effect.gen(function* () {
     const clock = yield* Clock.Clock;
@@ -204,12 +204,15 @@ describe("authenticated EventSub HTTP ingress", () => {
         description: "Controlled digest failure",
       });
 
-      const cryptoLayer = Layer.succeed(
-        Crypto.Crypto,
-        Crypto.make({
-          randomBytes: (size) => new Uint8Array(size),
-          digest: () => Effect.fail(digestFailure),
-        }),
+      const cryptoLayer = Layer.mergeAll(
+        NodeCrypto.layerSecureRandom,
+        Layer.succeed(
+          Digest.Digest,
+          Digest.Digest.of({
+            digest: () => Effect.die(digestFailure),
+            digestHex: () => Effect.die(digestFailure),
+          }),
+        ),
       );
 
       yield* withWebhook(
@@ -235,12 +238,15 @@ describe("authenticated EventSub HTTP ingress", () => {
       const timestamp = "2026-01-01T00:00:00.000Z";
       yield* TestClock.setTime(Date.parse(timestamp));
 
-      const cryptoLayer = Layer.succeed(
-        Crypto.Crypto,
-        Crypto.make({
-          randomBytes: (size) => new Uint8Array(size),
-          digest: () => Effect.interrupt,
-        }),
+      const cryptoLayer = Layer.mergeAll(
+        NodeCrypto.layerSecureRandom,
+        Layer.succeed(
+          Digest.Digest,
+          Digest.Digest.of({
+            digest: () => Effect.interrupt,
+            digestHex: () => Effect.interrupt,
+          }),
+        ),
       );
 
       yield* withWebhook(

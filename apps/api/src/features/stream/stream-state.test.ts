@@ -1,17 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import {
-  Cause,
-  Crypto,
-  Data,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  PlatformError,
-  Predicate,
-  Schema,
-} from "effect";
+import { Cause, Data, Effect, Exit, Fiber, Layer, PlatformError, Predicate, Schema } from "effect";
+import { Digest } from "effect/crypto";
 import { EventId, IsoTimestamp, StreamId } from "@cf-twitch/contracts/identity";
 import { deriveLifecycleEventId } from "./stream.ts";
 import {
@@ -94,16 +84,16 @@ describe("Stream Lifecycle state", () => {
         }),
       );
 
-      const failingCrypto = Layer.succeed(
-        Crypto.Crypto,
-        Crypto.make({
-          randomBytes: (size) => new Uint8Array(size),
-          digest: () => Effect.fail(cryptoFailure),
+      const failingDigest = Layer.succeed(
+        Digest.Digest,
+        Digest.Digest.of({
+          digest: () => Effect.die(cryptoFailure),
+          digestHex: () => Effect.die(cryptoFailure),
         }),
       );
 
       const failed = yield* deriveLifecycleEventId(input).pipe(
-        Effect.provide(failingCrypto),
+        Effect.provide(failingDigest),
         Effect.exit,
       );
 
@@ -113,16 +103,16 @@ describe("Stream Lifecycle state", () => {
         expect(Cause.hasDies(failed.cause)).toBe(true);
       }
 
-      const suspendedCrypto = Layer.succeed(
-        Crypto.Crypto,
-        Crypto.make({
-          randomBytes: (size) => new Uint8Array(size),
+      const suspendedDigest = Layer.succeed(
+        Digest.Digest,
+        Digest.Digest.of({
           digest: () => Effect.never,
+          digestHex: () => Effect.never,
         }),
       );
 
       const fiber = yield* Effect.forkChild(
-        deriveLifecycleEventId(input).pipe(Effect.provide(suspendedCrypto)),
+        deriveLifecycleEventId(input).pipe(Effect.provide(suspendedDigest)),
       );
 
       yield* Fiber.interrupt(fiber);

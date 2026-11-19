@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { OAuthError, OAuthRedirectUri, OAuthState } from "@cf-twitch/contracts/oauth";
-import { Crypto, Effect, Layer, Redacted, Schema } from "effect";
-import { FastCheck } from "effect/testing";
+import { Effect, Layer, Redacted, Schema } from "effect";
+import { SecureRandom } from "effect/crypto";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
 import { providerLocalConfigurationLayer } from "../providers/provider-local-sql.test-support.ts";
 import { ProviderTokenExchange } from "../providers/provider-token-exchange.ts";
@@ -18,20 +18,16 @@ const encodeState = Schema.encodeSync(OAuthState);
 
 const parseRedirect = Schema.decodeOption(OAuthRedirectUri);
 
-it.effect(
+it.prop(
   "OAuth UUID state roundtrips only at the explicit wire boundary and remains redacted in diagnostics",
-  () =>
-    Effect.sync(() => {
-      FastCheck.assert(
-        FastCheck.property(FastCheck.uuid(), (value) => {
-          const state = parseState(value);
-          expect(encodeState(state)).toBe(value);
-          expect(Redacted.value(state)).toBe(value);
-          expect(JSON.stringify({ state })).not.toContain(value);
-        }),
-        { numRuns: 100 },
-      );
-    }),
+  [Schema.String.check(Schema.isUUID())],
+  ([value]) => {
+    const state = parseState(value);
+    expect(encodeState(state)).toBe(value);
+    expect(Redacted.value(state)).toBe(value);
+    expect(JSON.stringify({ state })).not.toContain(value);
+  },
+  { arbitrary: { runs: 100 } },
 );
 
 it.effect("OAuth redirect URI parser rejects malformed absolute URLs and non-HTTP schemes", () =>
@@ -73,18 +69,15 @@ it.effect("OAuth token setup retains all baseline provider scopes", () =>
 
 it.effect("OAuth authorization URLs preserve exact query encoding and remain redacted", () =>
   Effect.gen(function* () {
-    const cryptoLayer = Layer.succeed(
-      Crypto.Crypto,
-      Crypto.make({
-        randomBytes: (size) => new Uint8Array(size),
-        digest: (_algorithm, bytes) => Effect.succeed(bytes),
-      }),
+    const secureRandomLayer = Layer.succeed(
+      SecureRandom.SecureRandom,
+      SecureRandom.make((size) => new Uint8Array(size)),
     );
 
     const layer = oauthAuthorizationLayerWithoutDependencies.pipe(
       Layer.provide([
         providerLocalConfigurationLayer,
-        cryptoLayer,
+        secureRandomLayer,
         Layer.mock(OAuthStateClient, { createAttempt: () => Effect.void }),
         Layer.mock(ProviderTokenExchange, {}),
         Layer.mock(ProviderAccessTokens, {}),

@@ -1,9 +1,10 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
-import { Crypto, Effect, Layer } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { Effect, Layer } from "effect";
+import { SecureRandom } from "effect/crypto";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { raffleLayer } from "./raffle-database.ts";
 import { raffleHttpHandlersLayer } from "./raffle-http-handlers.ts";
@@ -18,15 +19,17 @@ export class RaffleServer extends Cloudflare.DurableObject<RaffleServer, RaffleS
   "KeyboardRaffleDO",
 ) {}
 
-/** Captures outer Crypto while keeping SQL acquisition inside the Durable Object runtime phase. */
-export const raffleServerLayer = RaffleServer.make<Crypto.Crypto>(
+/** Captures outer SecureRandom while keeping SQL acquisition inside the Durable Object runtime phase. */
+export const raffleServerLayer = RaffleServer.make<
+  Cloudflare.DurableObjectState | SecureRandom.SecureRandom
+>(
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const secureRandom = yield* SecureRandom.SecureRandom;
     const state = yield* Cloudflare.DurableObjectState;
 
     const database = raffleLayer.pipe(
       Layer.provide(SqliteClient.layer({ storage: state.raw.storage })),
-      Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
+      Layer.provide(Layer.succeed(SecureRandom.SecureRandom, secureRandom)),
     );
 
     const handlers = raffleHttpHandlersLayer.pipe(Layer.provide(database));

@@ -1,15 +1,6 @@
-import {
-  Clock,
-  Context,
-  Crypto,
-  Effect,
-  Encoding,
-  Layer,
-  Option,
-  Predicate,
-  Schema,
-  Semaphore,
-} from "effect";
+import { Clock, Context, Effect, Layer, Option, Predicate, Schema, Semaphore } from "effect";
+import { Digest } from "effect/crypto";
+import { Hex } from "effect/encoding";
 import { type DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import { StreamLifecycleError, type StreamTransitionCheckpoint } from "@cf-twitch/contracts/stream";
@@ -82,21 +73,19 @@ export const deriveLifecycleEventId = Effect.fn("StreamLifecycle.deriveLifecycle
     readonly streamId: StreamId;
     readonly transitionAt: IsoTimestamp;
   }) {
-    const crypto = yield* Crypto.Crypto;
+    const digestService = yield* Digest.Digest;
 
-    const digest = yield* crypto
-      .digest(
-        "SHA-256",
-        new TextEncoder().encode(
-          `cf-twitch:stream-lifecycle:${input.transition}:${input.streamId}:${input.transitionAt}`,
-        ),
-      )
-      .pipe(Effect.orDie);
+    const digest = yield* digestService.digest(
+      Digest.sha256,
+      new TextEncoder().encode(
+        `cf-twitch:stream-lifecycle:${input.transition}:${input.streamId}:${input.transitionAt}`,
+      ),
+    );
 
     const uuidBytes = digest.slice(0, 16);
     uuidBytes[6] = ((uuidBytes[6] ?? 0) & 0x0f) | 0x50;
     uuidBytes[8] = ((uuidBytes[8] ?? 0) & 0x3f) | 0x80;
-    const hex = Encoding.encodeHex(uuidBytes);
+    const hex = Hex.encode(uuidBytes);
 
     return EventId.make(
       `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
@@ -134,7 +123,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
   const events = yield* EventPublisher;
   const alarm = yield* StreamAlarm;
   const viewerProvider = yield* StreamViewerProvider;
-  const crypto = yield* Crypto.Crypto;
+  const digestService = yield* Digest.Digest;
   const mutationSemaphore = yield* Semaphore.make(1);
 
   const saveEffectCheckpoint = Effect.fn("StreamLifecycle.saveEffectCheckpoint")(function* (
@@ -255,7 +244,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
       transition: "online",
       streamId: input.streamId,
       transitionAt: input.startedAt,
-    }).pipe(Effect.provideService(Crypto.Crypto, crypto));
+    }).pipe(Effect.provideService(Digest.Digest, digestService));
 
     const accepted = acceptOnlineTransition(current, { ...input, eventId });
 
@@ -285,7 +274,7 @@ export const makeStreamLifecycle = Effect.gen(function* () {
       transition: "offline",
       streamId,
       transitionAt: input.endedAt,
-    }).pipe(Effect.provideService(Crypto.Crypto, crypto));
+    }).pipe(Effect.provideService(Digest.Digest, digestService));
 
     const accepted = acceptOfflineTransition(current, { ...input, eventId });
 

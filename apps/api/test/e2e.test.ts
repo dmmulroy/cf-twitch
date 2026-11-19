@@ -1,10 +1,11 @@
 import { cfTwitchInfrastructureStageConfig } from "@cf-twitch/shared-infrastructure";
 import { expect, it } from "@effect/vitest";
-import * as Cloudflare from "alchemy/Cloudflare";
-import * as Test from "alchemy/Test/Vitest";
-import { Effect, Encoding, Option, Redacted, Schedule, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import * as Cloudflare from "@alchemy.run/cloudflare";
+import * as Test from "@alchemy.run/test/Vitest";
+import { Effect, Option, Redacted, Schedule, Schema } from "effect";
+import { Hex } from "effect/encoding";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 
 import { ViewerAchievementProgress } from "@cf-twitch/contracts/achievement";
 import { EventSubReceiptStatus } from "@cf-twitch/contracts/eventsub";
@@ -108,9 +109,7 @@ const signEventSubRequest = async (input: {
     ["sign"],
   );
 
-  const signature = Encoding.encodeHex(
-    new Uint8Array(await crypto.subtle.sign("HMAC", key, signed)),
-  );
+  const signature = Hex.encode(new Uint8Array(await crypto.subtle.sign("HMAC", key, signed)));
 
   return new Request(`${input.url}/webhooks/twitch`, {
     method: "POST",

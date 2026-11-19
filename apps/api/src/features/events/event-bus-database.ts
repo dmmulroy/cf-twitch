@@ -1,6 +1,6 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
 import { Context, Effect, Layer, Option, Schema } from "effect";
-import { SqlClient, SqlError } from "effect/unstable/sql";
+import { SqlClient, SqlError } from "effect/sql";
 import {
   DomainEventType,
   EventBusError,

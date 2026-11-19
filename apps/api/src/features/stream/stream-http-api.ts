@@ -12,7 +12,7 @@ import {
   ViewerHistory,
   ViewerHistoryInput,
 } from "@cf-twitch/contracts/stream";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 const UnitSuccess = Schema.Struct({ success: Schema.Literal(true) });
 

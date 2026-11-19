@@ -1,9 +1,9 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
 import { Effect, Layer, Option } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { twitchConfigurationLayer } from "../../runtime/twitch-configuration.ts";
@@ -84,9 +84,9 @@ const makeEventBusServer = Effect.gen(function* () {
 });
 
 /** Hosts EventBusDO while leaving its outgoing Achievement capability visible to scenarios. */
-export const eventBusServerLayerWithoutDependencies = EventBusServer.make<Achievements>(
-  makeEventBusServer.pipe(Effect.provide(achievementEventHandlerLayer), Effect.orDie),
-);
+export const eventBusServerLayerWithoutDependencies = EventBusServer.make<
+  Cloudflare.DurableObjectState | Achievements
+>(makeEventBusServer.pipe(Effect.provide(achievementEventHandlerLayer), Effect.orDie));
 
 /** Ready Event Bus server selects the production Achievement client graph. */
 export const eventBusServerLayer = eventBusServerLayerWithoutDependencies.pipe(

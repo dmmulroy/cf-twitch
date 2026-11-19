@@ -1,8 +1,8 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Effect, Layer, Schema } from "effect";
-import { HttpClientError } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import { HttpClientError } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import { AchievementError } from "@cf-twitch/contracts/achievement";
 import { Achievements } from "./achievements-service.ts";
 import { AchievementsHttpApi } from "./achievements-http-api.ts";

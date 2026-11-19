@@ -10,7 +10,7 @@ import {
   Schema,
   Semaphore,
 } from "effect";
-import { SqlClient, SqlError } from "effect/unstable/sql";
+import { SqlClient, SqlError } from "effect/sql";
 import type { SchemaError } from "effect/Schema";
 import {
   AcceptedEventSubReceipt,

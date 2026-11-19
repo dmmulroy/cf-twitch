@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { Achievements } from "./achievements-service.ts";
 import { AchievementsHttpApi } from "./achievements-http-api.ts";
 

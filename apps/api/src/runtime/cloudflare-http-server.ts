@@ -1,5 +1,5 @@
 import { Effect, FileSystem, Layer, Path } from "effect";
-import { Etag, HttpPlatform } from "effect/unstable/http";
+import { Etag, HttpPlatform } from "effect/http";
 
 const cloudflareHttpPlatformLayer = Layer.succeed(HttpPlatform.HttpPlatform, {
   platform: "web",

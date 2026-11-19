@@ -2,7 +2,7 @@ import { it, expect } from "@effect/vitest";
 import { BroadcasterId, RewardId } from "@cf-twitch/contracts/identity";
 import { OAuthRedirectUri } from "@cf-twitch/contracts/oauth";
 import { Effect, Layer, Option, Redacted, Result } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import {
   ProviderTokenExchange,

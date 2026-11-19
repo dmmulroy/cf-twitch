@@ -2,7 +2,8 @@ import { SqliteClient } from "@effect/sql-sqlite-node";
 import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
 import { Cause, Context, Effect, Exit, Layer, Option, Predicate, Ref, Schema } from "effect";
-import { FastCheck, TestClock } from "effect/testing";
+import * as Arbitrary from "effect/Arbitrary";
+import { TestClock } from "effect/testing";
 import {
   AchievementDefinition,
   AchievementError,
@@ -570,12 +571,12 @@ describe("Chat command preparation through real registry and executor", () => {
           }),
         );
 
-        const samples = FastCheck.sample(
-          FastCheck.tuple(
-            FastCheck.constantFrom("a", "😀", "🎉", "é", "中"),
-            FastCheck.integer({ min: 495, max: 505 }),
-          ),
-          { seed: 2026, numRuns: 30 },
+        const samples = yield* Arbitrary.sampleEffect(
+          Arbitrary.all([
+            Arbitrary.schema(Schema.Literals(["a", "😀", "🎉", "é", "中"])),
+            Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: 495, maximum: 505 }))),
+          ]),
+          { seed: 2026, count: 30 },
         );
 
         for (const [point, length] of samples) {
@@ -593,41 +594,32 @@ describe("Chat command preparation through real registry and executor", () => {
 });
 
 describe("Chat badge permission hierarchy", () => {
-  it.effect(
+  it.prop(
     "selects the maximum tier independent of badge order and ignores subscription badges",
-    () =>
-      Effect.sync(() => {
-        FastCheck.assert(
-          FastCheck.property(
-            FastCheck.array(
-              FastCheck.constantFrom(
-                "broadcaster",
-                "moderator",
-                "vip",
-                "subscriber",
-                "founder",
-                "bits",
-              ),
-            ),
-            (badges) => {
-              const expected = badges.includes("broadcaster")
-                ? "broadcaster"
-                : badges.includes("moderator")
-                  ? "moderator"
-                  : badges.includes("vip")
-                    ? "vip"
-                    : "everyone";
+    [
+      Schema.Array(
+        Schema.Literals(["broadcaster", "moderator", "vip", "subscriber", "founder", "bits"]),
+      ),
+    ],
+    ([badges]) => {
+      const expected = badges.includes("broadcaster")
+        ? "broadcaster"
+        : badges.includes("moderator")
+          ? "moderator"
+          : badges.includes("vip")
+            ? "vip"
+            : "everyone";
 
-              expect(getChatCommandPermission(badges.map((set_id) => ({ set_id })))).toBe(expected);
-              expect(
-                getChatCommandPermission([...badges].reverse().map((set_id) => ({ set_id }))),
-              ).toBe(expected);
-              expect(hasCommandPermission(expected, "everyone")).toBe(true);
-            },
-          ),
-        );
-        expect(hasCommandPermission("vip", "moderator")).toBe(false);
-        expect(hasCommandPermission("broadcaster", "moderator")).toBe(true);
-      }),
+      expect(getChatCommandPermission(badges.map((set_id) => ({ set_id })))).toBe(expected);
+      expect(getChatCommandPermission([...badges].reverse().map((set_id) => ({ set_id })))).toBe(
+        expected,
+      );
+      expect(hasCommandPermission(expected, "everyone")).toBe(true);
+    },
   );
+
+  it("orders the elevated permission tiers", () => {
+    expect(hasCommandPermission("vip", "moderator")).toBe(false);
+    expect(hasCommandPermission("broadcaster", "moderator")).toBe(true);
+  });
 });

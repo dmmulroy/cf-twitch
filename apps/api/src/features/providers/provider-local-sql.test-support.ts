@@ -3,7 +3,7 @@ import { NodeCrypto } from "@effect/platform-node";
 import { BroadcasterId, RewardId } from "@cf-twitch/contracts/identity";
 import { ProviderError, type OAuthProvider } from "@cf-twitch/contracts/provider";
 import { Context, Effect, Layer, Option, Redacted } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
 import {

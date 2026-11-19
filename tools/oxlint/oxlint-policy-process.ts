@@ -1,5 +1,5 @@
 import { Effect, FileSystem, PlatformError, Scope, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { join } from "node:path";
 
 /** Exit status and interleaved stdout/stderr captured from one policy command invocation. */

@@ -1,11 +1,12 @@
 import { NodeCrypto } from "@effect/platform-node";
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Crypto, Effect, Layer, Option, Schema } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
-import { SqlClient } from "effect/unstable/sql";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { Effect, Layer, Option, Schema } from "effect";
+import { SecureRandom } from "effect/crypto";
+import * as Arbitrary from "effect/Arbitrary";
+import { SqlClient } from "effect/sql";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { IsoTimestamp, PageSize, RedemptionId, ViewerId } from "@cf-twitch/contracts/identity";
 import { RaffleNumber, RaffleRecordResult, RecordRaffleRoll } from "@cf-twitch/contracts/raffle";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
@@ -125,37 +126,37 @@ describe("Raffle real SQLite authority", () => {
         expect(Option.isNone(yield* raffle.getUserStats({ userId: input.userId }))).toBe(true);
       }).pipe(Effect.provide(database)),
   );
-  it.effect("uses two independent Crypto byte draws and never redraws an existing receipt", () => {
-    let randomByteCalls = 0;
-    const words = [0, 9_999];
+  it.effect(
+    "uses two independent SecureRandom byte draws and never redraws an existing receipt",
+    () => {
+      let randomByteCalls = 0;
+      const words = [0, 9_999];
 
-    const crypto = Crypto.make({
-      randomBytes: () => {
+      const secureRandom = SecureRandom.make(() => {
         const word = words[randomByteCalls++] ?? 0xffff_ffff;
         const bytes = new Uint8Array(4);
         new DataView(bytes.buffer).setUint32(0, word);
 
         return bytes;
-      },
-      digest: (_algorithm, data) => Effect.succeed(data),
-    });
+      });
 
-    const controlledDatabase = raffleLayer.pipe(
-      Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
-      Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })),
-    );
+      const controlledDatabase = raffleLayer.pipe(
+        Layer.provide(Layer.succeed(SecureRandom.SecureRandom, secureRandom)),
+        Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })),
+      );
 
-    return Effect.gen(function* () {
-      const raffle = yield* Raffle;
-      const { roll: _roll, winningNumber: _winningNumber, ...input } = rollInput("controlled");
-      const first = yield* raffle.getOrCreateRoll(input);
+      return Effect.gen(function* () {
+        const raffle = yield* Raffle;
+        const { roll: _roll, winningNumber: _winningNumber, ...input } = rollInput("controlled");
+        const first = yield* raffle.getOrCreateRoll(input);
 
-      expect(first.roll).toMatchObject({ roll: 1, winningNumber: 10_000 });
-      expect(randomByteCalls).toBe(2);
-      expect(yield* raffle.getOrCreateRoll(input)).toEqual(first);
-      expect(randomByteCalls).toBe(2);
-    }).pipe(Effect.provide(controlledDatabase));
-  });
+        expect(first.roll).toMatchObject({ roll: 1, winningNumber: 10_000 });
+        expect(randomByteCalls).toBe(2);
+        expect(yield* raffle.getOrCreateRoll(input)).toEqual(first);
+        expect(randomByteCalls).toBe(2);
+      }).pipe(Effect.provide(controlledDatabase));
+    },
+  );
 
   it.effect(
     "strict global non-winning records exclude ties/winners and ranking follows latest names",
@@ -289,13 +290,14 @@ describe("Raffle real SQLite authority", () => {
       Effect.gen(function* () {
         const raffle = yield* Raffle;
 
-        const pairs = FastCheck.sample(
-          FastCheck.tuple(
-            FastCheck.integer({ min: 1, max: 10_000 }),
-            FastCheck.integer({ min: 1, max: 10_000 }),
-          ),
-          { seed: 7123, numRuns: 150 },
+        const raffleNumber = Arbitrary.schema(
+          Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10_000 })),
         );
+
+        const pairs = yield* Arbitrary.sampleEffect(Arbitrary.all([raffleNumber, raffleNumber]), {
+          seed: 7123,
+          count: 150,
+        });
 
         let best = Infinity;
 

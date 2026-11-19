@@ -1,8 +1,8 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Context, Effect, Layer, Option, type Schema } from "effect";
-import type { HttpClientError } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import type { HttpClientError } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import { EVENT_BUS_SINGLETON_KEY, EventBusError } from "@cf-twitch/contracts/event-bus";
 import { EventBusHttpApi } from "./event-bus-http-api.ts";
 import eventBusServerLayer, { EventBusServer } from "./event-bus-server.ts";

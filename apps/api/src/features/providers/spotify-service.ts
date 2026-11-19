@@ -5,8 +5,9 @@ import {
   type SpotifyDevice,
 } from "@cf-twitch/contracts/provider";
 import type { SpotifyPlayback, SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
-import { Context, Crypto, Effect, Layer, Option, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Cause, Context, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { SecureRandom } from "effect/crypto";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
 import {
@@ -140,19 +141,23 @@ export const makeSpotifyService = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const tokens = yield* ProviderAccessTokens;
   const configuration = yield* TwitchConfiguration;
-  const crypto = yield* Crypto.Crypto;
+  const secureRandom = yield* SecureRandom.SecureRandom;
 
   const generateProviderCommandId = Effect.fn("SpotifyService.generateProviderCommandId")(() =>
-    crypto.randomUUIDv4.pipe(
-      Effect.mapError(
+    // Effect 4.1 SecureRandom reports randomness failure as a defect, not a typed failure.
+    secureRandom.uuidV4().pipe(
+      Effect.catchCauseIf(
+        (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
         () =>
-          new ProviderError({
-            provider: "spotify",
-            operation: "generateProviderCommandId",
-            kind: "randomness",
-            status: 0,
-            retryAfterMs: Option.none(),
-          }),
+          Effect.fail(
+            new ProviderError({
+              provider: "spotify",
+              operation: "generateProviderCommandId",
+              kind: "randomness",
+              status: 0,
+              retryAfterMs: Option.none(),
+            }),
+          ),
       ),
     ),
   );

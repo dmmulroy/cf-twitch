@@ -1,7 +1,7 @@
-import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { generateIsolatedCfTwitchTestStage } from "@cf-twitch/shared-infrastructure";
-import { Effect, Runtime, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Effect, Layer, Runtime, Schema } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const CfTwitchLocalTestTarget = Schema.Literal("local");
 
@@ -65,5 +65,7 @@ if (import.meta.main) {
     yield* runCfTwitchLocalEndToEndTests();
   });
 
-  NodeRuntime.runMain(main.pipe(Effect.provide(NodeServices.layer)));
+  NodeRuntime.runMain(
+    main.pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layerSecureRandom))),
+  );
 }

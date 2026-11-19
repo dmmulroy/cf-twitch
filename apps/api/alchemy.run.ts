@@ -1,7 +1,7 @@
 import { parseCfTwitchInfrastructureStage } from "@cf-twitch/shared-infrastructure";
 import * as Alchemy from "alchemy";
 import type { Input } from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Effect } from "effect";
 import twitchApiWorkerLayer, { TwitchApiWorker } from "./src/runtime/twitch-worker.ts";
 

@@ -22,16 +22,16 @@
     "verify": "node tools/verification/run-cf-twitch-verification.ts"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.0-rc.112",
-    "@effect/vitest": "4.0.0-rc.112",
+    "@effect/platform-node": "4.1.4",
+    "@effect/vitest": "4.1.4",
     "@oxlint/plugins": "1.80.0",
     "@types/node": "26.3.0",
-    "effect": "4.0.0-rc.112",
+    "effect": "4.1.4",
     "oxc-parser": "0.146.0",
     "oxlint": "1.80.0",
     "typescript": "7.0.2",
-    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
-    "vite-plus": "0.3.0"
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.6.0",
+    "vite-plus": "1.6.0"
   },
   "devEngines": {
     "packageManager": {

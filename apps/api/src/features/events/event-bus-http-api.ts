@@ -13,7 +13,7 @@ import {
   RegisterEventBusSubscriptionInput,
 } from "@cf-twitch/contracts/event-bus";
 import { EventId, NonNegativeInt } from "@cf-twitch/contracts/identity";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 const EventIdInput = Schema.Struct({ eventId: EventId });
 

@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { WorkflowExecution } from "./workflow-execution.ts";
 import { WorkflowHttpApi } from "./workflow-http-api.ts";
 

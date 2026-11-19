@@ -1,7 +1,9 @@
-import { Clock, Crypto, Effect, Encoding, Predicate, Redacted, Schema, Stream } from "effect";
+import { Cause, Clock, Effect, Predicate, Redacted, Schema, Stream } from "effect";
+import { Digest } from "effect/crypto";
+import { Hex } from "effect/encoding";
 import { EventSubHeaders } from "@cf-twitch/contracts/eventsub";
 import { IsoTimestamp } from "@cf-twitch/contracts/identity";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { EventSubReceipts } from "../eventsub/eventsub-receipts.ts";
 import { parseEventSubMessage } from "../eventsub/eventsub-message.ts";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
@@ -54,7 +56,7 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(
     const configuration = yield* TwitchConfiguration;
     const receipts = yield* EventSubReceipts;
     const correlation = yield* HttpRequestCorrelation;
-    const effectCrypto = yield* Crypto.Crypto;
+    const digestService = yield* Digest.Digest;
     const request = yield* HttpServerRequest.HttpServerRequest;
 
     const headers = yield* parseHeaders(request.headers).pipe(
@@ -86,7 +88,7 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(
     signedBytes.set(bodyBytes, prefix.length);
 
     const signature = yield* Effect.fromResult(
-      Encoding.decodeHex(headers["twitch-eventsub-message-signature"].slice(7)),
+      Hex.decode(headers["twitch-eventsub-message-signature"].slice(7)),
     ).pipe(
       Effect.map((bytes) => new Uint8Array(bytes)),
       Effect.mapError(
@@ -134,10 +136,14 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(
         contentType: "text/plain; charset=UTF-8",
       });
 
-    const contentDigest = yield* effectCrypto.digest("SHA-256", signedBytes).pipe(
-      Effect.map(Encoding.encodeHex),
-      Effect.mapError(
-        () => new HttpBoundaryError({ status: 503, error: "EventSub durable acceptance failed" }),
+    // Effect 4.1 Digest reports an unavailable SHA implementation as a defect, not a typed failure.
+    const contentDigest = yield* digestService.digestHex(Digest.sha256, signedBytes).pipe(
+      Effect.catchCauseIf(
+        (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
+        () =>
+          Effect.fail(
+            new HttpBoundaryError({ status: 503, error: "EventSub durable acceptance failed" }),
+          ),
       ),
     );
 

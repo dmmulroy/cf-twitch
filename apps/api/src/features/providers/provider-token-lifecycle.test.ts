@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import type { ProviderTokens } from "@cf-twitch/contracts/provider";
 import { Clock, Effect, Fiber, Layer, Option, Redacted } from "effect";
 import { TestClock } from "effect/testing";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { ProviderTokenDatabase } from "./provider-token-database.ts";
 import { ProviderTokenLifecycle } from "./provider-token-lifecycle.ts";
 import {

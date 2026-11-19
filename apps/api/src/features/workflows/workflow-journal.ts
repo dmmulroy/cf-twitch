@@ -1,6 +1,6 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
 import { Clock, Context, Effect, Layer, Match, Option, Result, Schema } from "effect";
-import { SqlClient, SqlError } from "effect/unstable/sql";
+import { SqlClient, SqlError } from "effect/sql";
 import type { SchemaError } from "effect/Schema";
 import { IsoTimestamp, NonNegativeInt } from "@cf-twitch/contracts/identity";
 import {
@@ -245,7 +245,7 @@ export const makeWorkflowJournal = Effect.gen(function* () {
 
   const initialize = Effect.fn("WorkflowJournal.initialize")(function* (input: WorkflowInput) {
     const id = WorkflowId.make(
-      WorkflowInput.match<string>(input, {
+      WorkflowInput.match(input, {
         SongRequest: ({ redemption }) => redemption.id,
         KeyboardRaffle: ({ redemption }) => redemption.id,
         RaidShoutout: ({ raid }) => raid.messageId,

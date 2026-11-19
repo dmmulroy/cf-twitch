@@ -1,9 +1,9 @@
 import { ProviderError, type OAuthProvider } from "@cf-twitch/contracts/provider";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Effect, Layer, Option, type Schema } from "effect";
-import type { HttpClientError } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import type { HttpClientError } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
 import { ProviderTokenHttpApi } from "./provider-token-http-api.ts";
 import providerTokenServerLayer, {

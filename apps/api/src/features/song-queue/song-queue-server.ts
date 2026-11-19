@@ -1,9 +1,9 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
 import { Effect, Layer } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { SpotifyService, spotifyServiceLayer } from "../providers/spotify-service.ts";
 import { songQueueAlarmLayer } from "./song-queue-alarm.ts";

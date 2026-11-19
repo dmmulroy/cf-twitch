@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { isOpenApiPattern } from "./schema-pattern.ts";
 import { NonNegativeInt, PositiveInt } from "./identity.ts";
 import { OAuthProvider } from "./provider.ts";
 
@@ -10,7 +11,7 @@ export type OAuthState = typeof OAuthState.Type;
 
 /** OAuth redirect URI must be an absolute URL. */
 export const OAuthRedirectUri = Schema.String.check(
-  Schema.isPattern(/^https?:\/\/[^\s]+$/),
+  isOpenApiPattern(/^https?:\/\/[^\s]+$/),
   Schema.makeFilter((value) => URL.canParse(value)),
 ).pipe(Schema.brand("OAuthRedirectUri"));
 

@@ -7,8 +7,9 @@ import {
   type OAuthStateOutcome,
 } from "@cf-twitch/contracts/oauth";
 import type { ProviderError, ProviderTokens } from "@cf-twitch/contracts/provider";
-import { Clock, Context, Crypto, Effect, Layer, Redacted } from "effect";
-import { UrlParams } from "effect/unstable/http";
+import { Cause, Clock, Context, Effect, Layer, Redacted } from "effect";
+import { SecureRandom } from "effect/crypto";
+import { UrlParams } from "effect/http";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
 import { providerAccessTokensLayer } from "../providers/provider-token-client.ts";
@@ -55,7 +56,7 @@ export class OAuthAuthorization extends Context.Service<OAuthAuthorization, IOAu
 /** Construct OAuth orchestration without hiding the one-use state or token persistence requirements. */
 export const makeOAuthAuthorization = Effect.gen(function* () {
   const configuration = yield* TwitchConfiguration;
-  const crypto = yield* Crypto.Crypto;
+  const secureRandom = yield* SecureRandom.SecureRandom;
   const states = yield* OAuthStateClient;
   const exchange = yield* ProviderTokenExchange;
   const tokens = yield* ProviderAccessTokens;
@@ -63,10 +64,13 @@ export const makeOAuthAuthorization = Effect.gen(function* () {
   const beginAuthorization = Effect.fn("OAuthAuthorization.beginAuthorization")(function* (
     input: BeginAuthorization,
   ) {
-    const state = yield* crypto.randomUUIDv4.pipe(
+    // Effect 4.1 SecureRandom reports randomness failure as a defect, not a typed failure.
+    const state = yield* secureRandom.uuidV4().pipe(
       Effect.map(Redacted.make),
-      Effect.mapError(
-        () => new OAuthError({ operation: "beginAuthorization", reason: "randomness" }),
+      Effect.catchCauseIf(
+        (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
+        () =>
+          Effect.fail(new OAuthError({ operation: "beginAuthorization", reason: "randomness" })),
       ),
     );
 

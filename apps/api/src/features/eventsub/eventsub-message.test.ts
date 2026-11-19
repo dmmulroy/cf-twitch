@@ -1,7 +1,6 @@
 import { it } from "@effect/vitest";
-import { describe, expect, test } from "vite-plus/test";
+import { describe, expect } from "vite-plus/test";
 import { Effect, Predicate, Schema } from "effect";
-import { FastCheck } from "effect/testing";
 import { EventSubHeaders } from "@cf-twitch/contracts/eventsub";
 import { parseEventSubMessage } from "./eventsub-message.ts";
 
@@ -172,31 +171,27 @@ describe("EventSub signed message boundary", () => {
       }),
   );
 
-  test("unknown subscription payloads retain JSON values and cannot spoof a known internal discriminator", () => {
-    FastCheck.assert(
-      FastCheck.property(
-        FastCheck.string({ minLength: 1 }),
-        Schema.toArbitrary(Schema.Json)(FastCheck),
-        (suffix, value) => {
-          const type = `unknown.${suffix}`;
+  it.prop(
+    "unknown subscription payloads retain JSON values and cannot spoof a known internal discriminator",
+    [Schema.String.check(Schema.isMinLength(1)), Schema.Json],
+    ([suffix, value]) => {
+      const type = `unknown.${suffix}`;
 
-          const result = Effect.runSync(
-            parseEventSubMessage(
-              { ...headers, "twitch-eventsub-subscription-type": type },
-              Object.fromEntries([
-                ["subscription", subscription(type)],
-                ["event", { value }],
-                ["_tag", "RewardRedemptionNotification"],
-                ["__proto__", { subscription: subscription("spoofed.subscription") }],
-              ]),
-            ),
-          );
+      const result = Effect.runSync(
+        parseEventSubMessage(
+          { ...headers, "twitch-eventsub-subscription-type": type },
+          Object.fromEntries([
+            ["subscription", subscription(type)],
+            ["event", { value }],
+            ["_tag", "RewardRedemptionNotification"],
+            ["__proto__", { subscription: subscription("spoofed.subscription") }],
+          ]),
+        ),
+      );
 
-          expect(result).toHaveProperty("_tag", "UnhandledEventSubNotification");
-          expect(result).toHaveProperty("subscription.type", type);
-          expect(result).toHaveProperty("event.value", value);
-        },
-      ),
-    );
-  });
+      expect(result).toHaveProperty("_tag", "UnhandledEventSubNotification");
+      expect(result).toHaveProperty("subscription.type", type);
+      expect(result).toHaveProperty("event.value", value);
+    },
+  );
 });

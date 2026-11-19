@@ -1,5 +1,5 @@
 import { Context, Effect, Redacted, Result, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { NonNegativeInt, PageSize } from "@cf-twitch/contracts/identity";
 import { SongQueueLimit } from "@cf-twitch/contracts/song-queue";
 import type { TwitchHttpError } from "@cf-twitch/contracts/twitch-api";

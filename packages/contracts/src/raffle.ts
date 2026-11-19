@@ -24,7 +24,11 @@ export const RaffleDistance = Schema.Int.check(
 /** Parsed absolute distance between one roll and its winning number. */
 export type RaffleDistance = typeof RaffleDistance.Type;
 
-/** Immutable roll evidence; derived distance and winner fields are not accepted. */
+/**
+ * Immutable roll evidence; derived distance and winner fields are not accepted.
+ *
+ * Decoders must pass `recordRaffleRollParseOptions`: Effect 4.1 no longer applies `parseOptions` annotations.
+ */
 export const RecordRaffleRoll = Schema.Struct({
   id: RedemptionId,
   userId: ViewerId,
@@ -32,7 +36,10 @@ export const RecordRaffleRoll = Schema.Struct({
   roll: RaffleNumber,
   winningNumber: RaffleNumber,
   rolledAt: IsoTimestamp,
-}).annotate({ parseOptions: { onExcessProperty: "error" } });
+});
+
+/** Parse options that reject caller-supplied derived roll fields. */
+export const recordRaffleRollParseOptions = { onExcessProperty: "error" } as const;
 
 /** One roll per redemption, with exact immutable replay evidence. */
 export interface RecordRaffleRoll extends Schema.Schema.Type<typeof RecordRaffleRoll> {}

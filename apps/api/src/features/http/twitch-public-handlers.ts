@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { TwitchHttpApi, TwitchNowPlayingResponse } from "@cf-twitch/contracts/twitch-api";
 import {
   RequestHistoryQuery,

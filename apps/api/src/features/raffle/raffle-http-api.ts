@@ -1,8 +1,9 @@
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   RaffleError,
   RecordRaffleRoll,
+  recordRaffleRollParseOptions,
   RaffleRecordResult,
   RaffleLeaderboardQuery,
   RaffleLeaderboardEntry,
@@ -19,7 +20,7 @@ export class RaffleHttpApi extends HttpApi.make("RaffleHttpApi")
           payload: RecordRaffleRoll,
           success: RaffleRecordResult,
           error: RaffleError,
-        }),
+        }).annotate(HttpApi.PayloadParseOptions, recordRaffleRollParseOptions),
       )
       .add(
         HttpApiEndpoint.post("getOrCreateRoll", "/getOrCreateRoll", {

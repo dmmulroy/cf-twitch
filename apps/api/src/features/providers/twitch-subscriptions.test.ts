@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import {
   providerLocalAccessTokensLayer,
   providerLocalConfigurationLayer,

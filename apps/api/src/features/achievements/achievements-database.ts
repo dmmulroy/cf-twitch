@@ -1,6 +1,6 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
 import { DateTime, Effect, Layer, Option, Predicate, Schema } from "effect";
-import { SqlClient, SqlSchema, type SqlError } from "effect/unstable/sql";
+import { SqlClient, SqlSchema, type SqlError } from "effect/sql";
 import {
   AchievementDefinition,
   AchievementError,

@@ -6,37 +6,39 @@ catalogMode: prefer
 
 catalog:
   "@cloudflare/workers-types": 5.20260825.1
-  "@effect/platform-node": 4.0.0-rc.112
-  "@effect/sql-sqlite-do": 4.0.0-rc.112
-  "@effect/sql-sqlite-node": 4.0.0-rc.112
-  "@effect/vitest": 4.0.0-rc.112
+  "@effect/platform-node": 4.1.4
+  "@effect/sql-sqlite-do": 4.1.4
+  "@effect/sql-sqlite-node": 4.1.4
+  "@effect/vitest": 4.1.4
   "@oxlint/plugins": 1.80.0
   "@types/node": 26.3.0
-  alchemy: 2.0.0-beta.76
-  effect: 4.0.0-rc.112
+  "@alchemy.run/cloudflare": 2.0.0-beta.87
+  "@alchemy.run/test": 2.0.0-beta.87
+  alchemy: 2.0.0-beta.87
+  effect: 4.1.4
   oxlint: 1.80.0
   typescript: 7.0.2
-  vite: npm:@voidzero-dev/vite-plus-core@0.3.0
-  vite-plus: 0.3.0
+  vite: npm:@voidzero-dev/vite-plus-core@1.6.0
+  vite-plus: 1.6.0
 
 overrides:
   "@cloudflare/workers-types": 5.20260825.1
-  "@effect/platform-node": 4.0.0-rc.112
-  "@effect/sql-sqlite-do": 4.0.0-rc.112
-  "@effect/sql-sqlite-node": 4.0.0-rc.112
-  "@effect/vitest": 4.0.0-rc.112
+  "@effect/platform-node": 4.1.4
+  "@effect/sql-sqlite-do": 4.1.4
+  "@effect/sql-sqlite-node": 4.1.4
+  "@effect/vitest": 4.1.4
   "@oxlint/plugins": 1.80.0
-  effect: 4.0.0-rc.112
+  effect: 4.1.4
   oxlint: 1.80.0
   typescript: 7.0.2
   workerd: 1.20260908.1
   vite: "catalog:"
-  vite-plus: 0.3.0
+  vite-plus: 1.6.0
 
 peerDependencyRules:
   allowedVersions:
     typescript: "7.0.2"
-    vite: "0.3.0"
+    vite: "1.6.0"
 
 allowBuilds:
   esbuild: false
@@ -45,20 +47,24 @@ allowBuilds:
   workerd: true
 
 minimumReleaseAgeExclude:
-  - "@alchemy.run/cloudflare-runtime@2.0.0-beta.76"
-  - "@alchemy.run/floci@2.0.0-beta.76"
-  - "@alchemy.run/node-utils@2.0.0-beta.76"
+  - "@alchemy.run/node-utils@2.0.0-beta.87"
   - "@cloudflare/workers-types@5.20260825.1"
-  - "@effect/platform-node@4.0.0-rc.112"
-  - "@effect/sql-sqlite-do@4.0.0-rc.112"
-  - "@effect/sql-sqlite-node@4.0.0-rc.112"
-  - "@effect/vitest@4.0.0-rc.112"
+  - "@effect/platform-node@4.1.4"
+  - "@effect/sql-sqlite-do@4.1.4"
+  - "@effect/sql-sqlite-node@4.1.4"
+  - "@effect/vitest@4.1.4"
   - "@oxlint/plugins@1.80.0"
-  - "@voidzero-dev/vite-plus-core@0.3.0"
-  - "alchemy@2.0.0-beta.76"
-  - "effect@4.0.0-rc.112"
+  - "@voidzero-dev/vite-plus-core@1.6.0"
+  - "@alchemy.run/cloudflare@2.0.0-beta.87"
+  - "@alchemy.run/cloudflare-runtime@2.0.0-beta.87"
+  - "@alchemy.run/sql@2.0.0-beta.87"
+  - "@alchemy.run/acme@2.0.0-beta.87"
+  - "@alchemy.run/docker@2.0.0-beta.87"
+  - "@alchemy.run/test@2.0.0-beta.87"
+  - "alchemy@2.0.0-beta.87"
+  - "effect@4.1.4"
   - "oxlint@1.80.0"
-  - "vite-plus@0.3.0"
+  - "vite-plus@1.6.0"
   - "@cloudflare/workerd-darwin-64@1.20260908.1"
   - "@cloudflare/workerd-darwin-arm64@1.20260908.1"
   - "@cloudflare/workerd-linux-64@1.20260908.1"

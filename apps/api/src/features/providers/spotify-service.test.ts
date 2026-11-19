@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { SpotifyTrackId } from "@cf-twitch/contracts/identity";
 import { Cause, Effect, Exit, Layer, Option, Redacted, Result } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
 import {
   providerLocalAccessTokensLayer,

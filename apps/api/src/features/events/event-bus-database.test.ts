@@ -2,7 +2,7 @@ import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { PageSize } from "@cf-twitch/contracts/identity";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { makeEventBusDatabase } from "./event-bus-database.ts";
 
 const eventJson = JSON.stringify({

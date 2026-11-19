@@ -1,5 +1,5 @@
 import { ErrorReporter, Layer } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
 import { twitchHttpCorrelationLayer } from "./http-request-correlation.ts";
 import { twitchPublicHandlersLayer } from "./twitch-public-handlers.ts";

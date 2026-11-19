@@ -19,7 +19,7 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";

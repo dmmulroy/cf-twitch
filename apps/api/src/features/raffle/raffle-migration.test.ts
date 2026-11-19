@@ -2,7 +2,7 @@ import { NodeCrypto } from "@effect/platform-node";
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { expect, it } from "@effect/vitest";
 import { Effect, Option } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { RaffleNumber, RecordRaffleRoll } from "@cf-twitch/contracts/raffle";
 import { IsoTimestamp, RedemptionId, ViewerId } from "@cf-twitch/contracts/identity";
 import { historicalRaffleStatements } from "./raffle-historical.fixture.ts";

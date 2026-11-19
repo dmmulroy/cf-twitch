@@ -2,7 +2,7 @@ import { SqliteMigrator } from "@effect/sql-sqlite-do";
 import { OAuthProvider, ProviderError, ProviderTokens } from "@cf-twitch/contracts/provider";
 import { IsoTimestamp } from "@cf-twitch/contracts/identity";
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 /** Durable token state stores the next alarm intent so restart repairs interrupted scheduling. */
 export const ProviderTokenState = Schema.Struct({

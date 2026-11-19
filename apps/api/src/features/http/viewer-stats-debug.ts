@@ -1,5 +1,5 @@
 import { Effect, Option, Result } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 import type {
   AchievementDefinition,
   AchievementError,

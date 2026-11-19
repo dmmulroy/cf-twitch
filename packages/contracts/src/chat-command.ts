@@ -1,11 +1,12 @@
 import { Effect, Schema } from "effect";
+import { isOpenApiPattern } from "./schema-pattern.ts";
 import { EventSubMessageId, IsoTimestamp, NonNegativeInt, ViewerId } from "./identity.ts";
 
 /** Canonical chat command name; aliases obey the same lowercase syntax. */
 export const ChatCommandName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(50),
-  Schema.isPattern(/^[a-z0-9-]+$/),
+  isOpenApiPattern(/^[a-z0-9-]+$/),
 ).pipe(Schema.brand("ChatCommandName"));
 
 /** Parsed canonical chat command name. */
@@ -100,7 +101,11 @@ const createStored = {
   initialValue: Schema.optionalKey(ChatCommandValue),
 };
 
-/** Strict create input; absent fields are defaulted once by command construction. */
+/**
+ * Strict create input; absent fields are defaulted once by command construction.
+ *
+ * Decoders must pass `chatCommandInputParseOptions`: Effect 4.1 no longer applies `parseOptions` annotations.
+ */
 export const CreateChatCommandInput = Schema.Union([
   Schema.Struct({ ...createBase, responseType: Schema.Literal("static"), ...createStored }),
   Schema.Struct({
@@ -116,12 +121,16 @@ export const CreateChatCommandInput = Schema.Union([
     counterSourceName: Schema.optionalKey(ChatCommandName),
     initialCounter: Schema.optionalKey(NonNegativeInt),
   }),
-]).annotate({ parseOptions: { onExcessProperty: "error" } });
+]);
 
 /** Parsed command create input. */
 export type CreateChatCommandInput = typeof CreateChatCommandInput.Type;
 
-/** Nonempty definition patch; response transitions must supply all contradictory field changes. */
+/**
+ * Nonempty definition patch; response transitions must supply all contradictory field changes.
+ *
+ * Decoders must pass `chatCommandInputParseOptions` to reject unmodeled fields.
+ */
 export const UpdateChatCommandInput = Schema.Struct({
   description: Schema.optionalKey(CommandDescription),
   category: Schema.optionalKey(ChatCommandCategory),
@@ -135,13 +144,9 @@ export const UpdateChatCommandInput = Schema.Struct({
   outputTemplate: Schema.optionalKey(Schema.NullOr(CommandTemplate)),
   emptyResponse: Schema.optionalKey(Schema.NullOr(CommandTemplate)),
   writePermission: Schema.optionalKey(Schema.NullOr(ChatCommandPermission)),
-})
-  .check(
-    Schema.makeFilter(
-      (patch) => Object.keys(patch).length > 0 || "Command patch must not be empty",
-    ),
-  )
-  .annotate({ parseOptions: { onExcessProperty: "error" } });
+}).check(
+  Schema.makeFilter((patch) => Object.keys(patch).length > 0 || "Command patch must not be empty"),
+);
 
 /** Parsed nonempty command patch. */
 export type UpdateChatCommandInput = typeof UpdateChatCommandInput.Type;
@@ -387,7 +392,13 @@ export type ChatCommandError = CommandsError | ChatCommandRenderError | ChatComm
 
 const decodeChatCommandName = Schema.decodeEffect(ChatCommandName);
 
-const decodeCreateChatCommandInput = Schema.decodeEffect(CreateChatCommandInput);
+/** Parse options that keep command create and patch inputs closed to unmodeled fields. */
+export const chatCommandInputParseOptions = { onExcessProperty: "error" } as const;
+
+const decodeCreateChatCommandInput = Schema.decodeEffect(
+  CreateChatCommandInput,
+  chatCommandInputParseOptions,
+);
 
 /** Parses a string as a canonical chat command name. */
 export const parseChatCommandName = (

@@ -1,8 +1,8 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Effect, Layer, Match, Schema } from "effect";
-import type { HttpClientError } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import type { HttpClientError } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import {
   CommandsDbError,
   CommandsInvalidResponseError,

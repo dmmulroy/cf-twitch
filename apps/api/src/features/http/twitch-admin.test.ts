@@ -1,8 +1,8 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Option, Schema } from "effect";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
+import { HttpRouter } from "effect/http";
 import { TwitchAdminApi } from "@cf-twitch/contracts/twitch-api";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { AchievementId } from "@cf-twitch/contracts/achievement";

@@ -1,10 +1,10 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { Effect, Layer, Option, Schema } from "effect";
-import * as FastCheck from "effect/testing/FastCheck";
-import { SqlClient } from "effect/unstable/sql";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import * as Arbitrary from "effect/Arbitrary";
+import { SqlClient } from "effect/sql";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import {
   type AchievementDefinition,
   type AchievementError,
@@ -478,10 +478,10 @@ describe("Achievements real SQLite authority", () => {
     Effect.gen(function* () {
       const service = yield* Achievements;
 
-      const ids = FastCheck.sample(FastCheck.integer({ min: 1, max: 20 }), {
-        seed: 871,
-        numRuns: 100,
-      });
+      const ids = yield* Arbitrary.sampleEffect(
+        Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 20 }))),
+        { seed: 871, count: 100 },
+      );
 
       for (const id of ids) yield* service.handleEvent(request(id));
       const unique = new Set(ids).size;

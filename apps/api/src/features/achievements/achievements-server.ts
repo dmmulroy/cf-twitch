@@ -1,9 +1,9 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
 import { DateTime, Effect, Layer } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { TwitchAnalytics, twitchAnalyticsLayer } from "../../runtime/twitch-analytics.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
@@ -29,7 +29,7 @@ export class AchievementsServer extends Cloudflare.DurableObject<
 
 /** Captures infrastructure at init; SQL, migration, recovery and alarms execute only at runtime. */
 export const achievementsServerLayerWithoutDependencies = AchievementsServer.make<
-  TwitchService | TwitchAnalytics
+  Cloudflare.DurableObjectState | TwitchService | TwitchAnalytics
 >(
   Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;

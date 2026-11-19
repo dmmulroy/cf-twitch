@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { EventBusAdministration, EventPublisher } from "./event-bus-service.ts";
 import { EventBusProcessor } from "./event-bus.ts";
 import { EventBusHttpApi } from "./event-bus-http-api.ts";

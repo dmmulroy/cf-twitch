@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Option, Schema } from "effect";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 
 /** Alarm failures never erase durable retry evidence. */
 export class WorkflowAlarmError extends Schema.TaggedError<WorkflowAlarmError>()(

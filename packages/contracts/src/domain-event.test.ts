@@ -1,6 +1,5 @@
 import { expect, expectTypeOf, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
-import { FastCheck } from "effect/testing";
 import {
   DomainEvent,
   encodeDomainEventJson,
@@ -41,39 +40,34 @@ it.effect("rejects winner evidence that also claims a non-winning distance recor
   }),
 );
 
-it("preserves raffle evidence and optional correlation through durable JSON replay", () => {
-  FastCheck.assert(
-    FastCheck.property(
-      Schema.toArbitrary(RaffleNumber)(FastCheck),
-      Schema.toArbitrary(RaffleNumber)(FastCheck),
-      FastCheck.boolean(),
-      (roll, winningNumber, correlated) => {
-        const event = RaffleRollEvent.make({
-          id: EventId.make("fa88369b-99df-44cd-8c79-c71bd4743fb6"),
-          v: 1,
-          timestamp: IsoTimestamp.make("2026-09-05T12:00:00Z"),
-          correlationId: correlated ? Option.some("delivery-123") : Option.none(),
-          type: "raffle_roll",
-          source: "KeyboardRaffleSagaDO",
-          userId: ViewerId.make("viewer-123"),
-          userDisplayName: "Viewer",
-          sagaId: RedemptionId.make("redemption-123"),
-          roll,
-          winningNumber,
-          distance: RaffleDistance.make(Math.abs(roll - winningNumber)),
-          isWinner: roll === winningNumber,
-          isNewRecord: false,
-        });
+it.prop(
+  "preserves raffle evidence and optional correlation through durable JSON replay",
+  [RaffleNumber, RaffleNumber, Schema.Boolean],
+  ([roll, winningNumber, correlated]) => {
+    const event = RaffleRollEvent.make({
+      id: EventId.make("fa88369b-99df-44cd-8c79-c71bd4743fb6"),
+      v: 1,
+      timestamp: IsoTimestamp.make("2026-09-05T12:00:00Z"),
+      correlationId: correlated ? Option.some("delivery-123") : Option.none(),
+      type: "raffle_roll",
+      source: "KeyboardRaffleSagaDO",
+      userId: ViewerId.make("viewer-123"),
+      userDisplayName: "Viewer",
+      sagaId: RedemptionId.make("redemption-123"),
+      roll,
+      winningNumber,
+      distance: RaffleDistance.make(Math.abs(roll - winningNumber)),
+      isWinner: roll === winningNumber,
+      isNewRecord: false,
+    });
 
-        const replayed = Effect.runSync(
-          Effect.gen(function* () {
-            return yield* parseDomainEventJson(yield* encodeDomainEventJson(event));
-          }),
-        );
+    const replayed = Effect.runSync(
+      Effect.gen(function* () {
+        return yield* parseDomainEventJson(yield* encodeDomainEventJson(event));
+      }),
+    );
 
-        expect(replayed).toEqual(event);
-      },
-    ),
-    { numRuns: 100 },
-  );
-});
+    expect(replayed).toEqual(event);
+  },
+  { arbitrary: { runs: 100 } },
+);

@@ -1,6 +1,6 @@
 import { cfTwitchAnalyticsDataset } from "@cf-twitch/shared-infrastructure";
 import { RuntimeContext } from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Context, Effect, Layer, Option, Schema } from "effect";
 
 /** Achievement unlock metric carries its durable effect identity for downstream deduplication. */

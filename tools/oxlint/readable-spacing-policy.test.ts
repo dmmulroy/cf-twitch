@@ -1,9 +1,9 @@
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, FileSystem } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { join } from "node:path";
-import { RuleTester } from "oxlint/plugins-dev";
+import { RuleTester } from "vite-plus/lint/plugins-dev";
 
 import { requireReadableSpacingRule } from "./anti-slop/rules/require-readable-spacing.ts";
 import { makeOxlintPolicyProbeDirectory, runOxlintPolicyCommand } from "./oxlint-policy-process.ts";

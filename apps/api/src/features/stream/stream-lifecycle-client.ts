@@ -1,8 +1,8 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Effect, Layer, type Schema } from "effect";
-import type { HttpClientError } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import type { HttpClientError } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import { STREAM_LIFECYCLE_SINGLETON_KEY, StreamLifecycleError } from "@cf-twitch/contracts/stream";
 import { StreamLifecycleHttpApi } from "./stream-http-api.ts";
 import { StreamLifecycleClient, type IStreamLifecycleClient } from "./stream-lifecycle.ts";

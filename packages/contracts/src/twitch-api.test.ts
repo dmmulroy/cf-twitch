@@ -1,9 +1,11 @@
 import { expect, it } from "@effect/vitest";
-import { Effect, Encoding } from "effect";
+import { Effect } from "effect";
+import { Hex } from "effect/encoding";
 import { generateTwitchOpenApi } from "./twitch-api.ts";
 
-// Captured before the annotation and schema changes to guard every generated OpenAPI field.
-const baselineOpenApiSha256 = "cdd65b425598d34738264538af7f7a44b2c2038753b00d39ce666daf9ff554ea";
+// Guards every generated OpenAPI field. Re-pinned for Effect 4.1.4, whose generator flattens nested `anyOf`
+// unions and emits `Int`'s safe-integer bounds; the document is otherwise identical to the previous baseline.
+const baselineOpenApiSha256 = "fec9f9974d885c586e3ee042c4ac1ff8397b1c6fee8e6481e542ef94bda140dd";
 
 const openApiOperationMethods = new Set([
   "get",
@@ -26,7 +28,7 @@ const countOpenApiOperations = (openApi: ReturnType<typeof generateTwitchOpenApi
 const digestOpenApi = (openApi: ReturnType<typeof generateTwitchOpenApi>) =>
   Effect.promise(() =>
     crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(openApi))),
-  ).pipe(Effect.map((digest) => Encoding.encodeHex(new Uint8Array(digest))));
+  ).pipe(Effect.map((digest) => Hex.encode(new Uint8Array(digest))));
 
 it.effect("preserves the complete generated Twitch OpenAPI document", () =>
   Effect.gen(function* () {

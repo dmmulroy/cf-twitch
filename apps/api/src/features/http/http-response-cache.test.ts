@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Fiber, Layer, Predicate, Schema } from "effect";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
+import { HttpRouter } from "effect/http";
 import { TwitchStatsApi } from "@cf-twitch/contracts/twitch-api";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { ViewerId } from "@cf-twitch/contracts/identity";

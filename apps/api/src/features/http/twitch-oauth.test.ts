@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Option, Redacted } from "effect";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
+import { HttpRouter } from "effect/http";
 import { TwitchOAuthApi } from "@cf-twitch/contracts/twitch-api";
 import { OAuthError, type OAuthStateOutcome } from "@cf-twitch/contracts/oauth";
 import { ProviderError } from "@cf-twitch/contracts/provider";

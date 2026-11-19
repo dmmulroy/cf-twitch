@@ -1,6 +1,6 @@
 import { Effect, Match, Option, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
 import { EventId } from "@cf-twitch/contracts/identity";
 import {

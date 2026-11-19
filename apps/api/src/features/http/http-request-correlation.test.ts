@@ -1,7 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   Cause,
-  Crypto,
   Effect,
   ErrorReporter,
   Exit,
@@ -11,8 +10,9 @@ import {
   Redacted,
   Tracer,
 } from "effect";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpRouter } from "effect/unstable/http";
+import { SecureRandom } from "effect/crypto";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
+import { HttpRouter } from "effect/http";
 import { TwitchOAuthApi } from "@cf-twitch/contracts/twitch-api";
 import { OAuthAuthorization } from "../oauth/oauth-authorization.ts";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
@@ -26,10 +26,7 @@ const oauthApi = HttpApi.make("TwitchHttpApi").add(TwitchOAuthApi);
 
 const fixedRequestId = "00000000-0000-4000-8000-000000000000";
 
-const fixedRequestCrypto = Crypto.make({
-  randomBytes: (size) => new Uint8Array(size),
-  digest: () => Effect.die("HTTP correlation test does not use cryptographic digests"),
-});
+const fixedRequestSecureRandom = SecureRandom.make((size) => new Uint8Array(size));
 
 const findResponseSpan = (spans: readonly Tracer.NativeSpan[], response: Response | undefined) =>
   spans.find((span) => span.traceId === response?.headers.get("x-trace-id"));
@@ -114,7 +111,7 @@ describe("safe HTTP trace export", () => {
           Layer.provide(twitchHttpCorrelationLayer),
           Layer.provide([
             cloudflareHttpServerLayer,
-            Layer.succeed(Crypto.Crypto, fixedRequestCrypto),
+            Layer.succeed(SecureRandom.SecureRandom, fixedRequestSecureRandom),
             Layer.succeed(TwitchConfiguration, httpTestConfiguration),
             Layer.mock(OAuthAuthorization, {
               beginAuthorization: (input) => {

@@ -3,7 +3,7 @@ import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { recordingTwitchAnalyticsLayer } from "../../../test/support/recording-twitch-analytics.ts";
 import { RaidShoutoutInput, WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { WorkflowAlarm, WorkflowAlarmError } from "./workflow-alarm.ts";

@@ -1,8 +1,8 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
 import { Effect, Layer } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { OAuthStateHttpApi } from "./oauth-state-http-api.ts";
 import { oauthStateHttpHandlersLayer } from "./oauth-state-http-handlers.ts";
@@ -20,7 +20,7 @@ export class OAuthStateServer extends Cloudflare.DurableObject<
 >()("OAuthStateDO") {}
 
 /** OAuth state server accesses native storage only inside the returned runtime Effect. */
-export const oauthStateServerLayer = OAuthStateServer.make<never>(
+export const oauthStateServerLayer = OAuthStateServer.make<Cloudflare.DurableObjectState>(
   Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
 

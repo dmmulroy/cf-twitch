@@ -1,10 +1,10 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import { ProviderError, type OAuthProvider } from "@cf-twitch/contracts/provider";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
 import { Effect, Layer, Option } from "effect";
-import { HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import {
   providerTokenDatabaseLayerWithoutDependencies,

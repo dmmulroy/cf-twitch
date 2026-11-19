@@ -1,6 +1,6 @@
 import { Effect, Option, Predicate, Redacted, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
 import { OAuthRedirectUri, OAuthState } from "@cf-twitch/contracts/oauth";
 import type { OAuthProvider } from "@cf-twitch/contracts/provider";

@@ -1,17 +1,18 @@
 import { Schema } from "effect";
+import { isOpenApiPattern } from "./schema-pattern.ts";
 import { EventSubMessageId, IsoTimestamp, NonNegativeInt } from "./identity.ts";
 
 /** EventSub headers are authenticated before body parsing; retry metadata is not receipt identity. */
 export const EventSubHeaders = Schema.Struct({
   "twitch-eventsub-message-id": EventSubMessageId,
-  "twitch-eventsub-message-retry": Schema.String.check(Schema.isPattern(/^\d+$/)),
+  "twitch-eventsub-message-retry": Schema.String.check(isOpenApiPattern(/^\d+$/)),
   "twitch-eventsub-message-type": Schema.Literals([
     "webhook_callback_verification",
     "notification",
     "revocation",
   ]),
   "twitch-eventsub-message-signature": Schema.String.check(
-    Schema.isPattern(/^sha256=[0-9a-f]{64}$/),
+    isOpenApiPattern(/^sha256=[0-9a-f]{64}$/),
   ),
   "twitch-eventsub-message-timestamp": IsoTimestamp,
   "twitch-eventsub-subscription-type": Schema.NonEmptyString,
@@ -32,7 +33,7 @@ export const AcceptedEventSubReceipt = Schema.Struct({
   messageId: EventSubMessageId,
   /** First server ingestion time; not signed source time and never duplicate identity. */
   receivedAt: IsoTimestamp,
-  contentDigest: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+  contentDigest: Schema.String.check(isOpenApiPattern(/^[0-9a-f]{64}$/)),
   headers: EventSubHeaders,
   body: Schema.Json,
   correlation: EventSubCorrelation,

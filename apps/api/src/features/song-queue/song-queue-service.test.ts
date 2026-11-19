@@ -18,14 +18,9 @@ import {
 } from "@cf-twitch/contracts/song-queue";
 import { Context, Deferred, Effect, Fiber, Layer, Option, Redacted, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import {
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-  HttpRouter,
-} from "effect/unstable/http";
-import { HttpApiBuilder, HttpApiClient } from "effect/unstable/httpapi";
-import { SqlClient } from "effect/unstable/sql";
+import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter } from "effect/http";
+import { HttpApiBuilder, HttpApiClient } from "effect/http-api";
+import { SqlClient } from "effect/sql";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";

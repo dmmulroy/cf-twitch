@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   ChatCommandDebugSnapshot,
   ChatCommandDefinition,
@@ -7,6 +7,7 @@ import {
   ChatCommandSelector,
   ChatCommandValue,
   ChatCommandWithValue,
+  chatCommandInputParseOptions,
   CommandsError,
   CreateChatCommandInput,
   IncrementChatCommandCounter,
@@ -62,14 +63,14 @@ export class CommandsHttpApiGroup extends HttpApiGroup.make("commands")
       payload: CreateChatCommandInput,
       success: ChatCommandDefinition,
       error: CommandsError,
-    }),
+    }).annotate(HttpApi.PayloadParseOptions, chatCommandInputParseOptions),
   )
   .add(
     HttpApiEndpoint.patch("updateCommand", "/commands", {
       payload: UpdateChatCommandRequest,
       success: ChatCommandDefinition,
       error: CommandsError,
-    }),
+    }).annotate(HttpApi.PayloadParseOptions, chatCommandInputParseOptions),
   )
   .add(
     HttpApiEndpoint.post("deleteCommand", "/commands/delete", {

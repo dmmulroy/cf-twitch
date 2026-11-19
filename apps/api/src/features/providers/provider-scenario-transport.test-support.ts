@@ -1,10 +1,5 @@
 import { Context, Deferred, Effect, Layer, Predicate, Ref, type Schema } from "effect";
-import {
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 /** Synthetic provider transcript records only operation counts, never credentials or request bodies. */
 export interface IProviderScenarioTranscript {

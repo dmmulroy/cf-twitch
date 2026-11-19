@@ -4,7 +4,7 @@ import {
   OAuthError,
   type OAuthStateOutcome,
 } from "@cf-twitch/contracts/oauth";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Clock, Context, Effect, Layer, Option, Redacted, Schema } from "effect";
 
 /** One-use OAuth state authority is backed by a native Durable Object storage transaction. */
