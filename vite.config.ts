@@ -19,8 +19,8 @@ const localStatePatterns = [
   "tools/oxlint/anti-slop/**",
 ] as const;
 
-/** Defines strict canonical checks and safe Vite Task caching for the complete workspace. */
-const cfTwitchViteConfig = defineConfig({
+/** Vite+ configuration that defines strict canonical checks and safe Vite Task caching for the whole workspace. */
+export default defineConfig({
   fmt: {
     ignorePatterns: [...localStatePatterns],
   },
@@ -76,5 +76,3 @@ const cfTwitchViteConfig = defineConfig({
     },
   },
 });
-
-export default cfTwitchViteConfig;

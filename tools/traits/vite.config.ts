@@ -1,10 +1,11 @@
 import { defineConfig } from "vite-plus";
 
 /**
- * Vite config for Traits tooling: the Traits configuration (re-exported by the root `traits.ts`,
- * where Traits looks for it) and the Claude subscription language model. `pnpm test:unit` runs its
- * tests.
+ * Vite+ configuration for Traits tooling, which runs the Claude subscription language model tests.
+ *
+ * **Details**
+ *
+ * The Traits configuration itself is re-exported by the root `traits.ts`, where Traits looks for
+ * it. `pnpm test:unit` runs these tests.
  */
-const toolsTraitsViteConfig = defineConfig({});
-
-export default toolsTraitsViteConfig;
+export default defineConfig({});

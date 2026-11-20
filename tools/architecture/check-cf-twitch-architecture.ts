@@ -39,9 +39,13 @@ interface ArchitectureViolation {
   readonly reason: string;
 }
 
-class CfTwitchArchitectureViolation extends Schema.TaggedError<CfTwitchArchitectureViolation>()(
-  "CfTwitchArchitectureViolation",
+/** Error returned when the workspace breaks one or more architecture rules. */
+class CfTwitchArchitectureError extends Schema.TaggedError<CfTwitchArchitectureError>()(
+  "CfTwitchArchitectureError",
   {
+    operation: Schema.Literals(["verifyCfTwitchArchitecture"]),
+    reason: Schema.Literals(["ArchitectureRulesViolated"]),
+    /** Each offending file with the rule it breaks. */
     violations: Schema.Array(
       Schema.Struct({
         file: Schema.String,
@@ -50,22 +54,30 @@ class CfTwitchArchitectureViolation extends Schema.TaggedError<CfTwitchArchitect
     ),
   },
 ) {
+  /** Operator guidance listing every violation and how to rerun the check. */
   override get message(): string {
     const details = this.violations
       .map((violation) => `${violation.file}: ${violation.reason}`)
       .join("\n");
 
-    return `CF Twitch architecture verification failed:\n${details}`;
+    return `CF Twitch architecture verification found rule violations:\n${details}\nFix each listed file and rerun \`pnpm verify\`.`;
   }
 }
 
 /** Parsed module specifiers and syntax errors from one TypeScript source file. */
 export interface ParsedSourceImports {
+  /** Parser diagnostics; a non-empty list means the specifiers may be incomplete. */
   readonly errors: ReadonlyArray<string>;
+  /** Static import, re-export, and literal dynamic-import specifiers in source order by kind. */
   readonly specifiers: ReadonlyArray<string>;
 }
 
-/** Parse static imports, re-exports, and literal dynamic imports from TypeScript source. */
+/**
+ * Parses static imports, re-exports, and literal dynamic imports from TypeScript source.
+ *
+ * @returns The specifiers and any parser diagnostics; syntax errors are reported in `errors`
+ *   rather than thrown.
+ */
 export const parseCfTwitchSourceImports = (file: string, source: string): ParsedSourceImports => {
   const parsed = parseSync(file, source);
   const dynamicSpecifiers: string[] = [];
@@ -119,24 +131,33 @@ const inspectCfTwitchSourceText = (
   const violations: Array<ArchitectureViolation> = [];
 
   if (source.includes("vi.mock(") || source.includes("jest.mock(")) {
-    violations.push({ file, reason: "module mocking is forbidden; provide a real service Layer" });
+    violations.push({
+      file,
+      reason: "Module mocking is forbidden. Provide a real or in-memory service Layer instead.",
+    });
   }
 
   if (source.includes("process.env")) {
-    violations.push({ file, reason: "read environment values through Effect Config" });
+    violations.push({
+      file,
+      reason:
+        "Direct process.env access is forbidden. Read environment values through Effect Config.",
+    });
   }
 
   if (source.includes(".rpc(")) {
     violations.push({
       file,
-      reason: "cf-twitch code must use HTTP Durable Object contracts, not RPC",
+      reason:
+        "Durable Object RPC calls are forbidden. Call the Durable Object through its HTTP contract and generated client.",
     });
   }
 
   if (source.includes("transferredFrom") || source.includes("Alchemy.adopt(")) {
     violations.push({
       file,
-      reason: "cf-twitch source must not automatically adopt or transfer production resources",
+      reason:
+        "Automatic production resource adoption or transfer is forbidden. Remove it and follow the production cutover gate.",
     });
   }
 
@@ -156,19 +177,24 @@ const inspectCfTwitchPackageImport = (
   if (forbiddenDependency !== undefined) {
     violations.push({
       file,
-      reason: `cf-twitch source imports forbidden legacy dependency ${specifier}`,
+      reason: `Forbidden legacy dependency import ${specifier}. Replace it with the Effect or Alchemy equivalent.`,
     });
   }
 
   if (specifier === "@cf-twitch/contracts") {
     violations.push({
       file,
-      reason: "contracts require an explicit @cf-twitch/contracts/<concept> subpath import",
+      reason:
+        "Bare @cf-twitch/contracts import is forbidden. Import the explicit @cf-twitch/contracts/<concept> subpath.",
     });
   }
 
   if (file.startsWith("packages/") && specifier.startsWith("@cf-twitch/api")) {
-    violations.push({ file, reason: "packages must not import the API application" });
+    violations.push({
+      file,
+      reason:
+        "Package import of the API application is forbidden. Move the shared code into a package.",
+    });
   }
 
   if (
@@ -181,7 +207,7 @@ const inspectCfTwitchPackageImport = (
   ) {
     violations.push({
       file,
-      reason: `portable contracts must not import infrastructure or Cloudflare module ${specifier}`,
+      reason: `Portable contracts import infrastructure or Cloudflare module ${specifier}. Move that dependency into the API application or shared-infrastructure.`,
     });
   }
 
@@ -198,7 +224,12 @@ const inspectCfTwitchRelativeImport = (
   runtimeSource: string,
 ): ReadonlyArray<ArchitectureViolation> => {
   if (file.startsWith("packages/") && destination.startsWith(applicationsRoot)) {
-    return [{ file, reason: `packages must not reach into an application through ${specifier}` }];
+    return [
+      {
+        file,
+        reason: `Package reaches into an application through ${specifier}. Move the shared code into a package.`,
+      },
+    ];
   }
 
   const belongsToFeatureOrRuntime =
@@ -213,7 +244,7 @@ const inspectCfTwitchRelativeImport = (
     ? [
         {
           file,
-          reason: `feature/runtime source reaches outside canonical API source roots through ${specifier}`,
+          reason: `Feature or runtime source reaches outside the canonical API source roots through ${specifier}. Move the imported code under src/features or src/runtime.`,
         },
       ]
     : [];
@@ -230,7 +261,7 @@ const inspectCfTwitchSource = Effect.fn("CfTwitchArchitecture.inspectCfTwitchSou
   const violations: Array<ArchitectureViolation> = [
     ...parsedImports.errors.map((error) => ({
       file,
-      reason: `TypeScript source could not be parsed: ${error}`,
+      reason: `TypeScript source could not be parsed: ${error}. Fix the syntax error.`,
     })),
     ...inspectCfTwitchSourceText(file, source),
   ];
@@ -282,21 +313,24 @@ const verifyPackageManifests = Effect.fn("CfTwitchArchitecture.verifyPackageMani
     if (Option.isNone(contractsManifest)) {
       violations.push({
         file: "packages/contracts/package.json",
-        reason: "contracts package manifest must decode with the canonical source subpath export",
+        reason:
+          'Contracts package manifest lacks the canonical source subpath export. Set exports to { "./*": "./src/*.ts" }.',
       });
     }
 
     if (Option.isNone(apiManifest)) {
       violations.push({
         file: "apps/api/package.json",
-        reason: "API package manifest must decode with a string-valued dependencies object",
+        reason:
+          "API package manifest dependencies are missing or not string-valued. Restore a dependencies object of package versions.",
       });
     }
 
     if (yield* fileSystem.exists("packages/contracts/src/index.ts")) {
       violations.push({
         file: "packages/contracts/src/index.ts",
-        reason: "contracts use explicit concept subpaths and must not expose a broad source barrel",
+        reason:
+          "Contracts source barrel index.ts is forbidden. Delete it and import explicit concept subpaths.",
       });
     }
 
@@ -304,7 +338,7 @@ const verifyPackageManifests = Effect.fn("CfTwitchArchitecture.verifyPackageMani
       if (Option.isSome(apiManifest) && dependency in apiManifest.value.dependencies) {
         violations.push({
           file: "apps/api/package.json",
-          reason: `cf-twitch API package must not declare legacy dependency ${dependency}`,
+          reason: `API package declares forbidden legacy dependency ${dependency}. Remove it from apps/api/package.json.`,
         });
       }
     }
@@ -313,7 +347,12 @@ const verifyPackageManifests = Effect.fn("CfTwitchArchitecture.verifyPackageMani
   },
 );
 
-/** Verifies canonical cf-twitch workspace and package boundaries. */
+/**
+ * Verifies canonical cf-twitch workspace and package boundaries.
+ *
+ * @returns Nothing on success; fails with `CfTwitchArchitectureError` listing every violation, or
+ *   with `PlatformError` when a source file or manifest cannot be read.
+ */
 export const verifyCfTwitchArchitecture = Effect.fn(
   "CfTwitchArchitecture.verifyCfTwitchArchitecture",
 )(function* () {
@@ -329,7 +368,13 @@ export const verifyCfTwitchArchitecture = Effect.fn(
   const violations = [...sourceViolations, ...packageViolations];
 
   if (violations.length > 0) {
-    return yield* Effect.fail(new CfTwitchArchitectureViolation({ violations }));
+    return yield* Effect.fail(
+      new CfTwitchArchitectureError({
+        operation: "verifyCfTwitchArchitecture",
+        reason: "ArchitectureRulesViolated",
+        violations,
+      }),
+    );
   }
 
   yield* Effect.logInfo(`CF Twitch architecture verified across ${files.length} source files.`);

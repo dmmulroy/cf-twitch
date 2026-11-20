@@ -2,7 +2,15 @@ import { generateTwitchOpenApi } from "@cf-twitch/contracts/twitch-api";
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
 
-/** Prints the canonical route list and OpenAPI document without starting runtime services. */
+/**
+ * Effect that prints the canonical route list and OpenAPI document without starting runtime services.
+ *
+ * **Details**
+ *
+ * With `--check`, prints only the OpenAPI version and path count.
+ *
+ * @throws A defect when OpenAPI generation throws for an invalid API definition.
+ */
 export const inspectCfTwitchApi = Effect.sync(() => {
   const openApi = generateTwitchOpenApi();
 

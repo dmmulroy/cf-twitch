@@ -6,25 +6,42 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 /** Claude Code effort levels the CLI accepts for `--effort`. */
 export type ClaudeCliEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-/** How the Claude subscription language model runs the Claude Code CLI. */
+/** Settings for how the Claude subscription language model runs the Claude Code CLI. */
 export interface ClaudeSubscriptionLanguageModelOptions {
   /** Claude model id or CLI alias, such as `claude-opus-5-5`. */
   readonly model: string;
-  /** Effort level for every request. */
-  readonly effort?: ClaudeCliEffort | undefined;
-  /** Claude Code executable: a path or a name on `PATH`. Defaults to `claude`. */
-  readonly command?: string | undefined;
+  /** Effort level for every request; `none` keeps the CLI's default effort. */
+  readonly effort: Option.Option<ClaudeCliEffort>;
+  /** Claude Code executable: a path or a name on `PATH`; `none` runs `claude`. */
+  readonly command: Option.Option<string>;
 }
 
 /** One Claude Code CLI run: its arguments, standard input, and environment. */
 export interface ClaudeCliInvocation {
+  /** Executable to spawn: a path or a name on `PATH`. */
   readonly command: string;
+  /** Arguments produced by `toClaudeCliArguments`. */
   readonly args: ReadonlyArray<string>;
+  /** Rendered prompt written to the CLI's standard input. */
   readonly stdin: string;
+  /**
+   * Environment overrides for the child process, in the process spawner's representation.
+   *
+   * **Details**
+   *
+   * An `undefined` value removes that variable from the inherited environment.
+   */
   readonly env: Readonly<Record<string, string | undefined>>;
 }
 
-/** Runs the Claude Code CLI and returns its standard output. */
+/**
+ * Function type for running the Claude Code CLI and returning its standard output.
+ *
+ * **Details**
+ *
+ * Implementations fail with `PlatformError` when the CLI cannot be spawned or its output cannot
+ * be read.
+ */
 export type ClaudeCliRunner = (
   invocation: ClaudeCliInvocation,
 ) => Effect.Effect<string, PlatformError.PlatformError>;
@@ -65,13 +82,17 @@ const CLAUDE_CLI_ENVIRONMENT = {
 } satisfies ClaudeCliInvocation["env"];
 
 /**
- * CLI arguments for one non-interactive request: JSON output, no tools, no MCP servers, no user
- * or project settings, no slash commands, and no saved session. `jsonSchema` turns on Claude
- * Code's structured output; `systemPrompt` replaces Claude Code's own system prompt.
+ * Returns the CLI arguments for one non-interactive request.
+ *
+ * **Details**
+ *
+ * Requests JSON output with no tools, no MCP servers, no user or project settings, no slash
+ * commands, and no saved session. `jsonSchema` turns on Claude Code's structured output;
+ * `systemPrompt` replaces Claude Code's own system prompt.
  */
 export const toClaudeCliArguments = (request: {
   readonly model: string;
-  readonly effort: ClaudeCliEffort | undefined;
+  readonly effort: Option.Option<ClaudeCliEffort>;
   readonly systemPrompt: Option.Option<string>;
   readonly jsonSchema: Option.Option<unknown>;
 }): ReadonlyArray<string> => [
@@ -80,7 +101,10 @@ export const toClaudeCliArguments = (request: {
   "json",
   "--model",
   request.model,
-  ...(request.effort === undefined ? [] : ["--effort", request.effort]),
+  ...Option.match(request.effort, {
+    onNone: () => [],
+    onSome: (effort) => ["--effort", effort],
+  }),
   ...Option.match(request.systemPrompt, {
     onNone: () => [],
     onSome: (systemPrompt) => ["--system-prompt", systemPrompt],
@@ -99,20 +123,40 @@ export const toClaudeCliArguments = (request: {
   "--no-chrome",
 ];
 
-/** Why a prompt cannot be sent through the Claude Code CLI. */
-type UnsupportedPromptPart = { readonly role: string; readonly part: string };
+/** Error returned when a prompt contains a part the Claude Code CLI cannot carry. */
+export class ClaudeCliPromptError extends Schema.TaggedError<ClaudeCliPromptError>()(
+  "ClaudeCliPromptError",
+  {
+    operation: Schema.Literals(["renderClaudeCliPrompt"]),
+    reason: Schema.Literals(["UnsupportedPromptPart"]),
+    /** Role of the message that holds the unsupported part, such as `user` or `tool`. */
+    role: Schema.String,
+    /** Prompt part type the CLI cannot carry, such as `file` or `tool-result`. */
+    part: Schema.String,
+  },
+) {
+  /** Caller guidance naming the unsupported part. */
+  override get message(): string {
+    return `Claude Code CLI prompt contains an unsupported ${this.part} part in a ${this.role} message. Send text parts only.`;
+  }
+}
 
 /**
- * Renders a prompt for one CLI request: system messages become the system prompt, and the
- * conversation becomes standard input. A single user message is sent as-is; longer conversations
- * are labeled by speaker. Fails with the first part the CLI cannot carry (files, reasoning, tool
- * calls and results).
+ * Renders a prompt for one CLI request.
+ *
+ * **Details**
+ *
+ * System messages become the system prompt, and the conversation becomes standard input. A single
+ * user message is sent as-is; longer conversations are labeled by speaker.
+ *
+ * @returns The system prompt and standard input, or fails with `ClaudeCliPromptError` at the
+ *   first part the CLI cannot carry (files, reasoning, tool calls and results).
  */
 export const renderClaudeCliPrompt = (
   prompt: Prompt.Prompt,
 ): Effect.Effect<
   { readonly systemPrompt: Option.Option<string>; readonly stdin: string },
-  UnsupportedPromptPart
+  ClaudeCliPromptError
 > =>
   Effect.gen(function* () {
     const systemTexts: Array<string> = [];
@@ -125,14 +169,28 @@ export const renderClaudeCliPrompt = (
       }
 
       if (message.role === "tool") {
-        return yield* Effect.fail({ role: "tool", part: "tool-result" });
+        return yield* Effect.fail(
+          new ClaudeCliPromptError({
+            operation: "renderClaudeCliPrompt",
+            reason: "UnsupportedPromptPart",
+            role: "tool",
+            part: "tool-result",
+          }),
+        );
       }
 
       const texts: Array<string> = [];
 
       for (const part of message.content) {
         if (part.type !== "text")
-          return yield* Effect.fail({ role: message.role, part: part.type });
+          return yield* Effect.fail(
+            new ClaudeCliPromptError({
+              operation: "renderClaudeCliPrompt",
+              reason: "UnsupportedPromptPart",
+              role: message.role,
+              part: part.type,
+            }),
+          );
         texts.push(part.text);
       }
 
@@ -160,19 +218,22 @@ const ClaudeCliResult = Schema.fromJsonString(
   Schema.Struct({
     type: Schema.Literal("result"),
     is_error: Schema.Boolean,
-    result: Schema.optional(Schema.String),
-    structured_output: Schema.optional(Schema.Json),
-    api_error_status: Schema.optional(Schema.NullOr(Schema.Number)),
-    usage: Schema.optional(
+    result: Schema.OptionFromOptionalKey(Schema.String),
+    structured_output: Schema.OptionFromOptionalKey(Schema.Json),
+    api_error_status: Schema.OptionFromOptionalNullOr(Schema.Number),
+    usage: Schema.OptionFromOptionalKey(
       Schema.Struct({
-        input_tokens: Schema.optional(Schema.Int),
-        cache_read_input_tokens: Schema.optional(Schema.Int),
-        cache_creation_input_tokens: Schema.optional(Schema.Int),
-        output_tokens: Schema.optional(Schema.Int),
+        input_tokens: Schema.OptionFromOptionalKey(Schema.Int),
+        cache_read_input_tokens: Schema.OptionFromOptionalKey(Schema.Int),
+        cache_creation_input_tokens: Schema.OptionFromOptionalKey(Schema.Int),
+        output_tokens: Schema.OptionFromOptionalKey(Schema.Int),
       }),
     ),
   }),
 );
+
+/** Token counts the CLI reports, each absent when the CLI omits it. */
+type ClaudeCliTokenUsage = Option.Option.Value<(typeof ClaudeCliResult.Type)["usage"]>;
 
 // Standard output is text, so the codec's encoded side is `string`.
 const decodeClaudeCliResult = Schema.decodeEffect(ClaudeCliResult);
@@ -183,9 +244,15 @@ const claudeCliError = (method: string, reason: AiError.AiErrorReason) =>
   AiError.make({ module: MODULE, method, reason });
 
 /**
- * Turns the CLI's standard output into response parts: one text part (the structured output as
- * JSON when a schema was requested) and a finish part with token usage. A result the CLI marks
- * as an error becomes an `AiError` whose reason follows the API status.
+ * Parses the CLI's standard output into response parts.
+ *
+ * **Details**
+ *
+ * Produces one text part (the structured output as JSON when a schema was requested) and a
+ * finish part with token usage.
+ *
+ * @returns The response parts, or fails with `AiError`: `InvalidResponseError` when the output is
+ *   not a CLI JSON result, or a reason that follows the API status when the CLI reports an error.
  */
 export const toClaudeCliResponseParts = (
   method: string,
@@ -203,35 +270,47 @@ export const toClaudeCliResponseParts = (
     ),
     Effect.flatMap((result) => {
       if (result.is_error) {
-        const message = result.result ?? "Claude Code CLI reported an error without a message.";
-        const status = result.api_error_status ?? undefined;
+        const message = Option.getOrElse(
+          result.result,
+          () => "Claude Code CLI reported an error without a message.",
+        );
 
-        const signInHint =
-          status === undefined || status === 401 || status === 403
-            ? " If Claude Code is signed out, run `claude auth login`, then retry."
-            : "";
+        const status = result.api_error_status;
 
-        const description = `Claude Code CLI request failed: ${message}${signInHint}`;
+        const wayForward = Option.match(status, {
+          onNone: () => "If Claude Code is signed out, run `claude auth login`, then retry.",
+          onSome: (code) =>
+            code === 401 || code === 403
+              ? "If Claude Code is signed out, run `claude auth login`, then retry."
+              : "Resolve the problem the CLI reports, then retry.",
+        });
+
+        const description = `Claude Code CLI request failed: ${message} ${wayForward}`;
 
         return Effect.fail(
           claudeCliError(
             method,
-            status === undefined
-              ? new AiError.InternalProviderError({ description })
-              : AiError.reasonFromHttpStatus({ status, description }),
+            Option.match(status, {
+              onNone: () => new AiError.InternalProviderError({ description }),
+              onSome: (code) => AiError.reasonFromHttpStatus({ status: code, description }),
+            }),
           ),
         );
       }
 
-      const text =
-        result.structured_output === undefined
-          ? (result.result ?? "")
-          : JSON.stringify(result.structured_output);
+      const text = Option.match(result.structured_output, {
+        onNone: () => Option.getOrElse(result.result, () => ""),
+        onSome: (structuredOutput) => JSON.stringify(structuredOutput),
+      });
 
       const usage = result.usage;
-      const cacheRead = usage?.cache_read_input_tokens ?? 0;
-      const cacheWrite = usage?.cache_creation_input_tokens ?? 0;
-      const uncached = usage?.input_tokens;
+
+      const tokenCount = (select: (counts: ClaudeCliTokenUsage) => Option.Option<number>) =>
+        usage.pipe(Option.flatMap(select));
+
+      const uncached = tokenCount((counts) => counts.input_tokens);
+      const cacheRead = tokenCount((counts) => counts.cache_read_input_tokens);
+      const cacheWrite = tokenCount((counts) => counts.cache_creation_input_tokens);
 
       return Effect.succeed<Array<Response.PartEncoded>>([
         { type: "text", text },
@@ -239,13 +318,24 @@ export const toClaudeCliResponseParts = (
           type: "finish",
           reason: "stop",
           usage: {
+            // The encoded response contract represents unknown counts as `undefined`.
             inputTokens: {
-              uncached,
-              cacheRead: usage?.cache_read_input_tokens,
-              cacheWrite: usage?.cache_creation_input_tokens,
-              total: uncached === undefined ? undefined : uncached + cacheRead + cacheWrite,
+              uncached: Option.getOrUndefined(uncached),
+              cacheRead: Option.getOrUndefined(cacheRead),
+              cacheWrite: Option.getOrUndefined(cacheWrite),
+              total: Option.getOrUndefined(
+                Option.map(
+                  uncached,
+                  (count) =>
+                    count +
+                    Option.getOrElse(cacheRead, () => 0) +
+                    Option.getOrElse(cacheWrite, () => 0),
+                ),
+              ),
             },
-            outputTokens: { total: usage?.output_tokens },
+            outputTokens: {
+              total: Option.getOrUndefined(tokenCount((counts) => counts.output_tokens)),
+            },
           },
         },
       ]);
@@ -253,9 +343,19 @@ export const toClaudeCliResponseParts = (
   );
 
 /**
- * Builds a `LanguageModel` that answers each request with one Claude Code CLI run on the
- * signed-in Claude subscription. Structured output (`generateObject`) uses `--json-schema` with
- * Anthropic's structured-output schema rules. Tools are not supported.
+ * Creates a `LanguageModel` that answers each request with one Claude Code CLI run on the
+ * signed-in Claude subscription.
+ *
+ * **Details**
+ *
+ * Structured output (`generateObject`) uses `--json-schema` with Anthropic's structured-output
+ * schema rules. Tools are not supported.
+ *
+ * @param run - Runner that spawns the CLI; tests pass a controlled runner.
+ * @returns The language model service. Its requests fail with `AiError`: `InvalidRequestError`
+ *   for tools or non-text prompt parts, `UnsupportedSchemaError` when a response schema has no
+ *   JSON Schema form, `InternalProviderError` when the CLI cannot run, and the reasons documented
+ *   on `toClaudeCliResponseParts`.
  */
 export const makeClaudeSubscriptionLanguageModel = (
   run: ClaudeCliRunner,
@@ -270,20 +370,22 @@ export const makeClaudeSubscriptionLanguageModel = (
             new AiError.InvalidRequestError({
               parameter: "tools",
               description:
-                "The Claude subscription language model runs Claude Code without tools. Send the request without tools.",
+                "Claude subscription language model requests cannot include tools because Claude Code runs without tools. Send the request without tools.",
             }),
           ),
         );
       }
 
       const rendered = yield* renderClaudeCliPrompt(providerOptions.prompt).pipe(
-        Effect.mapError((unsupported) =>
-          claudeCliError(
-            method,
-            new AiError.InvalidRequestError({
-              parameter: "prompt",
-              description: `The Claude subscription language model sends text only; a ${unsupported.role} message contains a ${unsupported.part} part. Send text parts only.`,
-            }),
+        Effect.catchTag("ClaudeCliPromptError", (error) =>
+          Effect.fail(
+            claudeCliError(
+              method,
+              new AiError.InvalidRequestError({
+                parameter: "prompt",
+                description: error.message,
+              }),
+            ),
           ),
         ),
       );
@@ -302,15 +404,17 @@ export const makeClaudeSubscriptionLanguageModel = (
                   claudeCliError(
                     method,
                     new AiError.UnsupportedSchemaError({
-                      description: error instanceof Error ? error.message : String(error),
+                      description: `Claude Code CLI cannot use the response schema: ${error instanceof Error ? error.message : String(error)}. Use a schema with a JSON Schema representation.`,
                     }),
                   ),
               }),
             )
           : Option.none();
 
+      const command = Option.getOrElse(options.command, () => "claude");
+
       const stdout = yield* run({
-        command: options.command ?? "claude",
+        command,
         args: toClaudeCliArguments({
           model: options.model,
           effort: options.effort,
@@ -324,7 +428,7 @@ export const makeClaudeSubscriptionLanguageModel = (
           claudeCliError(
             method,
             new AiError.InternalProviderError({
-              description: `Could not run the Claude Code CLI (${options.command ?? "claude"}): ${error.message}. Install Claude Code, make sure it is on PATH, and restart Traits.`,
+              description: `Claude Code CLI could not be started with ${command}: ${error.message}. Install Claude Code, make sure it is on PATH, and restart Traits.`,
             }),
           ),
         ),
@@ -393,6 +497,9 @@ const spawnClaudeCli = (spawner: ChildProcessSpawner.ChildProcessSpawner["Servic
  *
  * Needs `claude` on `PATH` and a subscription login (`claude auth login`). Requests use the
  * subscription's usage limits, not API credits.
+ *
+ * @returns A Layer that requires `ChildProcessSpawner`; request failures are the `AiError`
+ *   reasons documented on `makeClaudeSubscriptionLanguageModel`.
  */
 export const claudeSubscriptionLanguageModelLayer = (
   options: ClaudeSubscriptionLanguageModelOptions,

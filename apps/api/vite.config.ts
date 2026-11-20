@@ -1,7 +1,7 @@
 import { defineConfig } from "vite-plus";
 
-/** Separates ordinary tests from explicitly staged local-workerd acceptance tests. */
-const apiViteConfig = defineConfig(({ mode }) => ({
+/** Vite+ configuration that separates ordinary tests from explicitly staged local-workerd acceptance tests. */
+export default defineConfig(({ mode }) => ({
   run: {
     tasks: {
       "test:e2e:local": {
@@ -21,5 +21,3 @@ const apiViteConfig = defineConfig(({ mode }) => ({
           include: ["src/**/*.test.ts", "test/review/**/*.test.ts", "test/support/**/*.test.ts"],
         },
 }));
-
-export default apiViteConfig;

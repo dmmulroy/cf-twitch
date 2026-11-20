@@ -1,5 +1,5 @@
 import { TypeSafeClient, TypeSafeDecisionModel } from "@effect/ai-typesafe";
-import { Config, Layer } from "effect";
+import { Config, Layer, Option } from "effect";
 import type { TraitsConfig } from "traits";
 
 import { claudeSubscriptionLanguageModelLayer } from "./claude-subscription-language-model.ts";
@@ -38,6 +38,7 @@ export default {
    */
   layerLanguageModel: claudeSubscriptionLanguageModelLayer({
     model: "claude-opus-5-5",
-    effort: "medium",
+    effort: Option.some("medium"),
+    command: Option.none(),
   }),
 } satisfies TraitsConfig;

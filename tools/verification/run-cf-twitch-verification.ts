@@ -14,21 +14,28 @@ const CfTwitchVerificationCommand = Schema.Literals([
 
 type CfTwitchVerificationCommand = typeof CfTwitchVerificationCommand.Type;
 
-class CfTwitchVerificationCommandFailed extends Schema.TaggedError<CfTwitchVerificationCommandFailed>()(
-  "CfTwitchVerificationCommandFailed",
+/** Error returned when one verification command exits non-zero. */
+class CfTwitchVerificationError extends Schema.TaggedError<CfTwitchVerificationError>()(
+  "CfTwitchVerificationError",
   {
+    operation: Schema.Literals(["runCfTwitchVerificationCommand"]),
+    reason: Schema.Literals(["CommandFailed"]),
+    /** Verification step that failed, such as `lint` or `e2e`. */
     command: CfTwitchVerificationCommand,
     exitCode: Schema.Number,
   },
 ) {
+  /** Marks the failure as not yet reported so `NodeRuntime.runMain` logs its message. */
   override readonly [Runtime.errorReported] = false;
 
+  /** Process exit code `NodeRuntime.runMain` uses, matching the failed child command. */
   override get [Runtime.errorExitCode](): number {
     return this.exitCode;
   }
 
+  /** Operator guidance naming the failed step and its exit code. */
   override get message(): string {
-    return `CF Twitch verification command ${this.command} failed with exit code ${this.exitCode}.`;
+    return `CF Twitch verification command ${this.command} failed with exit code ${this.exitCode}. Fix the failure reported above and rerun \`pnpm verify\`.`;
   }
 }
 
@@ -39,7 +46,14 @@ const runCfTwitchVerificationCommand = Effect.fn(
   const exitCode = yield* childProcessSpawner.exitCode(command);
 
   if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
-    return yield* Effect.fail(new CfTwitchVerificationCommandFailed({ command: name, exitCode }));
+    return yield* Effect.fail(
+      new CfTwitchVerificationError({
+        operation: "runCfTwitchVerificationCommand",
+        reason: "CommandFailed",
+        command: name,
+        exitCode,
+      }),
+    );
   }
 });
 
@@ -51,7 +65,12 @@ const inheritedCommand = (executable: string, arguments_: ReadonlyArray<string>)
     extendEnv: true,
   });
 
-/** Runs every static check, unit suite, and isolated local-workerd acceptance suite in order. */
+/**
+ * Runs every static check, unit suite, and isolated local-workerd acceptance suite in order.
+ *
+ * @returns Nothing on success; fails with `CfTwitchVerificationError` at the first command that
+ *   exits non-zero, or with `PlatformError` when a command cannot be spawned.
+ */
 export const runCfTwitchVerification = Effect.fn("CfTwitchVerification.runCfTwitchVerification")(
   function* () {
     yield* runCfTwitchVerificationCommand(

@@ -42,7 +42,7 @@ const runWithCli = <A, E>(
 
       return Effect.succeed(stdout);
     },
-    { model: "claude-opus-5-5", effort: "medium" },
+    { model: "claude-opus-5-5", effort: Option.some("medium"), command: Option.none() },
   ).pipe(
     Effect.flatMap((model) =>
       program.pipe(Effect.provideService(LanguageModel.LanguageModel, model), Effect.exit),
@@ -63,7 +63,7 @@ describe("toClaudeCliArguments", () => {
   it("runs one isolated, non-interactive request", () => {
     const args = toClaudeCliArguments({
       model: "claude-opus-5-5",
-      effort: "medium",
+      effort: Option.some("medium"),
       systemPrompt: Option.some("Be brief."),
       jsonSchema: Option.some({ type: "object" }),
     });
@@ -115,6 +115,24 @@ describe("renderClaudeCliPrompt", () => {
     expect(rendered.stdin).toBe("User:\nFirst.\n\nAssistant:\nNoted.\n\nUser:\nSecond.");
     expect(rendered.systemPrompt).toEqual(Option.none());
   });
+
+  it("fails with the role and part type of the first non-text part", async () => {
+    const error = await Effect.runPromise(
+      Effect.flip(
+        renderClaudeCliPrompt(
+          Prompt.make([
+            {
+              role: "user",
+              content: [{ type: "file", mediaType: "text/plain", data: "notes" }],
+            },
+          ]),
+        ),
+      ),
+    );
+
+    expect(error.reason).toBe("UnsupportedPromptPart");
+    expect([error.role, error.part]).toEqual(["user", "file"]);
+  });
 });
 
 describe("makeClaudeSubscriptionLanguageModel", () => {
@@ -156,7 +174,9 @@ describe("makeClaudeSubscriptionLanguageModel", () => {
     );
 
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("Claude Code CLI request failed: Model not found.");
+    expect(JSON.stringify(exit)).toContain(
+      "Claude Code CLI request failed: Model not found. Resolve the problem the CLI reports, then retry.",
+    );
   });
 
   it("suggests signing in when the CLI fails without an API status", async () => {
