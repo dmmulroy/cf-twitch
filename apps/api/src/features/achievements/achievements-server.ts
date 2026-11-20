@@ -7,27 +7,48 @@ import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { TwitchAnalytics, twitchAnalyticsLayer } from "../../runtime/twitch-analytics.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
-import { Achievements } from "./achievements-service.ts";
-import { achievementsLayer } from "./achievements-database.ts";
-import {
-  AchievementOutbox,
-  achievementOutboxLayerWithoutDependencies,
-} from "./achievement-outbox.ts";
+import { Achievements, achievementsLayer } from "./achievements-service.ts";
+import { AchievementOutbox, achievementOutboxLayer } from "./achievement-outbox.ts";
 import { achievementsHttpHandlersLayer } from "./achievements-http-handlers.ts";
 import { AchievementsHttpApi } from "./achievements-http-api.ts";
 
+/** Handlers the `AchievementsDO` Durable Object exposes to the Worker runtime. */
 interface AchievementsServerContract {
+  /**
+   * Serves the versioned achievements HTTP contract after scheduling an outbox wake-up.
+   *
+   * @throws Dies when the outbox wake-up alarm cannot be read or scheduled.
+   */
   readonly fetch: HttpEffect;
+  /**
+   * Flushes pending unlock deliveries when any remain.
+   *
+   * @throws Dies with any storage, scheduling, or outbox failure, so Cloudflare retries the alarm.
+   */
   readonly alarm: () => Effect.Effect<void>;
 }
 
-/** Physical AchievementsDO class and achievements singleton key are retained without namespace transfer. */
+/**
+ * Durable Object class that hosts the achievement authority under its physical name `AchievementsDO`.
+ *
+ * **Details**
+ *
+ * The physical class name and the `achievements` singleton key are retained without namespace transfer.
+ */
 export class AchievementsServer extends Cloudflare.DurableObject<
   AchievementsServer,
   AchievementsServerContract
 >()("AchievementsDO") {}
 
-/** Captures infrastructure at init; SQL, migration, recovery and alarms execute only at runtime. */
+/**
+ * Layer that registers the `AchievementsDO` server while leaving Twitch and analytics required.
+ *
+ * **Details**
+ *
+ * Outer initialization only captures `TwitchService` and `TwitchAnalytics`. SQL acquisition,
+ * migrations, outbox recovery, and alarms run in the Durable Object runtime phase, where storage or
+ * alarm-scheduling failures are defects.
+ */
 export const achievementsServerLayerWithoutDependencies = AchievementsServer.make<
   Cloudflare.DurableObjectState | TwitchService | TwitchAnalytics
 >(
@@ -36,8 +57,8 @@ export const achievementsServerLayerWithoutDependencies = AchievementsServer.mak
     const twitch = yield* TwitchService;
     const analytics = yield* TwitchAnalytics;
 
-    const services = achievementOutboxLayerWithoutDependencies.pipe(
-      Layer.provideMerge(achievementsLayer),
+    // The outbox and handlers share one memoized SQL authority from `achievementsLayer`.
+    const services = Layer.mergeAll(achievementOutboxLayer, achievementsLayer).pipe(
       Layer.provide(SqliteClient.layer({ storage: state.raw.storage })),
       Layer.provide(Layer.succeed(TwitchService, twitch)),
       Layer.provide(Layer.succeed(TwitchAnalytics, analytics)),
@@ -89,10 +110,8 @@ export const achievementsServerLayerWithoutDependencies = AchievementsServer.mak
   }),
 );
 
-/** Ready server registers Twitch and analytics infrastructure during outer initialization. */
+/** Production Layer that registers the `AchievementsDO` server with Twitch and analytics infrastructure selected. */
 export const achievementsServerLayer = achievementsServerLayerWithoutDependencies.pipe(
   Layer.provide([twitchServiceLayer, twitchAnalyticsLayer]),
   Layer.orDie,
 );
-
-export default achievementsServerLayer;

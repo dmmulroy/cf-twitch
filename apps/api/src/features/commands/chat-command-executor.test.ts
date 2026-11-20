@@ -7,6 +7,7 @@ import { TestClock } from "effect/testing";
 import {
   AchievementDefinition,
   AchievementError,
+  achievementErrorWithoutIdentifiers,
   UnlockedAchievement,
 } from "@cf-twitch/contracts/achievement";
 import {
@@ -155,8 +156,9 @@ const providerTestLayer = Layer.unwrap(
     const achievementFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("achievements"))
         return yield* new AchievementError({
-          operation: "command lookup",
+          operation: "getDefinitions",
           reason: "transport_unavailable",
+          ...achievementErrorWithoutIdentifiers,
         });
     });
 

@@ -15,7 +15,13 @@ import {
 } from "@cf-twitch/contracts/achievement";
 import { DomainEvent } from "@cf-twitch/contracts/domain-event";
 
-/** Versioned achievements operations shared by the HTTP server and namespace client. */
+/**
+ * Versioned achievements HTTP contract shared by the `AchievementsDO` server and its namespace client.
+ *
+ * **Details**
+ *
+ * Each endpoint mirrors one `IAchievements` method and fails with `AchievementError`.
+ */
 export class AchievementsHttpApi extends HttpApi.make("AchievementsHttpApi")
   .add(
     HttpApiGroup.make("achievements")

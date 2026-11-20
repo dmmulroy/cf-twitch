@@ -19,6 +19,7 @@ const achievementSchemaStatements = [
   "CREATE INDEX IF NOT EXISTS `idx_achievement_unlock_outbox_pending` ON `achievement_unlock_outbox` (`announcement_state`, `metric_state`)",
 ];
 
+/** Migration that adopts the baseline achievement tables, failing with `SqlError` on a pre-viewer-ID schema. */
 const adoptAchievementSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -30,6 +31,7 @@ const adoptAchievementSchema = Effect.gen(function* () {
   yield* sql`CREATE TABLE IF NOT EXISTS achievement_outbox_retry (effect_id TEXT PRIMARY KEY NOT NULL, next_attempt_at INTEGER NOT NULL)`;
 });
 
+/** Migration that records each Viewer's current unlock generation, failing with `SqlError` when it cannot run. */
 const fenceAchievementUnlockGeneration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // Fences an old in-flight response from marking a later session's unlock as announced.
@@ -40,7 +42,16 @@ const fenceAchievementUnlockGeneration = Effect.gen(function* () {
  WHERE u.unlocked_at IS NOT NULL ORDER BY o.created_at DESC,o.effect_id DESC`;
 });
 
-/** Adopts complete baseline achievement SQL; older pre-viewer-ID databases fail closed. */
+/**
+ * Migration loader that adopts the complete baseline achievement SQL and fences unlock generations.
+ *
+ * **Details**
+ *
+ * Baseline SQL is authoritative; the Agent JSON projection is never imported. A pre-viewer-ID database
+ * without `user_achievements.user_id` fails closed: running the loader with `SqliteMigrator.run` then
+ * fails with `MigrationError` or `SqlError`. The unlock-generation fence stops a delayed
+ * announcement response from marking a later Stream Session's unlock as announced.
+ */
 export const achievementMigrationLoader = SqliteMigrator.fromRecord({
   "1_adopt_achievement_sql": adoptAchievementSchema,
   "2_fence_unlock_generation": fenceAchievementUnlockGeneration,

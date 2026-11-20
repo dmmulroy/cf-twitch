@@ -2,12 +2,12 @@
 
 ## Capability boundaries
 
-- `Raffle` (`../raffle/raffle-service.ts`) owns secure draw creation, immutable roll receipts, active roll history and ranking. `raffleClientLayer` provides that tag over the `KeyboardRaffleDO` HTTP namespace, singleton `keyboard-raffle`.
-- `Achievements` (`achievements-service.ts`) owns the transactional Event ID inbox, stable Viewer ID progress, all thirteen definitions, stream watermark/session resets, request streaks, ranking, debug snapshots and one-time resets. `achievementsClientLayer` provides that tag over physical `AchievementsDO`, singleton `achievements`.
-- `AchievementOutbox` owns durable metric/chat claims and retry scheduling evidence. It requires the real `TwitchService` and `TwitchAnalytics`; no fallback implementation is installed. The server captures infrastructure in outer initialization and acquires SQL only at runtime.
+- `Raffle` (`../raffle/raffle-service.ts`) owns secure draw creation, immutable roll receipts, active roll history and ranking. The file declares `IRaffle`, the tag, the SQL constructor `makeRaffle`, `raffleLayerWithoutDependencies`, `raffleLayer`, and the in-memory `raffleTestLayer`. `raffleClientLayer` provides that tag over the `KeyboardRaffleDO` HTTP namespace, singleton `keyboard-raffle`. `RaffleRandom` (`../raffle/raffle-random.ts`) owns rejection sampling; `raffleRandomTestLayer` runs it over a seeded generator.
+- `Achievements` (`achievements-service.ts`) owns the transactional Event ID inbox, stable Viewer ID progress, all thirteen definitions, stream watermark/session resets, request streaks, ranking, debug snapshots and one-time resets. The file declares `IAchievements`, the tag, `makeAchievements`, `achievementsLayerWithoutDependencies`, `achievementsLayer`, and the in-memory `achievementsTestLayer`. `achievementsClientLayer` provides that tag over physical `AchievementsDO`, singleton `achievements`.
+- `AchievementOutbox` owns durable metric/chat claims and retry scheduling evidence. It requires the real `TwitchService` and `TwitchAnalytics`; no fallback implementation is installed in production. `achievementOutboxLayer` selects the SQL authority; `achievementOutboxTestLayer` delivers over `achievementsTestLayer` and leaves Twitch and analytics for each test to select. The server captures infrastructure in outer initialization and acquires SQL only at runtime.
 - `WorkflowExecution` owns raffle fulfillment/refund, raffle chat/event/metric delivery and compensation. Raffle deletion removes the active roll but retains its immutable receipt. A delayed replay does not resurrect it or draw again.
 
-Raffle randomness/history, achievement progression/session transactions, and non-idempotent outbox claims have separate authorities. HTTP clients expose those same application interfaces; [architecture](../../../../../docs/architecture.md) owns invocation-lifetime and Layer conventions.
+Raffle randomness/history, achievement progression/session transactions, and non-idempotent outbox claims have separate authorities. Shared Achievement Rules live in `achievement-rules.ts` and read-model projections in `achievement-projections.ts`, so the SQL and in-memory authorities apply identical logic. HTTP clients expose those same application interfaces; [architecture](../../../../../docs/architecture.md) owns invocation-lifetime and Layer conventions.
 
 ## Historical state and cutover
 
@@ -27,14 +27,19 @@ Behavioral corrections are explicit: Stream Opener requires the current request 
 
 Use the [focused verification command](../../../../../docs/verification.md#focused-feedback) with `src/features/raffle src/features/achievements`. Dated run results belong in [recorded verification](../../../../../docs/verification.md#recorded-verification).
 
-Evidence entrypoints: [raffle SQL](../raffle/raffle-database.test.ts), [raffle migration](../raffle/raffle-migration.test.ts), [achievement SQL](achievements-database.test.ts), [historical migration](achievement-migration.test.ts), [rules](achievement-rules.test.ts), and [outbox](achievement-outbox.test.ts). They cover:
+Evidence entrypoints: [raffle service](../raffle/raffle-service.test.ts), [raffle migration](../raffle/raffle-migration.test.ts), [raffle draws](../raffle/raffle-random.test.ts), [achievement service](achievements-service.test.ts), [historical migration](achievement-migration.test.ts), [rules](achievement-rules.test.ts), and [outbox](achievement-outbox.test.ts). They cover:
 
+- Interface parity: the raffle and achievement journeys that need no SQL inspection run against both the real-SQLite authority and the in-memory test Layer, including typed error identifiers and messages. The in-memory test Layers keep no storage-failure modes, and the in-memory achievement authority leaves every unlock pending announcement because it has no SQL outbox.
 - Real SQLite: immutable exact replay/conflict, concurrent draw deduplication, compensation receipt retention, global strict record rules, all ranking modes, latest display names, SQL constraints and receipt transaction rollback.
 - Real SQLite: all thirteen definitions and unlocks, threshold freeze, one-time progress, streak replacement/reset/longest retention, concurrent Event ID inbox, stable Viewer ID rename, strictly-after Stream Opener, stale/mismatched stream transitions, ranking/unannounced/debug/reset, outbox transaction rollback, direct event compatibility and corrupt definition errors.
 - Independent frozen historical SQL adoption, complete state rehydration and sending-to-uncertain recovery.
 - Actual `AchievementOutbox.flush` with real SQLite, the complete production Twitch HTTP service over the closed controlled provider transport, and recording analytics: all thirteen announcements/metrics, concurrent exactly-once claims, durable rate-limit deadlines/Retry-After/retry exhaustion, dropped chat abandonment, unknown/malformed delivery non-retry, replay/restart metric deduplication. A SQLite trigger rejects finalization after an actual successful provider response; SQL authority restart changes sending to uncertain and subsequent calls do not send another chat or metric.
 - Real Effect HTTP handlers: valid JSON roundtrips, versioned intake/query/reset, invalid bounded inputs and rejection of caller-supplied raffle derived evidence.
 - FastCheck properties: threshold/streak laws, equivalent-instant watermark ordering, unknown-outcome non-retry, bounded announcement retries and Retry-After precedence; generated real-SQL roll pairs/redelivery permutations. Web Crypto draw bounds are tested without claiming that a finite statistical test proves cryptographic uniformity. The implementation uses Uint32 rejection sampling, never modulo reduction of an incomplete bucket.
+
+## Typed errors
+
+`AchievementError` and `RaffleError` carry a literal `operation`, a classified `reason`, and the safe identifiers the failing operation knew (`eventId`, `viewerId`, `viewerDisplayName` for achievements; `redemptionId`, `viewerId`, `viewerDisplayName` for raffles), each `None` when absent. Their messages start with a fixed description, name the operation and reason, and end with one next step that matches the operation's idempotency: event-ID and redemption-ID retries are safe, an uncertain achievement reset must be read before repeating, and stored-data corruption must be inspected rather than retried. The unused raffle `invalid_input` reason was removed.
 
 ## Native recovery and polling trade-off
 
