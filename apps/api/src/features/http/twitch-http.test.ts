@@ -1,11 +1,11 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Option, Redacted } from "effect";
+import { Effect, Layer, Option, Redacted, Schema } from "effect";
 import { HttpRouter } from "effect/http";
 import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { RaffleError } from "@cf-twitch/contracts/raffle";
-import { TwitchStatsApi } from "@cf-twitch/contracts/twitch-api";
+import { TwitchHttpErrorBody, TwitchStatsApi } from "@cf-twitch/contracts/twitch-api";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { httpTestConfiguration as configuration } from "./http-test-fixtures.ts";
@@ -109,12 +109,14 @@ describe("Worker HTTP compatibility boundary", () => {
           if (golden.method !== "GET") init.body = JSON.stringify(golden.body);
           const response = yield* Effect.promise(() => fetch(request(golden.path, init)));
           expect(response.status).toBe(400);
-          expect(yield* Effect.promise(() => response.json())).toEqual({
-            code:
-              golden.error === "Invalid query parameters"
-                ? "InvalidQueryParameters"
-                : "InvalidCommandPayload",
-            error: golden.error,
+
+          const body = yield* Effect.promise(() => response.json()).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(TwitchHttpErrorBody)),
+          );
+
+          expect(body).toEqual({
+            code: golden.code,
+            error: body.message,
             operation: expect.any(String),
             message: expect.stringMatching(/^Invalid (query parameters|command payload): .+\.$/u),
             details: golden.details,
@@ -187,7 +189,8 @@ describe("Worker HTTP compatibility boundary", () => {
           expect(missingRoute.headers.get("x-request-id")).toMatch(/^[a-f\d-]{36}$/u);
           expect(yield* Effect.promise(() => missingRoute.json())).toEqual({
             code: "RouteNotFound",
-            error: "Not found",
+            error:
+              "No route matches GET /missing. Check the method and path against the API documentation.",
             operation: "routeRequest",
             message:
               "No route matches GET /missing. Check the method and path against the API documentation.",
@@ -240,7 +243,8 @@ describe("Worker HTTP compatibility boundary", () => {
         expect(missing.status).toBe(404);
         expect(yield* Effect.promise(() => missing.json())).toEqual({
           code: "ViewerNotFound",
-          error: "User not found",
+          error:
+            "Viewer not found: Viewer 123 has no Keyboard Raffle rolls. Check the Twitch user ID and try again.",
           operation: "raffleViewer",
           message:
             "Viewer not found: Viewer 123 has no Keyboard Raffle rolls. Check the Twitch user ID and try again.",
@@ -379,7 +383,6 @@ describe("Worker HTTP compatibility boundary", () => {
           expect(authorizedBody.status).toBe(400);
           expect(yield* Effect.promise(() => authorizedBody.json())).toMatchObject({
             code: "InvalidJsonBody",
-            error: "Invalid JSON body",
             operation: "createCommand",
           });
 
@@ -432,7 +435,6 @@ describe("Worker HTTP compatibility boundary", () => {
           expect(reset.status).toBe(400);
           expect(yield* Effect.promise(() => reset.json())).toMatchObject({
             code: "InvalidViewerDisplayName",
-            error: "Viewer display name must not be empty",
             operation: "resetAchievements",
             details: { parameter: "user" },
           });
@@ -455,7 +457,6 @@ describe("Worker HTTP compatibility boundary", () => {
 
         expect(callback.status).toBe(400);
         expect(yield* Effect.promise(() => callback.json())).toMatchObject({
-          error: "Invalid or expired OAuth state",
           code: "invalid",
           operation: "twitchCallback",
           details: { provider: "twitch" },

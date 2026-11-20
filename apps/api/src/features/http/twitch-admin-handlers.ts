@@ -51,17 +51,12 @@ const decodeUpdateCommand = Schema.decodeEffect(Schema.toCodecJson(UpdateChatCom
 
 const decodeEventId = Schema.decodeEffect(EventId);
 
-const invalidCommandPayload = (
-  summary: "Invalid command payload" | "Invalid command patch",
-  error: Schema.SchemaError,
-  payload: Schema.Json,
-) =>
+const invalidCommandPayload = (error: Schema.SchemaError, payload: Schema.Json) =>
   new HttpBoundaryError({
     operation: "parseBody",
     status: 400,
     failure: {
       code: "InvalidCommandPayload",
-      error: summary,
       message:
         "Invalid command payload: one or more command fields are missing, unknown, or invalid. Fix the fields listed in details and send the request again.",
       details: formatHttpCommandIssues(error, payload),
@@ -83,7 +78,6 @@ const parseHttpEventId = (id: string): Effect.Effect<EventId, HttpBoundaryError>
           status: 400,
           failure: {
             code: "InvalidEventId",
-            error: "Invalid event ID",
             message: `Invalid event ID ${JSON.stringify(id)}: Event Bus event IDs are UUIDs. Check the ID with GET /api/admin/dlq and try again.`,
             details: { eventId: id },
             retryable: false,
@@ -106,7 +100,6 @@ const parseHttpCommandName = (name: string): Effect.Effect<ChatCommandName, Http
           status: 400,
           failure: {
             code: "InvalidCommandNameError",
-            error: "Invalid command name",
             message: `Invalid command name ${JSON.stringify(name)}: use a canonical command name without the leading "!". Fix the path and try again.`,
             details: { commandName: name },
             retryable: false,
@@ -123,7 +116,6 @@ const readCommandJson = HttpServerRequest.schemaBodyJson(Schema.Json).pipe(
         status: 400,
         failure: {
           code: "InvalidJsonBody",
-          error: "Invalid JSON body",
           message:
             "Invalid JSON body: the request body is not finite JSON. Send a JSON object and try again.",
           details: {},
@@ -133,11 +125,10 @@ const readCommandJson = HttpServerRequest.schemaBodyJson(Schema.Json).pipe(
   ),
 );
 
-const commandChange = (summary: string): HttpServiceAccess => ({
+const commandChange: HttpServiceAccess = {
   kind: "change",
-  summary,
   reconcile: "Check the commands with GET /api/admin/commands before retrying.",
-});
+};
 
 /**
  * Layer that serves administrator Event Bus, Achievements and Chat Commands endpoints.
@@ -178,7 +169,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
                 Effect.fail(
                   eventBusHttpFailure(error, {
                     kind: "repeatable",
-                    summary: "Failed to fetch DLQ",
                   }),
                 ),
               ),
@@ -199,7 +189,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
                 Effect.fail(
                   eventBusHttpFailure(error, {
                     kind: "repeatable",
-                    summary: "Failed to fetch pending events",
                   }),
                 ),
               ),
@@ -220,7 +209,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
                 Effect.fail(
                   eventBusHttpFailure(error, {
                     kind: "change",
-                    summary: "Failed to replay DLQ item",
                     reconcile:
                       "Check whether the event remains in GET /api/admin/dlq before retrying.",
                   }),
@@ -261,7 +249,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
                 Effect.fail(
                   eventBusHttpFailure(error, {
                     kind: "change",
-                    summary: "Failed to delete DLQ item",
                     reconcile:
                       "Check whether the event remains in GET /api/admin/dlq before retrying.",
                   }),
@@ -290,7 +277,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
                   status: 400,
                   failure: {
                     code: "InvalidViewerDisplayName",
-                    error: "Viewer display name must not be empty",
                     message:
                       'Viewer display name must not be empty: the "user" query parameter is blank. Send a display name, or omit "user" to reset every viewer.',
                     details: { parameter: "user" },
@@ -306,7 +292,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
                   Effect.fail(
                     achievementHttpFailure(error, {
                       kind: "change",
-                      summary: "Failed to reset achievements",
                       reconcile:
                         "Check the counts with GET /api/admin/achievements/debug/counts before retrying.",
                     }),
@@ -321,7 +306,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
                   status: 404,
                   failure: {
                     code: "ViewerAchievementsNotFound",
-                    error: "User not found or no one-time achievements to reset",
                     message: `Viewer achievements not found: ${user.value} has no one-time achievements to reset. Check the display name and try again.`,
                     details: { user: user.value },
                     retryable: false,
@@ -346,7 +330,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
               Effect.fail(
                 achievementHttpFailure(error, {
                   kind: "repeatable",
-                  summary: "Failed to fetch achievements debug counts",
                 }),
               ),
             ),
@@ -364,7 +347,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
               Effect.fail(
                 achievementHttpFailure(error, {
                   kind: "repeatable",
-                  summary: "Failed to fetch user debug snapshot",
                 }),
               ),
             ),
@@ -381,7 +363,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
             Effect.catchTags(
               commandsHttpFailureHandlers({
                 kind: "repeatable",
-                summary: "Failed to list commands",
               }),
             ),
             Effect.flatMap((value) =>
@@ -397,18 +378,12 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
             const payload = yield* readCommandJson;
 
             const input = yield* decodeCreateCommand(payload).pipe(
-              Effect.mapError((error) =>
-                invalidCommandPayload("Invalid command payload", error, payload),
-              ),
+              Effect.mapError((error) => invalidCommandPayload(error, payload)),
             );
 
             const value = yield* commands
               .createCommand(input)
-              .pipe(
-                Effect.catchTags(
-                  commandsHttpFailureHandlers(commandChange("Failed to create command")),
-                ),
-              );
+              .pipe(Effect.catchTags(commandsHttpFailureHandlers(commandChange)));
 
             return yield* encodeHttpResponse("chatCommands", ChatCommandDefinition, value, 201);
           }),
@@ -421,20 +396,14 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
             const payload = yield* readCommandJson;
 
             const patch = yield* decodeUpdateCommand(payload).pipe(
-              Effect.mapError((error) =>
-                invalidCommandPayload("Invalid command patch", error, payload),
-              ),
+              Effect.mapError((error) => invalidCommandPayload(error, payload)),
             );
 
             const name = yield* parseHttpCommandName(params.name);
 
             const value = yield* commands
               .updateCommand({ name, patch })
-              .pipe(
-                Effect.catchTags(
-                  commandsHttpFailureHandlers(commandChange("Failed to update command")),
-                ),
-              );
+              .pipe(Effect.catchTags(commandsHttpFailureHandlers(commandChange)));
 
             return yield* encodeHttpResponse("chatCommands", ChatCommandDefinition, value);
           }),
@@ -448,11 +417,7 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
 
             yield* commands
               .deleteCommand({ name })
-              .pipe(
-                Effect.catchTags(
-                  commandsHttpFailureHandlers(commandChange("Failed to delete command")),
-                ),
-              );
+              .pipe(Effect.catchTags(commandsHttpFailureHandlers(commandChange)));
 
             return HttpServerResponse.jsonUnsafe({
               message: "Command deleted",
@@ -469,7 +434,6 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
               Effect.catchTags(
                 commandsHttpFailureHandlers({
                   kind: "repeatable",
-                  summary: "Failed to fetch commands debug snapshot",
                 }),
               ),
             );

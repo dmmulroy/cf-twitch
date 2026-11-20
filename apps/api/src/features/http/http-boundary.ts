@@ -32,10 +32,17 @@ export type HttpBoundaryOperation =
   | "verifyWebhook"
   | "acceptWebhook";
 
-/** Public error body content known where a failure is classified; the renderer adds `operation` and `requestId`. */
+/**
+ * Public error body content known where a failure is classified.
+ *
+ * **Details**
+ *
+ * The renderer adds the endpoint `operation`, the request's `requestId`, and the compatibility
+ * `error` field, which repeats `message`.
+ */
 export type TwitchHttpFailure = TwitchHttpErrorBody extends infer Body
   ? Body extends TwitchHttpErrorBody
-    ? Omit<Body, "operation" | "requestId">
+    ? Omit<Body, "error" | "operation" | "requestId">
     : never
   : never;
 
@@ -84,7 +91,13 @@ export const renderHttpBoundaryError = Effect.fnUntraced(function* (
   error: HttpBoundaryError,
 ) {
   const { requestId } = yield* HttpRequestCorrelation;
-  const body: TwitchHttpErrorBody = { ...error.failure, operation, requestId };
+
+  const body: TwitchHttpErrorBody = {
+    ...error.failure,
+    error: error.failure.message,
+    operation,
+    requestId,
+  };
 
   return yield* encodeTwitchHttpErrorResponse(body, { status: error.status }).pipe(Effect.orDie);
 });
@@ -114,7 +127,6 @@ const authenticationUnavailable = (audience: TwitchHttpAuthenticationAudience) =
     status: 503,
     failure: {
       code: "AuthenticationUnavailable",
-      error: "Authentication unavailable",
       message: `Authentication unavailable for the ${audience}: the credential could not be verified. Retry the request in a few seconds.`,
       details: { audience },
       retryable: true,
@@ -185,7 +197,6 @@ export const requireHttpAdministrator = Effect.fn("Http.requireAdministrator")(f
         status: 503,
         failure: {
           code: "AuthenticationNotConfigured",
-          error: `${audience} not configured`,
           message: `Authentication not configured for the ${audience}: no administrator secret is set. Contact the operator to configure the administrator secret.`,
           details: { audience },
           retryable: false,
@@ -202,7 +213,6 @@ export const requireHttpAdministrator = Effect.fn("Http.requireAdministrator")(f
         status: 401,
         failure: {
           code: "AuthorizationMissing",
-          error: "Missing Authorization header",
           message: `Authorization header missing for the ${audience}. Send "Authorization: Bearer <token>" and try again.`,
           details: { audience },
           retryable: false,
@@ -218,7 +228,6 @@ export const requireHttpAdministrator = Effect.fn("Http.requireAdministrator")(f
         status: 401,
         failure: {
           code: "AuthorizationMalformed",
-          error: "Invalid Authorization header format",
           message: `Authorization header malformed for the ${audience}: expected "Bearer <token>". Fix the header and try again.`,
           details: { audience },
           retryable: false,
@@ -233,7 +242,6 @@ export const requireHttpAdministrator = Effect.fn("Http.requireAdministrator")(f
         status: 401,
         failure: {
           code: "CredentialRejected",
-          error: "Invalid token",
           message: `Credential rejected for the ${audience}: the bearer token does not match. Send the configured administrator token and try again.`,
           details: { audience },
           retryable: false,
@@ -256,7 +264,6 @@ export const invalidHttpServiceResponse = (
     status: 500,
     failure: {
       code: "InvalidServiceResponse",
-      error: "Invalid service response",
       message:
         "Invalid service response: the result did not match the published response schema. Contact support with the request ID in this response.",
       details: { service },
@@ -319,7 +326,6 @@ const invalidQueryParameters = (details: readonly TwitchHttpValidationIssue[]) =
     status: 400,
     failure: {
       code: "InvalidQueryParameters",
-      error: "Invalid query parameters",
       message:
         "Invalid query parameters: one or more values are missing, repeated, unknown, or out of range. Fix the query parameters listed in details and send the request again.",
       details,

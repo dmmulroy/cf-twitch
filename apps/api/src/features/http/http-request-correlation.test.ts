@@ -249,7 +249,8 @@ describe("safe HTTP trace export", () => {
         ]);
         expect(yield* readResponseJson(responses[2])).toEqual({
           code: "RouteNotFound",
-          error: "Not found",
+          error:
+            "No route matches GET /not-found. Check the method and path against the API documentation.",
           operation: "routeRequest",
           message:
             "No route matches GET /not-found. Check the method and path against the API documentation.",
@@ -261,7 +262,7 @@ describe("safe HTTP trace export", () => {
         for (const defect of responses.slice(3, 5))
           expect(yield* readResponseJson(defect)).toEqual({
             code: "InternalFailure",
-            error: "Internal server error",
+            error: `Internal server error while handling the request. Contact support with request ID ${fixedRequestId}.`,
             operation: "handleRequest",
             message: `Internal server error while handling the request. Contact support with request ID ${fixedRequestId}.`,
             details: {},

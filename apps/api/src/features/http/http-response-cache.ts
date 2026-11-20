@@ -12,6 +12,8 @@ export interface IHttpResponseCache {
    * Corrupt or unreadable hits are evicted best effort and replaced only from `load`. Failed loads
    * are never cached, and cache I/O failures never fail the request.
    *
+   * @param input - Canonical cache `key`, the `service` named if the loaded value is invalid, the
+   * response `schema` that validates hits and encodes stored values, and the `load` effect for misses.
    * @returns The value, the failure of `load`, or `HttpBoundaryError` (`InvalidServiceResponse`, 500) when the loaded value violates `schema`.
    */
   readonly readThrough: <A, E, R>(input: {

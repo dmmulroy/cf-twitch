@@ -35,7 +35,6 @@ const invalidEventSubInput = (
         status: 400,
         failure: {
           code,
-          error: "Invalid EventSub headers",
           message:
             "Invalid EventSub headers: a required Twitch-Eventsub-* header is missing or malformed. Send every EventSub header with its documented format.",
           details: {},
@@ -48,7 +47,6 @@ const invalidEventSubInput = (
         status: 400,
         failure: {
           code,
-          error: "Invalid EventSub body",
           message:
             "Invalid EventSub body: the body could not be read as UTF-8 text. Send the notification body as UTF-8 JSON.",
           details: {},
@@ -61,7 +59,6 @@ const invalidEventSubInput = (
         status: 400,
         failure: {
           code,
-          error: "Invalid EventSub JSON body",
           message:
             "Invalid EventSub JSON body: the signed body is not valid JSON. Send the notification body as JSON.",
           details: {},
@@ -74,7 +71,6 @@ const invalidEventSubInput = (
         status: 400,
         failure: {
           code,
-          error: "Invalid EventSub payload",
           message:
             "Invalid EventSub payload: the JSON does not match the EventSub message schema or disagrees with the subscription headers. Fix the payload and send it again.",
           details: {},
@@ -94,7 +90,6 @@ const readEventSubBytes = Effect.fn("Http.readEventSubBytes")(function* () {
       status: 400,
       failure: {
         code: "EventSubBodyTooLarge",
-        error: "EventSub body too large",
         message: `EventSub body too large: the body exceeds ${maximumEventSubBodyBytes} bytes. Send a body of at most ${maximumEventSubBodyBytes} bytes.`,
         details: { maximumBytes: maximumEventSubBodyBytes },
         retryable: false,
@@ -158,7 +153,6 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(function*
         status: 401,
         failure: {
           code: "EventSubTimestampOutOfWindow",
-          error: "EventSub timestamp outside the allowed window",
           message:
             "EventSub timestamp outside the allowed window: the message timestamp is more than 10 minutes from server time. Resend the notification with a current timestamp and signature.",
           details: { toleranceSeconds: 600 },
@@ -205,7 +199,6 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(function*
         status: 503,
         failure: {
           code: "AuthenticationUnavailable",
-          error: "EventSub authentication unavailable",
           message:
             "Authentication unavailable for the EventSub webhook: the signature could not be verified. Retry the delivery in a few seconds.",
           details: { audience: "EventSub webhook" },
@@ -221,7 +214,6 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(function*
         status: 401,
         failure: {
           code: "EventSubSignatureInvalid",
-          error: "Invalid EventSub signature",
           message:
             "EventSub signature invalid: the HMAC-SHA256 signature does not match the message ID, timestamp, and body. Sign the exact bytes with the subscription secret and resend.",
           details: {},
@@ -250,7 +242,6 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(function*
     status: 503,
     failure: {
       code: "EventSubAcceptanceFailed",
-      error: "EventSub durable acceptance failed",
       message: `EventSub acceptance failed for message ${messageId}: the receipt could not be stored durably. Redeliver the same message; acceptance is idempotent by message ID.`,
       details: { messageId },
       retryable: true,
@@ -276,7 +267,6 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(function*
             status: 409,
             failure: {
               code: "EventSubReceiptConflict",
-              error: "EventSub message conflicts with an accepted receipt",
               message: `EventSub receipt conflict for message ${conflict.messageId}: an accepted message with this ID has different content. Send a new message ID for different content.`,
               details: { messageId: conflict.messageId },
               retryable: false,

@@ -40,7 +40,6 @@ const resolveOAuthCallbackUri = Effect.fn("Http.oauthCallbackUri")(function* (
           status: 400,
           failure: {
             code: "InvalidCallbackUrl",
-            error: "Invalid OAuth callback URL",
             message: `Invalid OAuth callback URL: the request origin and "x-forwarded-proto" header do not form a valid ${providerName(provider)} callback URI. Fix the forwarded protocol header and try again.`,
             details: { provider },
             retryable: false,
@@ -74,7 +73,6 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
             status: 503,
             failure: {
               code: "AuthenticationNotConfigured",
-              error: "OAuth setup not configured",
               message:
                 "Authentication not configured for OAuth setup: no setup secret is set. Contact the operator to configure the OAuth setup secret.",
               details: { audience: "OAuth setup" },
@@ -97,7 +95,6 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
             status: 401,
             failure: {
               code: "CredentialRejected",
-              error: "Unauthorized",
               message:
                 'Credential rejected for OAuth setup: the "x-setup-secret" header is missing or wrong. Send the configured setup secret in that header and try again.',
               details: { audience: "OAuth setup" },
@@ -113,7 +110,6 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
           Effect.fail(
             oauthStateHttpFailure(error, {
               kind: "repeatable",
-              summary: `Unable to start ${providerName(provider)} authorization`,
             }),
           ),
         ),
@@ -136,7 +132,6 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
           status: 400,
           failure: {
             code: outcome,
-            error: "Invalid or expired OAuth state",
             message: `OAuth state rejected (${outcome}): the callback state is not a pending ${providerName(provider)} authorization for this redirect URI. ${restart}`,
             details: { provider },
             retryable: false,
@@ -155,7 +150,6 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
             Effect.fail(
               oauthStateHttpFailure(error, {
                 kind: "change",
-                summary: "OAuth state validation unavailable",
                 reconcile: restart,
               }),
             ),
@@ -171,7 +165,6 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
             status: 400,
             failure: {
               code: "provider_denied",
-              error: "Authorization failed",
               message: `Authorization denied: ${providerName(provider)} authorization was not approved. ${restart}`,
               details: { provider },
               retryable: false,
@@ -190,7 +183,6 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
             status: 400,
             failure: {
               code: "AuthorizationCodeMissing",
-              error: "No authorization code received",
               message: `Authorization code missing: the ${providerName(provider)} callback has no "code" query parameter. ${restart}`,
               details: { provider },
               retryable: false,
@@ -207,7 +199,6 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
               Effect.fail(
                 oauthStateHttpFailure(error, {
                   kind: "change",
-                  summary: `Authorization failed for ${providerName(provider)}`,
                   reconcile: restart,
                 }),
               ),

@@ -26,7 +26,7 @@ import { OAuthProvider, ProviderEventSubSubscription, ProviderFailureKind } from
 import { ViewerId } from "./identity.ts";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
 
-/** Public subscription evidence omits absent callback keys, as Twitch management clients expect. */
+/** Schema for an EventSub subscription in management responses; an absent callback key is omitted, as Twitch management clients expect. */
 export const TwitchSubscriptionResponse = Schema.Struct({
   ...ProviderEventSubSubscription.fields,
   transport: Schema.Struct({
@@ -418,7 +418,7 @@ const callbackQuery = OpenApi.annotations({
 
 const webhookHeaders = OpenApi.annotations({
   description:
-    "Raw body is bounded to 1 MiB and decoded with fatal UTF-8. Require timestamp within ±10 minutes and HMAC-SHA256(messageId + timestamp + exact body bytes) before JSON parsing. Header/body subscription type and version must agree. Conflicting message content returns 503.",
+    "Raw body is bounded to 1 MiB and decoded with fatal UTF-8. Require timestamp within ±10 minutes and HMAC-SHA256(messageId + timestamp + exact body bytes) before JSON parsing. Header/body subscription type and version must agree. A reused message ID with different content returns 409.",
   override: {
     parameters: [
       "twitch-eventsub-message-id",
@@ -446,21 +446,21 @@ const setupSecurity = OpenApi.annotations({ override: { security: [{ OAuthSetupH
 
 const json = { success: Schema.Json, error: errors };
 
-/** External now playing absence encodes as null rather than an Effect Option object. */
+/** Schema for the Now Playing response; an absent track encodes as `null`. */
 export const TwitchNowPlayingResponse = Schema.Struct({
   track: Schema.OptionFromNullOr(QueuedTrack),
   position: Schema.Literal(0),
 });
 
-/** Public stats viewer IDs retain the historical numeric-only boundary. */
+/** Schema for a statistics route Viewer ID, restricted to the historical 1–20 digit Twitch user ID. */
 export const TwitchStatsViewerId = ViewerId.check(Schema.isPattern(/^\d{1,20}$/u));
 
-/** Stats response encoding also validates numeric viewer identities before caching. */
+/** Schema for the top requesters response; encoding rejects non-numeric Viewer IDs before a value is cached. */
 export const TwitchTopRequestersResponse = Schema.Array(
   Schema.Struct({ ...TopSongRequester.fields, userId: TwitchStatsViewerId }),
 );
 
-/** Public raffle stats reject invalid service viewer identities before returning cacheable data. */
+/** Schema for one viewer's Keyboard Raffle statistics; encoding rejects non-numeric Viewer IDs before a value is cached. */
 export const TwitchRaffleViewerResponse = Schema.Struct({
   ...RaffleLeaderboardEntry.fields,
   userId: TwitchStatsViewerId,
@@ -524,69 +524,81 @@ const commandSnapshot = Schema.Struct({
   ),
 });
 
-const reconciliationResponse = Schema.Struct({
+/** Schema for the stream reconciliation result; absent Twitch values encode as `null`. */
+export const TwitchStreamReconciliationResponse = Schema.Struct({
   action: Schema.Literals(["noop", "set_online", "set_offline"]),
   queueWarmup: Schema.Literals(["not_needed", "ok", "error"]),
   before: StreamLifecycleState,
   after: StreamLifecycleState,
   twitch: Schema.Struct({
     isLive: Schema.Boolean,
-    startedAt: Schema.NullOr(Schema.String),
-    viewerCount: Schema.NullOr(Schema.Number),
-    title: Schema.NullOr(Schema.String),
-    gameName: Schema.NullOr(Schema.String),
+    startedAt: Schema.OptionFromNullOr(Schema.String),
+    viewerCount: Schema.OptionFromNullOr(Schema.Number),
+    title: Schema.OptionFromNullOr(Schema.String),
+    gameName: Schema.OptionFromNullOr(Schema.String),
   }),
 });
 
-const statusResponse = Schema.Struct({
+/** Stream reconciliation result: the action taken, queue warmup outcome, states before and after, and Twitch evidence. */
+export type TwitchStreamReconciliationResponse = typeof TwitchStreamReconciliationResponse.Type;
+
+/** Schema for the debug status aggregate; each component reports its own failure, and absent values encode as `null`. */
+export const TwitchDebugStatusResponse = Schema.Struct({
   timestamp: Schema.String,
   stream: Schema.Struct({
     ok: Schema.Boolean,
-    isLive: Schema.NullOr(Schema.Boolean),
-    startedAt: Schema.NullOr(Schema.String),
-    peakViewerCount: Schema.NullOr(Schema.Number),
-    error: Schema.NullOr(Schema.String),
+    isLive: Schema.OptionFromNullOr(Schema.Boolean),
+    startedAt: Schema.OptionFromNullOr(Schema.String),
+    peakViewerCount: Schema.OptionFromNullOr(Schema.Number),
+    error: Schema.OptionFromNullOr(Schema.String),
   }),
   twitch: Schema.Struct({
     ok: Schema.Boolean,
-    isLive: Schema.NullOr(Schema.Boolean),
-    startedAt: Schema.NullOr(Schema.String),
-    viewerCount: Schema.NullOr(Schema.Number),
-    error: Schema.NullOr(Schema.String),
+    isLive: Schema.OptionFromNullOr(Schema.Boolean),
+    startedAt: Schema.OptionFromNullOr(Schema.String),
+    viewerCount: Schema.OptionFromNullOr(Schema.Number),
+    error: Schema.OptionFromNullOr(Schema.String),
   }),
   songQueue: Schema.Struct({
     ok: Schema.Boolean,
-    queueLength: Schema.NullOr(Schema.Int),
-    error: Schema.NullOr(Schema.String),
+    queueLength: Schema.OptionFromNullOr(Schema.Int),
+    error: Schema.OptionFromNullOr(Schema.String),
   }),
 });
 
-const viewerStatsResponse = Schema.Struct({
+/** Debug status aggregate of Stream Lifecycle, Twitch, and Song Queue component health. */
+export type TwitchDebugStatusResponse = typeof TwitchDebugStatusResponse.Type;
+
+/** Schema for the `!stats` preview diagnostics; each component reports its own failure, and absent values encode as `null`. */
+export const TwitchViewerStatsDebugResponse = Schema.Struct({
   targetUser: Schema.String,
   noStatsForTargetUser: Schema.Boolean,
   chatMessage: Schema.String,
   components: Schema.Struct({
     song: Schema.Struct({
       status: Schema.Literals(["ok", "error"]),
-      count: Schema.NullOr(Schema.Int),
-      error: Schema.NullOr(Schema.String),
+      count: Schema.OptionFromNullOr(Schema.Int),
+      error: Schema.OptionFromNullOr(Schema.String),
     }),
     achievements: Schema.Struct({
       status: Schema.Literals(["ok", "error"]),
-      unlockedCount: Schema.NullOr(Schema.Int),
-      definitionsCount: Schema.NullOr(Schema.Int),
-      error: Schema.NullOr(Schema.String),
+      unlockedCount: Schema.OptionFromNullOr(Schema.Int),
+      definitionsCount: Schema.OptionFromNullOr(Schema.Int),
+      error: Schema.OptionFromNullOr(Schema.String),
     }),
     raffle: Schema.Struct({
       status: Schema.Literals(["ok", "error"]),
       notFound: Schema.Boolean,
       stats: Schema.String,
-      error: Schema.NullOr(Schema.String),
+      error: Schema.OptionFromNullOr(Schema.String),
     }),
   }),
 });
 
-/** Public data URLs intentionally remain unversioned for overlay/client compatibility. */
+/** `!stats` preview diagnostics for one viewer, with per-component status. */
+export type TwitchViewerStatsDebugResponse = typeof TwitchViewerStatsDebugResponse.Type;
+
+/** Endpoint group for health, Song Queue, and Achievements reads; its URLs stay unversioned for overlay and client compatibility. */
 export const TwitchPublicApi = HttpApiGroup.make("public")
   .add(
     HttpApiEndpoint.get("health", "/health", {
@@ -637,7 +649,7 @@ export const TwitchPublicApi = HttpApiGroup.make("public")
     }),
   );
 
-/** Public statistics preserve canonical query keys and a sixty second cache lifetime. */
+/** Endpoint group for public Song Request and Keyboard Raffle statistics, cached for sixty seconds under canonical keys. */
 export const TwitchStatsApi = HttpApiGroup.make("stats")
   .add(
     HttpApiEndpoint.get("topTracks", "/api/stats/top-tracks", {
@@ -672,7 +684,7 @@ export const TwitchStatsApi = HttpApiGroup.make("stats")
     }),
   );
 
-/** Privileged commands and diagnostics require the administrator bearer secret. */
+/** Endpoint group for Event Bus, Achievements, and Chat Commands administration, authenticated by the administrator bearer token. */
 export const TwitchAdminApi = HttpApiGroup.make("admin")
   .add(
     HttpApiEndpoint.get("deadLetters", "/api/admin/dlq", {
@@ -761,13 +773,13 @@ export const TwitchAdminApi = HttpApiGroup.make("admin")
   .add(
     HttpApiEndpoint.get("viewerStatsDebug", "/api/admin/debug/stats/:user", {
       ...json,
-      success: viewerStatsResponse,
+      success: TwitchViewerStatsDebugResponse,
       params: user,
     }),
   )
   .annotateEndpointsMerge(administratorSecurityTransform);
 
-/** Stream reconciliation and diagnostics retain their existing authenticated URLs. */
+/** Endpoint group for authenticated Stream Lifecycle and Keyboard Raffle diagnostics and stream reconciliation. */
 export const TwitchDebugApi = HttpApiGroup.make("debug")
   .add(
     HttpApiEndpoint.get("streamState", "/api/debug/stream-state", {
@@ -784,15 +796,18 @@ export const TwitchDebugApi = HttpApiGroup.make("debug")
   .add(
     HttpApiEndpoint.post("reconcileStream", "/api/debug/reconcile-stream-state", {
       ...json,
-      success: reconciliationResponse,
+      success: TwitchStreamReconciliationResponse,
     }),
   )
   .add(
-    HttpApiEndpoint.get("debugStatus", "/api/debug/status", { ...json, success: statusResponse }),
+    HttpApiEndpoint.get("debugStatus", "/api/debug/status", {
+      ...json,
+      success: TwitchDebugStatusResponse,
+    }),
   )
   .annotateEndpointsMerge(administratorSecurityTransform);
 
-/** Provider OAuth callbacks use durable one-use state, never a query setup secret. */
+/** Endpoint group for Spotify and Twitch OAuth; authorization requires the setup header and callbacks consume durable one-use state. */
 export const TwitchOAuthApi = HttpApiGroup.make("oauth")
   .add(
     HttpApiEndpoint.get("spotifyAuthorize", "/oauth/spotify/authorize", {
@@ -819,7 +834,7 @@ export const TwitchOAuthApi = HttpApiGroup.make("oauth")
     }).annotateMerge(callbackQuery),
   );
 
-/** Twitch webhook raw bytes are authenticated before payload decoding or durable acceptance. */
+/** Endpoint group for the signed EventSub webhook and authenticated subscription management. */
 export const TwitchEventSubApi = HttpApiGroup.make("eventsub")
   .add(
     HttpApiEndpoint.post("webhook", "/webhooks/twitch", {
@@ -857,14 +872,14 @@ export const TwitchEventSubApi = HttpApiGroup.make("eventsub")
     }).annotateMerge(administratorSecurity),
   );
 
-/** OBS overlay HTML does not require authentication and polls only same-origin APIs. */
+/** Endpoint group for the unauthenticated OBS Now Playing overlay, which polls only same-origin APIs. */
 export const TwitchOverlayApi = HttpApiGroup.make("overlay").add(
   HttpApiEndpoint.get("nowPlayingOverlay", "/overlay/now-playing", {
     success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "text/html" })),
   }),
 );
 
-/** OpenAPI generation input and executable route inventory for the public Worker. */
+/** Public Worker API definition, used both to generate OpenAPI and to register executable routes. */
 export class TwitchHttpApi extends HttpApi.make("TwitchHttpApi")
   .add(
     TwitchPublicApi,

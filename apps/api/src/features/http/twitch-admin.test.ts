@@ -277,7 +277,6 @@ describe("administrator HTTP with real SQLite command registry", () => {
           expect(response.status).toBe(404);
           expect(yield* Effect.promise(() => response.json())).toMatchObject({
             code: "DeadLetterNotFound",
-            error: `DLQ item not found: ${missingEventId}`,
             operation,
             details: { eventId: missingEventId },
             requestId: response.headers.get("x-request-id"),

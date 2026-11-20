@@ -45,7 +45,6 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
               Effect.fail(
                 songQueueHttpFailure(error, {
                   kind: "repeatable",
-                  summary: "Failed to fetch now playing",
                 }),
               ),
             ),
@@ -63,7 +62,6 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
               Effect.fail(
                 songQueueHttpFailure(error, {
                   kind: "repeatable",
-                  summary: "Failed to fetch queue",
                 }),
               ),
             ),
@@ -90,7 +88,6 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
                 Effect.fail(
                   songQueueHttpFailure(error, {
                     kind: "repeatable",
-                    summary: "Failed to fetch song request history",
                   }),
                 ),
               ),
@@ -105,7 +102,6 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
             Effect.fail(
               achievementHttpFailure(error, {
                 kind: "repeatable",
-                summary: "Failed to fetch achievement definitions",
               }),
             ),
           ),
@@ -124,7 +120,6 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
               Effect.fail(
                 achievementHttpFailure(error, {
                   kind: "repeatable",
-                  summary: "Failed to fetch achievement leaderboard",
                 }),
               ),
             ),
@@ -143,7 +138,6 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
             Effect.fail(
               achievementHttpFailure(error, {
                 kind: "repeatable",
-                summary: "Failed to fetch user achievements",
               }),
             ),
           ),
@@ -159,7 +153,6 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
             Effect.fail(
               achievementHttpFailure(error, {
                 kind: "repeatable",
-                summary: "Failed to fetch unlocked achievements",
               }),
             ),
           ),

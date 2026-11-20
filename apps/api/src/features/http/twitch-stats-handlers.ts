@@ -38,7 +38,6 @@ const parseHttpStatsViewerId = (user: string): Effect.Effect<ViewerId, HttpBound
           status: 400,
           failure: {
             code: "InvalidViewerId",
-            error: "Invalid request parameters",
             message: `Invalid Viewer ID ${JSON.stringify(user)}: statistics paths require a numeric Twitch user ID of 1 to 20 digits. Fix the path and try again.`,
             details: { user },
             retryable: false,
@@ -51,7 +50,7 @@ const topTracks = Schema.Array(TopRequestedTrack);
 
 const raffleLeaderboard = Schema.Array(TwitchRaffleViewerResponse);
 
-const statisticsRead = { kind: "repeatable", summary: "Failed to fetch statistics" } as const;
+const statisticsRead = { kind: "repeatable" } as const;
 
 const withCacheHeader = HttpServerResponse.setHeader("Cache-Control", "public, max-age=60");
 
@@ -177,7 +176,6 @@ export const twitchStatsHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "sta
                         status: 404,
                         failure: {
                           code: "ViewerNotFound",
-                          error: "User not found",
                           message: `Viewer not found: Viewer ${userId} has no Keyboard Raffle rolls. Check the Twitch user ID and try again.`,
                           details: { userId },
                           retryable: false,

@@ -224,7 +224,8 @@ describe("authenticated EventSub HTTP ingress", () => {
             expect(response.status).toBe(503);
             expect(yield* Effect.promise(() => response.json())).toEqual({
               code: "EventSubAcceptanceFailed",
-              error: "EventSub durable acceptance failed",
+              error:
+                "EventSub acceptance failed for message eventsub-test-message: the receipt could not be stored durably. Redeliver the same message; acceptance is idempotent by message ID.",
               operation: "webhook",
               message:
                 "EventSub acceptance failed for message eventsub-test-message: the receipt could not be stored durably. Redeliver the same message; acceptance is idempotent by message ID.",
@@ -340,7 +341,6 @@ describe("authenticated EventSub HTTP ingress", () => {
           expect(invalidResponse.status).toBe(400);
           expect(yield* Effect.promise(() => invalidResponse.json())).toMatchObject({
             code: "InvalidEventSubBody",
-            error: "Invalid EventSub body",
           });
           const text = JSON.stringify(envelope("unknown.subscription", { message: "🎵 café" }));
           const body = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(text)]);
@@ -535,19 +535,20 @@ describe("EventSub management HTTP", () => {
           expect(response.status).toBe(500);
           expect(yield* Effect.promise(() => response.json())).toMatchObject({
             code: "SubscriptionSetupIncomplete",
-            error: "Some subscriptions failed to create",
             operation: "setupSubscriptions",
             details: {
               skipped: [],
               created: expect.any(Array),
               errors: [
-                expect.objectContaining({
+                {
                   type: "stream.offline",
+                  error: "Twitch subscription creation failed (rejected) for stream.offline.",
                   code: "TwitchSubscriptionCreateError",
-                }),
+                },
               ],
             },
-            retryable: true,
+            // A rejected creation is permanent, so repeating setup is not reported as retryable.
+            retryable: false,
           });
           expect(attempted).toEqual([
             "stream.online",

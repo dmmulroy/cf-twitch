@@ -96,19 +96,22 @@ class HttpTraceFailure
 }
 
 /** Renders the safe public body for an unexpected defect; the cause stays in the redacted error report. */
-const renderInternalFailure = (requestId: string): HttpServerResponse.HttpServerResponse =>
-  HttpServerResponse.jsonUnsafe(
+const renderInternalFailure = (requestId: string): HttpServerResponse.HttpServerResponse => {
+  const message = `Internal server error while handling the request. Contact support with request ID ${requestId}.`;
+
+  return HttpServerResponse.jsonUnsafe(
     {
       code: "InternalFailure",
-      error: "Internal server error",
+      error: message,
       operation: "handleRequest",
-      message: `Internal server error while handling the request. Contact support with request ID ${requestId}.`,
+      message,
       details: {},
       requestId,
       retryable: false,
     } satisfies TwitchHttpErrorBody,
     { status: 500 },
   );
+};
 
 /** Renders framework routing and request-reading rejections with the public error envelope. */
 const renderHttpServerError = (
@@ -116,16 +119,19 @@ const renderHttpServerError = (
   requestId: string,
   method: string,
   path: string,
-): HttpServerResponse.HttpServerResponse =>
-  Match.value(error.reason).pipe(
+): HttpServerResponse.HttpServerResponse => {
+  const routeNotFound = `No route matches ${method} ${path}. Check the method and path against the API documentation.`;
+  const bodyUnreadable = `Request body for ${method} ${path} could not be read. Fix the body and send the request again.`;
+
+  return Match.value(error.reason).pipe(
     Match.tagsExhaustive({
       RouteNotFound: () =>
         HttpServerResponse.jsonUnsafe(
           {
             code: "RouteNotFound",
-            error: "Not found",
+            error: routeNotFound,
             operation: "routeRequest",
-            message: `No route matches ${method} ${path}. Check the method and path against the API documentation.`,
+            message: routeNotFound,
             details: { method, path },
             requestId,
             retryable: false,
@@ -136,9 +142,9 @@ const renderHttpServerError = (
         HttpServerResponse.jsonUnsafe(
           {
             code: "InvalidJsonBody",
-            error: "Invalid request body",
+            error: bodyUnreadable,
             operation: "routeRequest",
-            message: `Request body for ${method} ${path} could not be read. Fix the body and send the request again.`,
+            message: bodyUnreadable,
             details: {},
             requestId,
             retryable: false,
@@ -149,8 +155,19 @@ const renderHttpServerError = (
       ResponseError: () => renderInternalFailure(requestId),
     }),
   );
+};
 
-/** Safe server tracing omits header values, full URLs, query values and response Location credentials. */
+/**
+ * Layer of global middleware that correlates, traces and safely reports every public HTTP request.
+ *
+ * **Details**
+ *
+ * Generates `x-request-id` and `x-trace-id` on every response and provides
+ * `HttpRequestCorrelation` to handlers. Unmatched routes and unreadable bodies render as
+ * `RouteNotFound` (404) or `InvalidJsonBody` (400); defects render as `InternalFailure` (500) and
+ * are reported with a fixed message and a redacted cause. Interruption stays visible. Server spans
+ * omit header values, full URLs, query values and response `Location` credentials.
+ */
 export const twitchHttpCorrelationLayer = HttpRouter.middleware<{
   provides: HttpRequestCorrelation;
   handles: HttpServerError.HttpServerError;

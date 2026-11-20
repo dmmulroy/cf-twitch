@@ -26,12 +26,13 @@ import { HttpBoundaryError } from "./http-boundary.ts";
  *
  * **Details**
  *
- * `summary` is the historical short `error` text of the endpoint. A `change` names, in `reconcile`, the
- * read that shows whether the change was applied, phrased as a complete sentence.
+ * `repeatable` covers reads and requests that are safe to send again, such as starting a new OAuth
+ * attempt. A `change` names, in `reconcile`, the read that shows whether the change was applied,
+ * phrased as a complete sentence.
  */
 export type HttpServiceAccess =
-  | { readonly kind: "repeatable"; readonly summary: string }
-  | { readonly kind: "change"; readonly summary: string; readonly reconcile: string };
+  | { readonly kind: "repeatable" }
+  | { readonly kind: "change"; readonly reconcile: string };
 
 /** Display names of services as callers know them, used inside public messages. */
 const serviceLabels: Record<TwitchHttpService, string> = {
@@ -54,6 +55,8 @@ const serviceLabels: Record<TwitchHttpService, string> = {
  *
  * A repeatable request is safe to retry. A change may already have been applied, so it reports `OutcomeUnknown`
  * and directs the caller to the read that reconciles it.
+ *
+ * @returns `ServiceUnavailable` (503, retryable) for a repeatable request, or `OutcomeUnknown` (503, not retryable) for a change.
  */
 export const unavailableHttpService = (
   service: TwitchHttpService,
@@ -65,7 +68,6 @@ export const unavailableHttpService = (
         status: 503,
         failure: {
           code: "ServiceUnavailable",
-          error: "Service temporarily unavailable",
           message: `Service temporarily unavailable: ${serviceLabels[service]} could not be reached. Retry the request in a few seconds.`,
           details: { service },
           retryable: true,
@@ -76,66 +78,70 @@ export const unavailableHttpService = (
         status: 503,
         failure: {
           code: "OutcomeUnknown",
-          error: access.summary,
           message: `Outcome unknown: ${serviceLabels[service]} became unavailable before confirming the change. ${access.reconcile}`,
           details: { service },
           retryable: false,
         },
       });
 
-/** Builds the failure for a service whose internal response violated its contract. */
-export const invalidHttpServiceResult = (
-  service: TwitchHttpService,
-  access: HttpServiceAccess,
-): HttpBoundaryError =>
+/**
+ * Builds the failure for a service whose internal response violated its contract.
+ *
+ * @returns `InvalidServiceResponse` (500, not retryable).
+ */
+export const invalidHttpServiceResult = (service: TwitchHttpService): HttpBoundaryError =>
   new HttpBoundaryError({
     operation: "callService",
     status: 500,
     failure: {
       code: "InvalidServiceResponse",
-      error: access.summary,
       message: `Invalid service response: ${serviceLabels[service]} returned a response outside its internal contract. Contact support with the request ID in this response.`,
       details: { service },
       retryable: false,
     },
   });
 
-/** Builds the failure for durable service data that failed validation when read. */
-export const invalidHttpStoredData = (
-  service: TwitchHttpService,
-  access: HttpServiceAccess,
-): HttpBoundaryError =>
+/**
+ * Builds the failure for durable service data that failed validation when read.
+ *
+ * @returns `StoredDataInvalid` (500, not retryable).
+ */
+export const invalidHttpStoredData = (service: TwitchHttpService): HttpBoundaryError =>
   new HttpBoundaryError({
     operation: "callService",
     status: 500,
     failure: {
       code: "StoredDataInvalid",
-      error: access.summary,
       message: `Stored data invalid: ${serviceLabels[service]} found stored records that failed validation. Contact support with the request ID in this response.`,
       details: { service },
       retryable: false,
     },
   });
 
-/** Builds the failure for a service that rejected a request the HTTP boundary had already validated. */
-export const failedHttpService = (
-  service: TwitchHttpService,
-  access: HttpServiceAccess,
-  reason: string,
-): HttpBoundaryError =>
+/**
+ * Builds the failure for a service that rejected a request the HTTP boundary had already validated.
+ *
+ * @returns `ServiceFailed` (500, not retryable), naming the service's classified reason.
+ */
+export const failedHttpService = (service: TwitchHttpService, reason: string): HttpBoundaryError =>
   new HttpBoundaryError({
     operation: "callService",
     status: 500,
     failure: {
       code: "ServiceFailed",
-      error: access.summary,
       message: `Service failed: ${serviceLabels[service]} rejected an internal request (${reason}). Contact support with the request ID in this response.`,
       details: { service },
       retryable: false,
     },
   });
 
-/** Translates a Song Queue failure by its classified reason. */
+/**
+ * Translates a Song Queue failure by its classified reason.
+ *
+ * @returns `ServiceUnavailable` or `OutcomeUnknown` (503) for storage, coordination, transport or
+ * provider outages; `StoredDataInvalid` or `InvalidServiceResponse` (500) for invalid data; and
+ * `ServiceFailed` (500) for rejected internal input.
+ */
 export const songQueueHttpFailure = (
   error: SongQueueError,
   access: HttpServiceAccess,
@@ -147,15 +153,21 @@ export const songQueueHttpFailure = (
     case "provider_unavailable":
       return unavailableHttpService("songQueue", access);
     case "stored_data_invalid":
-      return invalidHttpStoredData("songQueue", access);
+      return invalidHttpStoredData("songQueue");
     case "invalid_response":
-      return invalidHttpServiceResult("songQueue", access);
+      return invalidHttpServiceResult("songQueue");
     case "invalid_input":
-      return failedHttpService("songQueue", access, error.reason);
+      return failedHttpService("songQueue", error.reason);
   }
 };
 
-/** Translates a Keyboard Raffle failure by its classified reason. */
+/**
+ * Translates a Keyboard Raffle failure by its classified reason.
+ *
+ * @returns `ServiceUnavailable` or `OutcomeUnknown` (503) for persistence, transport or randomness
+ * outages; `StoredDataInvalid` or `InvalidServiceResponse` (500) for invalid data; and
+ * `ServiceFailed` (500) for rejected input, replay conflicts and compensated rolls.
+ */
 export const raffleHttpFailure = (
   error: RaffleError,
   access: HttpServiceAccess,
@@ -166,17 +178,23 @@ export const raffleHttpFailure = (
     case "randomness_unavailable":
       return unavailableHttpService("keyboardRaffle", access);
     case "invalid_stored_data":
-      return invalidHttpStoredData("keyboardRaffle", access);
+      return invalidHttpStoredData("keyboardRaffle");
     case "invalid_response":
-      return invalidHttpServiceResult("keyboardRaffle", access);
+      return invalidHttpServiceResult("keyboardRaffle");
     case "invalid_input":
     case "idempotency_conflict":
     case "compensated":
-      return failedHttpService("keyboardRaffle", access, error.reason);
+      return failedHttpService("keyboardRaffle", error.reason);
   }
 };
 
-/** Translates an Achievements failure by its classified reason. */
+/**
+ * Translates an Achievements failure by its classified reason.
+ *
+ * @returns `ServiceUnavailable` or `OutcomeUnknown` (503) for persistence or transport outages;
+ * `StoredDataInvalid` or `InvalidServiceResponse` (500) for invalid data; and `ServiceFailed`
+ * (500) for rejected internal input.
+ */
 export const achievementHttpFailure = (
   error: AchievementError,
   access: HttpServiceAccess,
@@ -186,15 +204,22 @@ export const achievementHttpFailure = (
     case "transport_unavailable":
       return unavailableHttpService("achievements", access);
     case "invalid_stored_data":
-      return invalidHttpStoredData("achievements", access);
+      return invalidHttpStoredData("achievements");
     case "invalid_response":
-      return invalidHttpServiceResult("achievements", access);
+      return invalidHttpServiceResult("achievements");
     case "invalid_input":
-      return failedHttpService("achievements", access, error.reason);
+      return failedHttpService("achievements", error.reason);
   }
 };
 
-/** Translates an Event Bus failure by its classified reason; a missing dead letter becomes a 404. */
+/**
+ * Translates an Event Bus failure by its classified reason.
+ *
+ * @returns `DeadLetterNotFound` (404) for a missing dead letter with a known ID;
+ * `ServiceUnavailable` or `OutcomeUnknown` (503) for persistence or subscriber outages;
+ * `StoredDataInvalid` or `InvalidServiceResponse` (500) for invalid data; and `ServiceFailed` (500)
+ * otherwise.
+ */
 export const eventBusHttpFailure = (
   error: EventBusError,
   access: HttpServiceAccess,
@@ -204,19 +229,18 @@ export const eventBusHttpFailure = (
     case "subscriber_unavailable":
       return unavailableHttpService("eventBus", access);
     case "stored_event_invalid":
-      return invalidHttpStoredData("eventBus", access);
+      return invalidHttpStoredData("eventBus");
     case "invalid_response":
-      return invalidHttpServiceResult("eventBus", access);
+      return invalidHttpServiceResult("eventBus");
     case "event_not_found":
       return Option.match(error.eventId, {
-        onNone: () => failedHttpService("eventBus", access, error.reason),
+        onNone: () => failedHttpService("eventBus", error.reason),
         onSome: (eventId) =>
           new HttpBoundaryError({
             operation: "callService",
             status: 404,
             failure: {
               code: "DeadLetterNotFound",
-              error: `DLQ item not found: ${eventId}`,
               message: `Dead letter not found: the Event Bus has no dead letter with ID ${eventId}. Check the ID with GET /api/admin/dlq and try again.`,
               details: { eventId },
               retryable: false,
@@ -225,11 +249,17 @@ export const eventBusHttpFailure = (
       });
     case "subscription_not_found":
     case "subscription_conflict":
-      return failedHttpService("eventBus", access, error.reason);
+      return failedHttpService("eventBus", error.reason);
   }
 };
 
-/** Translates a Stream Lifecycle failure by its classified reason. */
+/**
+ * Translates a Stream Lifecycle failure by its classified reason.
+ *
+ * @returns `StreamEffectsPending` (409, retryable) while a previous transition's effects run;
+ * `ServiceUnavailable` or `OutcomeUnknown` (503) for persistence or provider outages; and
+ * `StoredDataInvalid` or `InvalidServiceResponse` (500) for invalid data.
+ */
 export const streamLifecycleHttpFailure = (
   error: StreamLifecycleError,
   access: HttpServiceAccess,
@@ -239,16 +269,15 @@ export const streamLifecycleHttpFailure = (
     case "provider_unavailable":
       return unavailableHttpService("streamLifecycle", access);
     case "stored_state_invalid":
-      return invalidHttpStoredData("streamLifecycle", access);
+      return invalidHttpStoredData("streamLifecycle");
     case "invalid_response":
-      return invalidHttpServiceResult("streamLifecycle", access);
+      return invalidHttpServiceResult("streamLifecycle");
     case "effects_pending":
       return new HttpBoundaryError({
         operation: "callService",
         status: 409,
         failure: {
           code: "StreamEffectsPending",
-          error: access.summary,
           message:
             "Stream effects pending: the previous stream transition is still applying its side effects. Retry the request after a few seconds.",
           details: {},
@@ -258,7 +287,13 @@ export const streamLifecycleHttpFailure = (
   }
 };
 
-/** Translates an OAuth state failure by its classified reason. */
+/**
+ * Translates an OAuth state failure by its classified reason.
+ *
+ * @returns `ServiceUnavailable` or `OutcomeUnknown` (503) for persistence, transport or randomness
+ * outages; `InvalidServiceResponse` (500) for an invalid state-store response; and `ServiceFailed`
+ * (500) for rejected internal input.
+ */
 export const oauthStateHttpFailure = (
   error: OAuthError,
   access: HttpServiceAccess,
@@ -269,9 +304,9 @@ export const oauthStateHttpFailure = (
     case "randomness":
       return unavailableHttpService("oauthState", access);
     case "invalid_response":
-      return invalidHttpServiceResult("oauthState", access);
+      return invalidHttpServiceResult("oauthState");
     case "invalid-input":
-      return failedHttpService("oauthState", access, error.reason);
+      return failedHttpService("oauthState", error.reason);
   }
 };
 
@@ -282,6 +317,10 @@ export const oauthStateHttpFailure = (
  *
  * Name, alias and definition conflicts keep their historical public codes. Use with
  * `Effect.catchTags` so a new registry failure is a type error until its policy is chosen.
+ *
+ * @returns Handlers that each fail with `HttpBoundaryError`: 404 for a missing command, 409 for name,
+ * alias, update-type or write-permission conflicts, 400 for rejected input or definitions, 503 for
+ * unavailable storage, and 500 for invalid responses or stored state.
  */
 export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
   CommandNotFoundError: (error: CommandNotFoundError) =>
@@ -291,7 +330,6 @@ export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
         status: 404,
         failure: {
           code: "CommandNotFoundError",
-          error: error.message,
           message: `Command not found: no chat command is named ${error.commandName}. Check the name with GET /api/admin/commands and try again.`,
           details: { commandName: error.commandName },
           retryable: false,
@@ -305,7 +343,6 @@ export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
         status: 409,
         failure: {
           code: "CommandAlreadyExistsError",
-          error: error.message,
           message: `Command already exists: ${error.commandName} is already a command name or alias. Choose a different name and try again.`,
           details: { commandName: error.commandName },
           retryable: false,
@@ -319,21 +356,19 @@ export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
         status: 409,
         failure: {
           code: "CommandAliasConflictError",
-          error: error.message,
           message: `Command alias conflict: ${error.alias} is already used by ${error.owner}. Choose a different alias and try again.`,
           details: { alias: error.alias, owner: error.owner },
           retryable: false,
         },
       }),
     ),
-  CommandInputParseError: (error: CommandInputParseError) =>
+  CommandInputParseError: (_error: CommandInputParseError) =>
     Effect.fail(
       new HttpBoundaryError({
         operation: "callService",
         status: 400,
         failure: {
           code: "CommandInputParseError",
-          error: error.message,
           message:
             "Command input rejected: the registry did not accept the command fields. Fix the request body and send it again.",
           details: {},
@@ -348,7 +383,6 @@ export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
         status: 400,
         failure: {
           code: "CommandInvalidDefinitionError",
-          error: error.message,
           message: `Command definition invalid for ${error.commandName}: ${error.reason}. Fix the command definition and send it again.`,
           details: { commandName: error.commandName, rule: error.reason },
           retryable: false,
@@ -362,7 +396,6 @@ export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
         status: 409,
         failure: {
           code: "CommandNotUpdateableError",
-          error: error.message,
           message: `Command not updateable: ${error.commandName} has response type ${error.responseType}, which does not accept value updates. Change a dynamic command instead.`,
           details: { commandName: error.commandName },
           retryable: false,
@@ -376,7 +409,6 @@ export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
         status: 409,
         failure: {
           code: "CommandUpdatePermissionDeniedError",
-          error: error.message,
           message: `Command update permission denied for ${error.commandName}: it requires ${error.requiredPermission}. Update the command's write permission first.`,
           details: { commandName: error.commandName },
           retryable: false,
@@ -386,18 +418,17 @@ export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
   CommandsDbError: (_error: CommandsDbError) =>
     Effect.fail(unavailableHttpService("chatCommands", access)),
   CommandsInvalidResponseError: (_error: CommandsInvalidResponseError) =>
-    Effect.fail(invalidHttpServiceResult("chatCommands", access)),
+    Effect.fail(invalidHttpServiceResult("chatCommands")),
   CommandsStateParseError: (_error: CommandsStateParseError) =>
-    Effect.fail(invalidHttpStoredData("chatCommands", access)),
+    Effect.fail(invalidHttpStoredData("chatCommands")),
 });
 
-/** Twitch request whose provider failure is being translated. */
+/** Twitch request whose provider failure is being translated, which selects request-specific codes. */
 export type TwitchHttpRequestKind = "listSubscriptions" | "deleteSubscription" | "getStreamInfo";
 
 const twitchRequestRejected = (
   error: ProviderError,
   request: TwitchHttpRequestKind,
-  access: HttpServiceAccess,
 ): HttpBoundaryError => {
   switch (request) {
     case "listSubscriptions":
@@ -406,7 +437,6 @@ const twitchRequestRejected = (
         status: 500,
         failure: {
           code: "TwitchSubscriptionRequestError",
-          error: access.summary,
           message: `Twitch subscription request rejected (${error.kind}) while listing EventSub subscriptions. Contact support with the request ID in this response.`,
           details: { provider: "twitch", failure: error.kind },
           retryable: false,
@@ -418,14 +448,13 @@ const twitchRequestRejected = (
         status: 500,
         failure: {
           code: "TwitchSubscriptionDeleteError",
-          error: access.summary,
           message: `Twitch subscription deletion rejected (${error.kind}). Check the subscription with GET /eventsub/list before retrying.`,
           details: { provider: "twitch", failure: error.kind },
           retryable: false,
         },
       });
     case "getStreamInfo":
-      return failedHttpService("twitch", access, error.kind);
+      return failedHttpService("twitch", error.kind);
   }
 };
 
@@ -436,12 +465,16 @@ const twitchRequestRejected = (
  *
  * Every translated request is safe to repeat: listing and stream lookup are reads, and deleting a
  * subscription twice reports `TwitchSubscriptionNotFound`.
+ *
+ * @returns `TwitchParseError` (500) for an invalid Twitch response; `TwitchNetworkError` (503,
+ * retryable) when Twitch is unreachable, rate limited or unconfirmed; `ServiceUnavailable` (503)
+ * when Twitch credentials are unusable; `TwitchSubscriptionNotFound` (404) when a deleted ID is
+ * unknown; and a request-specific 500 failure when Twitch rejects the request.
  */
 export const twitchProviderHttpFailure = (
   error: ProviderError,
   request: TwitchHttpRequestKind,
   subscriptionId: Option.Option<string>,
-  access: HttpServiceAccess,
 ): HttpBoundaryError => {
   switch (error.kind) {
     case "invalid-response":
@@ -450,7 +483,6 @@ export const twitchProviderHttpFailure = (
         status: 500,
         failure: {
           code: "TwitchParseError",
-          error: access.summary,
           message:
             "Twitch response invalid: Twitch returned data outside its documented format. Contact support with the request ID in this response.",
           details: { provider: "twitch" },
@@ -465,7 +497,6 @@ export const twitchProviderHttpFailure = (
         status: 503,
         failure: {
           code: "TwitchNetworkError",
-          error: access.summary,
           message: `Twitch request failed (${error.kind}): Twitch was unreachable, rate limited, or did not confirm the result. Retry the request in a few seconds.`,
           details: { provider: "twitch", failure: error.kind },
           retryable: true,
@@ -478,7 +509,6 @@ export const twitchProviderHttpFailure = (
         status: 503,
         failure: {
           code: "ServiceUnavailable",
-          error: access.summary,
           message: `Service temporarily unavailable: Twitch credentials could not be used (${error.kind}). Retry the request in a few seconds.`,
           details: { service: "twitch" },
           retryable: true,
@@ -492,7 +522,6 @@ export const twitchProviderHttpFailure = (
         status: 503,
         failure: {
           code: "ServiceUnavailable",
-          error: access.summary,
           message: `Service temporarily unavailable: Twitch credentials are not ready (${error.kind}). Complete Twitch authorization at /oauth/twitch/authorize, then retry.`,
           details: { service: "twitch" },
           retryable: false,
@@ -505,19 +534,18 @@ export const twitchProviderHttpFailure = (
             status: 404,
             failure: {
               code: "TwitchSubscriptionNotFound",
-              error: access.summary,
               message: `Twitch subscription not found: no EventSub subscription has ID ${subscriptionId.value}. Check the ID with GET /eventsub/list and try again.`,
               details: { subscriptionId: subscriptionId.value },
               retryable: false,
             },
           })
-        : twitchRequestRejected(error, request, access);
+        : twitchRequestRejected(error, request);
     case "rejected":
     case "invalid-input":
     case "no-active-device":
     case "chat-dropped":
     case "randomness":
-      return twitchRequestRejected(error, request, access);
+      return twitchRequestRejected(error, request);
   }
 };
 
@@ -538,6 +566,11 @@ const tokenExchangeFailedCode = (provider: OAuthProvider) =>
  *
  * Authorization codes are one-use, so no exchange failure is retryable; each message directs the
  * caller to start authorization again. Codes keep their historical provider-specific names.
+ *
+ * @returns The provider's parse error (500) for an invalid token response,
+ * `ProviderAccessTokenError` (503) when tokens could not be stored, and the provider's token
+ * exchange error: 503 when the provider was unreachable, 400 when it rejected the code, and 500
+ * when this server could not complete the exchange.
  */
 export const oauthExchangeHttpFailure = (
   error: ProviderError,
@@ -553,7 +586,6 @@ export const oauthExchangeHttpFailure = (
         status: 500,
         failure: {
           code: tokenResponseInvalidCode(provider),
-          error: `Token response invalid from ${providerName}`,
           message: `Token response invalid: ${providerName} returned an authorization-code response outside its documented format. ${restart}`,
           details: { provider },
           retryable: false,
@@ -565,7 +597,6 @@ export const oauthExchangeHttpFailure = (
         status: 503,
         failure: {
           code: "ProviderAccessTokenError",
-          error: `Token storage failed for ${providerName}`,
           message: `Token storage unavailable: ${providerName} issued tokens, but they could not be stored durably. ${restart}`,
           details: { provider },
           retryable: false,
@@ -580,7 +611,6 @@ export const oauthExchangeHttpFailure = (
         status: 503,
         failure: {
           code: tokenExchangeFailedCode(provider),
-          error: `Token exchange failed with ${providerName}`,
           message: `Token exchange failed (${error.kind}): ${providerName} was unreachable or did not confirm the exchange. ${restart}`,
           details: { provider, failure: error.kind },
           retryable: false,
@@ -595,7 +625,6 @@ export const oauthExchangeHttpFailure = (
         status: 400,
         failure: {
           code: tokenExchangeFailedCode(provider),
-          error: `Token exchange failed with ${providerName}`,
           message: `Token exchange rejected (${error.kind}): ${providerName} did not accept the authorization code. ${restart}`,
           details: { provider, failure: error.kind },
           retryable: false,
@@ -611,7 +640,6 @@ export const oauthExchangeHttpFailure = (
         status: 500,
         failure: {
           code: tokenExchangeFailedCode(provider),
-          error: `Token exchange failed with ${providerName}`,
           message: `Token exchange failed (${error.kind}): the ${providerName} exchange could not be completed by this server. Contact support with the request ID in this response.`,
           details: { provider, failure: error.kind },
           retryable: false,
