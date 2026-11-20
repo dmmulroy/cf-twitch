@@ -35,7 +35,7 @@ const LegacyViewerScheduleRow = Schema.Struct({
 type EncodedViewerSnapshotRow = typeof ViewerSnapshotRow.Encoded;
 
 /** One viewer-count observation to record against the state it was observed in. */
-export interface StreamViewerCountRecord {
+export interface StreamDatabaseViewerCount {
   /** State read before the observation; its peak is raised when `count` exceeds it. */
   readonly state: PersistedStreamState;
   readonly count: NonNegativeInt;
@@ -44,7 +44,7 @@ export interface StreamViewerCountRecord {
 }
 
 /** Page of viewer-count observations with the total matching count before pagination. */
-export interface StreamViewerHistoryPage {
+export interface StreamDatabaseViewerHistoryPage {
   readonly snapshots: ReadonlyArray<ViewerCountSnapshot>;
   readonly totalCount: NonNegativeInt;
 }
@@ -78,7 +78,7 @@ export interface IStreamDatabase {
    *   fails.
    */
   readonly recordViewerCount: (
-    input: StreamViewerCountRecord,
+    input: StreamDatabaseViewerCount,
   ) => Effect.Effect<PersistedStreamState, StreamLifecycleError>;
   /**
    * Returns viewer counts within inclusive time bounds, oldest first.
@@ -88,7 +88,7 @@ export interface IStreamDatabase {
    */
   readonly getViewerHistory: (
     input: ViewerHistoryInput,
-  ) => Effect.Effect<StreamViewerHistoryPage, StreamLifecycleError>;
+  ) => Effect.Effect<StreamDatabaseViewerHistoryPage, StreamLifecycleError>;
   /**
    * Returns how many viewer counts are stored.
    *
@@ -151,7 +151,12 @@ const streamError = (
   reason: StreamLifecycleError["reason"],
 ) => new StreamLifecycleError({ operation, reason });
 
-/** Classifies SQL and stored-state failures of one Stream Lifecycle database operation. */
+/**
+ * Classifies SQL and stored-state failures of one Stream Lifecycle database operation.
+ *
+ * @returns The operation's result, or fails with `StreamLifecycleError` whose reason is
+ *   `persistence_unavailable` for SQL failures and `stored_state_invalid` for parse failures.
+ */
 const withDatabaseErrors = <A>(
   operation: StreamLifecycleError["operation"],
   effect: Effect.Effect<A, SqlError.SqlError | Schema.SchemaError | StreamLifecycleError>,

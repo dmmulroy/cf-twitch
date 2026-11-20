@@ -103,4 +103,5 @@ export const streamLifecycleServerLayer = streamLifecycleServerLayerWithoutDepen
   Layer.provide(twitchConfigurationLayer),
 );
 
+/** Default export: the production `StreamLifecycleDO` server Layer, discovered by Alchemy. */
 export default streamLifecycleServerLayer;

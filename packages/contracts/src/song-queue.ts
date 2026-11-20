@@ -18,6 +18,7 @@ export type SongQueueLimit = typeof SongQueueLimit.Type;
 
 /** Schema for an accepted Song Request, identified by its redemption ID rather than a Queue Occurrence. */
 export const PendingSongRequest = Schema.Struct({
+  /** Redemption ID of the Song Request, kept under its historical `eventId` field name. */
   eventId: RedemptionId,
   track: SpotifyTrack,
   requesterUserId: ViewerId,
@@ -46,6 +47,7 @@ export type QueuedTrack = typeof QueuedTrack.Type;
 
 /** Schema for Now Playing: the current occurrence or none, always at position zero. */
 export const NowPlaying = Schema.Struct({
+  /** Currently playing occurrence, or none when playback is idle. */
   track: Schema.OptionFromNullOr(QueuedTrack),
   position: Schema.Literal(0),
 });
@@ -56,6 +58,7 @@ export interface NowPlaying extends Schema.Schema.Type<typeof NowPlaying> {}
 /** Schema for a song queue page: requested tracks in FIFO order ahead of Spotify autoplay order. */
 export const SongQueueResult = Schema.Struct({
   tracks: Schema.Array(QueuedTrack).check(Schema.isMaxLength(100)),
+  /** Number of upcoming occurrences before the page limit applies. */
   totalCount: NonNegativeInt,
 });
 
@@ -73,6 +76,7 @@ export const RequestHistoryItem = Schema.Struct({
   requesterUserId: ViewerId,
   requesterDisplayName: Schema.NonEmptyString,
   requestedAt: IsoTimestamp,
+  /** Observed playback departure time; not Redemption Fulfillment. */
   fulfilledAt: IsoTimestamp,
 });
 
@@ -83,7 +87,9 @@ export interface RequestHistoryItem extends Schema.Schema.Type<typeof RequestHis
 export const RequestHistoryQuery = Schema.Struct({
   limit: SongQueueLimit,
   offset: NonNegativeInt.check(Schema.isLessThanOrEqualTo(10_000)),
+  /** Inclusive lower bound on playback departure, compared as an instant. */
   since: Schema.OptionFromNullOr(IsoTimestamp),
+  /** Inclusive upper bound on playback departure, compared as an instant. */
   until: Schema.OptionFromNullOr(IsoTimestamp),
 })
   .check(
@@ -92,7 +98,10 @@ export const RequestHistoryQuery = Schema.Struct({
         Option.isNone(query.since) ||
         Option.isNone(query.until) ||
         Date.parse(query.since.value) <= Date.parse(query.until.value),
-      { message: "Song queue history since must not follow until" },
+      {
+        message:
+          "Request history `since` is later than `until`. Send a `since` at or before `until`.",
+      },
     ),
   )
   .pipe(Schema.brand("RequestHistoryQuery"));
@@ -103,6 +112,7 @@ export type RequestHistoryQuery = typeof RequestHistoryQuery.Type;
 /** Schema for a Request History page, newest playback departure first. */
 export const RequestHistoryResult = Schema.Struct({
   requests: Schema.Array(RequestHistoryItem).check(Schema.isMaxLength(100)),
+  /** Number of matching history items before pagination. */
   totalCount: NonNegativeInt,
 });
 
@@ -155,6 +165,7 @@ export const SongQueueSessionInput = Schema.Struct({ since: IsoTimestamp });
 export const SongQueueDuplicateInput = Schema.Struct({
   userId: ViewerId,
   trackId: SpotifyTrackId,
+  /** Minutes before now within which a pending or played request counts as a duplicate. */
   windowMinutes: SongQueueLimit,
 });
 
@@ -206,8 +217,11 @@ export type SongQueueFailureReason = typeof SongQueueFailureReason.Type;
  * so messages may direct callers to retry the same request after transient failures.
  */
 export class SongQueueError extends Schema.TaggedError<SongQueueError>()("SongQueueError", {
+  /** Song queue operation that failed. */
   operation: SongQueueOperation,
+  /** Classified cause of the failure. */
   reason: SongQueueFailureReason,
+  /** Redemption ID of the Song Request involved, when the operation targets one. */
   eventId: Schema.OptionFromNullOr(RedemptionId).pipe(
     Schema.withConstructorDefault(Effect.succeed(Option.none<RedemptionId>())),
   ),

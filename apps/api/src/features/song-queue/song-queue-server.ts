@@ -72,4 +72,5 @@ const songQueueServerLayer = songQueueServerLayerWithoutDependencies.pipe(
   Layer.provide(spotifyServiceLayer),
 );
 
+/** Default export: the production `SongQueueDO` server Layer, discovered by Alchemy. */
 export default songQueueServerLayer;

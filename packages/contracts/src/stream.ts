@@ -12,8 +12,11 @@ export const STREAM_LIFECYCLE_SINGLETON_KEY = "stream-lifecycle";
 /** Current durable evidence about the active or most recent Stream Session. */
 export const StreamLifecycleState = Schema.Struct({
   isLive: Schema.Boolean,
+  /** Source start time of the active or most recent Stream Session; none before the first. */
   startedAt: Schema.OptionFromNullOr(IsoTimestamp),
+  /** Source end time of the most recent Stream Session; none while live or before the first ends. */
   endedAt: Schema.OptionFromNullOr(IsoTimestamp),
+  /** Highest Viewer count observed, carried across Stream Sessions until reset. */
   peakViewerCount: NonNegativeInt,
 });
 
@@ -79,6 +82,7 @@ export type ViewerHistory = typeof ViewerHistory.Type;
 
 /** Twitch provider evidence used to reconcile Stream Lifecycle state. */
 export const StreamProviderState = Schema.Struct({
+  /** Twitch's current stream for the broadcaster, or none when Twitch reports it offline. */
   stream: Schema.OptionFromNullOr(
     Schema.Struct({
       id: StreamId,
@@ -86,6 +90,7 @@ export const StreamProviderState = Schema.Struct({
       viewerCount: NonNegativeInt,
     }),
   ),
+  /** When Twitch was observed; used as the offline time or viewer-count time. */
   observedAt: IsoTimestamp,
 });
 
@@ -119,9 +124,13 @@ export const StreamTransitionCheckpoint = Schema.Struct({
   streamId: StreamId,
   transition: Schema.Literals(["online", "offline"]),
   transitionAt: IsoTimestamp,
+  /** Whether the Spotify token lifecycle has been told about this transition. */
   spotifyTokenNotified: Schema.Boolean,
+  /** Whether the Twitch token lifecycle has been told about this transition. */
   twitchTokenNotified: Schema.Boolean,
+  /** Whether the `stream_online`/`stream_offline` domain event has been published. */
   lifecycleEventPublished: Schema.Boolean,
+  /** Whether viewer polling has been scheduled (online) or cleared (offline). */
   viewerPollingUpdated: Schema.Boolean,
 });
 
@@ -142,6 +151,7 @@ export type StreamLifecycleDebugState = typeof StreamLifecycleDebugState.Type;
 /** Stream Lifecycle readiness and pending-effect status. */
 export const StreamLifecycleStatus = Schema.Struct({
   healthy: Schema.Boolean,
+  /** Whether an accepted transition still has incomplete durable effects. */
   effectsPending: Schema.Boolean,
   state: StreamLifecycleState,
 });
@@ -196,8 +206,11 @@ export type StreamLifecycleFailureReason = typeof StreamLifecycleFailureReason.T
 export class StreamLifecycleError extends Schema.TaggedError<StreamLifecycleError>()(
   "StreamLifecycleError",
   {
+    /** Stream Lifecycle operation that failed. */
     operation: StreamLifecycleOperation,
+    /** Classified cause of the failure. */
     reason: StreamLifecycleFailureReason,
+    /** Twitch Stream ID involved, when the failing code knows it. */
     streamId: Schema.OptionFromNullOr(StreamId).pipe(
       Schema.withConstructorDefault(Effect.succeed(Option.none<StreamId>())),
     ),

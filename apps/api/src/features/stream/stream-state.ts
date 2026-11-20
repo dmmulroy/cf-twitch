@@ -77,7 +77,8 @@ const checkpointMatchesStreamState = (
  */
 export const PersistedStreamState = Schema.Union([OfflineStreamState, LiveStreamState]).check(
   Schema.makeFilter(checkpointMatchesStreamState, {
-    message: "Transition checkpoint must match its tagged stream state",
+    message:
+      "Stream Lifecycle transition checkpoint does not match its tagged state. Inspect the stored Stream Lifecycle state before retrying.",
   }),
 );
 
@@ -139,7 +140,7 @@ const checkpointFromLegacyIntent = (
 
 /** Message for the forbidden encode direction: legacy Agent formats are read, never written. */
 const legacyStreamStateEncodeForbidden = () =>
-  "Stream Lifecycle state is never written in a legacy Agent format";
+  "Stream Lifecycle state cannot be encoded in a legacy Agent format. Encode it with the current PersistedStreamState schema.";
 
 // Decoding into the type side still runs the union's checkpoint filter, so a legacy intent must
 // agree with its tagged state exactly as current rows must.
@@ -181,7 +182,10 @@ const PersistedStreamStateFromLegacyBoolean = Schema.toCodecJson(LegacyBooleanSt
       if (legacy.startedAt === null || legacy.streamSessionId === null)
         return Effect.fail(
           new SchemaIssue.InvalidValue(
-            { message: "Live legacy Stream Lifecycle state must have a start and session ID" },
+            {
+              message:
+                "Legacy live Stream Lifecycle state is missing its start time or session ID. Inspect the legacy Agent state row before retrying adoption.",
+            },
             legacy,
           ),
         );

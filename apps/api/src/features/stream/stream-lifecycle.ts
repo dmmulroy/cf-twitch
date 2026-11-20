@@ -71,11 +71,20 @@ export class StreamLifecycle extends Context.Service<StreamLifecycle, IStreamLif
 
 const decodeComputedIsoTimestamp = Schema.decodeEffect(IsoTimestamp);
 
-/** Returns the instant `epochMillis` as a timestamp; `Date#toISOString` output always parses. */
+/**
+ * Returns the instant `epochMillis` as a timestamp.
+ *
+ * @throws {SchemaError} As a defect only if `Date#toISOString` output fails to parse, which an
+ *   in-range clock value cannot produce.
+ */
 const timestampAt = (epochMillis: number) =>
   decodeComputedIsoTimestamp(new Date(epochMillis).toISOString()).pipe(Effect.orDie);
 
-/** Returns the instant `delay` milliseconds from now. */
+/**
+ * Returns the instant `delay` milliseconds from now.
+ *
+ * @throws {SchemaError} As a defect under the same impossible condition as `timestampAt`.
+ */
 const nextAlarmTimestamp = (delay: number) =>
   Clock.currentTimeMillis.pipe(Effect.flatMap((now) => timestampAt(now + delay)));
 

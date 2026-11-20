@@ -4,7 +4,8 @@ import { NonNegativeInt, SpotifyTrackId } from "./identity.ts";
 const spotifyArtworkUrl = Schema.String.check(
   Schema.isMaxLength(2_048),
   Schema.makeFilter((value) => URL.canParse(value) && /^https?:\/\//.test(value), {
-    message: "Spotify artwork URL must use HTTP or HTTPS",
+    message:
+      "Spotify artwork URL is not an HTTP or HTTPS URL. Supply an http(s) artwork URL or omit it.",
   }),
 );
 
@@ -14,6 +15,7 @@ export const SpotifyTrack = Schema.Struct({
   name: Schema.NonEmptyString,
   artists: Schema.Array(Schema.NonEmptyString),
   album: Schema.NonEmptyString,
+  /** HTTP(S) album artwork URL, or none when Spotify supplies no artwork. */
   albumCoverUrl: Schema.OptionFromNullOr(spotifyArtworkUrl),
 });
 
@@ -22,9 +24,12 @@ export type SpotifyTrack = typeof SpotifyTrack.Type;
 
 /** Provider playback snapshot; the queue excludes the currently playing occurrence. */
 export const SpotifyPlayback = Schema.Struct({
+  /** Track loaded in the player, including while paused; none when nothing is loaded. */
   currentlyPlaying: Schema.OptionFromNullOr(SpotifyTrack),
+  /** Upcoming tracks in Spotify order, excluding the current track. */
   queue: Schema.Array(SpotifyTrack),
   isPlaying: Schema.Boolean,
+  /** Playback position within the current track, in milliseconds. */
   progressMs: NonNegativeInt,
 });
 
@@ -44,7 +49,9 @@ export type InvalidSpotifyTrackInputReason = typeof InvalidSpotifyTrackInputReas
 export class InvalidSpotifyTrackInput extends Schema.TaggedError<InvalidSpotifyTrackInput>()(
   "InvalidSpotifyTrackInput",
   {
+    /** Parser that rejected the input. */
     operation: Schema.Literal("parseSpotifyTrackInput"),
+    /** Whether the text is not a track reference at all or carries an invalid track ID. */
     reason: InvalidSpotifyTrackInputReason,
   },
 ) {

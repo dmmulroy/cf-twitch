@@ -141,14 +141,24 @@ const songQueueScenarioHandlersLayer = HttpApiBuilder.group(
     }),
 );
 
-/** Scratch-only scenario Worker exercises the real song queue HTTP namespace client. */
+/** Scratch-only scenario Worker that serves the song queue API through the real `SongQueue` HTTP client. */
 export class SongQueueScenarioWorker extends Cloudflare.Worker<
   SongQueueScenarioWorker,
   SongQueueScenarioWorkerContract,
   SongQueueServer
 >()("CfTwitchSongQueueScenarioWorker") {}
 
-/** Local workerd graph overrides the provider at the outer init binding boundary. */
+/**
+ * Layer for the local workerd scenario graph: Worker → `SongQueue` client → `SongQueueDO` → SQL.
+ *
+ * **Details**
+ *
+ * Replaces Spotify with a process-local model at the outer initialization boundary, so no
+ * external HTTP, token namespace, or production resource is reachable.
+ *
+ * @throws {MigrationError | SqlError | SongQueueError} As a defect from `SongQueueDO` startup when
+ *   storage cannot be migrated or polling cannot be restored.
+ */
 export const songQueueScenarioWorkerLayer = SongQueueScenarioWorker.make(
   {
     main: import.meta.url,
@@ -183,11 +193,12 @@ export const songQueueScenarioWorkerLayer = SongQueueScenarioWorker.make(
   ),
 );
 
-/** Scratch scenario output contains only the local Worker URL. */
+/** Scenario stack output: only the local Worker URL. */
 export const songQueueScenarioStack = Effect.gen(function* () {
   const worker = yield* SongQueueScenarioWorker;
 
   return { url: worker.url };
 }).pipe(Effect.provide(songQueueScenarioWorkerLayer));
 
+/** Default export: the scenario Worker Layer, discovered by the local Alchemy test stage. */
 export default songQueueScenarioWorkerLayer;

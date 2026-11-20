@@ -28,7 +28,7 @@ import {
 } from "./song-queue-reconciliation.ts";
 
 /** Schema for the durable song queue polling intent, which survives Durable Object eviction. */
-export const SongQueueCoordination = Schema.Struct({
+export const SongQueueDatabaseCoordination = Schema.Struct({
   /** Epoch milliseconds of the last successful Spotify observation, absent until one succeeds. */
   lastSyncAt: Schema.OptionFromNullOr(Schema.Number),
   /** Epoch milliseconds when the next Spotify refresh is due; `0` means immediately. */
@@ -40,10 +40,12 @@ export const SongQueueCoordination = Schema.Struct({
 });
 
 /** Durable song queue polling intent with absolute deadlines in epoch milliseconds. */
-export interface SongQueueCoordination extends Schema.Schema.Type<typeof SongQueueCoordination> {}
+export interface SongQueueDatabaseCoordination extends Schema.Schema.Type<
+  typeof SongQueueDatabaseCoordination
+> {}
 
 /** One parsed Spotify playback observation to reconcile with the saved Queue Occurrences. */
-export interface SongQueuePlaybackObservation {
+export interface SongQueueDatabasePlaybackObservation {
   /** Spotify Track currently playing, absent when playback is idle. */
   readonly currentlyPlaying: Option.Option<SpotifyTrack>;
   /** Upcoming Spotify Queue in provider order, excluding the current track. */
@@ -74,7 +76,7 @@ export interface ISongQueueDatabase extends Omit<ISongQueue, "refreshQueue"> {
    *   a failure leaves the previous snapshot and history unchanged.
    */
   readonly reconcilePlayback: (
-    input: SongQueuePlaybackObservation,
+    input: SongQueueDatabasePlaybackObservation,
   ) => Effect.Effect<void, SongQueueError>;
   /**
    * Deletes Pending Requests requested before `before`.
@@ -88,13 +90,15 @@ export interface ISongQueueDatabase extends Omit<ISongQueue, "refreshQueue"> {
    * @returns The coordination row, or fails with `SongQueueError` when storage fails or the row is
    *   missing or invalid.
    */
-  readonly getCoordination: () => Effect.Effect<SongQueueCoordination, SongQueueError>;
+  readonly getCoordination: () => Effect.Effect<SongQueueDatabaseCoordination, SongQueueError>;
   /**
    * Replaces the durable polling intent.
    *
    * @returns Nothing, or fails with `SongQueueError` when storage fails.
    */
-  readonly setCoordination: (input: SongQueueCoordination) => Effect.Effect<void, SongQueueError>;
+  readonly setCoordination: (
+    input: SongQueueDatabaseCoordination,
+  ) => Effect.Effect<void, SongQueueError>;
 }
 
 /** Service for song queue persistence; SQL representations stay private to this module. */
@@ -160,7 +164,9 @@ const parseStoredCount = Schema.decodeUnknownEffect(StoredCountRows);
 const storedCount = (rows: typeof StoredCountRows.Type): NonNegativeInt =>
   rows[0]?.count ?? NonNegativeInt.make(0);
 
-const parseStoredCoordination = Schema.decodeUnknownEffect(Schema.Array(SongQueueCoordination));
+const parseStoredCoordination = Schema.decodeUnknownEffect(
+  Schema.Array(SongQueueDatabaseCoordination),
+);
 
 const parseTrackStats = Schema.decodeUnknownEffect(
   Schema.Array(
@@ -423,11 +429,26 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
       yield* sql`DELETE FROM spotify_queue_snapshot`;
 
       for (const { position, track } of attributed) {
-        const eventId = track.source === "user" ? track.eventId : null;
-        yield* sql`INSERT INTO spotify_queue_snapshot (position, track_id, track_name, artists, album, album_cover_url, synced_at, source, event_id, requester_user_id, requester_display_name, requested_at) VALUES (${position}, ${track.id}, ${track.name}, ${JSON.stringify(track.artists)}, ${track.album}, ${Option.getOrNull(track.albumCoverUrl)}, ${syncedAt}, ${track.source}, ${eventId}, ${track.source === "user" ? track.requesterUserId : null}, ${track.source === "user" ? track.requesterDisplayName : null}, ${track.source === "user" ? track.requestedAt : null})`;
+        // Autoplay occurrences store SQL NULL in every attribution column.
+        const attribution =
+          track.source === "user"
+            ? {
+                eventId: track.eventId,
+                requesterUserId: track.requesterUserId,
+                requesterDisplayName: track.requesterDisplayName,
+                requestedAt: track.requestedAt,
+              }
+            : {
+                eventId: null,
+                requesterUserId: null,
+                requesterDisplayName: null,
+                requestedAt: null,
+              };
 
-        if (eventId !== null)
-          yield* sql`UPDATE pending_requests SET first_seen_in_spotify_at = COALESCE(first_seen_in_spotify_at, ${syncedAt}), last_seen_in_spotify_at = ${syncedAt} WHERE event_id = ${eventId}`;
+        yield* sql`INSERT INTO spotify_queue_snapshot (position, track_id, track_name, artists, album, album_cover_url, synced_at, source, event_id, requester_user_id, requester_display_name, requested_at) VALUES (${position}, ${track.id}, ${track.name}, ${JSON.stringify(track.artists)}, ${track.album}, ${Option.getOrNull(track.albumCoverUrl)}, ${syncedAt}, ${track.source}, ${attribution.eventId}, ${attribution.requesterUserId}, ${attribution.requesterDisplayName}, ${attribution.requestedAt})`;
+
+        if (track.source === "user")
+          yield* sql`UPDATE pending_requests SET first_seen_in_spotify_at = COALESCE(first_seen_in_spotify_at, ${syncedAt}), last_seen_in_spotify_at = ${syncedAt} WHERE event_id = ${track.eventId}`;
       }
     },
   );
@@ -649,7 +670,7 @@ interface InMemorySongQueueState {
   readonly pending: ReadonlyMap<RedemptionId, InMemorySongQueuePendingRequest>;
   readonly occurrences: readonly SongQueueOccurrence[];
   readonly history: readonly RequestHistoryItem[];
-  readonly coordination: SongQueueCoordination;
+  readonly coordination: SongQueueDatabaseCoordination;
 }
 
 /** Orders Request History rows the way SQL does: newest departure first, then event ID descending. */
@@ -687,7 +708,7 @@ const mostPlayedFirst = (
 /** Returns the in-memory state after reconciling one playback observation, mirroring the SQL transaction. */
 const reconcileInMemoryPlayback = (
   state: InMemorySongQueueState,
-  { currentlyPlaying, upcoming, syncedAt }: SongQueuePlaybackObservation,
+  { currentlyPlaying, upcoming, syncedAt }: SongQueueDatabasePlaybackObservation,
 ): InMemorySongQueueState => {
   const pendingRequests = [...state.pending.values()]
     .map((entry) => entry.request)
