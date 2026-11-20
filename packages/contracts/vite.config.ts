@@ -1,6 +1,4 @@
 import { defineConfig } from "vite-plus";
 
-/** Inherits strict root validation for the portable contracts source package. */
-const contractsViteConfig = defineConfig({});
-
-export default contractsViteConfig;
+/** Vite+ configuration for the portable contracts package, which inherits strict root validation. */
+export default defineConfig({});

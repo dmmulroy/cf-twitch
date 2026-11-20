@@ -7,43 +7,43 @@ const boundedIdentity = Schema.String.check(
   Schema.isTrimmed(),
 );
 
-/** Stable Twitch viewer identity, never a display name. */
+/** Schema for a stable Twitch viewer identity, never a display name. */
 export const ViewerId = boundedIdentity.pipe(Schema.brand("ViewerId"));
 
 /** Parsed Twitch viewer identity. */
 export type ViewerId = typeof ViewerId.Type;
 
-/** Twitch channel identity used for provider authorization and reward ownership. */
+/** Schema for the Twitch channel identity used for provider authorization and reward ownership. */
 export const BroadcasterId = boundedIdentity.pipe(Schema.brand("BroadcasterId"));
 
 /** Parsed Twitch channel identity. */
 export type BroadcasterId = typeof BroadcasterId.Type;
 
-/** Channel point redemption identity and durable workflow idempotency key. */
+/** Schema for a channel point redemption identity, which is also the durable workflow idempotency key. */
 export const RedemptionId = boundedIdentity.pipe(Schema.brand("RedemptionId"));
 
 /** Parsed channel point redemption identity. */
 export type RedemptionId = typeof RedemptionId.Type;
 
-/** Channel point reward identity, distinct from its individual redemptions. */
+/** Schema for a channel point reward identity, distinct from its individual redemptions. */
 export const RewardId = boundedIdentity.pipe(Schema.brand("RewardId"));
 
 /** Parsed channel point reward identity. */
 export type RewardId = typeof RewardId.Type;
 
-/** Stable UUID identifying a domain event across delivery attempts. */
+/** Schema for the stable UUID identifying a domain event across delivery attempts. */
 export const EventId = Schema.String.check(Schema.isUUID()).pipe(Schema.brand("EventId"));
 
 /** Parsed domain event identity. */
 export type EventId = typeof EventId.Type;
 
-/** Twitch EventSub delivery identity used to select its durable receipt. */
+/** Schema for the Twitch EventSub delivery identity used to select its durable receipt. */
 export const EventSubMessageId = boundedIdentity.pipe(Schema.brand("EventSubMessageId"));
 
 /** Parsed Twitch EventSub delivery identity. */
 export type EventSubMessageId = typeof EventSubMessageId.Type;
 
-/** Spotify track identity; contains only the provider's base-62 alphabet. */
+/** Schema for a Spotify track identity, which contains only the provider's base-62 alphabet. */
 export const SpotifyTrackId = Schema.String.check(
   isOpenApiPattern(/^[a-zA-Z0-9]+$/),
   Schema.isMaxLength(128),
@@ -52,7 +52,7 @@ export const SpotifyTrackId = Schema.String.check(
 /** Parsed Spotify track identity. */
 export type SpotifyTrackId = typeof SpotifyTrackId.Type;
 
-/** Twitch stream session identity, not a channel identity. */
+/** Schema for a Twitch stream session identity, not a channel identity. */
 export const StreamId = boundedIdentity.pipe(Schema.brand("StreamId"));
 
 /** Parsed Twitch stream session identity. */
@@ -71,30 +71,38 @@ const calendarDateIsValid = (value: string): boolean => {
   return day <= lastDay && Number.isFinite(Date.parse(value));
 };
 
-/** ISO 8601 instant with UTC or numeric offset; minute precision is allowed and calendar dates must exist. */
+/**
+ * Schema for an ISO 8601 instant with a UTC or numeric offset.
+ *
+ * **Details**
+ *
+ * Minute precision is allowed, and the calendar date must exist: `2025-02-29` is rejected rather
+ * than rolled into March.
+ */
 export const IsoTimestamp = Schema.String.check(
   isOpenApiPattern(isoTimestampPattern),
   Schema.makeFilter(calendarDateIsValid, {
-    message: "Timestamp must contain a valid calendar date",
+    message:
+      "Timestamp must contain a valid calendar date. Use a date that exists, such as 2026-02-28T12:00:00Z.",
   }),
 ).pipe(Schema.brand("IsoTimestamp"));
 
 /** Parsed instant retaining its original timezone representation. */
 export type IsoTimestamp = typeof IsoTimestamp.Type;
 
-/** Non-negative safe integer used for counts and offsets. */
+/** Schema for a non-negative safe integer used for counts and offsets. */
 export const NonNegativeInt = Schema.Natural;
 
 /** Parsed non-negative count or offset. */
 export type NonNegativeInt = typeof NonNegativeInt.Type;
 
-/** Positive safe integer used for counts and thresholds. */
+/** Schema for a positive safe integer used for counts and thresholds. */
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));
 
 /** Parsed positive count or threshold. */
 export type PositiveInt = typeof PositiveInt.Type;
 
-/** Bounded page size shared by administration and leaderboard queries. */
+/** Schema for the bounded page size shared by administration and leaderboard queries. */
 export const PageSize = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(1),
   Schema.isLessThanOrEqualTo(100),
