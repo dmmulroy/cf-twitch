@@ -4,14 +4,21 @@ import { Effect, Schema } from "effect";
 export class E2eHttpRequestError extends Schema.TaggedError<E2eHttpRequestError>()(
   "E2eHttpRequestError",
   {
+    /** E2E helper that sent the request. */
+    operation: Schema.Literals(["fetchE2eResponse", "fetchE2eText"]),
+    /** The request could not be sent or its response headers did not arrive. */
+    reason: Schema.Literal("RequestFailed"),
+    /** HTTP method of the staged request. */
     method: Schema.String,
+    /** Local test Worker URL of the staged request. */
     url: Schema.String,
+    /** Rejection from `fetch`, kept for diagnosis. */
     cause: Schema.Unknown,
   },
 ) {
   /** Failure summary naming the request method and URL. */
   override get message(): string {
-    return `E2E HTTP ${this.method} request failed for ${this.url}`;
+    return `E2E HTTP ${this.method} request failed for ${this.url} during ${this.operation}. Check that the local test Worker is running, then rerun the suite.`;
   }
 }
 
@@ -19,14 +26,21 @@ export class E2eHttpRequestError extends Schema.TaggedError<E2eHttpRequestError>
 export class E2eHttpResponseBodyError extends Schema.TaggedError<E2eHttpResponseBodyError>()(
   "E2eHttpResponseBodyError",
   {
+    /** E2E helper that read the body. */
+    operation: Schema.Literal("fetchE2eText"),
+    /** The response body failed while being read. */
+    reason: Schema.Literal("BodyReadFailed"),
+    /** HTTP method of the staged request. */
     method: Schema.String,
+    /** Local test Worker URL of the staged request. */
     url: Schema.String,
+    /** Rejection from reading the body, kept for diagnosis. */
     cause: Schema.Unknown,
   },
 ) {
   /** Failure summary naming the request method and URL whose body failed. */
   override get message(): string {
-    return `E2E HTTP ${this.method} response body failed for ${this.url}`;
+    return `E2E HTTP ${this.method} response body failed for ${this.url} during ${this.operation}. Check the local Worker logs for a dropped connection, then rerun the suite.`;
   }
 }
 
@@ -49,7 +63,11 @@ const describeE2eHttpRequest = (
   url: input instanceof Request ? input.url : String(input),
 });
 
-/** Run one E2E fetch with a typed request failure and interruption-bound AbortSignal. */
+/**
+ * Runs one E2E fetch whose AbortSignal is bound to fiber interruption.
+ *
+ * @returns The response, or fails with `E2eHttpRequestError` when the request cannot be sent or its headers do not arrive.
+ */
 export const fetchE2eResponse = (
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -58,11 +76,22 @@ export const fetchE2eResponse = (
 
   return Effect.tryPromise({
     try: (signal) => fetch(input, { ...init, signal }),
-    catch: (cause) => new E2eHttpRequestError({ ...request, cause }),
+    catch: (cause) =>
+      new E2eHttpRequestError({
+        ...request,
+        operation: "fetchE2eResponse",
+        reason: "RequestFailed",
+        cause,
+      }),
   });
 };
 
-/** Fetch and consume text under one AbortSignal so interruption also cancels body transfer. */
+/**
+ * Fetches and consumes response text under one AbortSignal, so interruption also cancels body transfer.
+ *
+ * @returns The response with its text body, or fails with `E2eHttpRequestError` when the request
+ * cannot be sent, or `E2eHttpResponseBodyError` when the body fails while being read.
+ */
 export const fetchE2eText = (
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -75,13 +104,35 @@ export const fetchE2eText = (
         (response) =>
           response.text().then(
             (body) => ({ response, body }),
-            (cause) => Promise.reject(new E2eHttpResponseBodyError({ ...request, cause })),
+            (cause) =>
+              Promise.reject(
+                new E2eHttpResponseBodyError({
+                  ...request,
+                  operation: "fetchE2eText",
+                  reason: "BodyReadFailed",
+                  cause,
+                }),
+              ),
           ),
-        (cause) => Promise.reject(new E2eHttpRequestError({ ...request, cause })),
+        (cause) =>
+          Promise.reject(
+            new E2eHttpRequestError({
+              ...request,
+              operation: "fetchE2eText",
+              reason: "RequestFailed",
+              cause,
+            }),
+          ),
       ),
+    // Rejections from fetch and Response are untagged promise failures, classified here as they enter Effect.
     catch: (cause) =>
       cause instanceof E2eHttpRequestError || cause instanceof E2eHttpResponseBodyError
         ? cause
-        : new E2eHttpRequestError({ ...request, cause }),
+        : new E2eHttpRequestError({
+            ...request,
+            operation: "fetchE2eText",
+            reason: "RequestFailed",
+            cause,
+          }),
   });
 };
