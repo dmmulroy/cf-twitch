@@ -22,22 +22,35 @@ describe("Spotify track input", () => {
     { arbitrary: { runs: 100 } },
   );
 
-  it.effect("rejects non-track resources and lookalike hosts without echoing request text", () =>
+  it.effect(
+    "classifies non-track resources and lookalike hosts as unsupported without echoing request text",
+    () =>
+      Effect.gen(function* () {
+        for (const input of [
+          "https://open.spotify.com.attacker.example/track/abc",
+          "https://attacker.example/track/abc",
+          "https://open.spotify.com/playlist/abc",
+          "https://open.spotify.com/track/abc/extra",
+          "https://open.spotify.com/track/abc%2Fdef",
+          "spotify:album:abc",
+          "spotify:track:abc?secret=private",
+          "file://open.spotify.com/track/abc",
+        ]) {
+          const error = yield* Effect.flip(parseSpotifyTrackInput(input));
+          expect(error._tag).toBe("InvalidSpotifyTrackInput");
+          expect(error.reason).toBe("unsupported_format");
+          expect(error.message).not.toContain(input);
+        }
+      }),
+  );
+
+  it.effect("classifies a track-shaped link whose ID exceeds the Spotify track ID bound", () =>
     Effect.gen(function* () {
-      for (const input of [
-        "https://open.spotify.com.attacker.example/track/abc",
-        "https://attacker.example/track/abc",
-        "https://open.spotify.com/playlist/abc",
-        "https://open.spotify.com/track/abc/extra",
-        "https://open.spotify.com/track/abc%2Fdef",
-        "spotify:album:abc",
-        "spotify:track:abc?secret=private",
-        "file://open.spotify.com/track/abc",
-      ]) {
-        const error = yield* Effect.flip(parseSpotifyTrackInput(input));
-        expect(error._tag).toBe("InvalidSpotifyTrackInput");
-        expect(error.message).not.toContain(input);
-      }
+      const input = `https://open.spotify.com/track/${"a".repeat(129)}`;
+      const error = yield* Effect.flip(parseSpotifyTrackInput(input));
+
+      expect(error.reason).toBe("invalid_track_id");
+      expect(error.message).not.toContain(input);
     }),
   );
 });

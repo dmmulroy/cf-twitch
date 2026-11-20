@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "./identity.ts";
 
 const ViewerHistoryLimit = Schema.Int.check(
@@ -149,39 +149,72 @@ export const StreamLifecycleStatus = Schema.Struct({
 /** Stream Lifecycle readiness and pending-effect status. */
 export type StreamLifecycleStatus = typeof StreamLifecycleStatus.Type;
 
-/** Stream Lifecycle operation names included in typed failures. */
+/** Stream Lifecycle operation names recorded on typed Stream Lifecycle failures. */
 export const StreamLifecycleOperation = Schema.Literals([
   "getState",
+  "saveState",
   "markOnline",
   "markOffline",
   "recordViewerCount",
+  "pollViewerCount",
   "getViewerHistory",
   "reconcile",
   "resumeTransitionEffects",
+  "rebuildAlarm",
+  "scheduleAlarm",
+  "clearAlarm",
+  "migrateLegacyState",
   "getStatus",
   "getDebugState",
   "reset",
 ]);
 
-/** Stream Lifecycle operation name. */
+/** Stream Lifecycle operation name recorded on typed Stream Lifecycle failures. */
 export type StreamLifecycleOperation = typeof StreamLifecycleOperation.Type;
 
-/** Expected failure while applying Stream Lifecycle state or durable effects. */
+/** Classified cause of a Stream Lifecycle failure. */
+export const StreamLifecycleFailureReason = Schema.Literals([
+  "persistence_unavailable",
+  "stored_state_invalid",
+  "invalid_response",
+  "effects_pending",
+  "provider_unavailable",
+]);
+
+/** Classified cause of a Stream Lifecycle failure. */
+export type StreamLifecycleFailureReason = typeof StreamLifecycleFailureReason.Type;
+
+/**
+ * Expected failure while applying Stream Lifecycle state or its durable transition effects.
+ *
+ * **Details**
+ *
+ * Accepted transitions persist their checkpoints before any effect runs, and duplicate source
+ * evidence is ignored, so retrying the same request resumes rather than repeats a transition.
+ */
 export class StreamLifecycleError extends Schema.TaggedError<StreamLifecycleError>()(
   "StreamLifecycleError",
   {
     operation: StreamLifecycleOperation,
-    reason: Schema.Literals([
-      "persistence_unavailable",
-      "stored_state_invalid",
-      "invalid_response",
-      "effects_pending",
-      "provider_unavailable",
-    ]),
+    reason: StreamLifecycleFailureReason,
+    streamId: Schema.OptionFromNullOr(StreamId).pipe(
+      Schema.withConstructorDefault(Effect.succeed(Option.none<StreamId>())),
+    ),
   },
 ) {
-  /** Stable Stream Lifecycle failure description excludes provider and stored payloads. */
+  /** Message naming the failed operation and reason, without provider or stored payloads. */
   override get message(): string {
-    return `Stream Lifecycle ${this.operation} failed (${this.reason})`;
+    switch (this.reason) {
+      case "persistence_unavailable":
+        return `Stream Lifecycle storage was unavailable during ${this.operation}. Retry the same request; accepted transitions resume from their saved checkpoints.`;
+      case "stored_state_invalid":
+        return `Stream Lifecycle stored state failed validation during ${this.operation}. Inspect the stored Stream Lifecycle state before retrying.`;
+      case "invalid_response":
+        return `Stream Lifecycle response failed validation during ${this.operation}. Read the Stream Lifecycle state to confirm the outcome before retrying.`;
+      case "effects_pending":
+        return `Stream Lifecycle transition effects are still pending after ${this.operation}. Retry the same request to resume the saved transition checkpoint.`;
+      case "provider_unavailable":
+        return `Stream Lifecycle could not read the Twitch viewer count during ${this.operation}. Retry after Twitch is reachable.`;
+    }
   }
 }

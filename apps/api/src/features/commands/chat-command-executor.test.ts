@@ -134,7 +134,7 @@ const providerTestLayer = Layer.unwrap(
 
       if ((yield* Ref.get(failedProviders)).includes("song"))
         return yield* new SongQueueError({
-          operation: "command lookup",
+          operation: "getCurrentlyPlaying",
           reason: "provider_unavailable",
         });
     });
@@ -142,7 +142,7 @@ const providerTestLayer = Layer.unwrap(
     const raffleFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("raffle"))
         return yield* new RaffleError({
-          operation: "command lookup",
+          operation: "getCurrentlyPlaying",
           reason: "transport_unavailable",
         });
     });
@@ -150,7 +150,7 @@ const providerTestLayer = Layer.unwrap(
     const achievementFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("achievements"))
         return yield* new AchievementError({
-          operation: "command lookup",
+          operation: "getCurrentlyPlaying",
           reason: "transport_unavailable",
         });
     });
