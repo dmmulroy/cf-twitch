@@ -1,6 +1,6 @@
 # Prevention proposals
 
-Use this analysis when evaluating new lint, parser-API policy, or regression tooling. These proposals are not installed rules. [Architecture](architecture.md) owns current conventions, root `vite.config.ts` owns lint policy, and the [historical audit](quality-audit.md) records the cleanup that motivated these proposals.
+Use this analysis when evaluating new lint, parser-API policy, or regression tooling. These proposals are not installed rules. The [project traits](../.agents/traits/) are the authoritative coding rules, reviewed with `check_traits`; [architecture](architecture.md#engineering-conventions) summarizes them as current conventions, root `vite.config.ts` owns lint policy, and the [historical audit](quality-audit.md) records the cleanup that motivated these proposals.
 
 ## 1. Improve shared parser examples
 
@@ -23,6 +23,8 @@ Evaluate `allowConstantLoopConditions: true`, then review remaining diagnostics 
 Candidate: `anti-slop-effect/no-exported-schema-decoder-factory`. Detect direct exports of Schema-generated decoder functions, including export-list aliases, because those factories expose library parse options as application API.
 
 Resolve Effect import aliases and exported bindings rather than matching identifier text. RuleTester should cover direct exports, renamed Schema imports, export-list aliases, unrelated same-name functions, and accepted private-codec/unary-wrapper pairs. Consider encoders under the same policy if their application surfaces have the same problem. Choosing the correct input type requires provenance knowledge, so offer a diagnostic rather than an autofix.
+
+The `private-codecs-unary-parsers` trait already requires this in review; a lint rule would make it mechanical.
 
 **Acceptance:** the rule catches the previous stage-parser API without reporting unrelated factories. Its scope distinguishes application APIs from deliberately low-level boundary codecs and agrees with the existing unknown-input rule. Reconcile shared examples before enabling it broadly.
 

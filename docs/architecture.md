@@ -2,13 +2,57 @@
 
 ## Engineering conventions
 
+The project traits in [`.agents/traits/`](../.agents/traits/) are authoritative coding rules. When this document, older code, or another guide conflicts with a trait, the trait wins and the conflicting text is corrected. Check changed files with the `traits` MCP `check_traits` tool (see [AGENTS.md](../AGENTS.md#traits)); its findings are per 200-line chunk and need review against the trait text. This section summarizes how the traits apply here; the trait files hold the exact requirements.
+
 Use Effect services, Layers, Schema, and workflows; Durable Objects expose versioned HTTP APIs. Application dependencies stay within the app or flow from packages into apps. Framework bindings, SQL rows, and provider representations stay private to their owning adapters.
 
-Service modules own their explicit interface, contextual tag, expected errors, constructor, and dependency-preserving Layer. Runtime consumers import Layers and yield services. Keep dependency requirements visible until the composition root selects implementations. Preserve tagged failure distinctions and interruption when translating boundary errors.
+### Service modules
 
-Use owner-provided types, narrowing, and schema refinements. Ordinary casts, `any`, non-null assertions, and unchecked parser failures require redesign; unavoidable boundary exceptions need concrete evidence and a safety comment. Test through real services and interfaces rather than module replacement. Exported symbols have concise JSDoc and searchable domain-qualified names.
+Each service whose implementation the application builds lives in a file named for its capability and declares, in this order (`effect-service-module-layout`):
 
-Root `vite.config.ts` owns lint policy, including the cyclomatic complexity ceiling. Refactor by cohesive responsibility: a helper earns its place by reducing reasoning burden while retaining precise input/error types. A smaller branch count alone does not justify extraction. Read manifests and pinned library source before selecting APIs; examples in other projects can lag this repository.
+1. `I<Capability>`: the service interface.
+2. The `Context.Service` class, named for the capability without `Tag`.
+3. `make<Capability>`: the constructor Effect.
+4. `<capability>LayerWithoutDependencies`: the Layer that leaves application dependencies in its requirement channel.
+5. `<capability>Layer`: the production Layer. With no production dependencies it is `<capability>Layer = <capability>LayerWithoutDependencies`.
+6. `<capability>TestLayer`: a complete, behaviorally honest in-memory or controlled implementation that crosses the same interface, exported from the same file.
+
+Every exported symbol in the module includes the capability name. Services that are an Alchemy or Workers-runtime binding, Alchemy resource declarations, Workers, and Durable Object classes are exempt. A test control surface that a test Layer also provides, such as `TwitchAnalyticsRecording` beside `twitchAnalyticsTestLayer`, lives in the same file.
+
+Runtime consumers import Layers and yield services. A Layer that depends on a service yields it while building and keeps it required until a composition root selects an implementation with `Layer.provide`; modules export Layer values, not factories that take services as arguments (`layer-dependencies-stay-required`).
+
+### Typed errors and messages
+
+Expected failures are `Schema.TaggedError` classes (`typed-error-context`) with:
+
+- `operation`: a `Schema.Literals` union naming the operation that failed.
+- `reason`: a `Schema.Literals` union classifying the cause.
+- The safe domain identifiers the failing code knows, as `Option` when they may be absent, plus further context when it applies (field violations, retryability, a safe cause).
+- A `message` getter whose text begins with a literal description, names the operation and reason, and ends with one way forward: correct the input and retry, retry when safe, inspect or reconcile an uncertain resource, or contact support with the request ID.
+
+Messages are calm and blame no one; retry advice and reassurance claim only what the operation's idempotency proves (`truthful-retry-and-reassurance`). Text that callers read uses domain words, not storage or runtime mechanics (`durable-public-vocabulary`). Defect messages passed to `Effect.die` follow the same wording rules.
+
+Translate expected failures by tag with `Effect.catchTag`/`Effect.catchTags`, passing correct application errors through unchanged and leaving unknown tags in the error channel. `Effect.mapError` is for channels with one meaning; `instanceof` is for non-Effect errors where they enter Effect (`explicit-tagged-error-translation`). Preserve interruption when translating.
+
+The HTTP feature owns the public error envelope: stable `code`, operation-specific `message`, variant-specific `details`, `requestId`, and a truthful `retryable`, with statuses chosen by what the failure means to the caller. Capabilities expose typed errors with `operation` and `reason`; they do not render HTTP responses.
+
+### Types, absence, and parsing
+
+Use owner-provided types, narrowing, and schema refinements. Ordinary casts, `any`, non-null assertions, and unchecked parser failures require redesign; a single unavoidable boundary assertion needs concrete evidence and a safety comment (`type-assertions-at-proven-boundaries`). Preserve the strongest known type through every boundary and intermediate step (`preserve-established-types`).
+
+Inside the application, optional values are `Option.Option<A>`. Nullable or optional external input is decoded into `Option` at the boundary and encoded back only where an external contract requires `null`, `undefined`, or an omitted key (`option-for-optional-values`). Parsing rules follow the [provenance table](#provenance).
+
+### Documentation comments
+
+Every exported declaration, public class member, and interface or service member has its own JSDoc; exported object and schema fields are documented when their meaning goes beyond name and type (`jsdoc-on-exports`). The summary is one paragraph: functions and methods start with a present-tense verb (`Parses`, `Returns`), values, types, Layers, and fields with a noun phrase (`Layer that`, `Schema for`) (`jsdoc-summary-paragraph`). Optional sections follow in the order **When to use**, **Details**, **Gotchas**, **Example**, then tags in the order `@deprecated`, `@template`, `@param`, `@returns`, `@throws`, `@default`, `@see` (`jsdoc-effect-layout`). `@returns` names the errors an Effect or Result fails with and when; `@throws` names thrown errors, rejections, and defects anywhere in the call stack (`jsdoc-error-documentation`).
+
+### Tests
+
+Tests exercise behavior through public interfaces with real or behaviorally faithful implementations, such as SQLite, `TestClock`, `<capability>TestLayer`s, and controlled providers, and each test name states the behavior it proves (`faithful-verification`). Schema tests cover behavior the application owns, such as transformations, custom filters, compatibility contracts, round trips, and regressions, not library mechanics a declaration already specifies (`schema-tests-cover-owned-behavior`).
+
+### Lint and refactoring
+
+Root `vite.config.ts` owns lint policy, including the cyclomatic complexity ceiling. Refactor by cohesive responsibility: a helper earns its place by reducing reasoning burden while retaining precise input/error types (`cohesive-extraction`). A smaller branch count alone does not justify extraction. Read manifests and pinned library source before selecting APIs; examples in other projects can lag this repository.
 
 ## Ownership
 
@@ -31,7 +75,7 @@ For a parsing change, identify the producer, already-established invariants, rem
 
 Storage provenance selects the codec: current tables use current codecs; identified legacy sources use explicit compatibility translation. Commit to the representation indicated by its evidence instead of falling through to a weaker schema after a parse failure.
 
-The service implementation is selected through a Layer. `*LayerWithoutDependencies` leaves application dependencies visible for composition; the ready Layer selects production dependencies. A test constructs the graph from controlled dependencies upward rather than overriding a fully built production graph.
+The service implementation is selected through a Layer. `*LayerWithoutDependencies` leaves application dependencies visible for composition; the ready Layer selects production dependencies; `*TestLayer` supplies the controlled implementation. A test constructs the graph from controlled dependencies upward rather than overriding a fully built production graph.
 
 ## Composition and lifetime
 
@@ -85,7 +129,7 @@ A physical class name preserves identity, not serialized-format compatibility. H
 
 ## Observability and configuration
 
-`TwitchConfiguration` reads Effect Config during outer initialization, allowing Alchemy to discover bindings. Secrets remain Redacted until final I/O. Configuration failures intentionally omit raw values and parser causes.
+`TwitchConfiguration` reads Effect Config during outer initialization, allowing Alchemy to discover bindings. Secrets remain Redacted until final I/O. `TwitchConfigurationError` names the failed setting (for example `TWITCH_CLIENT_SECRET`) and classifies it as `SettingInvalid` or `SettingsUnreadable`; it intentionally omits raw values and parser causes. `twitchConfigurationTestLayer` parses synthetic settings through the production reader. `TwitchAnalytics` writes are best effort; `twitchAnalyticsTestLayer` records them in memory and exposes `TwitchAnalyticsRecording` for assertions.
 
 The stock Effect HTTP tracers collect full URLs, query values, and headers, including OAuth redirect Locations. `twitchHttpTelemetrySafetyLayer` disables that automatic collection for both HTTP servers and clients. It is merged into the **outer exported Worker Layer**, because Alchemy's native HTTP adapter wraps the application handler. Disabling tracing only inside `fetch` is too late.
 

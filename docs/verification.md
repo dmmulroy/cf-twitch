@@ -16,6 +16,10 @@ This document owns check selection, local harness operation, and recorded verifi
 
    **Complete when:** each changed requirement has the strongest reliable test result available and any remaining gap is recorded in the acceptance ledger. A typecheck or local pass is not production approval.
 
+4. Run the `traits` MCP `check_traits` tool on every changed file, omitting `traitNames` so all [project traits](../.agents/traits/) run. Pass explicit project paths; Traits 0.5.15 does not apply the configured excludes, so never include `tools/oxlint/anti-slop/**` or `.agents/**`.
+
+   **Complete when:** each finding is either fixed or reviewed against the trait text and recorded as a false positive. A clean report is not proof of conformance; the [architecture conventions](architecture.md#engineering-conventions) summarize what the traits require.
+
 For documentation-only changes, check formatting, local links/anchors, and cited source/configuration facts. Source maps and version declarations can be looked up in the environment; keep documentation focused on constraints those lookups cannot explain.
 
 ## Focused feedback
@@ -67,6 +71,8 @@ For a new native fault journey, record request/trace correlation, controlled mut
 [HTTP request-correlation tests](../apps/api/src/features/http/http-request-correlation.test.ts) capture successful/failed spans and error reports, including the pinned `Cause.prettyErrors({ includeCauseInStack: true })` conversion used by OTLP. They assert secret exclusion while preserving correlation, Redacted causes, and interruption. This is not a live collector test or a claim of native process-eviction coverage. The outer telemetry placement constraint is documented in [observability](architecture.md#observability-and-configuration).
 
 ## Recorded verification
+
+Platform trait conformance (**2026-11-20**, branch `traits/platform`): root `pnpm verify` exited 0 with formatting, root lint, architecture (194 source files), OpenAPI inspection (38 paths), strict types, unit/tooling suites (API 355 / 45 files, contracts 15, shared infrastructure 9, Traits tooling 9, root tooling 65), and four local-workerd tests. This is a branch-local result before merging the other trait-conformance branches.
 
 Effect API reuse implementation (**2026-09-10**): root `pnpm verify` passed formatting, root lint, architecture (194 source files), OpenAPI inspection (38 paths / 40 operations), strict root/workspace types, 427 unit/tooling tests, and four local-workerd tests. No workerd/miniflare processes or generated policy-probe directories remained afterward. The [implementation ledger](effect-api-implementation.md#verification-and-remaining-gates) records suite counts, review evidence, conditional non-adoptions, and remaining gates. This supersedes the test counts below, not production or outstanding-native acceptance requirements.
 

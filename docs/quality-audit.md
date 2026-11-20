@@ -1,6 +1,6 @@
 # Rewrite quality audit — historical record
 
-These are review outcomes from the rewrite and its follow-up cleanup on 2026-09-05, not additional engineering rules. Current conventions live in [architecture](architecture.md), dated check results in [verification](verification.md#recorded-verification), and incomplete acceptance in the [ledger](capability-parity.md#acceptance-status).
+These are review outcomes from the rewrite and its follow-up cleanup on 2026-09-05, not additional engineering rules. Where a decision below conflicts with the [project traits](../.agents/traits/), the traits win. Current conventions live in [architecture](architecture.md), dated check results in [verification](verification.md#recorded-verification), and incomplete acceptance in the [ledger](capability-parity.md#acceptance-status).
 
 ## Full-tree review
 

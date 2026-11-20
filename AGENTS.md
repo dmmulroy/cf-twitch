@@ -22,6 +22,6 @@ Preserve viewer-facing behavior, durable evidence, and uncertainty about externa
 
 ## Traits
 
-Project coding traits live in `.agents/traits/` and are checked with the `traits` MCP server (`.pi/mcp.json`; config in `tools/traits`, re-exported by the root `traits.ts`). Run `check_traits` on the files you changed before declaring work complete. It needs `TYPESAFE_API_KEY` in the environment or the root `.env` and a Claude Code login (`claude auth login`).
+Project coding traits live in `.agents/traits/` and are checked with the `traits` MCP server (`.pi/mcp.json`; config in `tools/traits`, re-exported by the root `traits.ts`). Traits are authoritative: where one conflicts with existing code or documentation, follow the trait and correct the conflict. Do not weaken a trait or add an ignore directive merely to silence a finding. Run `check_traits` on the files you changed before declaring work complete. It needs `TYPESAFE_API_KEY` in the environment or the root `.env` and a Claude Code login (`claude auth login`).
 
 For setup and the source map, use [README.md](README.md).
