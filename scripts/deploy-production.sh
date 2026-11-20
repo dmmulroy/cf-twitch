@@ -15,7 +15,10 @@
 #      never redeploys the shared state store.
 #   6. Smoke-tests the public endpoints.
 #
-# Settings come from your shell environment or apps/api/.env (Alchemy reads it).
+# Settings come from your shell environment plus one settings file, the first that exists of:
+#   $CF_TWITCH_ENV_FILE, apps/api/.env, apps/api/.dev.vars
+# (both files are gitignored; worktrees don't share them, so point CF_TWITCH_ENV_FILE at
+# another checkout's file if needed, e.g. CF_TWITCH_ENV_FILE=../cf-twitch/apps/api/.dev.vars).
 # These values are uploaded as the Worker's secrets, so they must be the real
 # production values. TWITCH_EVENTSUB_SECRET must be the secret the existing Twitch
 # EventSub subscriptions were created with, or webhooks will start failing.
@@ -75,7 +78,23 @@ fi
 printf 'Deploying commit %s: %s\n' "${local_head:0:7}" "$(git log -1 --format=%s)"
 
 step "Checking production settings"
-env_file="$api_dir/.env"
+env_file=""
+for candidate in "${CF_TWITCH_ENV_FILE:-}" "$api_dir/.env" "$api_dir/.dev.vars"; do
+  if [[ -n "$candidate" && -f "$candidate" ]]; then
+    env_file="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"
+    break
+  fi
+done
+if [[ -n "${CF_TWITCH_ENV_FILE:-}" && "$env_file" == "" ]]; then
+  fail "CF_TWITCH_ENV_FILE points at a file that does not exist: $CF_TWITCH_ENV_FILE"
+fi
+if [[ -n "$env_file" ]]; then
+  echo "Using settings file: $env_file"
+else
+  echo "No settings file found; using exported environment variables only."
+fi
+env_file_args=()
+[[ -n "$env_file" ]] && env_file_args=(--env-file "$env_file")
 missing=()
 for name in "${REQUIRED_SETTINGS[@]}"; do
   if [[ -n "${!name:-}" ]]; then
@@ -87,7 +106,7 @@ for name in "${REQUIRED_SETTINGS[@]}"; do
   missing+=("$name")
 done
 if (( ${#missing[@]} > 0 )); then
-  fail "missing production settings (export them or add them to apps/api/.env): ${missing[*]}"
+  fail "missing production settings (export them, or set CF_TWITCH_ENV_FILE to a file with them): ${missing[*]}"
 fi
 echo "All ${#REQUIRED_SETTINGS[@]} required settings are present."
 
@@ -103,7 +122,7 @@ fi
 
 step "Planning the $STAGE stage"
 plan_log="$(mktemp -t cf-twitch-plan.XXXXXX)"
-(cd "$api_dir" && pnpm exec alchemy plan --stage "$STAGE" --no-input) 2>&1 | tee "$plan_log"
+(cd "$api_dir" && pnpm exec alchemy plan --stage "$STAGE" --no-input ${env_file_args[@]+"${env_file_args[@]}"}) 2>&1 | tee "$plan_log"
 plan_text="$(perl -pe 's/\e\[[0-9;]*m//g' "$plan_log")"
 
 grep -q 'Plan:' <<<"$plan_text" || fail "the plan did not finish; see the output above"
@@ -118,7 +137,7 @@ read -r -p "Type \"$CONFIRMATION\" to deploy commit ${local_head:0:7} to $STAGE:
 [[ "$answer" == "$CONFIRMATION" ]] || fail "not confirmed; nothing was deployed"
 
 step "Deploying to $STAGE (Alchemy will ask you to approve the plan)"
-(cd "$api_dir" && pnpm exec alchemy deploy --stage "$STAGE")
+(cd "$api_dir" && pnpm exec alchemy deploy --stage "$STAGE" ${env_file_args[@]+"${env_file_args[@]}"})
 
 step "Smoke-testing $WORKER_URL"
 smoke_failed=0
