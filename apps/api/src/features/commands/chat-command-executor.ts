@@ -174,10 +174,5 @@ export const executorLayerWithoutDependencies = Layer.effect(
 /** Ready executor resolves all real provider namespaces during Alchemy initialization. */
 export const executorLayer = executorLayerWithoutDependencies.pipe(
   Layer.provide(computedChatCommandsLayerWithoutDependencies),
-  Layer.provide([
-    commandsClientLayer,
-    songQueueLayer,
-    raffleClientLayer,
-    achievementsClientLayer,
-  ]),
+  Layer.provide([commandsClientLayer, songQueueLayer, raffleClientLayer, achievementsClientLayer]),
 );

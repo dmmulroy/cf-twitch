@@ -109,9 +109,7 @@ const songQueueServerLayer = songQueueServerLayerWithoutDependencies.pipe(
   Layer.provide(spotifyServiceLayer),
 );
 
-const songQueueLayer = songQueueLayerWithoutDependencies.pipe(
-  Layer.provide(songQueueServerLayer),
-);
+const songQueueLayer = songQueueLayerWithoutDependencies.pipe(Layer.provide(songQueueServerLayer));
 
 const eventBusServerLayer = eventBusServerLayerWithoutDependencies.pipe(
   Layer.provide(achievementsLayer),
