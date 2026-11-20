@@ -148,7 +148,7 @@ for (const provider of ["spotify", "twitch"] as const) {
           expect(result._tag).toBe("Failure");
 
           if (Result.isFailure(result)) {
-            expect(result.failure.kind).toBe(
+            expect(result.failure.reason).toBe(
               status === 429
                 ? "rate-limited"
                 : status >= 500
@@ -233,7 +233,7 @@ for (const provider of ["spotify", "twitch"] as const) {
           expect(result._tag).toBe("Failure");
 
           if (Result.isFailure(result)) {
-            expect(result.failure.kind).toBe("invalid-response");
+            expect(result.failure.reason).toBe("invalid-response");
             expect(JSON.stringify(result.failure)).not.toContain("leaked-invalid");
           }
         }),

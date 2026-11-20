@@ -14,12 +14,12 @@ export function decideAchievementAnnouncement(input: {
   readonly attempts: number;
   readonly nowMs: number;
 }): AchievementAnnouncementDecision {
-  if (input.error.kind === "outcome-unknown")
+  if (input.error.reason === "outcome-unknown")
     return { state: "uncertain", attempts: input.attempts };
   const delay = announcementRetryDelaysMs[input.attempts];
 
   const retryable = ["network", "rate-limited", "offline", "persistence"].includes(
-    input.error.kind,
+    input.error.reason,
   );
 
   if (!retryable || delay === undefined) return { state: "abandoned", attempts: input.attempts };

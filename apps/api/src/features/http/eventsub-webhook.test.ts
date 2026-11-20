@@ -547,8 +547,8 @@ describe("EventSub management HTTP", () => {
                 new ProviderError({
                   provider: "twitch",
                   operation: "createEventSubSubscription",
-                  kind: "rejected",
-                  status: 500,
+                  reason: "rejected",
+                  status: Option.some(500),
                   retryAfterMs: Option.none(),
                 }),
               )
@@ -601,8 +601,8 @@ describe("EventSub management HTTP", () => {
                 new ProviderError({
                   provider: "twitch",
                   operation: "deleteEventSubSubscription",
-                  kind: "rejected",
-                  status: 500,
+                  reason: "rejected",
+                  status: Option.some(500),
                   retryAfterMs: Option.none(),
                 }),
               )

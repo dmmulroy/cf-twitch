@@ -304,7 +304,7 @@ export const makeEventSubInbox = Effect.gen(function* () {
       const sent = yield* twitch.sendChatMessage({ message: response.message }).pipe(Effect.result);
 
       if (Result.isFailure(sent)) {
-        const kind = sent.failure.kind;
+        const kind = sent.failure.reason;
         providerRetryAfterMs = Option.getOrElse(sent.failure.retryAfterMs, () => 0);
 
         if (kind === "outcome-unknown" || kind === "network" || kind === "invalid-response") {

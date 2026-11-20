@@ -46,8 +46,8 @@ const localSpotifyLayer = Layer.effect(
               new ProviderError({
                 provider: "spotify",
                 operation: "getTrack",
-                kind: "not-found",
-                status: 404,
+                reason: "not-found",
+                status: Option.some(404),
                 retryAfterMs: Option.none(),
               }),
             ),

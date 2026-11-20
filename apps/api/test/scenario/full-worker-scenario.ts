@@ -26,8 +26,10 @@ import {
   ProviderScenarioTranscript,
   providerScenarioTransportLayer,
 } from "../../src/features/providers/provider-scenario-transport.test-support.ts";
-import { ProviderAccessTokens } from "../../src/features/providers/provider-access-tokens.ts";
-import { providerAccessTokensLayerWithoutDependencies } from "../../src/features/providers/provider-token-client.ts";
+import {
+  ProviderAccessTokens,
+  providerAccessTokensLayerWithoutDependencies,
+} from "../../src/features/providers/provider-access-tokens.ts";
 import { providerTokenExchangeLayerWithoutDependencies } from "../../src/features/providers/provider-token-exchange.ts";
 import {
   spotifyTokenServerLayerWithoutDependencies,

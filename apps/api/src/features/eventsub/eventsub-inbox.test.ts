@@ -400,8 +400,8 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
             new ProviderError({
               provider: "twitch",
               operation: "sendChatMessage",
-              kind: "rate-limited",
-              status: 429,
+              reason: "rate-limited",
+              status: Option.some(429),
               retryAfterMs: Option.none(),
             }),
           ),
@@ -440,8 +440,8 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
           new ProviderError({
             provider: "twitch",
             operation: "sendChatMessage",
-            kind: "outcome-unknown",
-            status: 0,
+            reason: "outcome-unknown",
+            status: Option.none(),
             retryAfterMs: Option.none(),
           }),
         ),

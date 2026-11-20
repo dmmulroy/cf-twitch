@@ -24,13 +24,11 @@ import { SqlClient } from "effect/sql";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
-import {
-  providerTokenDatabaseLayerWithoutDependencies,
-  TokenProviderIdentity,
-} from "../providers/provider-token-database.ts";
+import { providerTokenDatabaseLayerWithoutDependencies } from "../providers/provider-token-database.ts";
+import { ProviderTokenAlarm } from "../providers/provider-token-alarm.ts";
+import { ProviderTokenIdentity } from "../providers/provider-token-identity.ts";
 import { providerTokenExchangeLayer } from "../providers/provider-token-exchange.ts";
 import {
-  ProviderTokenAlarm,
   ProviderTokenLifecycle,
   providerTokenLifecycleLayerWithoutDependencies,
 } from "../providers/provider-token-lifecycle.ts";
@@ -193,7 +191,7 @@ const testLayer = Layer.unwrap(
           deleteAlarm: () => Ref.set(tokenAlarm, Option.none()),
         }),
       ]),
-      Layer.provide(Layer.succeed(TokenProviderIdentity, "spotify")),
+      Layer.provide(Layer.succeed(ProviderTokenIdentity, "spotify")),
       Layer.provide(sqliteLayer),
     );
 
@@ -218,9 +216,9 @@ const testLayer = Layer.unwrap(
             : Effect.fail(
                 new ProviderError({
                   provider,
-                  operation: "localTokenNamespace",
-                  kind: "not-configured",
-                  status: 0,
+                  operation: "getValidAccessToken",
+                  reason: "not-configured",
+                  status: Option.none(),
                   retryAfterMs: Option.none(),
                 }),
               );

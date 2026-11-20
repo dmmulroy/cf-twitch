@@ -76,7 +76,7 @@ for (const [mode, kind] of [
         .sendChatMessage({ message: ChatMessageText.make("Private viewer message") })
         .pipe(Effect.result);
 
-      expect(result).toHaveProperty("failure.kind", kind);
+      expect(result).toHaveProperty("failure.reason", kind);
       expect(JSON.stringify(result)).not.toContain("Private viewer message");
       expect(JSON.stringify(result)).not.toContain(`scenario:${mode}`);
       const transcript = yield* ProviderScenarioTranscript;

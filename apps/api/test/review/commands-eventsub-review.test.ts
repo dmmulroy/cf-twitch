@@ -108,8 +108,8 @@ describe("Independent EventSub chat delivery integration", () => {
                       new ProviderError({
                         provider: "twitch",
                         operation: "sendChatMessage",
-                        kind: "rate-limited",
-                        status: 429,
+                        reason: "rate-limited",
+                        status: Option.some(429),
                         retryAfterMs: Option.none(),
                       }),
                     )

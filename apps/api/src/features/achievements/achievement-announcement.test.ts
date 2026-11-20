@@ -3,12 +3,12 @@ import { Option, Schema } from "effect";
 import { ProviderError } from "@cf-twitch/contracts/provider";
 import { decideAchievementAnnouncement } from "./achievement-announcement.ts";
 
-const providerFailure = (kind: ProviderError["kind"], retryAfterMs = Option.none<number>()) =>
+const providerFailure = (reason: ProviderError["reason"], retryAfterMs = Option.none<number>()) =>
   new ProviderError({
     provider: "twitch",
     operation: "sendChatMessage",
-    kind,
-    status: 0,
+    reason,
+    status: Option.none(),
     retryAfterMs,
   });
 

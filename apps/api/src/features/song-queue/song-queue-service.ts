@@ -41,8 +41,8 @@ export const makeSongQueue = Effect.gen(function* () {
           Effect.annotateLogs({
             provider: error.provider,
             providerOperation: error.operation,
-            providerFailure: error.kind,
-            status: error.status,
+            providerFailure: error.reason,
+            status: Option.getOrNull(error.status),
           }),
         ),
       ),

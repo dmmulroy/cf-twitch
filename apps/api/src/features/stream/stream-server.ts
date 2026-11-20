@@ -13,8 +13,10 @@ import {
 } from "../../runtime/twitch-configuration.ts";
 import { eventPublisherLayer } from "../events/event-bus-client.ts";
 import { EventPublisher } from "../events/event-bus-service.ts";
-import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
-import { providerAccessTokensLayer } from "../providers/provider-token-client.ts";
+import {
+  ProviderAccessTokens,
+  providerAccessTokensLayer,
+} from "../providers/provider-access-tokens.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
 import { streamDatabaseLayerWithoutDependencies } from "./stream-database.ts";
 import { StreamLifecycleHttpApi } from "./stream-http-api.ts";

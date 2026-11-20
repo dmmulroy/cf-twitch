@@ -85,7 +85,7 @@ for (const [mode, kind] of [
         yield* seed(mode);
         const spotify = yield* SpotifyService;
         expect(yield* spotify.getPlayback().pipe(Effect.result)).toHaveProperty(
-          "failure.kind",
+          "failure.reason",
           kind,
         );
       }).pipe(Effect.provide(layer)),
@@ -101,7 +101,7 @@ for (const [mode, kind] of [
       yield* seed(mode);
       const spotify = yield* SpotifyService;
       const result = yield* spotify.getTrack(trackId).pipe(Effect.result);
-      expect(result).toHaveProperty("failure.kind", kind);
+      expect(result).toHaveProperty("failure.reason", kind);
 
       if (Result.isFailure(result) && mode === "rate-limited")
         expect(result.failure.retryAfterMs).toEqual(Option.some(12_000));
@@ -115,7 +115,7 @@ it.effect("Spotify mutations execute once and an unknown queue outcome is never 
     const spotify = yield* SpotifyService;
     const transcript = yield* ProviderScenarioTranscript;
     expect(yield* spotify.addToQueue(trackId).pipe(Effect.result)).toHaveProperty(
-      "failure.kind",
+      "failure.reason",
       "outcome-unknown",
     );
     expect(yield* transcript.readRequests()).toEqual([
