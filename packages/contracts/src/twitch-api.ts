@@ -220,12 +220,19 @@ const twitchHttpErrorVariant = <const Code extends string, Details extends Schem
   details: Details,
 ) =>
   Schema.Struct({
+    /** Stable literal error code; callers branch on it, and it selects the `details` schema. */
     code: Schema.Literal(code),
+    /** Same text as `message`, kept for clients that read the historical `error` field. */
     error: Schema.String,
+    /** Endpoint that failed, such as `createCommand`. */
     operation: TwitchHttpOperation,
+    /** Explanation naming the failure and its reason, ending with one way forward. */
     message: Schema.String,
+    /** Safe context specific to this code, such as the rejected fields or the requested identifier. */
     details,
+    /** Server-generated request ID, also returned in the `x-request-id` header, for correlating logs. */
     requestId: Schema.String,
+    /** Whether repeating the same request is safe and may succeed. */
     retryable: Schema.Boolean,
   });
 
@@ -526,7 +533,9 @@ const commandSnapshot = Schema.Struct({
 
 /** Schema for the stream reconciliation result; absent Twitch values encode as `null`. */
 export const TwitchStreamReconciliationResponse = Schema.Struct({
+  /** Transition applied to Stream Lifecycle; `noop` when the stored state already matched Twitch. */
   action: Schema.Literals(["noop", "set_online", "set_offline"]),
+  /** Song Queue read after going online; `not_needed` unless the action was `set_online`. */
   queueWarmup: Schema.Literals(["not_needed", "ok", "error"]),
   before: StreamLifecycleState,
   after: StreamLifecycleState,
@@ -571,8 +580,11 @@ export type TwitchDebugStatusResponse = typeof TwitchDebugStatusResponse.Type;
 
 /** Schema for the `!stats` preview diagnostics; each component reports its own failure, and absent values encode as `null`. */
 export const TwitchViewerStatsDebugResponse = Schema.Struct({
+  /** Display name after trimming whitespace and leading `@`. */
   targetUser: Schema.String,
+  /** True only when every component succeeded and found no songs, unlocks, or rolls. */
   noStatsForTargetUser: Schema.Boolean,
+  /** Exact text `!stats` would send to chat. */
   chatMessage: Schema.String,
   components: Schema.Struct({
     song: Schema.Struct({

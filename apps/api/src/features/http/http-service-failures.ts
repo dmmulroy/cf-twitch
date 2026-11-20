@@ -13,6 +13,7 @@ import type {
   CommandsStateParseError,
 } from "@cf-twitch/contracts/chat-command";
 import type { EventBusError } from "@cf-twitch/contracts/event-bus";
+import type { EventSubReceiptError } from "@cf-twitch/contracts/eventsub";
 import type { OAuthError } from "@cf-twitch/contracts/oauth";
 import type { OAuthProvider, ProviderError } from "@cf-twitch/contracts/provider";
 import type { RaffleError } from "@cf-twitch/contracts/raffle";
@@ -423,6 +424,53 @@ export const commandsHttpFailureHandlers = (access: HttpServiceAccess) => ({
     Effect.fail(invalidHttpStoredData("chatCommands")),
 });
 
+/**
+ * Translates an EventSub receipt store failure by its classified reason.
+ *
+ * **Details**
+ *
+ * Acceptance is idempotent by message ID, so an unavailable store is safe to redeliver.
+ *
+ * @returns `EventSubAcceptanceFailed` (503, retryable) for storage, scheduling, dispatch or
+ * transport outages; `StoredDataInvalid` or `InvalidServiceResponse` (500) for corrupt or invalid
+ * receipt data; and `ServiceFailed` (500) for rejected receipt input.
+ */
+export const eventSubReceiptHttpFailure = (
+  error: EventSubReceiptError,
+  messageId: string,
+): HttpBoundaryError => {
+  switch (error.reason) {
+    case "storage":
+    case "schedule":
+    case "dispatch":
+    case "transport":
+      return eventSubAcceptanceFailed(messageId);
+    case "corrupt":
+      return invalidHttpStoredData("eventSubReceipts");
+    case "invalid_response":
+      return invalidHttpServiceResult("eventSubReceipts");
+    case "invalid":
+      return failedHttpService("eventSubReceipts", error.reason);
+  }
+};
+
+/**
+ * Builds the failure for an EventSub notification whose receipt could not be stored durably.
+ *
+ * @returns `EventSubAcceptanceFailed` (503, retryable): redelivering the same message is idempotent.
+ */
+export const eventSubAcceptanceFailed = (messageId: string): HttpBoundaryError =>
+  new HttpBoundaryError({
+    operation: "acceptWebhook",
+    status: 503,
+    failure: {
+      code: "EventSubAcceptanceFailed",
+      message: `EventSub acceptance failed for message ${messageId}: the receipt could not be stored durably. Redeliver the same message; acceptance is idempotent by message ID.`,
+      details: { messageId },
+      retryable: true,
+    },
+  });
+
 /** Twitch request whose provider failure is being translated, which selects request-specific codes. */
 export type TwitchHttpRequestKind = "listSubscriptions" | "deleteSubscription" | "getStreamInfo";
 
@@ -569,8 +617,9 @@ const tokenExchangeFailedCode = (provider: OAuthProvider) =>
  *
  * @returns The provider's parse error (500) for an invalid token response,
  * `ProviderAccessTokenError` (503) when tokens could not be stored, and the provider's token
- * exchange error: 503 when the provider was unreachable, 400 when it rejected the code, and 500
- * when this server could not complete the exchange.
+ * exchange error: 503 when the provider was unreachable, 400 when it rejected the authorization
+ * code, and 500 when this server could not complete the exchange, including rejected client
+ * credentials.
  */
 export const oauthExchangeHttpFailure = (
   error: ProviderError,
@@ -617,9 +666,7 @@ export const oauthExchangeHttpFailure = (
         },
       });
     case "rejected":
-    case "unauthorized":
     case "invalid-input":
-    case "not-found":
       return new HttpBoundaryError({
         operation: "callService",
         status: 400,
@@ -630,6 +677,8 @@ export const oauthExchangeHttpFailure = (
           retryable: false,
         },
       });
+    case "unauthorized":
+    case "not-found":
     case "not-configured":
     case "reauthorization-required":
     case "no-active-device":

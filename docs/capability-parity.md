@@ -110,7 +110,7 @@ Signed HTTP ordering is part of the contract:
 5. Parse JSON and the message schema; require signed subscription type/version to match the body.
 6. Return an authenticated challenge, or durably accept a notification by message ID.
 
-Malformed headers/payload and oversized bodies produce `400` (oversized: `EventSubBodyTooLarge`), stale timestamp/bad signature `401`, conflicting content for an accepted message ID `409`, and durable acceptance failure `503` (retryable: acceptance is idempotent by message ID).
+Malformed headers/payload and oversized bodies produce `400` (oversized: `EventSubBodyTooLarge`), stale timestamp/bad signature `401`, conflicting content for an accepted message ID `409`, durable acceptance unavailable `503` (retryable: acceptance is idempotent by message ID), and corrupt or invalid receipt-store data `500` (not retryable).
 
 The persisted receipt and recovery alarm precede acknowledgment; provider dispatch is asynchronous. Identical redelivery resumes work; conflicting reuse rejects. Dispatch maps online/offline to Stream Lifecycle, configured rewards to deterministic workflows, raid to shoutout workflow, and chat to commands. Revocation/unknown notifications are recorded without domain mutation.
 

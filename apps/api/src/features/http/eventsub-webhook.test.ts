@@ -18,6 +18,7 @@ import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { HttpRouter } from "effect/http";
 import {
   EventSubReceiptConflict,
+  EventSubReceiptError,
   type AcceptedEventSubReceipt,
 } from "@cf-twitch/contracts/eventsub";
 import { httpTestConfiguration as configuration } from "./http-test-fixtures.ts";
@@ -101,6 +102,7 @@ const withWebhook = <A, E, R>(
   ) => Effect.Effect<A, E, R>,
   twitch: Partial<ITwitchService> = {},
   cryptoLayer: Layer.Layer<Digest.Digest | SecureRandom.SecureRandom> = NodeCrypto.layer,
+  receiptStoreFailure: Option.Option<EventSubReceiptError> = Option.none(),
 ) =>
   Effect.gen(function* () {
     const clock = yield* Clock.Clock;
@@ -119,6 +121,8 @@ const withWebhook = <A, E, R>(
     const receiptLayer = Layer.mock(EventSubReceipts, {
       accept: (receipt) =>
         Effect.gen(function* () {
+          if (Option.isSome(receiptStoreFailure))
+            return yield* Effect.fail(receiptStoreFailure.value);
           const existing = receipts.find((entry) => entry.messageId === receipt.messageId);
 
           if (existing !== undefined && existing.contentDigest !== receipt.contentDigest)
@@ -238,6 +242,37 @@ describe("authenticated EventSub HTTP ingress", () => {
         {},
         cryptoLayer,
       );
+    }),
+  );
+
+  it.effect("reports a retryable 503 only when the receipt store is unavailable", () =>
+    Effect.gen(function* () {
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(timestamp));
+
+      for (const [reason, status, code, retryable] of [
+        ["storage", 503, "EventSubAcceptanceFailed", true],
+        ["corrupt", 500, "StoredDataInvalid", false],
+        ["invalid_response", 500, "InvalidServiceResponse", false],
+      ] as const) {
+        yield* withWebhook(
+          (fetch) =>
+            Effect.gen(function* () {
+              const request = yield* Effect.promise(() => signedRequest({ timestamp }));
+              const response = yield* Effect.promise(() => fetch(request));
+
+              expect(response.status, reason).toBe(status);
+              expect(yield* Effect.promise(() => response.json()), reason).toMatchObject({
+                code,
+                operation: "webhook",
+                retryable,
+              });
+            }),
+          {},
+          NodeCrypto.layer,
+          Option.some(new EventSubReceiptError({ operation: "accept", reason })),
+        );
+      }
     }),
   );
 

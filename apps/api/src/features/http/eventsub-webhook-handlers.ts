@@ -9,6 +9,7 @@ import { parseEventSubMessage } from "../eventsub/eventsub-message.ts";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { HttpBoundaryError, handleHttpBoundary } from "./http-boundary.ts";
 import { HttpRequestCorrelation } from "./http-request-correlation.ts";
+import { eventSubAcceptanceFailed, eventSubReceiptHttpFailure } from "./http-service-failures.ts";
 
 /** Maximum authenticated EventSub body size, measured in bytes rather than UTF-16 characters. */
 export const maximumEventSubBodyBytes = 1_048_576;
@@ -237,22 +238,11 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(function*
 
   const messageId = headers["twitch-eventsub-message-id"];
 
-  const acceptanceFailed = new HttpBoundaryError({
-    operation: "acceptWebhook",
-    status: 503,
-    failure: {
-      code: "EventSubAcceptanceFailed",
-      message: `EventSub acceptance failed for message ${messageId}: the receipt could not be stored durably. Redeliver the same message; acceptance is idempotent by message ID.`,
-      details: { messageId },
-      retryable: true,
-    },
-  });
-
   // Effect 4.1 Digest reports an unavailable SHA implementation as a defect, not a typed failure.
   const contentDigest = yield* digestService.digestHex(Digest.sha256, signedBytes).pipe(
     Effect.catchCauseIf(
       (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
-      () => Effect.fail(acceptanceFailed),
+      () => Effect.fail(eventSubAcceptanceFailed(messageId)),
     ),
   );
 
@@ -273,7 +263,7 @@ export const handleEventSubWebhook = Effect.fn("Http.eventSubWebhook")(function*
             },
           }),
         ),
-      EventSubReceiptError: () => Effect.fail(acceptanceFailed),
+      EventSubReceiptError: (error) => Effect.fail(eventSubReceiptHttpFailure(error, messageId)),
     }),
   );
 

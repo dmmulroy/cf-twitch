@@ -10,6 +10,15 @@ import { Achievements } from "../achievements/achievements-service.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
 import { HttpBoundaryError, encodeHttpResponse } from "./http-boundary.ts";
+import {
+  achievementHttpFailure,
+  type HttpServiceAccess,
+  raffleHttpFailure,
+  songQueueHttpFailure,
+} from "./http-service-failures.ts";
+
+/** Component reads are repeatable, so their public failure messages suggest retrying. */
+const componentRead: HttpServiceAccess = { kind: "repeatable" };
 
 const summarizeAchievementStats = (
   unlocked: Result.Result<ReadonlyArray<UnlockedAchievement>, AchievementError>,
@@ -33,9 +42,9 @@ const summarizeAchievementStats = (
       unlockedCount: Option.none(),
       definitionsCount: Option.none(),
       error: Result.isFailure(unlocked)
-        ? Option.some(unlocked.failure.message)
+        ? Option.some(achievementHttpFailure(unlocked.failure, componentRead).message)
         : Result.isFailure(definitions)
-          ? Option.some(definitions.failure.message)
+          ? Option.some(achievementHttpFailure(definitions.failure, componentRead).message)
           : Option.none(),
     },
   };
@@ -70,7 +79,7 @@ const summarizeRaffleStats = (
       onSome: formatRaffleStats,
     }),
     error: Result.isFailure(result)
-      ? Option.some(result.failure.message)
+      ? Option.some(raffleHttpFailure(result.failure, componentRead).message)
       : notFound
         ? Option.some(
             `Raffle viewer not found: ${targetUser} has no Keyboard Raffle rolls. Check the display name and try again.`,
@@ -142,7 +151,9 @@ export const readViewerStatsDebug = Effect.fn("Http.viewerStatsDebug")(function*
       song: {
         status: Result.isSuccess(song) ? "ok" : "error",
         count: songCount,
-        error: Result.isFailure(song) ? Option.some(song.failure.message) : Option.none(),
+        error: Result.isFailure(song)
+          ? Option.some(songQueueHttpFailure(song.failure, componentRead).message)
+          : Option.none(),
       },
       achievements: achievementStats.component,
       raffle: raffleStats,

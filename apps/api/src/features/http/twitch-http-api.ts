@@ -21,6 +21,8 @@ export const twitchHttpHandlersLayer = Layer.mergeAll(
   twitchOverlayHandlersLayer,
 );
 
+// The pinned HttpApiBuilder captures construction-time reporters and reports before outer middleware,
+// so handler groups get none; the correlation middleware reports each failure once, with redaction.
 const twitchGeneratedHandlersLayer = twitchHttpHandlersLayer.pipe(
   Layer.provide(ErrorReporter.layer([] satisfies readonly [])),
 );

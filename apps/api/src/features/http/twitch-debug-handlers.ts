@@ -26,6 +26,7 @@ import {
 import {
   type HttpServiceAccess,
   raffleHttpFailure,
+  songQueueHttpFailure,
   streamLifecycleHttpFailure,
   twitchProviderHttpFailure,
 } from "./http-service-failures.ts";
@@ -240,7 +241,9 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                     isLive: Option.none(),
                     startedAt: Option.none(),
                     peakViewerCount: Option.none(),
-                    error: Option.some(state.failure.message),
+                    error: Option.some(
+                      streamLifecycleHttpFailure(state.failure, { kind: "repeatable" }).message,
+                    ),
                   },
               twitch: {
                 ok: Result.isSuccess(provider),
@@ -250,7 +253,10 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                 startedAt: Option.map(streamInfo, (value) => value.startedAt),
                 viewerCount: Option.map(streamInfo, (value) => value.viewerCount),
                 error: Result.isFailure(provider)
-                  ? Option.some(provider.failure.message)
+                  ? Option.some(
+                      twitchProviderHttpFailure(provider.failure, "getStreamInfo", Option.none())
+                        .message,
+                    )
                   : Option.none(),
               },
               songQueue: Result.isSuccess(songs)
@@ -262,7 +268,9 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                 : {
                     ok: false,
                     queueLength: Option.none(),
-                    error: Option.some(songs.failure.message),
+                    error: Option.some(
+                      songQueueHttpFailure(songs.failure, { kind: "repeatable" }).message,
+                    ),
                   },
             });
           }),
