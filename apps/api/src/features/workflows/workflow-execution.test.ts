@@ -10,7 +10,7 @@ import { HttpApiBuilder, HttpApiClient } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { WorkflowHttpApi } from "./workflow-http-api.ts";
 import { workflowHttpHandlersLayer } from "./workflow-http-handlers.ts";
-import { recordingTwitchAnalyticsLayer } from "../../../test/support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 import { DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { ProviderError } from "@cf-twitch/contracts/provider";
@@ -158,7 +158,7 @@ const recordingServices = Effect.gen(function* () {
     }),
     Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
     NodeCrypto.layer,
-    recordingTwitchAnalyticsLayer,
+    twitchAnalyticsTestLayer,
   );
 
   const executionLayer = workflowExecutionLayerWithoutDependencies.pipe(

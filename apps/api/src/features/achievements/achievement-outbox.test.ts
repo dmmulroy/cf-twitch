@@ -17,9 +17,9 @@ import {
 } from "../../../test/support/controlled-twitch-service.ts";
 import {
   RecordedTwitchAnalyticsCall,
-  recordingTwitchAnalyticsLayer,
+  twitchAnalyticsTestLayer,
   TwitchAnalyticsRecording,
-} from "../../../test/support/recording-twitch-analytics.ts";
+} from "../../runtime/twitch-analytics.ts";
 import {
   ProviderScenarioTranscript,
   providerScenarioTransportLayer,
@@ -37,7 +37,7 @@ const outboxTestLayer = (mode: ControlledTwitchProviderMode) =>
       Layer.mergeAll(
         achievementsLayer,
         controlledTwitchServiceLayer(mode),
-        recordingTwitchAnalyticsLayer,
+        twitchAnalyticsTestLayer,
         providerScenarioTransportLayer,
       ),
     ),

@@ -53,7 +53,7 @@ import {
 } from "../../src/runtime/twitch-worker.ts";
 import { TwitchConfiguration } from "../../src/runtime/twitch-configuration.ts";
 import { twitchHttpTelemetrySafetyLayer } from "../../src/runtime/twitch-telemetry.ts";
-import { recordingTwitchAnalyticsLayer } from "../support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../src/runtime/twitch-analytics.ts";
 
 const parseScenarioEventSubMessageId = Schema.decodeUnknownEffect(EventSubMessageId);
 
@@ -66,7 +66,7 @@ const configurationLayer = Layer.succeed(TwitchConfiguration, httpTestConfigurat
 const controlledPlatformLayer = Layer.mergeAll(
   configurationLayer,
   providerScenarioTransportLayer,
-  recordingTwitchAnalyticsLayer,
+  twitchAnalyticsTestLayer,
   NodeCrypto.layer,
 );
 
@@ -92,7 +92,7 @@ const twitchServiceLayer = twitchServiceLayerWithoutDependencies.pipe(
 );
 
 const achievementsServerLayer = achievementsServerLayerWithoutDependencies.pipe(
-  Layer.provide([twitchServiceLayer, recordingTwitchAnalyticsLayer]),
+  Layer.provide([twitchServiceLayer, twitchAnalyticsTestLayer]),
 );
 
 const achievementsLayer = achievementsClientLayerWithoutDependencies.pipe(
@@ -144,7 +144,7 @@ const workflowDependenciesLayer = Layer.mergeAll(
   songQueueLayer,
   raffleLayer,
   eventPublisherLayer,
-  recordingTwitchAnalyticsLayer,
+  twitchAnalyticsTestLayer,
   NodeCrypto.layer,
 );
 
@@ -163,7 +163,7 @@ const computedCommandsLayer = computedChatCommandsLayerWithoutDependencies.pipe(
 );
 
 const commandExecutorLayer = executorLayerWithoutDependencies.pipe(
-  Layer.provide([commandsLayer, computedCommandsLayer, recordingTwitchAnalyticsLayer]),
+  Layer.provide([commandsLayer, computedCommandsLayer, twitchAnalyticsTestLayer]),
 );
 
 const eventSubServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
@@ -173,7 +173,7 @@ const eventSubServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
     streamLayer,
     commandExecutorLayer,
     configurationLayer,
-    recordingTwitchAnalyticsLayer,
+    twitchAnalyticsTestLayer,
   ]),
 );
 

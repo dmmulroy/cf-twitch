@@ -6,7 +6,7 @@ import { TestClock } from "effect/testing";
 import { AcceptedEventSubReceipt } from "@cf-twitch/contracts/eventsub";
 import { ChatCommandName } from "@cf-twitch/contracts/chat-command";
 import { ProviderError } from "@cf-twitch/contracts/provider";
-import { recordingTwitchAnalyticsLayer } from "../support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../src/runtime/twitch-analytics.ts";
 import { TwitchConfiguration } from "../../src/runtime/twitch-configuration.ts";
 import { httpTestConfiguration } from "../../src/features/http/http-test-fixtures.ts";
 import { Commands } from "../../src/features/commands/commands.ts";
@@ -79,7 +79,7 @@ const dispatchLayer = eventSubDispatchLayerWithoutDependencies.pipe(Layer.provid
 const inboxLayer = eventSubInboxLayerWithoutDependencies.pipe(Layer.provide(dispatchLayer));
 
 const commonLayer = Layer.mergeAll(
-  recordingTwitchAnalyticsLayer,
+  twitchAnalyticsTestLayer,
   Layer.succeed(TwitchConfiguration, httpTestConfiguration),
   Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
   Layer.mock(WorkflowStarters, {}),

@@ -93,14 +93,21 @@ const twitchApplicationLayer = Layer.mergeAll(
   Layer.provide(FetchHttpClient.layer),
 );
 
-/** Public Twitch API Worker and its thirteen HTTP-only Durable Object namespaces. */
+/** Worker declaration for the public Twitch API and its thirteen HTTP-only Durable Object namespaces. */
 export class TwitchApiWorker extends Cloudflare.Worker<
   TwitchApiWorker,
   TwitchWorkerHandlers,
   TwitchHostedServers
 >()("CfTwitchApi") {}
 
-/** Capture application capabilities at init while leaving concrete providers selectable by the host. */
+/**
+ * Effect that captures application capabilities at init while leaving concrete providers selectable by the host.
+ *
+ * **Details**
+ *
+ * Captured services are bridged into the per-invocation router with `Layer.succeed`; the router
+ * itself is memoized per execution so no scope escapes its invocation.
+ */
 export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function* () {
   const achievements = yield* Achievements;
   const commands = yield* Commands;
@@ -148,7 +155,12 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
   return { fetch };
 });
 
-/** Initialize the production capability graph during Alchemy planning and runtime cold start. */
+/**
+ * Effect that initializes the production capability graph during Alchemy planning and runtime cold start.
+ *
+ * @throws A defect when runtime configuration, telemetry settings, or the analytics dataset stage
+ *   are invalid; the Worker cannot start without them.
+ */
 export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDependencies.pipe(
   Effect.provide(twitchApplicationLayer),
   Effect.provide(twitchConfigurationLayer),
@@ -158,7 +170,14 @@ export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDepen
   Effect.orDie,
 );
 
-/** Alchemy owns stage-qualified Worker names; existing production resources are never adopted implicitly. */
+/**
+ * Layer that declares the `cf-twitch-api` Worker with its implementation and telemetry safety.
+ *
+ * **Details**
+ *
+ * Alchemy owns stage-qualified Worker names; existing production resources are never adopted
+ * implicitly.
+ */
 export const twitchApiWorkerLayer = TwitchApiWorker.make(
   {
     name: "cf-twitch-api",

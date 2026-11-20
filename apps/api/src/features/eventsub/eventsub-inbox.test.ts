@@ -5,10 +5,10 @@ import { Deferred, Effect, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
 import {
-  recordingTwitchAnalyticsLayer,
+  TwitchAnalytics,
+  twitchAnalyticsTestLayer,
   TwitchAnalyticsRecording,
-} from "../../../test/support/recording-twitch-analytics.ts";
-import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
+} from "../../runtime/twitch-analytics.ts";
 import { FetchHttpClient, HttpClient, HttpRouter } from "effect/http";
 import { HttpApiBuilder, HttpApiClient } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
@@ -79,10 +79,7 @@ const chatReceipt = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
   },
 });
 
-const sqlite = Layer.merge(
-  SqliteClient.layer({ filename: ":memory:" }),
-  recordingTwitchAnalyticsLayer,
-);
+const sqlite = Layer.merge(SqliteClient.layer({ filename: ":memory:" }), twitchAnalyticsTestLayer);
 
 const recordingInbox = Effect.gen(function* () {
   const analytics = yield* TwitchAnalytics;

@@ -10,7 +10,7 @@ import { RaffleError } from "@cf-twitch/contracts/raffle";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 import { WorkflowInput } from "@cf-twitch/contracts/workflow";
-import { recordingTwitchAnalyticsLayer } from "../support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../src/runtime/twitch-analytics.ts";
 import {
   WorkflowExecution,
   workflowExecutionLayerWithoutDependencies,
@@ -51,7 +51,7 @@ const reviewServices = Effect.gen(function* () {
   const recordWithoutReceipt = Ref.set(remoteRecordExists, true);
 
   const dependencies = Layer.mergeAll(
-    recordingTwitchAnalyticsLayer,
+    twitchAnalyticsTestLayer,
     NodeCrypto.layer,
     Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
     Layer.mock(SpotifyService, {

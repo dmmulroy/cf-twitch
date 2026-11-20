@@ -11,7 +11,10 @@ import {
   WorkflowStatus,
 } from "@cf-twitch/contracts/workflow";
 import { WorkflowAlarm, WorkflowAlarmError } from "./workflow-alarm.ts";
-import { TwitchAnalytics, type SagaLifecycleMetric } from "../../runtime/twitch-analytics.ts";
+import {
+  TwitchAnalytics,
+  type TwitchAnalyticsSagaLifecycleMetric,
+} from "../../runtime/twitch-analytics.ts";
 
 /** Step failure classification states the safety guarantee for a subsequent attempt. */
 export class WorkflowStepFailure extends Schema.TaggedError<WorkflowStepFailure>()(
@@ -154,7 +157,7 @@ export const makeWorkflowJournal = Effect.gen(function* () {
 
   const emitLifecycle = Effect.fn("WorkflowJournal.emitLifecycle")(function* (
     run: typeof StoredWorkflowRun.Type,
-    event: SagaLifecycleMetric["event"],
+    event: TwitchAnalyticsSagaLifecycleMetric["event"],
     identity: string,
     stepName: Option.Option<string>,
     error: Option.Option<string>,

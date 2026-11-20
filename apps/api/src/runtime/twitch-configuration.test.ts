@@ -1,6 +1,10 @@
 import { expect, it } from "@effect/vitest";
-import { ConfigProvider, Effect, Redacted } from "effect";
-import { TwitchConfiguration, twitchConfigurationLayer } from "./twitch-configuration.ts";
+import { ConfigProvider, Effect, Option, Redacted } from "effect";
+import {
+  TwitchConfiguration,
+  twitchConfigurationLayer,
+  twitchConfigurationTestLayer,
+} from "./twitch-configuration.ts";
 
 const configurationFixture = {
   TWITCH_CLIENT_ID: "twitch-client",
@@ -29,7 +33,7 @@ it.effect("captures parsed runtime identities and redacts every credential", () 
   ),
 );
 
-it.effect("reports configuration failure without leaking source values or parse causes", () =>
+it.effect("names the invalid setting without leaking source values or parse causes", () =>
   Effect.gen(function* () {
     const error = yield* Effect.flip(
       Effect.gen(function* () {
@@ -45,7 +49,21 @@ it.effect("reports configuration failure without leaking source values or parse 
     );
 
     expect(error._tag).toBe("TwitchConfigurationError");
+    expect(error.operation).toBe("readTwitchConfiguration");
+    expect(error.reason).toBe("SettingInvalid");
+    expect(error.setting).toEqual(Option.some("TWITCH_CLIENT_SECRET"));
     expect(JSON.stringify(error)).not.toContain("fixture-");
-    expect(error.message).toContain(".env.example");
+    expect(error.message).toBe(
+      "Twitch configuration setting TWITCH_CLIENT_SECRET is missing or invalid. Set it as described in apps/api/.env.example and restart the Worker.",
+    );
   }),
+);
+
+it.effect("parses the synthetic test settings through the production reader", () =>
+  Effect.gen(function* () {
+    const configuration = yield* TwitchConfiguration;
+    expect(configuration.twitch.broadcaster.id).toBe("12345");
+    expect(configuration.rewardRouting.songRequestRewardId).toBe("song-reward");
+    expect(Redacted.value(configuration.administratorSecret)).toBe("admin-secret");
+  }).pipe(Effect.provide(twitchConfigurationTestLayer)),
 );

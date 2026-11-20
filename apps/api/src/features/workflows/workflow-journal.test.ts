@@ -4,7 +4,7 @@ import { describe, expect } from "vite-plus/test";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
-import { recordingTwitchAnalyticsLayer } from "../../../test/support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 import { RaidShoutoutInput, WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { WorkflowAlarm, WorkflowAlarmError } from "./workflow-alarm.ts";
 import {
@@ -40,10 +40,7 @@ const retryable = new WorkflowStepFailure({
   retryAfterMs: Option.none(),
 });
 
-const testSql = Layer.merge(
-  SqliteClient.layer({ filename: ":memory:" }),
-  recordingTwitchAnalyticsLayer,
-);
+const testSql = Layer.merge(SqliteClient.layer({ filename: ":memory:" }), twitchAnalyticsTestLayer);
 
 const alarmLayer = Layer.succeed(WorkflowAlarm, { set: () => Effect.void });
 

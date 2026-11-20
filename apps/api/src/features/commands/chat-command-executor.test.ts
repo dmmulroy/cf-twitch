@@ -17,7 +17,10 @@ import {
 } from "@cf-twitch/contracts/chat-command";
 import { RaffleError, RaffleLeaderboardEntry } from "@cf-twitch/contracts/raffle";
 import { NowPlaying, QueuedTrack, SongQueueError } from "@cf-twitch/contracts/song-queue";
-import { TwitchAnalytics, type ChatCommandMetric } from "../../runtime/twitch-analytics.ts";
+import {
+  TwitchAnalytics,
+  type TwitchAnalyticsChatCommandMetric,
+} from "../../runtime/twitch-analytics.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
@@ -104,7 +107,7 @@ interface TestObservations {
   readonly songCount: Ref.Ref<number>;
   readonly failedProviders: Ref.Ref<readonly ("song" | "raffle" | "achievements")[]>;
   readonly interruptedProviders: Ref.Ref<readonly ("song" | "raffle" | "achievements")[]>;
-  readonly metrics: Ref.Ref<readonly ChatCommandMetric[]>;
+  readonly metrics: Ref.Ref<readonly TwitchAnalyticsChatCommandMetric[]>;
   readonly lookups: Ref.Ref<readonly string[]>;
 }
 
@@ -126,7 +129,7 @@ const providerTestLayer = Layer.unwrap(
       [],
     );
 
-    const metrics = yield* Ref.make<readonly ChatCommandMetric[]>([]);
+    const metrics = yield* Ref.make<readonly TwitchAnalyticsChatCommandMetric[]>([]);
     const lookups = yield* Ref.make<readonly string[]>([]);
 
     const songFailure = Effect.gen(function* () {
