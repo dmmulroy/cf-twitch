@@ -1,22 +1,14 @@
-import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { EventSubReceiptError } from "@cf-twitch/contracts/eventsub";
 import { HttpRouter } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
-import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
-import { WorkflowStarters } from "../workflows/workflow-starters.ts";
-import { workflowStartersLayer } from "../workflows/workflow-client.ts";
-import { workflowAlarmLayer } from "../workflows/workflow-alarm.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
-import { StreamLifecycleClient } from "../stream/stream-lifecycle.ts";
-import { streamLifecycleClientLayer } from "../stream/stream-lifecycle-client.ts";
-import { ChatCommandExecutor, executorLayer } from "../commands/chat-command-executor.ts";
-import { EventSubInbox, eventSubInboxLayerWithoutDependencies } from "./eventsub-inbox.ts";
-import { eventSubDispatchLayerWithoutDependencies } from "./eventsub-dispatch.ts";
+import { EventSubInbox, eventSubInboxLayer } from "./eventsub-inbox.ts";
+import { EventSubDispatch, eventSubDispatchLayer } from "./eventsub-dispatch.ts";
 import { EventSubHttpApi } from "./eventsub-http-api.ts";
 import { eventSubHttpHandlersLayer } from "./eventsub-http-handlers.ts";
 
@@ -25,21 +17,18 @@ interface EventSubServerContract {
   readonly alarm: () => Effect.Effect<void>;
 }
 
-/** EventSub inbox preserves its physical namespace class and signed-message-id object names. */
+/** Durable Object namespace for the EventSub inbox, preserving its physical class and signed-message-ID object names. */
 export class EventSubWebhookServer extends Cloudflare.DurableObject<
   EventSubWebhookServer,
   EventSubServerContract
 >()("EventSubWebhookDO") {}
 
-/** Real receipt SQL/HTTP server with downstream authority selection visible to composition and smoke tests. */
+/** Real receipt SQL/HTTP server with dispatch, provider, and analytics selection visible to composition and smoke tests. */
 export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServer.make(
   Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
-    const workflows = yield* WorkflowStarters;
+    const dispatch = yield* EventSubDispatch;
     const twitch = yield* TwitchService;
-    const stream = yield* StreamLifecycleClient;
-    const commands = yield* ChatCommandExecutor;
-    const configuration = yield* TwitchConfiguration;
     const analytics = yield* TwitchAnalytics;
 
     return Effect.gen(function* () {
@@ -50,31 +39,22 @@ export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServ
           new EventSubReceiptError({
             operation: "legacy-state-gate",
             reason: "storage",
+            messageId: Option.none(),
           }),
-      });
+      }).pipe(Effect.map(Option.fromUndefinedOr));
 
-      if (legacy !== undefined)
+      if (Option.isSome(legacy))
         return yield* new EventSubReceiptError({
           operation: "legacy-state-gate",
-          reason: "corrupt",
+          reason: "legacy_state",
+          messageId: Option.none(),
         });
 
-      const dispatchLayer = eventSubDispatchLayerWithoutDependencies.pipe(
+      const inboxLayer = eventSubInboxLayer.pipe(
         Layer.provide([
-          Layer.succeed(WorkflowStarters, workflows),
-          Layer.succeed(StreamLifecycleClient, stream),
-          Layer.succeed(ChatCommandExecutor, commands),
-          Layer.succeed(TwitchConfiguration, configuration),
-        ]),
-      );
-
-      const inboxLayer = eventSubInboxLayerWithoutDependencies.pipe(
-        Layer.provide([
-          dispatchLayer,
+          Layer.succeed(EventSubDispatch, dispatch),
           Layer.succeed(TwitchService, twitch),
           Layer.succeed(TwitchAnalytics, analytics),
-          workflowAlarmLayer,
-          SqliteClient.layer({ storage: state.raw.storage }),
         ]),
       );
 
@@ -97,14 +77,9 @@ export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServ
   }),
 );
 
-/** Ready EventSub receipt server registers real dependency bindings during the outer phase. */
+/** Production EventSub receipt server, registering its dispatch and provider bindings during the outer phase; requires reward configuration and analytics. */
 export const eventSubWebhookServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
-  Layer.provide([
-    workflowStartersLayer,
-    twitchServiceLayer,
-    streamLifecycleClientLayer,
-    executorLayer,
-  ]),
+  Layer.provide([eventSubDispatchLayer, twitchServiceLayer]),
 );
 
 export default eventSubWebhookServerLayer;

@@ -16,7 +16,10 @@ import {
   workflowExecutionLayerWithoutDependencies,
 } from "../../src/features/workflows/workflow-execution.ts";
 import { workflowJournalLayerWithoutDependencies } from "../../src/features/workflows/workflow-journal.ts";
-import { WorkflowAlarm } from "../../src/features/workflows/workflow-alarm.ts";
+import {
+  WorkflowAlarm,
+  workflowAlarmTestLayer,
+} from "../../src/features/workflows/workflow-alarm.ts";
 import { SpotifyService } from "../../src/features/providers/spotify-service.ts";
 import { TwitchService } from "../../src/features/providers/twitch-service.ts";
 import { SongQueue } from "../../src/features/song-queue/song-queue.ts";
@@ -53,7 +56,7 @@ const reviewServices = Effect.gen(function* () {
   const dependencies = Layer.mergeAll(
     recordingTwitchAnalyticsLayer,
     NodeCrypto.layer,
-    Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
+    workflowAlarmTestLayer,
     Layer.mock(SpotifyService, {
       getTrack: () => Effect.succeed(track),
       addToQueue: () => Effect.void,

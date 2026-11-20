@@ -1,7 +1,6 @@
-import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { Digest } from "effect/crypto";
 import { HttpRouter } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -16,12 +15,7 @@ import { SongQueue } from "../song-queue/song-queue.ts";
 import { songQueueClientLayer } from "../song-queue/song-queue-client.ts";
 import { SpotifyService, spotifyServiceLayer } from "../providers/spotify-service.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
-import { workflowAlarmLayer } from "./workflow-alarm.ts";
-import { WorkflowJournal, workflowJournalLayerWithoutDependencies } from "./workflow-journal.ts";
-import {
-  WorkflowExecution,
-  workflowExecutionLayerWithoutDependencies,
-} from "./workflow-execution.ts";
+import { WorkflowExecution, workflowExecutionLayer } from "./workflow-execution.ts";
 import { WorkflowHttpApi } from "./workflow-http-api.ts";
 import { workflowHttpHandlersLayer } from "./workflow-http-handlers.ts";
 
@@ -48,9 +42,9 @@ export class RaidShoutoutSagaServer extends Cloudflare.DurableObject<
   WorkflowServerContract
 >()("RaidShoutoutSagaDO") {}
 
+// Each namespace accepts only its own workflow kind, so a misrouted start cannot create a run of another kind under this identity.
 const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
   Effect.gen(function* () {
-    const state = yield* Cloudflare.DurableObjectState;
     const spotify = yield* SpotifyService;
     const twitch = yield* TwitchService;
     const queue = yield* SongQueue;
@@ -61,15 +55,8 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
 
     // Only stable capabilities are captured during planning. SQL, migration and alarm acquisition are runtime-only.
     return Effect.gen(function* () {
-      const sqlLayer = SqliteClient.layer({ storage: state.raw.storage });
-
-      const journalLayer = workflowJournalLayerWithoutDependencies.pipe(
-        Layer.provide([sqlLayer, workflowAlarmLayer, Layer.succeed(TwitchAnalytics, analytics)]),
-      );
-
-      const executionLayer = workflowExecutionLayerWithoutDependencies.pipe(
+      const executionLayer = workflowExecutionLayer.pipe(
         Layer.provide([
-          journalLayer,
           Layer.succeed(SpotifyService, spotify),
           Layer.succeed(TwitchService, twitch),
           Layer.succeed(SongQueue, queue),
@@ -81,9 +68,8 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
       );
 
       return yield* Effect.gen(function* () {
-        const journal = yield* WorkflowJournal;
         const execution = yield* WorkflowExecution;
-        yield* journal.restoreAlarm();
+        yield* execution.restoreAlarm();
 
         const restrictedExecution = WorkflowExecution.of({
           ...execution,
@@ -94,6 +80,8 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
                   new WorkflowError({
                     operation: "start",
                     reason: "conflict",
+                    workflowId: Option.none(),
+                    stepName: Option.none(),
                   }),
                 ),
         });
@@ -110,7 +98,7 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
         const fetch = yield* HttpRouter.toHttpEffect(httpLayer);
 
         return { fetch, alarm: () => execution.resume().pipe(Effect.orDie) };
-      }).pipe(Effect.provide(Layer.merge(executionLayer, journalLayer)));
+      }).pipe(Effect.provide(executionLayer));
     }).pipe(Effect.orDie);
   });
 

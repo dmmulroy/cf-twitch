@@ -15,8 +15,11 @@ import {
   eventPublisherLayerWithoutDependencies,
 } from "../../src/features/events/event-bus-client.ts";
 import { eventBusServerLayerWithoutDependencies } from "../../src/features/events/event-bus-server.ts";
-import { eventSubReceiptsLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-client.ts";
-import { EventSubReceipts } from "../../src/features/eventsub/eventsub-receipts.ts";
+import { eventSubDispatchLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-dispatch.ts";
+import {
+  EventSubReceipts,
+  eventSubReceiptsLayerWithoutDependencies,
+} from "../../src/features/eventsub/eventsub-receipts.ts";
 import { eventSubWebhookServerLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-server.ts";
 import { httpTestConfiguration } from "../../src/features/http/http-test-fixtures.ts";
 import { oauthAuthorizationLayerWithoutDependencies } from "../../src/features/oauth/oauth-authorization.ts";
@@ -41,7 +44,7 @@ import { songQueueClientLayerWithoutDependencies } from "../../src/features/song
 import { songQueueServerLayerWithoutDependencies } from "../../src/features/song-queue/song-queue-server.ts";
 import { streamLifecycleClientLayerWithoutDependencies } from "../../src/features/stream/stream-lifecycle-client.ts";
 import { streamLifecycleServerLayerWithoutDependencies } from "../../src/features/stream/stream-server.ts";
-import { workflowStartersLayerWithoutDependencies } from "../../src/features/workflows/workflow-client.ts";
+import { workflowStartersLayerWithoutDependencies } from "../../src/features/workflows/workflow-starters.ts";
 import {
   keyboardRaffleSagaServerLayerWithoutDependencies,
   raidShoutoutSagaServerLayerWithoutDependencies,
@@ -166,15 +169,12 @@ const commandExecutorLayer = executorLayerWithoutDependencies.pipe(
   Layer.provide([commandsLayer, computedCommandsLayer, recordingTwitchAnalyticsLayer]),
 );
 
+const eventSubDispatchLayer = eventSubDispatchLayerWithoutDependencies.pipe(
+  Layer.provide([workflowStartersLayer, streamLayer, commandExecutorLayer, configurationLayer]),
+);
+
 const eventSubServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
-  Layer.provide([
-    workflowStartersLayer,
-    twitchServiceLayer,
-    streamLayer,
-    commandExecutorLayer,
-    configurationLayer,
-    recordingTwitchAnalyticsLayer,
-  ]),
+  Layer.provide([eventSubDispatchLayer, twitchServiceLayer, recordingTwitchAnalyticsLayer]),
 );
 
 const eventSubReceiptsLayer = eventSubReceiptsLayerWithoutDependencies.pipe(

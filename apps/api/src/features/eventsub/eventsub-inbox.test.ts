@@ -110,6 +110,7 @@ const recordingInbox = Effect.gen(function* () {
                   new EventSubReceiptError({
                     operation: "dispatch",
                     reason: "dispatch",
+                    messageId: Option.none(),
                   }),
                 )
               : Ref.get(response),
@@ -133,10 +134,17 @@ const recordingInbox = Effect.gen(function* () {
         Ref.get(alarmFailure).pipe(
           Effect.flatMap((fail) =>
             fail
-              ? Effect.fail(new WorkflowAlarmError({ message: "Controlled alarm unavailable" }))
+              ? Effect.fail(
+                  new WorkflowAlarmError({
+                    operation: "set-alarm",
+                    reason: "storage_rejected",
+                    dueAt: Option.none(),
+                  }),
+                )
               : Ref.set(dueAt, due),
           ),
         ),
+      get: () => Ref.get(dueAt),
     }),
   );
 

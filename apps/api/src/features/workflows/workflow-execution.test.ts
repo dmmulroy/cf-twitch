@@ -23,7 +23,7 @@ import { Raffle } from "../raffle/raffle-service.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { SpotifyService } from "../providers/spotify-service.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
-import { WorkflowAlarm } from "./workflow-alarm.ts";
+import { WorkflowAlarm, workflowAlarmTestLayer } from "./workflow-alarm.ts";
 import { workflowJournalLayerWithoutDependencies } from "./workflow-journal.ts";
 import {
   WorkflowExecution,
@@ -156,7 +156,7 @@ const recordingServices = Effect.gen(function* () {
           ),
         ),
     }),
-    Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
+    workflowAlarmTestLayer,
     NodeCrypto.layer,
     recordingTwitchAnalyticsLayer,
   );

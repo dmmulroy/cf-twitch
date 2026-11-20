@@ -14,8 +14,13 @@ import { SongQueue } from "../song-queue/song-queue.ts";
 import { SpotifyService } from "../providers/spotify-service.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
 import {
+  invalidSpotifyTrackInputMessagePrefix,
   WorkflowJournal,
+  workflowJournalLayer,
+  workflowJournalTestLayer,
   WorkflowStepFailure,
+  type WorkflowStepFailureReason,
+  type WorkflowStepOperation,
   type WorkflowStepPolicy,
 } from "./workflow-journal.ts";
 
@@ -61,47 +66,106 @@ const publishPolicy: WorkflowStepPolicy = {
   rollback: false,
 };
 
-const providerFailure =
-  (safety: WorkflowStepPolicy["safety"]) =>
-  (error: ProviderError): WorkflowStepFailure =>
-    new WorkflowStepFailure({
-      kind:
-        error.kind === "outcome-unknown" ||
-        error.kind === "network" ||
-        error.kind === "invalid-response"
-          ? safety === "non-idempotent"
-            ? "unknown"
-            : "retryable"
-          : error.kind === "rate-limited" || error.status >= 500 || error.kind === "persistence"
-            ? "retryable"
-            : "permanent",
-      message:
-        error.kind === "not-found" && error.operation === "getTrack"
-          ? "Workflow Spotify track input is invalid"
-          : error.message,
+/** Classifies a provider failure by whether another attempt of a step with this safety can be repeated. */
+const classifyProviderFailure =
+  (operation: WorkflowStepOperation, safety: WorkflowStepPolicy["safety"]) =>
+  (error: ProviderError): WorkflowStepFailure => {
+    const ambiguous =
+      error.kind === "outcome-unknown" ||
+      error.kind === "network" ||
+      error.kind === "invalid-response";
+
+    const transient =
+      error.kind === "rate-limited" || error.status >= 500 || error.kind === "persistence";
+
+    const kind = ambiguous
+      ? safety === "non-idempotent"
+        ? ("unknown" as const)
+        : ("retryable" as const)
+      : transient
+        ? ("retryable" as const)
+        : ("permanent" as const);
+
+    const reason: WorkflowStepFailureReason =
+      operation === "get-spotify-track" && error.kind === "not-found"
+        ? "invalid_track_input"
+        : ambiguous
+          ? kind === "unknown"
+            ? "outcome_unknown"
+            : "provider_unavailable"
+          : error.kind === "rate-limited"
+            ? "rate_limited"
+            : transient
+              ? "provider_unavailable"
+              : "provider_rejected";
+
+    return new WorkflowStepFailure({
+      operation,
+      reason,
+      kind,
+      providerFailure: Option.some(error.kind),
       retryAfterMs: error.retryAfterMs,
     });
+  };
 
-const durableFailure = (error: { readonly message: string }): WorkflowStepFailure =>
+/** Translates a provider failure into a step failure for the named external operation. */
+const catchProviderFailure =
+  (operation: WorkflowStepOperation, safety: WorkflowStepPolicy["safety"]) =>
+  <A, R>(effect: Effect.Effect<A, ProviderError, R>): Effect.Effect<A, WorkflowStepFailure, R> =>
+    effect.pipe(
+      Effect.catchTag("ProviderError", (error) =>
+        Effect.fail(classifyProviderFailure(operation, safety)(error)),
+      ),
+    );
+
+/** Creates the retryable step failure for an unavailable durable dependency (song queue, raffle, or event bus). */
+const dependencyUnavailable = (operation: WorkflowStepOperation): WorkflowStepFailure =>
   new WorkflowStepFailure({
+    operation,
+    reason: "dependency_unavailable",
     kind: "retryable",
-    message: error.message,
+    providerFailure: Option.none(),
     retryAfterMs: Option.none(),
   });
 
-/** Workflow executor exposes durable start, recovery and diagnostics through the same service seam. */
+/** Durable start, recovery, and diagnostics for the Song Request, Keyboard Raffle, and raid shoutout workflows. */
 export interface IWorkflowExecution {
+  /**
+   * Persists the canonical input and runs the workflow until it completes, halts, or waits for a retry.
+   *
+   * **Details**
+   *
+   * Starting the same input again resumes the existing run; step halts are recorded as run status rather than returned.
+   *
+   * @returns Nothing, or fails with `WorkflowError` reason `conflict` when the input differs from the existing run, and `storage`/`corrupt`/`legacy_state`/`schedule` for journal failures.
+   */
   readonly start: (input: WorkflowInput) => Effect.Effect<void, WorkflowError>;
+  /**
+   * Continues an unfinished run from its checkpoints; used by the Durable Object alarm.
+   *
+   * @returns Nothing, or fails with `WorkflowError` for journal storage, codec, legacy-format, or alarm failures.
+   */
   readonly resume: () => Effect.Effect<void, WorkflowError>;
+  /**
+   * Returns the run's operational status, or `None` before the workflow starts.
+   *
+   * @returns The status, or fails with `WorkflowError` reason `storage`/`corrupt`.
+   */
   readonly getStatus: () => Effect.Effect<Option.Option<WorkflowRunStatus>, WorkflowError>;
+  /**
+   * Re-arms the Durable Object alarm for an unfinished run when the object starts.
+   *
+   * @returns Nothing, or fails with `WorkflowError` reason `legacy_state`, `storage`, `corrupt`, or `schedule`.
+   */
+  readonly restoreAlarm: () => Effect.Effect<void, WorkflowError>;
 }
 
-/** One workflow execution service is acquired per Durable Object, never per HTTP request. */
+/** Service tag for workflow execution, acquired once per Durable Object rather than per HTTP request. */
 export class WorkflowExecution extends Context.Service<WorkflowExecution, IWorkflowExecution>()(
   "@cf-twitch/WorkflowExecution",
 ) {}
 
-/** Construct all three persisted workflows from their authoritative application capabilities. */
+/** Effect that builds the three persisted workflows from the journal and their authoritative application capabilities. */
 export const makeWorkflowExecution = Effect.gen(function* () {
   const journal = yield* WorkflowJournal;
   const spotify = yield* SpotifyService;
@@ -120,7 +184,16 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       .pipe(
         Effect.catchCauseIf(
           (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
-          () => Effect.fail(durableFailure({ message: "Workflow event identity digest failed" })),
+          () =>
+            Effect.fail(
+              new WorkflowStepFailure({
+                operation: "derive-event-id",
+                reason: "digest_unavailable",
+                kind: "retryable",
+                providerFailure: Option.none(),
+                retryAfterMs: Option.none(),
+              }),
+            ),
         ),
       );
 
@@ -139,8 +212,10 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       Effect.mapError(
         () =>
           new WorkflowStepFailure({
+            operation: "send-chat-message",
+            reason: "chat_message_too_long",
             kind: "permanent",
-            message: "Workflow chat message exceeds Twitch delivery constraints",
+            providerFailure: Option.none(),
             retryAfterMs: Option.none(),
           }),
       ),
@@ -152,7 +227,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
 
       return yield* twitch
         .sendChatMessage({ message: chatMessage })
-        .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null));
+        .pipe(catchProviderFailure("send-chat-message", "non-idempotent"), Effect.as(null));
     });
 
     yield* journal.checkpoint(name, Schema.Null, send, chatPolicy).pipe(
@@ -187,7 +262,12 @@ export const makeWorkflowExecution = Effect.gen(function* () {
     yield* journal.checkpoint(
       "publish-event",
       Schema.Null,
-      publisher.publish(pending).pipe(Effect.mapError(durableFailure), Effect.as(null)),
+      publisher.publish(pending).pipe(
+        Effect.catchTag("EventBusError", () =>
+          Effect.fail(dependencyUnavailable("publish-domain-event")),
+        ),
+        Effect.as(null),
+      ),
       publishPolicy,
     );
   });
@@ -203,7 +283,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
 
         return yield* twitch
           .sendChatMessage({ message: thanks })
-          .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null));
+          .pipe(catchProviderFailure("send-chat-message", "non-idempotent"), Effect.as(null));
       });
 
       yield* journal.checkpoint("send-chat-thanks", Schema.Null, sendThanks, chatPolicy);
@@ -212,7 +292,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
         Schema.Null,
         twitch
           .createShoutout({ toBroadcasterId: raid.raider.userId })
-          .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null)),
+          .pipe(catchProviderFailure("create-shoutout", "non-idempotent"), Effect.as(null)),
         chatPolicy,
       );
 
@@ -231,7 +311,10 @@ export const makeWorkflowExecution = Effect.gen(function* () {
             redemptionId: redemption.id,
             status: "FULFILLED",
           })
-          .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null)),
+          .pipe(
+            catchProviderFailure("update-redemption-status", "non-idempotent"),
+            Effect.as(null),
+          ),
         fulfillmentPolicy,
       );
 
@@ -250,8 +333,10 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           Effect.mapError(
             () =>
               new WorkflowStepFailure({
+                operation: "parse-spotify-track",
+                reason: "invalid_track_input",
                 kind: "permanent",
-                message: "Workflow Spotify track input is invalid",
+                providerFailure: Option.none(),
                 retryAfterMs: Option.none(),
               }),
           ),
@@ -262,7 +347,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       const track = yield* journal.checkpoint(
         "get-track-info",
         SpotifyTrack,
-        spotify.getTrack(trackId).pipe(Effect.mapError(providerFailure("idempotent"))),
+        spotify.getTrack(trackId).pipe(catchProviderFailure("get-spotify-track", "idempotent")),
         readPolicy,
       );
 
@@ -284,7 +369,12 @@ export const makeWorkflowExecution = Effect.gen(function* () {
             requesterDisplayName: redemption.userDisplayName,
             requestedAt: redemption.redeemedAt,
           })
-          .pipe(Effect.mapError(durableFailure), Effect.as(redemption.id)),
+          .pipe(
+            Effect.catchTag("SongQueueError", () =>
+              Effect.fail(dependencyUnavailable("persist-song-request")),
+            ),
+            Effect.as(redemption.id),
+          ),
         { ...readPolicy, attempts: 2, timeoutMs: 10_000 },
       );
       yield* journal.checkpoint(
@@ -292,7 +382,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
         SpotifyTrackId,
         spotify
           .addToQueue(trackId)
-          .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(trackId)),
+          .pipe(catchProviderFailure("add-to-spotify-queue", "non-idempotent"), Effect.as(trackId)),
         mutationPolicy,
       );
       yield* fulfill();
@@ -346,7 +436,11 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           displayName: redemption.userDisplayName,
           rolledAt: redemption.redeemedAt,
         })
-        .pipe(Effect.mapError(durableFailure)),
+        .pipe(
+          Effect.catchTag("RaffleError", () =>
+            Effect.fail(dependencyUnavailable("record-raffle-roll")),
+          ),
+        ),
       { ...readPolicy, attempts: 2, timeoutMs: 10_000 },
     );
 
@@ -402,14 +496,16 @@ export const makeWorkflowExecution = Effect.gen(function* () {
         SpotifyTrackId,
         (trackId) =>
           spotify.removeFromQueue(trackId).pipe(
-            Effect.mapError(providerFailure("non-idempotent")),
+            catchProviderFailure("remove-from-spotify-queue", "non-idempotent"),
             Effect.flatMap((confirmed) =>
               confirmed
                 ? Effect.void
                 : Effect.fail(
                     new WorkflowStepFailure({
+                      operation: "remove-from-spotify-queue",
+                      reason: "compensation_unconfirmed",
                       kind: "retryable",
-                      message: "Workflow Spotify compensation was not confirmed; refund withheld",
+                      providerFailure: Option.none(),
                       retryAfterMs: Option.none(),
                     }),
                   ),
@@ -420,14 +516,28 @@ export const makeWorkflowExecution = Effect.gen(function* () {
       yield* journal.compensate(
         "persist-request-undo-intent",
         RedemptionId,
-        (eventId) => queue.deleteRequest({ eventId }).pipe(Effect.mapError(durableFailure)),
+        (eventId) =>
+          queue
+            .deleteRequest({ eventId })
+            .pipe(
+              Effect.catchTag("SongQueueError", () =>
+                Effect.fail(dependencyUnavailable("delete-song-request")),
+              ),
+            ),
         "idempotent",
       );
     } else {
       yield* journal.compensate(
         "record-roll-undo-intent",
         RedemptionId,
-        (rollId) => raffle.deleteRollById({ rollId }).pipe(Effect.mapError(durableFailure)),
+        (rollId) =>
+          raffle
+            .deleteRollById({ rollId })
+            .pipe(
+              Effect.catchTag("RaffleError", () =>
+                Effect.fail(dependencyUnavailable("record-raffle-roll")),
+              ),
+            ),
         "idempotent",
       );
     }
@@ -441,12 +551,16 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           redemptionId: redemption.id,
           status: "CANCELED",
         })
-        .pipe(Effect.mapError(providerFailure("non-idempotent")), Effect.as(null)),
+        .pipe(catchProviderFailure("update-redemption-status", "non-idempotent"), Effect.as(null)),
       { ...fulfillmentPolicy, attempts: 5 },
     );
 
     if (WorkflowInput.guards.SongRequest(input)) {
-      const invalid = Option.getOrNull(originalError) === "Workflow Spotify track input is invalid";
+      // The persisted run error is the only durable evidence once compensation resumes after a restart.
+      const invalid = Option.exists(originalError, (error) =>
+        error.startsWith(invalidSpotifyTrackInputMessagePrefix),
+      );
+
       yield* chat(
         "send-failure-message",
         invalid
@@ -467,7 +581,7 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           ? Effect.void
           : journal.transition(
               halt.reason === "unknown" ? "OUTCOME_UNKNOWN" : "COMPENSATION_FAILED",
-              Option.some(halt.message),
+              Option.some(halt.detail),
             ),
       ),
     );
@@ -494,16 +608,16 @@ export const makeWorkflowExecution = Effect.gen(function* () {
           if (halt.reason === "retry") return;
 
           if (halt.reason === "unknown")
-            return yield* journal.transition("OUTCOME_UNKNOWN", Option.some(halt.message));
+            return yield* journal.transition("OUTCOME_UNKNOWN", Option.some(halt.detail));
           const latest = yield* journal.getStatus();
 
           if (Option.isSome(latest) && Option.isSome(latest.value.fulfilledAt))
-            return yield* journal.transition("POST_COMMIT_FAILED", Option.some(halt.message));
+            return yield* journal.transition("POST_COMMIT_FAILED", Option.some(halt.detail));
 
           if (WorkflowInput.guards.RaidShoutout(input.value))
-            return yield* journal.transition("FAILED", Option.some(halt.message));
-          yield* journal.transition("COMPENSATING", Option.some(halt.message));
-          yield* recoverCompensation(input.value, Option.some(halt.message));
+            return yield* journal.transition("FAILED", Option.some(halt.detail));
+          yield* journal.transition("COMPENSATING", Option.some(halt.detail));
+          yield* recoverCompensation(input.value, Option.some(halt.detail));
         }),
       ),
     );
@@ -515,11 +629,26 @@ export const makeWorkflowExecution = Effect.gen(function* () {
     permit.withPermit(journal.initialize(input).pipe(Effect.andThen(resumeUnlocked()))),
   );
 
-  return WorkflowExecution.of({ start, resume, getStatus: journal.getStatus });
+  return WorkflowExecution.of({
+    start,
+    resume,
+    getStatus: journal.getStatus,
+    restoreAlarm: journal.restoreAlarm,
+  });
 });
 
-/** Workflow execution retains real dependency requirements for runtime and controlled-provider tests. */
+/** Layer that provides workflow execution; requires the journal, providers, durable dependency clients, digest, and analytics. */
 export const workflowExecutionLayerWithoutDependencies = Layer.effect(
   WorkflowExecution,
   makeWorkflowExecution,
+);
+
+/** Production execution Layer over the Durable Object SQLite journal; requires the runtime `DurableObjectState` and the captured application capabilities. */
+export const workflowExecutionLayer = workflowExecutionLayerWithoutDependencies.pipe(
+  Layer.provide(workflowJournalLayer),
+);
+
+/** Execution Layer over the journal with an in-memory alarm; the test selects SQL, providers, dependency clients, digest, and analytics. */
+export const workflowExecutionTestLayer = workflowExecutionLayerWithoutDependencies.pipe(
+  Layer.provide(workflowJournalTestLayer),
 );

@@ -123,7 +123,11 @@ const withWebhook = <A, E, R>(
 
           if (existing !== undefined && existing.contentDigest !== receipt.contentDigest)
             return yield* Effect.fail(
-              new EventSubReceiptConflict({ messageId: receipt.messageId }),
+              new EventSubReceiptConflict({
+                operation: "accept",
+                reason: "content_mismatch",
+                messageId: receipt.messageId,
+              }),
             );
 
           if (existing === undefined) receipts.push(receipt);
