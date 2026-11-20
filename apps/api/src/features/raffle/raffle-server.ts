@@ -17,7 +17,6 @@ interface RaffleServerContract {
 /** Physical KeyboardRaffleDO class is retained; namespace adoption is never automatic. */
 export class RaffleServer extends Cloudflare.DurableObject<RaffleServer, RaffleServerContract>()(
   "KeyboardRaffleDO",
-  { transferredFrom: "CfTwitchApi" },
 ) {}
 
 /** Captures outer SecureRandom while keeping SQL acquisition inside the Durable Object runtime phase. */

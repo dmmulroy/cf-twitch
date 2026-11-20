@@ -28,13 +28,13 @@ type ProviderTokenServerContract = {
 export class SpotifyTokenServer extends Cloudflare.DurableObject<
   SpotifyTokenServer,
   ProviderTokenServerContract
->()("SpotifyTokenDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("SpotifyTokenDO") {}
 
 /** Twitch token namespace preserves its historical physical class without adopting production storage. */
 export class TwitchTokenServer extends Cloudflare.DurableObject<
   TwitchTokenServer,
   ProviderTokenServerContract
->()("TwitchTokenDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("TwitchTokenDO") {}
 
 const tokenServer = (provider: OAuthProvider) =>
   Effect.gen(function* () {

@@ -29,7 +29,7 @@ interface EventSubServerContract {
 export class EventSubWebhookServer extends Cloudflare.DurableObject<
   EventSubWebhookServer,
   EventSubServerContract
->()("EventSubWebhookDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("EventSubWebhookDO") {}
 
 /** Real receipt SQL/HTTP server with downstream authority selection visible to composition and smoke tests. */
 export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServer.make(

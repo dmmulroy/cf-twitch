@@ -17,7 +17,7 @@ type OAuthStateServerContract = {
 export class OAuthStateServer extends Cloudflare.DurableObject<
   OAuthStateServer,
   OAuthStateServerContract
->()("OAuthStateDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("OAuthStateDO") {}
 
 /** OAuth state server accesses native storage only inside the returned runtime Effect. */
 export const oauthStateServerLayer = OAuthStateServer.make<Cloudflare.DurableObjectState>(

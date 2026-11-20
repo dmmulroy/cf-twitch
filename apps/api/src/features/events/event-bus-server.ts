@@ -25,7 +25,7 @@ type EventBusServerContract = {
 export class EventBusServer extends Cloudflare.DurableObject<
   EventBusServer,
   EventBusServerContract
->()("EventBusDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("EventBusDO") {}
 
 const alarmFailure = () =>
   new EventBusError({

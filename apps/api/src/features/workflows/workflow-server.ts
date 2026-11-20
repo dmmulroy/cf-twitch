@@ -34,19 +34,19 @@ interface WorkflowServerContract {
 export class SongRequestSagaServer extends Cloudflare.DurableObject<
   SongRequestSagaServer,
   WorkflowServerContract
->()("SongRequestSagaDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("SongRequestSagaDO") {}
 
 /** Keyboard raffle namespace preserves the physical class and redemption-name identity. */
 export class KeyboardRaffleSagaServer extends Cloudflare.DurableObject<
   KeyboardRaffleSagaServer,
   WorkflowServerContract
->()("KeyboardRaffleSagaDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("KeyboardRaffleSagaDO") {}
 
 /** Raid shoutout namespace preserves the physical class and EventSub-message-name identity. */
 export class RaidShoutoutSagaServer extends Cloudflare.DurableObject<
   RaidShoutoutSagaServer,
   WorkflowServerContract
->()("RaidShoutoutSagaDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("RaidShoutoutSagaDO") {}
 
 const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
   Effect.gen(function* () {

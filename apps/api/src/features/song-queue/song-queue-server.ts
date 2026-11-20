@@ -21,7 +21,7 @@ interface SongQueueServerContract {
 export class SongQueueServer extends Cloudflare.DurableObject<
   SongQueueServer,
   SongQueueServerContract
->()("SongQueueDO", { transferredFrom: "CfTwitchApi" }) {}
+>()("SongQueueDO") {}
 
 /** Singleton song queue key is stable across HTTP client/server migration. */
 export const songQueueSingletonKey = "song-queue";
