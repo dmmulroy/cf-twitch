@@ -134,6 +134,7 @@ export const makeEventBus = Effect.gen(function* () {
     else yield* alarm.clear();
   });
 
+  // Fails with `subscriber_unavailable` or `subscriber_rejected` when a subscribed consumer does not accept the event.
   const deliver = Effect.fn("EventBus.deliver")(function* (
     event: DomainEvent,
     operation: EventBusOperation,
@@ -174,6 +175,7 @@ export const makeEventBus = Effect.gen(function* () {
       );
   });
 
+  // Subscriber failures reschedule or dead-letter the row; only storage failures fail this step.
   const processPending = Effect.fn("EventBus.processPending")(function* (pending: PendingEventRow) {
     const attempt = pending.attempts + 1;
     const decodedEvent = yield* Effect.result(parseDomainEventJson(pending.event));

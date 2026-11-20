@@ -357,6 +357,12 @@ const appendReceipt = (
       ),
   });
 
+/**
+ * Returns the stored receipt for a repeated mutation operation ID.
+ *
+ * @returns The matching receipt, `Option.none()` for a new or absent operation ID, or fails with
+ * `CommandInputParseError` (`operation_id_reused`) when the ID was used with different input.
+ */
 const findMatchingReceipt = Effect.fn("Commands.findMatchingReceipt")(function* (
   state: CommandsSnapshot,
   input: {
@@ -385,6 +391,12 @@ const findMatchingReceipt = Effect.fn("Commands.findMatchingReceipt")(function* 
   return receipt;
 });
 
+/**
+ * Returns the command named by a canonical name, or also by an alias in `alias` mode.
+ *
+ * @returns The definition, or fails with `CommandNotFoundError`: `canonical_name_required` when an
+ * alias was given in `canonical` mode, otherwise `unknown_command_name`.
+ */
 const requireCommand = Effect.fn("Commands.requireCommand")(function* (
   state: CommandsSnapshot,
   name: ChatCommandName,

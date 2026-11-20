@@ -151,7 +151,11 @@ export const UpdateChatCommandInput = Schema.Struct({
   emptyResponse: Schema.optionalKey(Schema.NullOr(CommandTemplate)),
   writePermission: Schema.optionalKey(Schema.NullOr(ChatCommandPermission)),
 }).check(
-  Schema.makeFilter((patch) => Object.keys(patch).length > 0 || "Command patch must not be empty"),
+  Schema.makeFilter(
+    (patch) =>
+      Object.keys(patch).length > 0 ||
+      "Chat command patch is empty. Include at least one field to change and send the patch again.",
+  ),
 );
 
 /** Parsed nonempty command patch. */

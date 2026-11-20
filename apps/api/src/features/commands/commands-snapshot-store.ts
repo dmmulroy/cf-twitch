@@ -101,6 +101,13 @@ export const commandSourceName = (command: ChatCommandDefinition): Option.Option
     ? command.counterSourceName
     : Option.some(command.valueSourceName);
 
+/**
+ * Checks stored keys, alias uniqueness, and source references of every definition.
+ *
+ * @returns Nothing, or fails with `CommandsStateParseError` for a stored key mismatch,
+ * `CommandAliasConflictError` for a repeated or colliding alias, and `CommandInvalidDefinitionError`
+ * for a missing source command.
+ */
 const validateCommandDefinitions = Effect.fn("CommandsSnapshotStore.validateCommandDefinitions")(
   function* (state: CommandsSnapshot, operation: ChatCommandOperation) {
     const aliasOwners = new Map<string, ChatCommandName>();
@@ -359,7 +366,8 @@ export const makeCommandsSnapshotStore = Effect.gen(function* () {
     );
   });
 
-  // The transaction boundary itself can fail to begin or commit; the change has not been confirmed.
+  // The transaction boundary itself can fail to begin or commit, so its SqlError becomes CommandsDbError
+  // (`storage_unavailable`); the caller's own errors pass through unchanged.
   const inTransaction = <A, E>(
     operation: ChatCommandOperation,
     effect: Effect.Effect<A, E>,

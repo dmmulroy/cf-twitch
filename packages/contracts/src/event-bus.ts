@@ -190,6 +190,24 @@ export const EventBusErrorReason = Schema.Literals([
 /** Classified reason an Event Bus operation failed. */
 export type EventBusErrorReason = typeof EventBusErrorReason.Type;
 
+const eventBusOperationDescriptions: Record<EventBusOperation, string> = {
+  publish: "event publication",
+  retryDue: "scheduled delivery retry",
+  scheduleAlarm: "retry scheduling",
+  listPending: "pending event listing",
+  listDeadLetters: "dead-letter listing",
+  replayDeadLetter: "dead-letter replay",
+  retryPending: "pending event retry",
+  deleteDeadLetter: "dead-letter deletion",
+  purgeExpiredDeadLetters: "expired dead-letter purge",
+  listSubscriptions: "subscription listing",
+  registerSubscription: "subscription registration",
+  unregisterSubscription: "subscription removal",
+  getStats: "Event Bus statistics",
+  getStatus: "Event Bus status",
+  reset: "Event Bus reset",
+};
+
 const eventBusEventLabel = (eventId: Option.Option<EventId>): string =>
   Option.match(eventId, { onNone: () => "", onSome: (id) => ` for event ${id}` });
 
@@ -209,30 +227,31 @@ export class EventBusError extends Schema.TaggedError<EventBusError>()("EventBus
   /** Describes the failed operation and reason without event payloads or persistence details. */
   override get message(): string {
     const event = eventBusEventLabel(this.eventId);
+    const operation = eventBusOperationDescriptions[this.operation];
 
     switch (this.reason) {
       case "persistence_unavailable":
-        return `Event Bus storage is unavailable during ${this.operation}${event}. Retry the same operation; Event Bus deduplicates deliveries by event ID.`;
+        return `Event Bus storage is unavailable during ${operation}${event}. Retry the same operation; Event Bus deduplicates deliveries by event ID.`;
       case "transport_unavailable":
-        return `Event Bus could not be reached during ${this.operation}${event}, so the outcome is unknown. Retry the same operation; Event Bus deduplicates deliveries by event ID.`;
+        return `Event Bus could not be reached during ${operation}${event}, so the outcome is unknown. Retry the same operation; Event Bus deduplicates deliveries by event ID.`;
       case "alarm_unavailable":
-        return `Event Bus alarm could not be scheduled during ${this.operation}. Pending deliveries are still stored; retry the operation to reschedule them.`;
+        return `Event Bus alarm could not be scheduled during ${operation}. Pending deliveries are still stored; retry the operation to reschedule them.`;
       case "stored_row_invalid":
-        return `Event Bus stored row is invalid during ${this.operation}${event}. Inspect and repair the stored Event Bus records before retrying.`;
+        return `Event Bus stored row is invalid during ${operation}${event}. Inspect and repair the stored Event Bus records before retrying.`;
       case "stored_event_invalid":
-        return `Event Bus stored event is unreadable during ${this.operation}${event}. Inspect the dead-letter entry, then repair or delete it.`;
+        return `Event Bus stored event is unreadable during ${operation}${event}. Inspect the dead-letter entry, then repair or delete it.`;
       case "event_invalid":
-        return `Event Bus could not encode the event during ${this.operation}${event}. Check the event fields against the domain event contract and publish it again.`;
+        return `Event Bus could not encode the event during ${operation}${event}. Check the event fields against the domain event contract and publish it again.`;
       case "invalid_response":
-        return `Event Bus response is invalid during ${this.operation}${event}: it does not match the Event Bus contract. Check that the API and the Event Bus run the same release, then read the event state before retrying.`;
+        return `Event Bus response is invalid during ${operation}${event}: it does not match the Event Bus contract. Check that the API and the Event Bus run the same release, then read the event state before retrying.`;
       case "subscriber_unavailable":
-        return `Event Bus subscriber did not accept the delivery during ${this.operation}${event}. The event stays pending or dead-lettered; check the subscriber and replay it.`;
+        return `Event Bus subscriber did not accept the delivery during ${operation}${event}. The event stays pending or dead-lettered; check the subscriber and replay it.`;
       case "subscriber_rejected":
-        return `Event Bus subscriber rejected the delivery during ${this.operation}${event}. The event stays pending or dead-lettered; inspect it, then replay or delete it.`;
+        return `Event Bus subscriber rejected the delivery during ${operation}${event}. The event stays pending or dead-lettered; inspect it, then replay or delete it.`;
       case "event_not_found":
-        return `Event Bus event not found during ${this.operation}${event}. Check the event ID against the pending and dead-letter lists and try again.`;
+        return `Event Bus event not found during ${operation}${event}. Check the event ID against the pending and dead-letter lists and try again.`;
       case "subscription_not_found":
-        return `Event Bus subscription not found during ${this.operation}${Option.match(this.subscriptionId, { onNone: () => "", onSome: (id) => ` for subscription ${id}` })}. List the subscriptions to find the current ID and try again.`;
+        return `Event Bus subscription not found during ${operation}${Option.match(this.subscriptionId, { onNone: () => "", onSome: (id) => ` for subscription ${id}` })}. List the subscriptions to find the current ID and try again.`;
     }
   }
 }

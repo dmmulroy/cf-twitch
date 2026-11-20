@@ -419,7 +419,8 @@ export const httpValidationGoldenCases = [
       {
         code: "custom",
         path: [],
-        message: "Command patch must not be empty",
+        message:
+          "Chat command patch is empty. Include at least one field to change and send the patch again.",
       },
     ],
   },

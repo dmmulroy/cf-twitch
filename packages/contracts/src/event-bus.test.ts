@@ -14,7 +14,7 @@ describe("Event Bus contracts", () => {
     });
 
     expect(error.message).toBe(
-      `Event Bus storage is unavailable during publish for event ${eventId}. Retry the same operation; Event Bus deduplicates deliveries by event ID.`,
+      `Event Bus storage is unavailable during event publication for event ${eventId}. Retry the same operation; Event Bus deduplicates deliveries by event ID.`,
     );
   });
 
@@ -26,7 +26,7 @@ describe("Event Bus contracts", () => {
     });
 
     expect(error.message).toBe(
-      "Event Bus could not be reached during retryPending, so the outcome is unknown. Retry the same operation; Event Bus deduplicates deliveries by event ID.",
+      "Event Bus could not be reached during pending event retry, so the outcome is unknown. Retry the same operation; Event Bus deduplicates deliveries by event ID.",
     );
   });
 
@@ -47,7 +47,7 @@ describe("Event Bus contracts", () => {
         subscriptionId: Option.some(EventBusSubscriptionId.make("achievements:raffle_roll")),
       }).message,
     ).toBe(
-      "Event Bus subscription not found during unregisterSubscription for subscription achievements:raffle_roll. List the subscriptions to find the current ID and try again.",
+      "Event Bus subscription not found during subscription removal for subscription achievements:raffle_roll. List the subscriptions to find the current ID and try again.",
     );
   });
 
