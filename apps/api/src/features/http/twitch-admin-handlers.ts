@@ -1,13 +1,9 @@
-import { Effect, Match, Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
-import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
+import { TwitchHttpApi, type TwitchHttpOperation } from "@cf-twitch/contracts/twitch-api";
 import { EventId } from "@cf-twitch/contracts/identity";
-import {
-  DeadLetterEventList,
-  PendingEventList,
-  type EventBusError,
-} from "@cf-twitch/contracts/event-bus";
+import { DeadLetterEventList, PendingEventList } from "@cf-twitch/contracts/event-bus";
 import {
   AchievementDebugTableCounts,
   AchievementDebugUserSnapshot,
@@ -15,10 +11,10 @@ import {
 import {
   ChatCommandDebugSnapshot,
   ChatCommandDefinition,
+  type ChatCommandName,
   parseChatCommandName,
   CreateChatCommandInput,
   UpdateChatCommandInput,
-  type CommandsError,
 } from "@cf-twitch/contracts/chat-command";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { Commands } from "../commands/commands.ts";
@@ -30,64 +26,128 @@ import {
   HttpBoundaryError,
   encodeHttpResponse,
   handleHttpBoundary,
+  invalidHttpServiceResponse,
   parseHttpAdminPageQuery,
   requireHttpAdministrator,
 } from "./http-boundary.ts";
+import {
+  achievementHttpFailure,
+  commandsHttpFailureHandlers,
+  eventBusHttpFailure,
+  type HttpServiceAccess,
+} from "./http-service-failures.ts";
 import { readViewerStatsDebug } from "./viewer-stats-debug.ts";
 import { formatHttpCommandIssues } from "./http-validation-issues.ts";
 
-const parseCreateCommand = Schema.decodeEffect(Schema.toCodecJson(CreateChatCommandInput), {
+const decodeCreateCommand = Schema.decodeEffect(Schema.toCodecJson(CreateChatCommandInput), {
   errors: "all",
   onExcessProperty: "error",
 });
 
-const parseUpdateCommand = Schema.decodeEffect(Schema.toCodecJson(UpdateChatCommandInput), {
+const decodeUpdateCommand = Schema.decodeEffect(Schema.toCodecJson(UpdateChatCommandInput), {
   errors: "all",
   onExcessProperty: "error",
 });
 
-const parseEventId = Schema.decodeEffect(EventId);
+const decodeEventId = Schema.decodeEffect(EventId);
 
-const failure = (error: string) => () => new HttpBoundaryError({ status: 500, error });
+const invalidCommandPayload = (
+  summary: "Invalid command payload" | "Invalid command patch",
+  error: Schema.SchemaError,
+  payload: Schema.Json,
+) =>
+  new HttpBoundaryError({
+    operation: "parseBody",
+    status: 400,
+    failure: {
+      code: "InvalidCommandPayload",
+      error: summary,
+      message:
+        "Invalid command payload: one or more command fields are missing, unknown, or invalid. Fix the fields listed in details and send the request again.",
+      details: formatHttpCommandIssues(error, payload),
+      retryable: false,
+    },
+  });
 
-const commandFailure = (operation: "create" | "update" | "delete") => (error: CommandsError) =>
-  Match.value(error).pipe(
-    Match.tag(
-      "CommandAlreadyExistsError",
-      "CommandAliasConflictError",
-      (failure) =>
-        new HttpBoundaryError({ status: 409, error: failure.message, code: failure._tag }),
-    ),
-    Match.tag(
-      "CommandNotFoundError",
-      (failure) =>
-        new HttpBoundaryError({ status: 404, error: failure.message, code: failure._tag }),
-    ),
-    Match.tag(
-      "CommandInputParseError",
-      "CommandInvalidDefinitionError",
-      (failure) =>
-        new HttpBoundaryError({ status: 400, error: failure.message, code: failure._tag }),
-    ),
-    Match.orElse(
-      () => new HttpBoundaryError({ status: 500, error: `Failed to ${operation} command` }),
+/**
+ * Parses an administrator event ID route segment.
+ *
+ * @returns The Event ID, or fails with `HttpBoundaryError` (`InvalidEventId`, 400) when it is not a UUID.
+ */
+const parseHttpEventId = (id: string): Effect.Effect<EventId, HttpBoundaryError> =>
+  decodeEventId(id).pipe(
+    Effect.mapError(
+      () =>
+        new HttpBoundaryError({
+          operation: "parsePath",
+          status: 400,
+          failure: {
+            code: "InvalidEventId",
+            error: "Invalid event ID",
+            message: `Invalid event ID ${JSON.stringify(id)}: Event Bus event IDs are UUIDs. Check the ID with GET /api/admin/dlq and try again.`,
+            details: { eventId: id },
+            retryable: false,
+          },
+        }),
     ),
   );
 
-const deadLetterFailure = (operation: "replay" | "delete") => (error: EventBusError) =>
-  new HttpBoundaryError({
-    status: error.reason === "event_not_found" ? 404 : 500,
-    error:
-      error.reason === "event_not_found"
-        ? `DLQ item not found: ${Option.getOrElse(error.eventId, () => "unknown")}`
-        : `Failed to ${operation} DLQ item`,
-  });
+/**
+ * Parses an administrator command name route segment.
+ *
+ * @returns The canonical command name, or fails with `HttpBoundaryError` (`InvalidCommandNameError`, 400).
+ */
+const parseHttpCommandName = (name: string): Effect.Effect<ChatCommandName, HttpBoundaryError> =>
+  parseChatCommandName(name).pipe(
+    Effect.mapError(
+      () =>
+        new HttpBoundaryError({
+          operation: "parsePath",
+          status: 400,
+          failure: {
+            code: "InvalidCommandNameError",
+            error: "Invalid command name",
+            message: `Invalid command name ${JSON.stringify(name)}: use a canonical command name without the leading "!". Fix the path and try again.`,
+            details: { commandName: name },
+            retryable: false,
+          },
+        }),
+    ),
+  );
 
 const readCommandJson = HttpServerRequest.schemaBodyJson(Schema.Json).pipe(
-  Effect.mapError(() => new HttpBoundaryError({ status: 400, error: "Invalid JSON body" })),
+  Effect.mapError(
+    () =>
+      new HttpBoundaryError({
+        operation: "readBody",
+        status: 400,
+        failure: {
+          code: "InvalidJsonBody",
+          error: "Invalid JSON body",
+          message:
+            "Invalid JSON body: the request body is not finite JSON. Send a JSON object and try again.",
+          details: {},
+          retryable: false,
+        },
+      }),
+  ),
 );
 
-/** Administrative handlers authenticate before body parsing and preserve conflict/not-found status codes. */
+const commandChange = (summary: string): HttpServiceAccess => ({
+  kind: "change",
+  summary,
+  reconcile: "Check the commands with GET /api/admin/commands before retrying.",
+});
+
+/**
+ * Layer that serves administrator Event Bus, Achievements and Chat Commands endpoints.
+ *
+ * **Details**
+ *
+ * Every endpoint authenticates the administrator bearer token before reading its body or query.
+ * Missing resources return 404 and name or alias conflicts return 409. A change whose service
+ * became unavailable reports `OutcomeUnknown` and names the read that reconciles it.
+ */
 export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "admin", (handlers) =>
   Effect.gen(function* () {
     const configuration = yield* TwitchConfiguration;
@@ -98,52 +158,75 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
     const raffle = yield* Raffle;
 
     const admin = <R>(
+      operation: TwitchHttpOperation,
       effect: Effect.Effect<HttpServerResponse.HttpServerResponse, HttpBoundaryError, R>,
     ) =>
       requireHttpAdministrator(configuration.administratorSecret, "Admin API").pipe(
         Effect.andThen(effect),
-        handleHttpBoundary,
+        handleHttpBoundary(operation),
       );
 
     return handlers
       .handleRaw("deadLetters", () =>
         admin(
+          "deadLetters",
           Effect.gen(function* () {
             const { limit, offset } = yield* parseHttpAdminPageQuery();
 
-            const value = yield* eventBus
-              .listDeadLetters({ limit, offset })
-              .pipe(Effect.mapError(failure("Failed to fetch DLQ")));
+            const value = yield* eventBus.listDeadLetters({ limit, offset }).pipe(
+              Effect.catchTag("EventBusError", (error) =>
+                Effect.fail(
+                  eventBusHttpFailure(error, {
+                    kind: "repeatable",
+                    summary: "Failed to fetch DLQ",
+                  }),
+                ),
+              ),
+            );
 
-            return yield* encodeHttpResponse(DeadLetterEventList, value);
+            return yield* encodeHttpResponse("eventBus", DeadLetterEventList, value);
           }),
         ),
       )
       .handleRaw("pendingEvents", () =>
         admin(
+          "pendingEvents",
           Effect.gen(function* () {
             const { limit, offset } = yield* parseHttpAdminPageQuery();
 
-            const value = yield* eventBus
-              .listPending({ limit, offset })
-              .pipe(Effect.mapError(failure("Failed to fetch pending events")));
+            const value = yield* eventBus.listPending({ limit, offset }).pipe(
+              Effect.catchTag("EventBusError", (error) =>
+                Effect.fail(
+                  eventBusHttpFailure(error, {
+                    kind: "repeatable",
+                    summary: "Failed to fetch pending events",
+                  }),
+                ),
+              ),
+            );
 
-            return yield* encodeHttpResponse(PendingEventList, value);
+            return yield* encodeHttpResponse("eventBus", PendingEventList, value);
           }),
         ),
       )
       .handleRaw("replayDeadLetter", ({ params }) =>
         admin(
+          "replayDeadLetter",
           Effect.gen(function* () {
-            const eventId = yield* parseEventId(params.id).pipe(
-              Effect.mapError(
-                () => new HttpBoundaryError({ status: 400, error: "Invalid event ID" }),
+            const eventId = yield* parseHttpEventId(params.id);
+
+            const value = yield* eventBus.replayDeadLetter({ eventId }).pipe(
+              Effect.catchTag("EventBusError", (error) =>
+                Effect.fail(
+                  eventBusHttpFailure(error, {
+                    kind: "change",
+                    summary: "Failed to replay DLQ item",
+                    reconcile:
+                      "Check whether the event remains in GET /api/admin/dlq before retrying.",
+                  }),
+                ),
               ),
             );
-
-            const value = yield* eventBus
-              .replayDeadLetter({ eventId })
-              .pipe(Effect.mapError(deadLetterFailure("replay")));
 
             if (value.success)
               return HttpServerResponse.jsonUnsafe({
@@ -169,16 +252,22 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
       )
       .handleRaw("deleteDeadLetter", ({ params }) =>
         admin(
+          "deleteDeadLetter",
           Effect.gen(function* () {
-            const eventId = yield* parseEventId(params.id).pipe(
-              Effect.mapError(
-                () => new HttpBoundaryError({ status: 400, error: "Invalid event ID" }),
+            const eventId = yield* parseHttpEventId(params.id);
+
+            yield* eventBus.deleteDeadLetter({ eventId }).pipe(
+              Effect.catchTag("EventBusError", (error) =>
+                Effect.fail(
+                  eventBusHttpFailure(error, {
+                    kind: "change",
+                    summary: "Failed to delete DLQ item",
+                    reconcile:
+                      "Check whether the event remains in GET /api/admin/dlq before retrying.",
+                  }),
+                ),
               ),
             );
-
-            yield* eventBus
-              .deleteDeadLetter({ eventId })
-              .pipe(Effect.mapError(deadLetterFailure("delete")));
 
             return HttpServerResponse.jsonUnsafe({ message: "Event deleted from DLQ", eventId });
           }),
@@ -186,137 +275,184 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
       )
       .handleRaw("resetAchievements", () =>
         admin(
+          "resetAchievements",
           Effect.gen(function* () {
             const request = yield* HttpServerRequest.HttpServerRequest;
-            const user = new URL(request.originalUrl).searchParams.get("user");
 
-            if (user !== null && user.trim().length === 0)
+            const user = Option.fromNullishOr(
+              new URL(request.originalUrl).searchParams.get("user"),
+            );
+
+            if (Option.isSome(user) && user.value.trim().length === 0)
               return yield* Effect.fail(
                 new HttpBoundaryError({
+                  operation: "parseQuery",
                   status: 400,
-                  error: "Viewer display name must not be empty",
+                  failure: {
+                    code: "InvalidViewerDisplayName",
+                    error: "Viewer display name must not be empty",
+                    message:
+                      'Viewer display name must not be empty: the "user" query parameter is blank. Send a display name, or omit "user" to reset every viewer.',
+                    details: { parameter: "user" },
+                    retryable: false,
+                  },
                 }),
               );
 
             const value = yield* achievements
-              .resetOneTimeAchievements({ userDisplayName: Option.fromNullishOr(user) })
-              .pipe(Effect.mapError(failure("Failed to reset achievements")));
+              .resetOneTimeAchievements({ userDisplayName: user })
+              .pipe(
+                Effect.catchTag("AchievementError", (error) =>
+                  Effect.fail(
+                    achievementHttpFailure(error, {
+                      kind: "change",
+                      summary: "Failed to reset achievements",
+                      reconcile:
+                        "Check the counts with GET /api/admin/achievements/debug/counts before retrying.",
+                    }),
+                  ),
+                ),
+              );
 
-            if (user !== null && value.deleted === 0)
-              return HttpServerResponse.jsonUnsafe(
-                { error: "User not found or no one-time achievements to reset", user },
-                { status: 404 },
+            if (Option.isSome(user) && value.deleted === 0)
+              return yield* Effect.fail(
+                new HttpBoundaryError({
+                  operation: "callService",
+                  status: 404,
+                  failure: {
+                    code: "ViewerAchievementsNotFound",
+                    error: "User not found or no one-time achievements to reset",
+                    message: `Viewer achievements not found: ${user.value} has no one-time achievements to reset. Check the display name and try again.`,
+                    details: { user: user.value },
+                    retryable: false,
+                  },
+                }),
               );
 
             return HttpServerResponse.jsonUnsafe({
               message: "One-time achievements reset",
               deleted: value.deleted,
               achievementIds: value.achievementIds,
-              user: user ?? "all",
+              user: Option.getOrElse(user, () => "all"),
             });
           }),
         ),
       )
       .handleRaw("achievementCounts", () =>
         admin(
+          "achievementCounts",
           achievements.getDebugTableCounts().pipe(
-            Effect.mapError(failure("Failed to fetch achievements debug counts")),
-            Effect.flatMap((value) => encodeHttpResponse(AchievementDebugTableCounts, value)),
+            Effect.catchTag("AchievementError", (error) =>
+              Effect.fail(
+                achievementHttpFailure(error, {
+                  kind: "repeatable",
+                  summary: "Failed to fetch achievements debug counts",
+                }),
+              ),
+            ),
+            Effect.flatMap((value) =>
+              encodeHttpResponse("achievements", AchievementDebugTableCounts, value),
+            ),
           ),
         ),
       )
       .handleRaw("achievementSnapshot", ({ params }) =>
         admin(
+          "achievementSnapshot",
           achievements.getDebugUserSnapshot({ userDisplayName: params.user }).pipe(
-            Effect.mapError(failure("Failed to fetch user debug snapshot")),
-            Effect.flatMap((value) => encodeHttpResponse(AchievementDebugUserSnapshot, value)),
+            Effect.catchTag("AchievementError", (error) =>
+              Effect.fail(
+                achievementHttpFailure(error, {
+                  kind: "repeatable",
+                  summary: "Failed to fetch user debug snapshot",
+                }),
+              ),
+            ),
+            Effect.flatMap((value) =>
+              encodeHttpResponse("achievements", AchievementDebugUserSnapshot, value),
+            ),
           ),
         ),
       )
       .handleRaw("commands", () =>
         admin(
+          "commands",
           commands.getAllCommands().pipe(
-            Effect.mapError(failure("Failed to list commands")),
+            Effect.catchTags(
+              commandsHttpFailureHandlers({
+                kind: "repeatable",
+                summary: "Failed to list commands",
+              }),
+            ),
             Effect.flatMap((value) =>
-              encodeHttpResponse(Schema.Array(ChatCommandDefinition), value),
+              encodeHttpResponse("chatCommands", Schema.Array(ChatCommandDefinition), value),
             ),
           ),
         ),
       )
       .handleRaw("createCommand", () =>
         admin(
+          "createCommand",
           Effect.gen(function* () {
             const payload = yield* readCommandJson;
 
-            const input = yield* parseCreateCommand(payload).pipe(
-              Effect.mapError(
-                (error) =>
-                  new HttpBoundaryError({
-                    status: 400,
-                    error: "Invalid command payload",
-                    details: formatHttpCommandIssues(error, payload),
-                  }),
+            const input = yield* decodeCreateCommand(payload).pipe(
+              Effect.mapError((error) =>
+                invalidCommandPayload("Invalid command payload", error, payload),
               ),
             );
 
             const value = yield* commands
               .createCommand(input)
-              .pipe(Effect.mapError(commandFailure("create")));
+              .pipe(
+                Effect.catchTags(
+                  commandsHttpFailureHandlers(commandChange("Failed to create command")),
+                ),
+              );
 
-            return yield* encodeHttpResponse(ChatCommandDefinition, value, 201);
+            return yield* encodeHttpResponse("chatCommands", ChatCommandDefinition, value, 201);
           }),
         ),
       )
       .handleRaw("updateCommand", ({ params }) =>
         admin(
+          "updateCommand",
           Effect.gen(function* () {
             const payload = yield* readCommandJson;
 
-            const patch = yield* parseUpdateCommand(payload).pipe(
-              Effect.mapError(
-                (error) =>
-                  new HttpBoundaryError({
-                    status: 400,
-                    error: "Invalid command patch",
-                    details: formatHttpCommandIssues(error, payload),
-                  }),
+            const patch = yield* decodeUpdateCommand(payload).pipe(
+              Effect.mapError((error) =>
+                invalidCommandPayload("Invalid command patch", error, payload),
               ),
             );
 
-            const name = yield* parseChatCommandName(params.name).pipe(
-              Effect.mapError(
-                () =>
-                  new HttpBoundaryError({
-                    status: 400,
-                    error: "Invalid command name",
-                    code: "InvalidCommandNameError",
-                  }),
-              ),
-            );
+            const name = yield* parseHttpCommandName(params.name);
 
             const value = yield* commands
               .updateCommand({ name, patch })
-              .pipe(Effect.mapError(commandFailure("update")));
+              .pipe(
+                Effect.catchTags(
+                  commandsHttpFailureHandlers(commandChange("Failed to update command")),
+                ),
+              );
 
-            return yield* encodeHttpResponse(ChatCommandDefinition, value);
+            return yield* encodeHttpResponse("chatCommands", ChatCommandDefinition, value);
           }),
         ),
       )
       .handleRaw("deleteCommand", ({ params }) =>
         admin(
+          "deleteCommand",
           Effect.gen(function* () {
-            const name = yield* parseChatCommandName(params.name).pipe(
-              Effect.mapError(
-                () =>
-                  new HttpBoundaryError({
-                    status: 400,
-                    error: "Invalid command name",
-                    code: "InvalidCommandNameError",
-                  }),
-              ),
-            );
+            const name = yield* parseHttpCommandName(params.name);
 
-            yield* commands.deleteCommand({ name }).pipe(Effect.mapError(commandFailure("delete")));
+            yield* commands
+              .deleteCommand({ name })
+              .pipe(
+                Effect.catchTags(
+                  commandsHttpFailureHandlers(commandChange("Failed to delete command")),
+                ),
+              );
 
             return HttpServerResponse.jsonUnsafe({
               message: "Command deleted",
@@ -327,13 +463,19 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
       )
       .handleRaw("commandsSnapshot", () =>
         admin(
+          "commandsSnapshot",
           Effect.gen(function* () {
-            const value = yield* commands
-              .getDebugSnapshot()
-              .pipe(Effect.mapError(failure("Failed to fetch commands debug snapshot")));
+            const value = yield* commands.getDebugSnapshot().pipe(
+              Effect.catchTags(
+                commandsHttpFailureHandlers({
+                  kind: "repeatable",
+                  summary: "Failed to fetch commands debug snapshot",
+                }),
+              ),
+            );
 
             const encoded = yield* Schema.encodeEffect(ChatCommandDebugSnapshot)(value).pipe(
-              Effect.mapError(failure("Failed to fetch commands debug snapshot")),
+              Effect.mapError(() => invalidHttpServiceResponse("encodeResponse", "chatCommands")),
             );
 
             return HttpServerResponse.jsonUnsafe({
@@ -349,6 +491,7 @@ export const twitchAdminHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "adm
       )
       .handleRaw("viewerStatsDebug", ({ params }) =>
         admin(
+          "viewerStatsDebug",
           readViewerStatsDebug(params.user).pipe(
             Effect.provideService(Achievements, achievements),
             Effect.provideService(SongQueue, songQueue),

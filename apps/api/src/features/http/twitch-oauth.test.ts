@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Option, Redacted } from "effect";
 import { HttpApi, HttpApiBuilder } from "effect/http-api";
@@ -10,6 +11,7 @@ import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { twitchOAuthHandlersLayer } from "./twitch-oauth-handlers.ts";
 import { httpTestConfiguration } from "./http-test-fixtures.ts";
+import { twitchHttpCorrelationLayer } from "./http-request-correlation.ts";
 
 const state = "11111111-1111-4111-8111-111111111111";
 
@@ -21,7 +23,9 @@ const withOAuth = <A, E, R>(
 ) => {
   const api = HttpApiBuilder.layer(oauthApi).pipe(
     Layer.provide(twitchOAuthHandlersLayer),
+    Layer.provide(twitchHttpCorrelationLayer),
     Layer.provide([
+      NodeCrypto.layer,
       Layer.succeed(TwitchConfiguration, httpTestConfiguration),
       Layer.succeed(OAuthAuthorization, authorization),
       cloudflareHttpServerLayer,
@@ -158,8 +162,14 @@ describe("OAuth HTTP protocol", () => {
 
             expect(malformedState.status).toBe(400);
             expect(yield* Effect.promise(() => malformedState.json())).toEqual({
-              error: "Invalid or expired OAuth state",
               code: "invalid",
+              error: "Invalid or expired OAuth state",
+              operation: "twitchCallback",
+              message:
+                "OAuth state rejected (invalid): the callback state is not a pending Twitch authorization for this redirect URI. Start authorization again at /oauth/twitch/authorize.",
+              details: { provider: "twitch" },
+              requestId: malformedState.headers.get("x-request-id"),
+              retryable: false,
             });
 
             const denied = yield* Effect.promise(() =>
@@ -172,10 +182,11 @@ describe("OAuth HTTP protocol", () => {
 
             expect(denied.status).toBe(400);
             const deniedBody = yield* Effect.promise(() => denied.text());
-            expect(JSON.parse(deniedBody)).toEqual({
+            expect(JSON.parse(deniedBody)).toMatchObject({
               error: "Authorization failed",
               code: "provider_denied",
-              details: "Twitch authorization was not approved",
+              details: { provider: "twitch" },
+              retryable: false,
             });
             expect(deniedBody).not.toContain("Declined");
 
@@ -184,8 +195,11 @@ describe("OAuth HTTP protocol", () => {
             );
 
             expect(noCode.status).toBe(400);
-            expect(yield* Effect.promise(() => noCode.json())).toEqual({
+            expect(yield* Effect.promise(() => noCode.json())).toMatchObject({
+              code: "AuthorizationCodeMissing",
               error: "No authorization code received",
+              operation: "spotifyCallback",
+              details: { provider: "spotify" },
             });
             expect(operations).toEqual(["consumed", "consumed"]);
           }),
@@ -208,9 +222,11 @@ describe("OAuth HTTP protocol", () => {
             );
 
             expect(response.status).toBe(400);
-            expect(yield* Effect.promise(() => response.json())).toEqual({
+            expect(yield* Effect.promise(() => response.json())).toMatchObject({
               error: "Invalid or expired OAuth state",
               code: outcome,
+              details: { provider: "spotify" },
+              retryable: false,
             });
           }),
       ),
@@ -218,7 +234,7 @@ describe("OAuth HTTP protocol", () => {
   }
 
   it.effect(
-    "renders state persistence outage as retryable and provider response corruption as a parse error",
+    "renders state persistence outage as an unknown outcome and provider response corruption as a parse error",
     () =>
       Effect.gen(function* () {
         yield* withOAuth(
@@ -234,8 +250,11 @@ describe("OAuth HTTP protocol", () => {
               );
 
               expect(response.status).toBe(503);
-              expect(yield* Effect.promise(() => response.json())).toEqual({
+              expect(yield* Effect.promise(() => response.json())).toMatchObject({
+                code: "OutcomeUnknown",
                 error: "OAuth state validation unavailable",
+                details: { service: "oauthState" },
+                retryable: false,
               });
             }),
         );
@@ -262,6 +281,8 @@ describe("OAuth HTTP protocol", () => {
               expect(response.status).toBe(500);
               expect(yield* Effect.promise(() => response.json())).toMatchObject({
                 code: "SpotifyParseError",
+                details: { provider: "spotify" },
+                retryable: false,
               });
             }),
         );

@@ -5,7 +5,6 @@ import {
   RequestHistoryQuery,
   RequestHistoryResult,
   SongQueueResult,
-  type SongQueueError,
 } from "@cf-twitch/contracts/song-queue";
 import {
   AchievementDefinition,
@@ -16,26 +15,22 @@ import {
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import {
-  HttpBoundaryError,
   encodeHttpResponse,
   parseHttpLimitQuery,
   parseHttpSongQueueQuery,
   handleHttpBoundary,
 } from "./http-boundary.ts";
+import { achievementHttpFailure, songQueueHttpFailure } from "./http-service-failures.ts";
 
-const songFailure = (message: string) => (error: SongQueueError) =>
-  new HttpBoundaryError(
-    error.reason === "transport_unavailable" ||
-      error.reason === "coordination_unavailable" ||
-      error.reason === "storage_unavailable" ||
-      error.reason === "provider_unavailable"
-      ? { status: 503, error: "Service temporarily unavailable" }
-      : { status: 500, error: message },
-  );
-
-const renderFailure = handleHttpBoundary;
-
-/** Public query handlers capture real service requirements without choosing their providers. */
+/**
+ * Layer that serves the public Song Queue and Achievements read endpoints.
+ *
+ * **Details**
+ *
+ * Captures the real `SongQueue` and `Achievements` services without choosing their providers.
+ * Service failures render as public errors by classified reason; unavailable services return a
+ * retryable 503.
+ */
 export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "public", (handlers) =>
   Effect.gen(function* () {
     const songQueue = yield* SongQueue;
@@ -45,23 +40,37 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
       .handle("health", () => Effect.succeed({ status: "ok" as const }))
       .handleRaw("nowPlaying", () =>
         Effect.gen(function* () {
-          const playing = yield* songQueue
-            .getCurrentlyPlaying()
-            .pipe(Effect.mapError(songFailure("Failed to fetch now playing")));
+          const playing = yield* songQueue.getCurrentlyPlaying().pipe(
+            Effect.catchTag("SongQueueError", (error) =>
+              Effect.fail(
+                songQueueHttpFailure(error, {
+                  kind: "repeatable",
+                  summary: "Failed to fetch now playing",
+                }),
+              ),
+            ),
+          );
 
-          return yield* encodeHttpResponse(TwitchNowPlayingResponse, playing);
-        }).pipe(renderFailure),
+          return yield* encodeHttpResponse("songQueue", TwitchNowPlayingResponse, playing);
+        }).pipe(handleHttpBoundary("nowPlaying")),
       )
       .handleRaw("queue", () =>
         Effect.gen(function* () {
           const limit = yield* parseHttpSongQueueQuery();
 
-          const queue = yield* songQueue
-            .getSongQueue({ limit })
-            .pipe(Effect.mapError(songFailure("Failed to fetch queue")));
+          const queue = yield* songQueue.getSongQueue({ limit }).pipe(
+            Effect.catchTag("SongQueueError", (error) =>
+              Effect.fail(
+                songQueueHttpFailure(error, {
+                  kind: "repeatable",
+                  summary: "Failed to fetch queue",
+                }),
+              ),
+            ),
+          );
 
-          return yield* encodeHttpResponse(SongQueueResult, queue);
-        }).pipe(renderFailure),
+          return yield* encodeHttpResponse("songQueue", SongQueueResult, queue);
+        }).pipe(handleHttpBoundary("queue")),
       )
       .handleRaw("requestHistory", () =>
         Effect.gen(function* () {
@@ -76,22 +85,34 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
                 until: Option.none(),
               }),
             )
-            .pipe(Effect.mapError(songFailure("Failed to fetch song request history")));
+            .pipe(
+              Effect.catchTag("SongQueueError", (error) =>
+                Effect.fail(
+                  songQueueHttpFailure(error, {
+                    kind: "repeatable",
+                    summary: "Failed to fetch song request history",
+                  }),
+                ),
+              ),
+            );
 
-          return yield* encodeHttpResponse(RequestHistoryResult, history);
-        }).pipe(renderFailure),
+          return yield* encodeHttpResponse("songQueue", RequestHistoryResult, history);
+        }).pipe(handleHttpBoundary("requestHistory")),
       )
       .handleRaw("achievementDefinitions", () =>
         achievements.getDefinitions().pipe(
-          Effect.mapError(
-            () =>
-              new HttpBoundaryError({
-                status: 500,
-                error: "Failed to fetch achievement definitions",
+          Effect.catchTag("AchievementError", (error) =>
+            Effect.fail(
+              achievementHttpFailure(error, {
+                kind: "repeatable",
+                summary: "Failed to fetch achievement definitions",
               }),
+            ),
           ),
-          Effect.flatMap((value) => encodeHttpResponse(Schema.Array(AchievementDefinition), value)),
-          renderFailure,
+          Effect.flatMap((value) =>
+            encodeHttpResponse("achievements", Schema.Array(AchievementDefinition), value),
+          ),
+          handleHttpBoundary("achievementDefinitions"),
         ),
       )
       .handleRaw("achievementLeaderboard", () =>
@@ -99,41 +120,53 @@ export const twitchPublicHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "pu
           const limit = yield* parseHttpLimitQuery();
 
           const value = yield* achievements.getLeaderboard({ limit: Option.some(limit) }).pipe(
-            Effect.mapError(
-              () =>
-                new HttpBoundaryError({
-                  status: 500,
-                  error: "Failed to fetch achievement leaderboard",
+            Effect.catchTag("AchievementError", (error) =>
+              Effect.fail(
+                achievementHttpFailure(error, {
+                  kind: "repeatable",
+                  summary: "Failed to fetch achievement leaderboard",
                 }),
+              ),
             ),
           );
 
-          return yield* encodeHttpResponse(Schema.Array(AchievementLeaderboardEntry), value);
-        }).pipe(renderFailure),
+          return yield* encodeHttpResponse(
+            "achievements",
+            Schema.Array(AchievementLeaderboardEntry),
+            value,
+          );
+        }).pipe(handleHttpBoundary("achievementLeaderboard")),
       )
       .handleRaw("viewerAchievements", ({ params }) =>
         achievements.getUserAchievements({ userDisplayName: params.user }).pipe(
-          Effect.mapError(
-            () =>
-              new HttpBoundaryError({ status: 500, error: "Failed to fetch user achievements" }),
+          Effect.catchTag("AchievementError", (error) =>
+            Effect.fail(
+              achievementHttpFailure(error, {
+                kind: "repeatable",
+                summary: "Failed to fetch user achievements",
+              }),
+            ),
           ),
           Effect.flatMap((value) =>
-            encodeHttpResponse(Schema.Array(ViewerAchievementProgress), value),
+            encodeHttpResponse("achievements", Schema.Array(ViewerAchievementProgress), value),
           ),
-          renderFailure,
+          handleHttpBoundary("viewerAchievements"),
         ),
       )
       .handleRaw("viewerUnlockedAchievements", ({ params }) =>
         achievements.getUnlockedAchievements({ userDisplayName: params.user }).pipe(
-          Effect.mapError(
-            () =>
-              new HttpBoundaryError({
-                status: 500,
-                error: "Failed to fetch unlocked achievements",
+          Effect.catchTag("AchievementError", (error) =>
+            Effect.fail(
+              achievementHttpFailure(error, {
+                kind: "repeatable",
+                summary: "Failed to fetch unlocked achievements",
               }),
+            ),
           ),
-          Effect.flatMap((value) => encodeHttpResponse(Schema.Array(UnlockedAchievement), value)),
-          renderFailure,
+          Effect.flatMap((value) =>
+            encodeHttpResponse("achievements", Schema.Array(UnlockedAchievement), value),
+          ),
+          handleHttpBoundary("viewerUnlockedAchievements"),
         ),
       );
   }),

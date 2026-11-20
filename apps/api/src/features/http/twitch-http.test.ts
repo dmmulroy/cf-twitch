@@ -18,7 +18,8 @@ import { StreamLifecycleClient } from "../stream/stream-lifecycle.ts";
 import { OAuthAuthorization } from "../oauth/oauth-authorization.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
 import { EventSubReceipts } from "../eventsub/eventsub-receipts.ts";
-import { HttpResponseCache } from "./http-response-cache.ts";
+import { httpResponseCacheTestLayer } from "./http-response-cache.ts";
+import { twitchHttpCorrelationLayer } from "./http-request-correlation.ts";
 import { twitchHttpApiLayer } from "./twitch-http-api.ts";
 import { twitchStatsHandlersLayer } from "./twitch-stats-handlers.ts";
 import { httpValidationGoldenCases } from "./http-validation-golden.ts";
@@ -70,7 +71,7 @@ const testLayers = (settings = configuration) =>
       listEventSubSubscriptions: () => Effect.succeed([]),
     }),
     Layer.mock(EventSubReceipts, {}),
-    Layer.mock(HttpResponseCache, { readThrough: ({ load }) => load }),
+    httpResponseCacheTestLayer,
   );
 
 const withHttp = <A, E, R>(
@@ -109,8 +110,16 @@ describe("Worker HTTP compatibility boundary", () => {
           const response = yield* Effect.promise(() => fetch(request(golden.path, init)));
           expect(response.status).toBe(400);
           expect(yield* Effect.promise(() => response.json())).toEqual({
+            code:
+              golden.error === "Invalid query parameters"
+                ? "InvalidQueryParameters"
+                : "InvalidCommandPayload",
             error: golden.error,
+            operation: expect.any(String),
+            message: expect.stringMatching(/^Invalid (query parameters|command payload): .+\.$/u),
             details: golden.details,
+            requestId: response.headers.get("x-request-id"),
+            retryable: false,
           });
         }),
       ),
@@ -127,6 +136,10 @@ describe("Worker HTTP compatibility boundary", () => {
             );
 
             expect(response.status, path).toBe(503);
+            expect(yield* Effect.promise(() => response.json()), path).toMatchObject({
+              code: "AuthenticationNotConfigured",
+              retryable: false,
+            });
           }
 
           const oauth = yield* Effect.promise(() =>
@@ -135,7 +148,12 @@ describe("Worker HTTP compatibility boundary", () => {
             ),
           );
 
-          expect(oauth.status).toBe(500);
+          expect(oauth.status).toBe(503);
+          expect(yield* Effect.promise(() => oauth.json())).toMatchObject({
+            code: "AuthenticationNotConfigured",
+            operation: "twitchAuthorize",
+            details: { audience: "OAuth setup" },
+          });
         }),
       {
         ...configuration,
@@ -167,6 +185,16 @@ describe("Worker HTTP compatibility boundary", () => {
           const missingRoute = yield* Effect.promise(() => fetch(request("/missing")));
           expect(missingRoute.status).toBe(404);
           expect(missingRoute.headers.get("x-request-id")).toMatch(/^[a-f\d-]{36}$/u);
+          expect(yield* Effect.promise(() => missingRoute.json())).toEqual({
+            code: "RouteNotFound",
+            error: "Not found",
+            operation: "routeRequest",
+            message:
+              "No route matches GET /missing. Check the method and path against the API documentation.",
+            details: { method: "GET", path: "/missing" },
+            requestId: missingRoute.headers.get("x-request-id"),
+            retryable: false,
+          });
           expect(missingRoute.headers.get("x-trace-id")).toMatch(/^[a-f\d]{32}$/u);
           const overlay = yield* Effect.promise(() => fetch(request("/overlay/now-playing")));
           expect(overlay.headers.get("content-type")).toBe("text/html; charset=UTF-8");
@@ -210,20 +238,31 @@ describe("Worker HTTP compatibility boundary", () => {
 
         const missing = yield* Effect.promise(() => fetch(request("/api/stats/raffle/user/123")));
         expect(missing.status).toBe(404);
-        expect(yield* Effect.promise(() => missing.json())).toEqual({ error: "User not found" });
+        expect(yield* Effect.promise(() => missing.json())).toEqual({
+          code: "ViewerNotFound",
+          error: "User not found",
+          operation: "raffleViewer",
+          message:
+            "Viewer not found: Viewer 123 has no Keyboard Raffle rolls. Check the Twitch user ID and try again.",
+          details: { userId: "123" },
+          requestId: missing.headers.get("x-request-id"),
+          retryable: false,
+        });
       }),
     ),
   );
 
   it.effect("distinguishes invalid DO statistics responses from transport outages", () =>
     Effect.gen(function* () {
-      for (const [reason, status, error] of [
-        ["invalid_response", 502, "Invalid service response"],
-        ["transport_unavailable", 503, "Service temporarily unavailable"],
+      for (const [reason, status, code, retryable] of [
+        ["invalid_response", 500, "InvalidServiceResponse", false],
+        ["transport_unavailable", 503, "ServiceUnavailable", true],
       ] as const) {
         const api = HttpApiBuilder.layer(HttpApi.make("TwitchHttpApi").add(TwitchStatsApi)).pipe(
           Layer.provide(twitchStatsHandlersLayer),
+          Layer.provide(twitchHttpCorrelationLayer),
           Layer.provide([
+            NodeCrypto.layer,
             cloudflareHttpServerLayer,
             Layer.mock(SongQueue, {
               getTopTracks: () =>
@@ -233,7 +272,7 @@ describe("Worker HTTP compatibility boundary", () => {
               getLeaderboard: () =>
                 Effect.fail(new RaffleError({ operation: "getLeaderboard", reason })),
             }),
-            Layer.mock(HttpResponseCache, { readThrough: ({ load }) => load }),
+            httpResponseCacheTestLayer,
           ]),
         );
 
@@ -244,7 +283,13 @@ describe("Worker HTTP compatibility boundary", () => {
               for (const path of ["/api/stats/top-tracks", "/api/stats/raffle/leaderboard"]) {
                 const response = yield* Effect.promise(() => handler(request(path)));
                 expect(response.status, `${path}: ${reason}`).toBe(status);
-                expect(yield* Effect.promise(() => response.json())).toEqual({ error });
+                expect(yield* Effect.promise(() => response.json())).toMatchObject({
+                  code,
+                  details: {
+                    service: path === "/api/stats/top-tracks" ? "songQueue" : "keyboardRaffle",
+                  },
+                  retryable,
+                });
                 expect(response.headers.get("cache-control")).toBeNull();
               }
             }),
@@ -286,7 +331,7 @@ describe("Worker HTTP compatibility boundary", () => {
             for (const [authorization, status] of [
               [undefined, 401],
               ["admin-secret", 401],
-              ["Bearer wrong", 403],
+              ["Bearer wrong", 401],
               ["Bearer admin-secret trailing", 401],
             ] as const) {
               const response = yield* Effect.promise(() =>
@@ -332,8 +377,10 @@ describe("Worker HTTP compatibility boundary", () => {
           );
 
           expect(authorizedBody.status).toBe(400);
-          expect(yield* Effect.promise(() => authorizedBody.json())).toEqual({
+          expect(yield* Effect.promise(() => authorizedBody.json())).toMatchObject({
+            code: "InvalidJsonBody",
             error: "Invalid JSON body",
+            operation: "createCommand",
           });
 
           for (const overflowBody of ["1e400", '{"nested":1e400}']) {
@@ -348,8 +395,8 @@ describe("Worker HTTP compatibility boundary", () => {
             );
 
             expect(overflow.status, overflowBody).toBe(400);
-            expect(yield* Effect.promise(() => overflow.json())).toEqual({
-              error: "Invalid JSON body",
+            expect(yield* Effect.promise(() => overflow.json())).toMatchObject({
+              code: "InvalidJsonBody",
             });
           }
         }),
@@ -383,8 +430,11 @@ describe("Worker HTTP compatibility boundary", () => {
           );
 
           expect(reset.status).toBe(400);
-          expect(yield* Effect.promise(() => reset.json())).toEqual({
+          expect(yield* Effect.promise(() => reset.json())).toMatchObject({
+            code: "InvalidViewerDisplayName",
             error: "Viewer display name must not be empty",
+            operation: "resetAchievements",
+            details: { parameter: "user" },
           });
         }),
       ),
@@ -404,9 +454,11 @@ describe("Worker HTTP compatibility boundary", () => {
         );
 
         expect(callback.status).toBe(400);
-        expect(yield* Effect.promise(() => callback.json())).toEqual({
+        expect(yield* Effect.promise(() => callback.json())).toMatchObject({
           error: "Invalid or expired OAuth state",
           code: "invalid",
+          operation: "twitchCallback",
+          details: { provider: "twitch" },
         });
       }),
     ),

@@ -53,26 +53,51 @@ const summarizeRaffleStats = (
   targetUser: string,
 ) => {
   const notFound = Result.isSuccess(result) && Option.isNone(result.success);
-  const entry = Result.isSuccess(result) ? Option.getOrUndefined(result.success) : undefined;
+  const entry = Result.isSuccess(result) ? result.success : Option.none();
 
   return {
-    status: entry === undefined ? ("error" as const) : ("ok" as const),
+    status: Option.isNone(entry) ? ("error" as const) : ("ok" as const),
     notFound,
-    stats: entry === undefined ? (notFound ? "0 rolls" : "unavailable") : formatRaffleStats(entry),
+    stats: Option.match(entry, {
+      onNone: () => (notFound ? "0 rolls" : "unavailable"),
+      onSome: formatRaffleStats,
+    }),
     error: Result.isFailure(result)
       ? result.failure.message
       : notFound
-        ? `Raffle viewer not found: ${targetUser}`
+        ? `Raffle viewer not found: ${targetUser} has no Keyboard Raffle rolls. Check the display name and try again.`
         : null,
   };
 };
 
-/** Debug stats preserve partial failures and the existing no-records chat preview. */
+/**
+ * Reads the `!stats` preview for one viewer, reporting each component's failure separately.
+ *
+ * **Details**
+ *
+ * Trims whitespace and leading `@` from the display name. A failed component reports its error
+ * in the body while the other components still render, so partial failures return 200.
+ *
+ * @returns The diagnostic response, or fails with `HttpBoundaryError` (`InvalidViewerDisplayName`, 400) when the trimmed display name is empty.
+ */
 export const readViewerStatsDebug = Effect.fn("Http.viewerStatsDebug")(function* (rawUser: string) {
   const targetUser = rawUser.trim().replace(/^@+/u, "");
 
   if (targetUser.length === 0)
-    return yield* Effect.fail(new HttpBoundaryError({ status: 400, error: "User is required" }));
+    return yield* Effect.fail(
+      new HttpBoundaryError({
+        operation: "parsePath",
+        status: 400,
+        failure: {
+          code: "InvalidViewerDisplayName",
+          error: "User is required",
+          message:
+            'Viewer display name must not be empty: the path has no display name after removing whitespace and "@". Put a display name in the path and try again.',
+          details: { parameter: "user" },
+          retryable: false,
+        },
+      }),
+    );
   const achievements = yield* Achievements;
   const songQueue = yield* SongQueue;
   const raffle = yield* Raffle;

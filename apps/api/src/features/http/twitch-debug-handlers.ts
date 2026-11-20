@@ -1,7 +1,7 @@
 import { Clock, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpServerResponse } from "effect/http";
-import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
+import { TwitchHttpApi, type TwitchHttpOperation } from "@cf-twitch/contracts/twitch-api";
 import { IsoTimestamp } from "@cf-twitch/contracts/identity";
 import { StreamLifecycleState } from "@cf-twitch/contracts/stream";
 import { RaffleLeaderboardEntry } from "@cf-twitch/contracts/raffle";
@@ -15,19 +15,37 @@ import {
   HttpBoundaryError,
   encodeHttpResponse,
   handleHttpBoundary,
+  invalidHttpServiceResponse,
   parseHttpLeaderboardQuery,
   requireHttpAdministrator,
 } from "./http-boundary.ts";
+import {
+  type HttpServiceAccess,
+  raffleHttpFailure,
+  streamLifecycleHttpFailure,
+  twitchProviderHttpFailure,
+} from "./http-service-failures.ts";
 
 const decodeTimestamp = Schema.decodeEffect(IsoTimestamp);
 
 const encodeStreamState = Schema.encodeEffect(StreamLifecycleState);
 
-const failure = (error: string) => () => new HttpBoundaryError({ status: 500, error });
-
 const debugSongQueueLimit = SongQueueLimit.make(5);
 
-/** Debug reconciliation replays same-state effects and preserves Twitch's authoritative start timestamp. */
+const reconcileChange = (summary: string): HttpServiceAccess => ({
+  kind: "change",
+  summary,
+  reconcile: "Read the stream state with GET /api/debug/stream-state before retrying.",
+});
+
+/**
+ * Layer that serves authenticated Stream Lifecycle and Keyboard Raffle diagnostics.
+ *
+ * **Details**
+ *
+ * Reconciliation replays same-state effects and preserves Twitch's authoritative start
+ * timestamp. Status aggregates partial component failures into a 200 body.
+ */
 export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "debug", (handlers) =>
   Effect.gen(function* () {
     const configuration = yield* TwitchConfiguration;
@@ -37,41 +55,61 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
     const raffle = yield* Raffle;
 
     const admin = <R>(
+      operation: TwitchHttpOperation,
       effect: Effect.Effect<HttpServerResponse.HttpServerResponse, HttpBoundaryError, R>,
     ) =>
       requireHttpAdministrator(configuration.administratorSecret, "Debug API").pipe(
         Effect.andThen(effect),
-        handleHttpBoundary,
+        handleHttpBoundary(operation),
       );
 
     return handlers
       .handleRaw("streamState", () =>
         admin(
+          "streamState",
           stream.getState().pipe(
-            Effect.mapError(failure("Failed to fetch stream state")),
-            Effect.flatMap((value) => encodeHttpResponse(StreamLifecycleState, value)),
+            Effect.catchTag("StreamLifecycleError", (error) =>
+              Effect.fail(
+                streamLifecycleHttpFailure(error, {
+                  kind: "repeatable",
+                  summary: "Failed to fetch stream state",
+                }),
+              ),
+            ),
+            Effect.flatMap((value) =>
+              encodeHttpResponse("streamLifecycle", StreamLifecycleState, value),
+            ),
           ),
         ),
       )
       .handleRaw("raffleLeaderboardDebug", () =>
         admin(
+          "raffleLeaderboardDebug",
           Effect.gen(function* () {
             const { limit, sortBy } = yield* parseHttpLeaderboardQuery();
 
-            const value = yield* raffle
-              .getLeaderboard({ limit: Option.some(limit), sortBy })
-              .pipe(
-                Effect.mapError(
-                  (error) => new HttpBoundaryError({ status: 500, error: error.message }),
+            const value = yield* raffle.getLeaderboard({ limit: Option.some(limit), sortBy }).pipe(
+              Effect.catchTag("RaffleError", (error) =>
+                Effect.fail(
+                  raffleHttpFailure(error, {
+                    kind: "repeatable",
+                    summary: "Failed to fetch raffle leaderboard",
+                  }),
                 ),
-              );
+              ),
+            );
 
-            return yield* encodeHttpResponse(Schema.Array(RaffleLeaderboardEntry), value);
+            return yield* encodeHttpResponse(
+              "keyboardRaffle",
+              Schema.Array(RaffleLeaderboardEntry),
+              value,
+            );
           }),
         ),
       )
       .handleRaw("reconcileStream", () =>
         admin(
+          "reconcileStream",
           Effect.gen(function* () {
             const [beforeResult, providerResult] = yield* Effect.all(
               [
@@ -85,17 +123,17 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
 
             if (Result.isFailure(beforeResult))
               return yield* Effect.fail(
-                new HttpBoundaryError({
-                  status: 500,
-                  error: "Failed to fetch current stream state",
+                streamLifecycleHttpFailure(beforeResult.failure, {
+                  kind: "repeatable",
+                  summary: "Failed to fetch current stream state",
                 }),
               );
 
             if (Result.isFailure(providerResult))
               return yield* Effect.fail(
-                new HttpBoundaryError({
-                  status: 500,
-                  error: "Failed to fetch Twitch stream status",
+                twitchProviderHttpFailure(providerResult.failure, "getStreamInfo", Option.none(), {
+                  kind: "repeatable",
+                  summary: "Failed to fetch Twitch stream status",
                 }),
               );
             const before = beforeResult.success;
@@ -105,7 +143,16 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
             if (Option.isSome(provider)) {
               yield* stream
                 .markOnline({ streamId: provider.value.id, startedAt: provider.value.startedAt })
-                .pipe(Effect.mapError(failure("Failed to reconcile online stream state")));
+                .pipe(
+                  Effect.catchTag("StreamLifecycleError", (error) =>
+                    Effect.fail(
+                      streamLifecycleHttpFailure(
+                        error,
+                        reconcileChange("Failed to reconcile online stream state"),
+                      ),
+                    ),
+                  ),
+                );
 
               if (!before.isLive) action = "set_online";
             } else {
@@ -117,7 +164,16 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
 
               yield* stream
                 .markOffline({ endedAt })
-                .pipe(Effect.mapError(failure("Failed to reconcile offline stream state")));
+                .pipe(
+                  Effect.catchTag("StreamLifecycleError", (error) =>
+                    Effect.fail(
+                      streamLifecycleHttpFailure(
+                        error,
+                        reconcileChange("Failed to reconcile offline stream state"),
+                      ),
+                    ),
+                  ),
+                );
 
               if (before.isLive) action = "set_offline";
             }
@@ -132,21 +188,30 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
             const after = yield* stream.getState().pipe(Effect.result);
 
             const encodedBefore = yield* encodeStreamState(before).pipe(
-              Effect.mapError(failure("Invalid service response")),
+              Effect.mapError(() =>
+                invalidHttpServiceResponse("encodeResponse", "streamLifecycle"),
+              ),
             );
 
             if (Result.isFailure(after))
-              return HttpServerResponse.jsonUnsafe(
-                {
-                  error: "Reconciliation completed but failed to read final state",
-                  action,
-                  before: encodedBefore,
-                },
-                { status: 500 },
+              return yield* Effect.fail(
+                new HttpBoundaryError({
+                  operation: "callService",
+                  status: 500,
+                  failure: {
+                    code: "StreamReconciliationUnconfirmed",
+                    error: "Reconciliation completed but failed to read final state",
+                    message: `Stream reconciliation unconfirmed: the ${action} reconciliation finished, but the final state could not be read (${after.failure.reason}). Read the stream state with GET /api/debug/stream-state.`,
+                    details: { action, before },
+                    retryable: false,
+                  },
+                }),
               );
 
             const encodedAfter = yield* encodeStreamState(after.success).pipe(
-              Effect.mapError(failure("Invalid service response")),
+              Effect.mapError(() =>
+                invalidHttpServiceResponse("encodeResponse", "streamLifecycle"),
+              ),
             );
 
             return HttpServerResponse.jsonUnsafe({
@@ -176,6 +241,7 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
       )
       .handleRaw("debugStatus", () =>
         admin(
+          "debugStatus",
           Effect.gen(function* () {
             const [state, provider, songs] = yield* Effect.all(
               [

@@ -22,19 +22,331 @@ import {
   UpdateChatCommandInput,
 } from "./chat-command.ts";
 import { StreamLifecycleState } from "./stream.ts";
-import { ProviderEventSubSubscription } from "./provider.ts";
+import { OAuthProvider, ProviderEventSubSubscription, ProviderFailureKind } from "./provider.ts";
 import { ViewerId } from "./identity.ts";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
 
-/** Existing public error envelope; status is selected by the HTTP boundary. */
-export const TwitchHttpError = Schema.Struct({
-  error: Schema.String,
-  code: Schema.optionalKey(Schema.String),
-  details: Schema.optionalKey(Schema.Json),
+/** Public subscription evidence omits absent callback keys, as Twitch management clients expect. */
+export const TwitchSubscriptionResponse = Schema.Struct({
+  ...ProviderEventSubSubscription.fields,
+  transport: Schema.Struct({
+    method: Schema.String,
+    callback: Schema.OptionFromOptionalKey(Schema.String),
+  }),
 });
 
-const errors = [400, 401, 403, 404, 409, 413, 500, 502, 503].map((status) =>
-  TwitchHttpError.pipe(HttpApiSchema.status(status)),
+/** Endpoint name reported in a public error's `operation`; `routeRequest` and `handleRequest` cover unmatched routes and unexpected failures. */
+export const TwitchHttpOperation = Schema.Literals([
+  "health",
+  "nowPlaying",
+  "queue",
+  "requestHistory",
+  "achievementDefinitions",
+  "achievementLeaderboard",
+  "viewerAchievements",
+  "viewerUnlockedAchievements",
+  "topTracks",
+  "viewerTopTracks",
+  "topRequesters",
+  "raffleLeaderboard",
+  "raffleViewer",
+  "deadLetters",
+  "pendingEvents",
+  "replayDeadLetter",
+  "deleteDeadLetter",
+  "resetAchievements",
+  "achievementCounts",
+  "achievementSnapshot",
+  "commands",
+  "createCommand",
+  "updateCommand",
+  "deleteCommand",
+  "commandsSnapshot",
+  "viewerStatsDebug",
+  "streamState",
+  "raffleLeaderboardDebug",
+  "reconcileStream",
+  "debugStatus",
+  "spotifyAuthorize",
+  "spotifyCallback",
+  "twitchAuthorize",
+  "twitchCallback",
+  "webhook",
+  "setupSubscriptions",
+  "listSubscriptions",
+  "deleteSubscription",
+  "cleanupSubscriptions",
+  "nowPlayingOverlay",
+  "routeRequest",
+  "handleRequest",
+]);
+
+/** Endpoint name reported in a public error's `operation`. */
+export type TwitchHttpOperation = typeof TwitchHttpOperation.Type;
+
+/** HTTP statuses a public error response may use, each chosen for what the failure means to the caller. */
+export const TwitchHttpErrorStatus = Schema.Literals([400, 401, 404, 409, 500, 503]);
+
+/** HTTP status of a public error response. */
+export type TwitchHttpErrorStatus = typeof TwitchHttpErrorStatus.Type;
+
+/** Credential audience named in authentication failures, so callers know which secret was expected. */
+export const TwitchHttpAuthenticationAudience = Schema.Literals([
+  "Admin API",
+  "Debug API",
+  "EventSub management",
+  "EventSub webhook",
+  "OAuth setup",
+]);
+
+/** Credential audience named in authentication failures. */
+export type TwitchHttpAuthenticationAudience = typeof TwitchHttpAuthenticationAudience.Type;
+
+/** Capability named in a public service failure, without exposing storage or transport internals. */
+export const TwitchHttpService = Schema.Literals([
+  "songQueue",
+  "keyboardRaffle",
+  "achievements",
+  "eventBus",
+  "chatCommands",
+  "streamLifecycle",
+  "oauthState",
+  "eventSubReceipts",
+  "twitch",
+  "spotify",
+]);
+
+/** Capability named in a public service failure. */
+export type TwitchHttpService = typeof TwitchHttpService.Type;
+
+const issuePath = Schema.Array(Schema.Union([Schema.String, Schema.Number]));
+
+const issueBase = { path: issuePath, message: Schema.String };
+
+const issueLiteralValue = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
+
+/** Schema for one field-level validation issue in historical Zod-compatible form; it never echoes rejected input values. */
+export const TwitchHttpValidationIssue = Schema.Union([
+  Schema.Struct({
+    ...issueBase,
+    code: Schema.Literal("invalid_type"),
+    expected: Schema.String,
+    format: Schema.optionalKey(Schema.Literal("safeint")),
+    received: Schema.optionalKey(Schema.Literals(["NaN", "Infinity"])),
+  }),
+  Schema.Struct({
+    ...issueBase,
+    code: Schema.Literal("too_small"),
+    origin: Schema.Literals(["number", "int", "string", "array"]),
+    minimum: Schema.Number,
+    inclusive: Schema.Literal(true),
+    note: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    ...issueBase,
+    code: Schema.Literal("too_big"),
+    origin: Schema.Literals(["number", "int", "string", "array"]),
+    maximum: Schema.Number,
+    inclusive: Schema.Literal(true),
+    note: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    ...issueBase,
+    code: Schema.Literal("invalid_value"),
+    values: Schema.Array(issueLiteralValue),
+  }),
+  Schema.Struct({
+    ...issueBase,
+    code: Schema.Literal("unrecognized_keys"),
+    keys: Schema.Array(Schema.String),
+  }),
+  Schema.Struct({ ...issueBase, code: Schema.Literal("custom") }),
+  Schema.Struct({
+    ...issueBase,
+    code: Schema.Literal("invalid_format"),
+    origin: Schema.Literal("string"),
+    format: Schema.Literals(["regex", "datetime"]),
+    pattern: Schema.String,
+  }),
+  Schema.Struct({
+    ...issueBase,
+    code: Schema.Literal("invalid_union"),
+    errors: Schema.Array(Schema.Never),
+    note: Schema.Literal("No matching discriminator"),
+    discriminator: Schema.Literal("responseType"),
+  }),
+]);
+
+/** One field-level validation issue in a public error's `details`. */
+export type TwitchHttpValidationIssue = typeof TwitchHttpValidationIssue.Type;
+
+const audienceDetails = Schema.Struct({ audience: TwitchHttpAuthenticationAudience });
+
+const serviceDetails = Schema.Struct({ service: TwitchHttpService });
+
+const providerDetails = Schema.Struct({ provider: OAuthProvider });
+
+const providerFailureDetails = Schema.Struct({
+  provider: OAuthProvider,
+  failure: ProviderFailureKind,
+});
+
+const validationDetails = Schema.Array(TwitchHttpValidationIssue);
+
+const noDetails = Schema.Struct({});
+
+const subscriptionSetupError = Schema.Struct({
+  type: Schema.String,
+  error: Schema.String,
+  code: Schema.Literals(["TwitchParseError", "TwitchSubscriptionCreateError"]),
+});
+
+const subscriptionConfig = Schema.Struct({
+  type: Schema.String,
+  version: Schema.String,
+  condition: Schema.Record(Schema.String, Schema.String),
+});
+
+/**
+ * Builds one public error variant whose literal `code` is paired with its own `details` schema.
+ *
+ * **Details**
+ *
+ * `error` keeps the historical short summary for existing clients; `message` is the complete
+ * operation-specific explanation ending with one way forward.
+ */
+const twitchHttpErrorVariant = <const Code extends string, Details extends Schema.Top>(
+  code: Code,
+  details: Details,
+) =>
+  Schema.Struct({
+    code: Schema.Literal(code),
+    error: Schema.String,
+    operation: TwitchHttpOperation,
+    message: Schema.String,
+    details,
+    requestId: Schema.String,
+    retryable: Schema.Boolean,
+  });
+
+/**
+ * Schema for every public error response body, discriminated by its literal `code`.
+ *
+ * **Details**
+ *
+ * Each variant carries a stable `code`, the endpoint `operation`, an explanatory `message`, its own
+ * `details`, the server-owned `requestId` also returned in `x-request-id`, and a truthful
+ * `retryable`. The legacy `error` summary remains for existing clients. Bodies never contain
+ * credentials, signed bodies, provider responses, SQL, or stack traces.
+ */
+export const TwitchHttpErrorBody = Schema.Union([
+  twitchHttpErrorVariant("AuthenticationNotConfigured", audienceDetails),
+  twitchHttpErrorVariant("AuthenticationUnavailable", audienceDetails),
+  twitchHttpErrorVariant("AuthorizationMissing", audienceDetails),
+  twitchHttpErrorVariant("AuthorizationMalformed", audienceDetails),
+  twitchHttpErrorVariant("CredentialRejected", audienceDetails),
+  twitchHttpErrorVariant("InvalidQueryParameters", validationDetails),
+  twitchHttpErrorVariant("InvalidJsonBody", noDetails),
+  twitchHttpErrorVariant("InvalidCommandPayload", validationDetails),
+  twitchHttpErrorVariant("InvalidCommandNameError", Schema.Struct({ commandName: Schema.String })),
+  twitchHttpErrorVariant("InvalidEventId", Schema.Struct({ eventId: Schema.String })),
+  twitchHttpErrorVariant("InvalidViewerId", Schema.Struct({ user: Schema.String })),
+  twitchHttpErrorVariant("InvalidViewerDisplayName", Schema.Struct({ parameter: Schema.String })),
+  twitchHttpErrorVariant("ViewerNotFound", Schema.Struct({ userId: Schema.String })),
+  twitchHttpErrorVariant("ViewerAchievementsNotFound", Schema.Struct({ user: Schema.String })),
+  twitchHttpErrorVariant("DeadLetterNotFound", Schema.Struct({ eventId: Schema.String })),
+  twitchHttpErrorVariant("CommandNotFoundError", Schema.Struct({ commandName: Schema.String })),
+  twitchHttpErrorVariant(
+    "CommandAlreadyExistsError",
+    Schema.Struct({ commandName: Schema.String }),
+  ),
+  twitchHttpErrorVariant(
+    "CommandAliasConflictError",
+    Schema.Struct({ alias: Schema.String, owner: Schema.String }),
+  ),
+  twitchHttpErrorVariant("CommandInputParseError", noDetails),
+  twitchHttpErrorVariant(
+    "CommandInvalidDefinitionError",
+    Schema.Struct({ commandName: Schema.String, rule: Schema.String }),
+  ),
+  twitchHttpErrorVariant(
+    "CommandNotUpdateableError",
+    Schema.Struct({ commandName: Schema.String }),
+  ),
+  twitchHttpErrorVariant(
+    "CommandUpdatePermissionDeniedError",
+    Schema.Struct({ commandName: Schema.String }),
+  ),
+  twitchHttpErrorVariant("StreamEffectsPending", noDetails),
+  twitchHttpErrorVariant(
+    "StreamReconciliationUnconfirmed",
+    Schema.Struct({
+      action: Schema.Literals(["noop", "set_online", "set_offline"]),
+      before: StreamLifecycleState,
+    }),
+  ),
+  twitchHttpErrorVariant("ServiceUnavailable", serviceDetails),
+  twitchHttpErrorVariant("OutcomeUnknown", serviceDetails),
+  twitchHttpErrorVariant("InvalidServiceResponse", serviceDetails),
+  twitchHttpErrorVariant("StoredDataInvalid", serviceDetails),
+  twitchHttpErrorVariant("ServiceFailed", serviceDetails),
+  twitchHttpErrorVariant(
+    "RouteNotFound",
+    Schema.Struct({ method: Schema.String, path: Schema.String }),
+  ),
+  twitchHttpErrorVariant("InternalFailure", noDetails),
+  twitchHttpErrorVariant("invalid", providerDetails),
+  twitchHttpErrorVariant("expired", providerDetails),
+  twitchHttpErrorVariant("consumed", providerDetails),
+  twitchHttpErrorVariant("mismatch", providerDetails),
+  twitchHttpErrorVariant("provider_denied", providerDetails),
+  twitchHttpErrorVariant("AuthorizationCodeMissing", providerDetails),
+  twitchHttpErrorVariant("InvalidCallbackUrl", providerDetails),
+  twitchHttpErrorVariant("SpotifyParseError", providerDetails),
+  twitchHttpErrorVariant("TwitchParseError", providerDetails),
+  twitchHttpErrorVariant("SpotifyTokenExchangeError", providerFailureDetails),
+  twitchHttpErrorVariant("TwitchTokenExchangeError", providerFailureDetails),
+  twitchHttpErrorVariant("ProviderAccessTokenError", providerDetails),
+  twitchHttpErrorVariant("TwitchNetworkError", providerFailureDetails),
+  twitchHttpErrorVariant("TwitchSubscriptionRequestError", providerFailureDetails),
+  twitchHttpErrorVariant("TwitchSubscriptionDeleteError", providerFailureDetails),
+  twitchHttpErrorVariant(
+    "TwitchSubscriptionNotFound",
+    Schema.Struct({ subscriptionId: Schema.String }),
+  ),
+  twitchHttpErrorVariant(
+    "SubscriptionSetupIncomplete",
+    Schema.Struct({
+      created: Schema.Array(TwitchSubscriptionResponse),
+      skipped: Schema.Array(subscriptionConfig),
+      errors: Schema.Array(subscriptionSetupError),
+    }),
+  ),
+  twitchHttpErrorVariant("InvalidEventSubHeaders", noDetails),
+  twitchHttpErrorVariant(
+    "EventSubTimestampOutOfWindow",
+    Schema.Struct({ toleranceSeconds: Schema.Literal(600) }),
+  ),
+  twitchHttpErrorVariant(
+    "EventSubBodyTooLarge",
+    Schema.Struct({ maximumBytes: Schema.Literal(1_048_576) }),
+  ),
+  twitchHttpErrorVariant("InvalidEventSubBody", noDetails),
+  twitchHttpErrorVariant("EventSubSignatureInvalid", noDetails),
+  twitchHttpErrorVariant("InvalidEventSubJson", noDetails),
+  twitchHttpErrorVariant("InvalidEventSubPayload", noDetails),
+  twitchHttpErrorVariant("EventSubReceiptConflict", Schema.Struct({ messageId: Schema.String })),
+  twitchHttpErrorVariant("EventSubAcceptanceFailed", Schema.Struct({ messageId: Schema.String })),
+]);
+
+/** Public error response body, discriminated by `code`. */
+export type TwitchHttpErrorBody = typeof TwitchHttpErrorBody.Type;
+
+/** Stable public error code, one per error body variant. */
+export type TwitchHttpErrorCode = TwitchHttpErrorBody["code"];
+
+const errors = TwitchHttpErrorStatus.literals.map((status) =>
+  TwitchHttpErrorBody.pipe(HttpApiSchema.status(status)),
 );
 
 const limitParameter = {
@@ -176,21 +488,6 @@ const oauthResponse = Schema.Struct({
   success: Schema.Literal(true),
   message: Schema.String,
   scopes: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
-});
-
-/** Public subscription evidence omits absent callback keys, as Twitch management clients expect. */
-export const TwitchSubscriptionResponse = Schema.Struct({
-  ...ProviderEventSubSubscription.fields,
-  transport: Schema.Struct({
-    method: Schema.String,
-    callback: Schema.OptionFromOptionalKey(Schema.String),
-  }),
-});
-
-const subscriptionConfig = Schema.Struct({
-  type: Schema.String,
-  version: Schema.String,
-  condition: Schema.Record(Schema.String, Schema.String),
 });
 
 const subscriptionSetup = Schema.Struct({

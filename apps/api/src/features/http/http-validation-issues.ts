@@ -1,65 +1,13 @@
 import { Match, Option, Predicate, Schema, type SchemaAST, type SchemaIssue } from "effect";
+import type { TwitchHttpValidationIssue } from "@cf-twitch/contracts/twitch-api";
 
-const issuePath = Schema.Array(Schema.Union([Schema.String, Schema.Number]));
+type PublicIssue = TwitchHttpValidationIssue;
 
-const issueBase = { path: issuePath, message: Schema.String };
+type IssuePath = PublicIssue["path"];
+
+type IssueLiteralValue = Extract<PublicIssue, { readonly code: "invalid_value" }>["values"][number];
 
 const literalValue = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
-
-const publicIssue = Schema.Union([
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("invalid_type"),
-    expected: Schema.String,
-    format: Schema.optionalKey(Schema.Literal("safeint")),
-    received: Schema.optionalKey(Schema.Literals(["NaN", "Infinity"])),
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("too_small"),
-    origin: Schema.Literals(["number", "int", "string", "array"]),
-    minimum: Schema.Number,
-    inclusive: Schema.Literal(true),
-    note: Schema.optionalKey(Schema.String),
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("too_big"),
-    origin: Schema.Literals(["number", "int", "string", "array"]),
-    maximum: Schema.Number,
-    inclusive: Schema.Literal(true),
-    note: Schema.optionalKey(Schema.String),
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("invalid_value"),
-    values: Schema.Array(literalValue),
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("unrecognized_keys"),
-    keys: Schema.Array(Schema.String),
-  }),
-  Schema.Struct({ ...issueBase, code: Schema.Literal("custom") }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("invalid_format"),
-    origin: Schema.Literal("string"),
-    format: Schema.Literals(["regex", "datetime"]),
-    pattern: Schema.String,
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("invalid_union"),
-    errors: Schema.Array(Schema.Never),
-    note: Schema.Literal("No matching discriminator"),
-    discriminator: Schema.Literal("responseType"),
-  }),
-]);
-
-type PublicIssue = typeof publicIssue.Type;
-
-type IssuePath = typeof issuePath.Type;
 
 type CommandInputValue = Schema.Json | undefined;
 
@@ -122,10 +70,7 @@ const typeIssue = (expected: string, input: CommandInputValue, path: IssuePath):
   message: `Invalid input: expected ${expected}, received ${receivedType(input)}`,
 });
 
-const enumIssue = (
-  values: readonly (typeof literalValue.Type)[],
-  path: IssuePath,
-): PublicIssue => ({
+const enumIssue = (values: readonly IssueLiteralValue[], path: IssuePath): PublicIssue => ({
   code: "invalid_value",
   values,
   path,

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Fiber, Layer, Predicate, Schema } from "effect";
 import { HttpApi, HttpApiBuilder } from "effect/http-api";
@@ -9,7 +10,13 @@ import { SongQueue } from "../song-queue/song-queue.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { twitchStatsHandlersLayer } from "./twitch-stats-handlers.ts";
-import { HttpResponseCache, httpResponseCacheLayer } from "./http-response-cache.ts";
+import {
+  HttpResponseCache,
+  HttpResponseCacheStorage,
+  httpResponseCacheLayerWithoutDependencies,
+  httpResponseCacheTestLayer,
+} from "./http-response-cache.ts";
+import { twitchHttpCorrelationLayer } from "./http-request-correlation.ts";
 
 // A recording Cache API fixture, not a replacement TTL policy. Cache-Control expiry is Cloudflare-owned.
 class RecordingWebCache {
@@ -48,6 +55,11 @@ class RecordingWebCache {
 
 const statsApi = HttpApi.make("TwitchHttpApi").add(TwitchStatsApi);
 
+const recordingCacheLayer = (cache: RecordingWebCache) =>
+  httpResponseCacheLayerWithoutDependencies.pipe(
+    Layer.provide(Layer.succeed(HttpResponseCacheStorage, cache)),
+  );
+
 describe("HTTP statistics edge cache", () => {
   it.effect(
     "evicts corrupt hits, canonicalizes equivalent limits, and writes only validated success values",
@@ -60,8 +72,10 @@ describe("HTTP statistics edge cache", () => {
 
         const api = HttpApiBuilder.layer(statsApi).pipe(
           Layer.provide(twitchStatsHandlersLayer),
+          Layer.provide(twitchHttpCorrelationLayer),
           Layer.provide([
-            httpResponseCacheLayer(cache),
+            NodeCrypto.layer,
+            recordingCacheLayer(cache),
             cloudflareHttpServerLayer,
             Layer.mock(Raffle, {}),
             Layer.mock(SongQueue, {
@@ -116,10 +130,11 @@ describe("HTTP statistics edge cache", () => {
 
           return yield* responseCache.readThrough({
             key,
+            service: "songQueue",
             schema: Schema.Array(Schema.String),
             load: Effect.succeed(["fresh"]),
           });
-        }).pipe(Effect.provide(httpResponseCacheLayer(cache)));
+        }).pipe(Effect.provide(recordingCacheLayer(cache)));
 
         expect(value, operation).toEqual(["fresh"]);
       }
@@ -135,10 +150,11 @@ describe("HTTP statistics edge cache", () => {
 
         return yield* responseCache.readThrough({
           key: "https://stats.internal/api/stats/top-requesters?limit=10",
+          service: "songQueue",
           schema: Schema.Array(Schema.String),
           load: Effect.succeed(["fresh"]),
         });
-      }).pipe(Effect.provide(httpResponseCacheLayer(cache)));
+      }).pipe(Effect.provide(recordingCacheLayer(cache)));
 
       const fiber = yield* read.pipe(Effect.forkChild);
       yield* Effect.promise(() => cache.putStarted.promise);
@@ -158,8 +174,10 @@ describe("HTTP statistics edge cache", () => {
 
       const api = HttpApiBuilder.layer(statsApi).pipe(
         Layer.provide(twitchStatsHandlersLayer),
+        Layer.provide(twitchHttpCorrelationLayer),
         Layer.provide([
-          httpResponseCacheLayer(cache),
+          NodeCrypto.layer,
+          recordingCacheLayer(cache),
           cloudflareHttpServerLayer,
           Layer.mock(Raffle, {}),
           Layer.mock(SongQueue, {
@@ -187,17 +205,23 @@ describe("HTTP statistics edge cache", () => {
         Effect.sync(() => HttpRouter.toWebHandler(api, { disableLogger: true })),
         ({ handler }) =>
           Effect.gen(function* () {
-            for (const [path, status, error] of [
-              ["top-tracks", 503, "Service temporarily unavailable"],
-              ["top-requesters", 502, "Invalid service response"],
-              ["top-requesters", 502, "Invalid service response"],
+            for (const [path, status, code, retryable] of [
+              ["top-tracks", 503, "ServiceUnavailable", true],
+              ["top-requesters", 500, "InvalidServiceResponse", false],
+              ["top-requesters", 500, "InvalidServiceResponse", false],
             ] as const) {
               const response = yield* Effect.promise(() =>
                 handler(new Request(`https://worker.test/api/stats/${path}`)),
               );
 
               expect(response.status).toBe(status);
-              expect(yield* Effect.promise(() => response.json())).toEqual({ error });
+              expect(yield* Effect.promise(() => response.json())).toMatchObject({
+                code,
+                operation: path === "top-tracks" ? "topTracks" : "topRequesters",
+                details: { service: "songQueue" },
+                requestId: response.headers.get("x-request-id"),
+                retryable,
+              });
               expect(response.headers.get("cache-control")).toBeNull();
             }
           }),
@@ -206,5 +230,27 @@ describe("HTTP statistics edge cache", () => {
       expect(loads).toBe(2);
       expect(cache.stored).toEqual([]);
     }),
+  );
+
+  it.effect("test layer serves a stored value without loading again", () =>
+    Effect.gen(function* () {
+      const responseCache = yield* HttpResponseCache;
+      let loads = 0;
+
+      const read = responseCache.readThrough({
+        key: "https://stats.internal/api/stats/top-requesters?limit=10",
+        service: "songQueue",
+        schema: Schema.Array(Schema.String),
+        load: Effect.sync(() => {
+          loads++;
+
+          return [`load-${loads}`];
+        }),
+      });
+
+      expect(yield* read).toEqual(["load-1"]);
+      expect(yield* read).toEqual(["load-1"]);
+      expect(loads).toBe(1);
+    }).pipe(Effect.provide(httpResponseCacheTestLayer)),
   );
 });
