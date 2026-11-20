@@ -4,10 +4,10 @@ import { describe, expect } from "vite-plus/test";
 import { Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpRouter } from "effect/http";
 import { HttpApiBuilder, HttpApiClient } from "effect/http-api";
-import { ChatCommandName } from "@cf-twitch/contracts/chat-command";
+import { ChatCommandName, CommandNotFoundError } from "@cf-twitch/contracts/chat-command";
 import { EventSubMessageId } from "@cf-twitch/contracts/identity";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
-import { commandsDatabaseLayerWithoutDependencies } from "./commands-database.ts";
+import { commandsLayer } from "./commands.ts";
 import { CommandsHttpApi } from "./commands-http-api.ts";
 import { commandsHttpHandlersLayerWithoutDependencies } from "./commands-http-handlers.ts";
 
@@ -15,9 +15,7 @@ const httpLayer = HttpApiBuilder.layer(CommandsHttpApi).pipe(
   Layer.provide(
     commandsHttpHandlersLayerWithoutDependencies.pipe(
       Layer.provide(
-        commandsDatabaseLayerWithoutDependencies.pipe(
-          Layer.provide(SqliteClient.layer({ filename: ":memory:" })),
-        ),
+        commandsLayer.pipe(Layer.provide(SqliteClient.layer({ filename: ":memory:" }))),
       ),
     ),
   ),
@@ -85,8 +83,11 @@ describe("Commands real HTTP API", () => {
               permission: "everyone",
               responseType: "computed",
               handlerKey: "time",
-              counterSourceName: ChatCommandName.make("runtime"),
-              initialCounter: 2,
+              enabled: Option.none(),
+              aliases: Option.none(),
+              createdAt: Option.none(),
+              counterSourceName: Option.some(ChatCommandName.make("runtime")),
+              initialCounter: Option.some(2),
             },
           });
 
@@ -97,11 +98,21 @@ describe("Commands real HTTP API", () => {
             }),
           ).toBe(5);
           yield* client.commands.deleteCommand({ payload: { name: created.name } });
-          expect(
-            yield* client.commands
-              .getCommand({ payload: { name: created.name } })
-              .pipe(Effect.result),
-          ).toHaveProperty("failure.message", "Command not found: runtime");
+
+          const missing = yield* client.commands
+            .getCommand({ payload: { name: created.name } })
+            .pipe(Effect.flip);
+
+          expect(missing).toEqual(
+            new CommandNotFoundError({
+              operation: "getCommand",
+              reason: "unknown_command_name",
+              commandName: created.name,
+            }),
+          );
+          expect(missing.message).toBe(
+            "Chat command not found for command lookup: no command or alias is named runtime. Check the command name and try again.",
+          );
         }).pipe(Effect.provide(fetchLayer));
       }).pipe(Effect.scoped),
   );
