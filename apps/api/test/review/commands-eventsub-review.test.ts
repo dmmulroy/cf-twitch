@@ -18,10 +18,7 @@ import {
   EventSubInbox,
   eventSubInboxLayerWithoutDependencies,
 } from "../../src/features/eventsub/eventsub-inbox.ts";
-import {
-  WorkflowAlarm,
-  workflowAlarmTestLayer,
-} from "../../src/features/workflows/workflow-alarm.ts";
+import { workflowAlarmTestLayer } from "../../src/features/workflows/workflow-alarm.ts";
 import { WorkflowStarters } from "../../src/features/workflows/workflow-starters.ts";
 import { StreamLifecycleClient } from "../../src/features/stream/stream-lifecycle.ts";
 import { TwitchService } from "../../src/features/providers/twitch-service.ts";

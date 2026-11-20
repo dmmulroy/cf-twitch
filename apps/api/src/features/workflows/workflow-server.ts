@@ -20,7 +20,13 @@ import { WorkflowHttpApi } from "./workflow-http-api.ts";
 import { workflowHttpHandlersLayer } from "./workflow-http-handlers.ts";
 
 interface WorkflowServerContract {
+  /** Serves the versioned workflow HTTP contract for this run. */
   readonly fetch: HttpEffect;
+  /**
+   * Resumes the unfinished run when the Durable Object alarm fires.
+   *
+   * @throws {WorkflowError} As a defect when the journal fails, so the runtime retries the alarm.
+   */
   readonly alarm: () => Effect.Effect<void>;
 }
 
@@ -42,6 +48,7 @@ export class RaidShoutoutSagaServer extends Cloudflare.DurableObject<
   WorkflowServerContract
 >()("RaidShoutoutSagaDO") {}
 
+// Initialization dies when the journal cannot migrate or restore its alarm; a failed alarm resume also dies so the runtime retries it.
 // Each namespace accepts only its own workflow kind, so a misrouted start cannot create a run of another kind under this identity.
 const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
   Effect.gen(function* () {
@@ -102,17 +109,17 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
     }).pipe(Effect.orDie);
   });
 
-/** Real song HTTP/SQL server with provider and durable dependency selection left visible. */
+/** Real song workflow HTTP/SQL server Layer, leaving provider and durable dependency selection visible. */
 export const songRequestSagaServerLayerWithoutDependencies = SongRequestSagaServer.make(
   makeWorkflowServerRuntime("SongRequest"),
 );
 
-/** Real raffle HTTP/SQL server with provider and durable dependency selection left visible. */
+/** Real raffle workflow HTTP/SQL server Layer, leaving provider and durable dependency selection visible. */
 export const keyboardRaffleSagaServerLayerWithoutDependencies = KeyboardRaffleSagaServer.make(
   makeWorkflowServerRuntime("KeyboardRaffle"),
 );
 
-/** Real raid HTTP/SQL server with provider and durable dependency selection left visible. */
+/** Real raid workflow HTTP/SQL server Layer, leaving provider and durable dependency selection visible. */
 export const raidShoutoutSagaServerLayerWithoutDependencies = RaidShoutoutSagaServer.make(
   makeWorkflowServerRuntime("RaidShoutout"),
 );
@@ -125,26 +132,27 @@ const workflowDependenciesLayer = Layer.mergeAll(
   eventPublisherLayer,
 );
 
-/** Production song workflow server selects real providers and durable dependency clients. */
+/** Production song workflow server Layer over real providers and durable dependency clients. */
 export const songRequestSagaServerLayer = songRequestSagaServerLayerWithoutDependencies.pipe(
   Layer.provide(workflowDependenciesLayer),
 );
 
-/** Production raffle workflow server selects real providers and durable dependency clients. */
+/** Production raffle workflow server Layer over real providers and durable dependency clients. */
 export const keyboardRaffleSagaServerLayer = keyboardRaffleSagaServerLayerWithoutDependencies.pipe(
   Layer.provide(workflowDependenciesLayer),
 );
 
-/** Production raid workflow server selects real providers and durable dependency clients. */
+/** Production raid workflow server Layer over real providers and durable dependency clients. */
 export const raidShoutoutSagaServerLayer = raidShoutoutSagaServerLayerWithoutDependencies.pipe(
   Layer.provide(workflowDependenciesLayer),
 );
 
-/** All workflow namespaces are composed explicitly; no existing namespace is auto-transferred. */
+// All workflow namespaces are composed explicitly; no existing namespace is auto-transferred.
 const workflowServersLayer = Layer.mergeAll(
   songRequestSagaServerLayer,
   keyboardRaffleSagaServerLayer,
   raidShoutoutSagaServerLayer,
 );
 
+/** All three production workflow servers, the module's default export for Alchemy namespace registration. */
 export default workflowServersLayer;

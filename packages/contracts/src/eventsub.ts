@@ -94,8 +94,11 @@ export type EventSubReceiptFailureReason = typeof EventSubReceiptFailureReason.T
 export class EventSubReceiptConflict extends Schema.TaggedError<EventSubReceiptConflict>()(
   "EventSubReceiptConflict",
   {
+    /** Receipt operation that detected the conflict. */
     operation: Schema.Literal("accept"),
+    /** The stored receipt's digest, message type, or subscription type/version differs. */
     reason: Schema.Literal("content_mismatch"),
+    /** Authenticated message ID that was reused. */
     messageId: EventSubMessageId,
   },
 ) {
@@ -109,7 +112,9 @@ export class EventSubReceiptConflict extends Schema.TaggedError<EventSubReceiptC
 export class EventSubReceiptError extends Schema.TaggedError<EventSubReceiptError>()(
   "EventSubReceiptError",
   {
+    /** Receipt operation that failed. */
     operation: EventSubReceiptOperation,
+    /** Classified cause; selects the message and whether the inbox retries. */
     reason: EventSubReceiptFailureReason,
     /** Authenticated message whose receipt failed, when the failing code knows it. */
     messageId: Schema.OptionFromNullOr(EventSubMessageId),

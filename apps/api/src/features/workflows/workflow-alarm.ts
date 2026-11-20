@@ -5,7 +5,9 @@ import * as Cloudflare from "@alchemy.run/cloudflare";
 export class WorkflowAlarmError extends Schema.TaggedError<WorkflowAlarmError>()(
   "WorkflowAlarmError",
   {
+    /** Alarm operation that storage rejected. */
     operation: Schema.Literals(["set-alarm", "delete-alarm", "get-alarm"]),
+    /** Durable Object storage rejected the alarm read or update. */
     reason: Schema.Literal("storage_rejected"),
     /** Requested wake-up time in epoch milliseconds, absent when cancelling or reading. */
     dueAt: Schema.OptionFromNullOr(Schema.Number),

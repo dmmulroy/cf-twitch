@@ -22,7 +22,8 @@ const EventSubSubscription = Schema.Struct({
     callback: Schema.OptionFromOptionalKey(
       Schema.String.check(
         Schema.makeFilter((value) => URL.canParse(value), {
-          message: "EventSub callback must be an absolute URL",
+          message:
+            "EventSub callback must be an absolute URL. Correct the subscription's webhook callback.",
         }),
       ),
     ),

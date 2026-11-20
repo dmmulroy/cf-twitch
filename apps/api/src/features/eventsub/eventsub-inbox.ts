@@ -11,8 +11,7 @@ import {
   Schema,
   Semaphore,
 } from "effect";
-import { SqlClient, SqlError } from "effect/sql";
-import type { SchemaError } from "effect/Schema";
+import { SqlClient } from "effect/sql";
 import {
   AcceptedEventSubReceipt,
   EventSubReceiptConflict,
@@ -25,11 +24,10 @@ import { NonNegativeInt } from "@cf-twitch/contracts/identity";
 import { TwitchService } from "../providers/twitch-service.ts";
 import {
   WorkflowAlarm,
-  WorkflowAlarmError,
   workflowAlarmLayer,
   workflowAlarmTestLayer,
 } from "../workflows/workflow-alarm.ts";
-import { EventSubChatResponse, EventSubDispatch } from "./eventsub-dispatch.ts";
+import { EventSubDispatchChatResponse, EventSubDispatch } from "./eventsub-dispatch.ts";
 import { parseEventSubMessage } from "./eventsub-message.ts";
 
 const StoredReceipt = Schema.Struct({
@@ -41,7 +39,7 @@ const StoredReceipt = Schema.Struct({
   leaseUntil: Schema.OptionFromNullOr(Schema.Number),
   nextAttemptAt: Schema.Number,
   lastError: Schema.OptionFromNullOr(Schema.String),
-  chatResponse: Schema.OptionFromNullOr(EventSubChatResponse),
+  chatResponse: Schema.OptionFromNullOr(EventSubDispatchChatResponse),
   chatDelivery: EventSubReceiptStatus.fields.chatCommandDelivery,
 });
 
@@ -69,11 +67,11 @@ const migrationLoader = SqliteMigrator.fromRecord({
 
 /** Creates `Effect.catchTags` handlers translating inbox SQL and codec failures into `EventSubReceiptError`. */
 const eventSubInboxStorageErrorHandlers = (operation: EventSubReceiptOperation) => ({
-  SqlError: (_: SqlError.SqlError) =>
+  SqlError: () =>
     Effect.fail(
       new EventSubReceiptError({ operation, reason: "storage", messageId: Option.none() }),
     ),
-  SchemaError: (_: SchemaError) =>
+  SchemaError: () =>
     Effect.fail(
       new EventSubReceiptError({ operation, reason: "corrupt", messageId: Option.none() }),
     ),
@@ -82,7 +80,7 @@ const eventSubInboxStorageErrorHandlers = (operation: EventSubReceiptOperation) 
 /** Creates `Effect.catchTags` handlers translating inbox SQL, codec, and alarm failures into `EventSubReceiptError`. */
 const eventSubInboxBoundaryErrorHandlers = (operation: EventSubReceiptOperation) => ({
   ...eventSubInboxStorageErrorHandlers(operation),
-  WorkflowAlarmError: (_: WorkflowAlarmError) =>
+  WorkflowAlarmError: () =>
     Effect.fail(
       new EventSubReceiptError({ operation, reason: "schedule", messageId: Option.none() }),
     ),
@@ -391,23 +389,17 @@ export const makeEventSubInbox = Effect.gen(function* () {
           },
         }),
         Effect.timeout("45 seconds"),
-        Effect.result,
+        Effect.as(true),
+        // Only dispatch failures and the deadline are retried below. Parse and persistence failures propagate, so the
+        // stale in-memory copy never overwrites newer or corrupt evidence.
+        Effect.catchTags({
+          TimeoutError: () => Effect.succeed(false),
+          EventSubReceiptError: (error) =>
+            error.reason === "dispatch" ? Effect.succeed(false) : Effect.fail(error),
+        }),
       );
 
-      if (Result.isSuccess(outcome)) return yield* complete(receipt);
-
-      // Parse and persistence failures never overwrite newer or corrupt evidence with the stale in-memory copy.
-      if (
-        !Predicate.isTagged(outcome.failure, "EventSubReceiptError") &&
-        !Predicate.isTagged(outcome.failure, "TimeoutError")
-      )
-        return yield* Effect.fail(outcome.failure);
-
-      if (
-        Predicate.isTagged(outcome.failure, "EventSubReceiptError") &&
-        outcome.failure.reason !== "dispatch"
-      )
-        return yield* outcome.failure;
+      if (outcome) return yield* complete(receipt);
 
       if (Option.getOrNull(receipt.chatDelivery) === "sending") {
         receipt = { ...receipt, chatDelivery: Option.some("uncertain") };
@@ -523,9 +515,6 @@ export const makeEventSubInbox = Effect.gen(function* () {
   return EventSubInbox.of({ accept, getReceiptStatus, recover, restoreAlarm });
 });
 
-/** Layer that provides the SQL inbox; requires SQL, the alarm, dispatch, the Twitch provider, and analytics. */
-export const eventSubInboxLayerWithoutDependencies = Layer.effect(EventSubInbox, makeEventSubInbox);
-
 // Built inside the Durable Object runtime phase, where `DurableObjectState` is available; never during planning.
 const durableObjectSqliteLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -535,7 +524,16 @@ const durableObjectSqliteLayer = Layer.unwrap(
   }),
 );
 
-/** Production inbox Layer over the Durable Object's SQLite storage and native alarm; requires the runtime `DurableObjectState`, dispatch, the Twitch provider, and analytics. */
+/** Layer that provides the SQL inbox; requires SQL, the alarm, dispatch, the Twitch provider, and analytics. */
+export const eventSubInboxLayerWithoutDependencies = Layer.effect(EventSubInbox, makeEventSubInbox);
+
+/**
+ * Production inbox Layer over the Durable Object's SQLite storage and native alarm; requires the runtime `DurableObjectState`, dispatch, the Twitch provider, and analytics.
+ *
+ * **Gotchas**
+ *
+ * Building runs migrations and fails with `SqlError` or `MigrationError` when they cannot run.
+ */
 export const eventSubInboxLayer = eventSubInboxLayerWithoutDependencies.pipe(
   Layer.provide([durableObjectSqliteLayer, workflowAlarmLayer]),
 );

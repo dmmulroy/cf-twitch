@@ -13,7 +13,13 @@ import { EventSubHttpApi } from "./eventsub-http-api.ts";
 import { eventSubHttpHandlersLayer } from "./eventsub-http-handlers.ts";
 
 interface EventSubServerContract {
+  /** Serves the versioned receipt HTTP contract for this message's inbox. */
   readonly fetch: HttpEffect;
+  /**
+   * Recovers the pending receipt when the Durable Object alarm fires.
+   *
+   * @throws {EventSubReceiptError} As a defect when recovery fails, so the runtime retries the alarm.
+   */
   readonly alarm: () => Effect.Effect<void>;
 }
 
@@ -23,7 +29,13 @@ export class EventSubWebhookServer extends Cloudflare.DurableObject<
   EventSubServerContract
 >()("EventSubWebhookDO") {}
 
-/** Real receipt SQL/HTTP server with dispatch, provider, and analytics selection visible to composition and smoke tests. */
+/**
+ * Real receipt SQL/HTTP server Layer, leaving dispatch, provider, and analytics selection visible to composition and smoke tests.
+ *
+ * **Gotchas**
+ *
+ * Object initialization dies, and the object serves no requests, when legacy `eventsub-receipt` state exists, storage cannot be read, or inbox migrations fail. A failed recovery alarm also dies, so the runtime retries it.
+ */
 export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServer.make(
   Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
@@ -77,9 +89,10 @@ export const eventSubWebhookServerLayerWithoutDependencies = EventSubWebhookServ
   }),
 );
 
-/** Production EventSub receipt server, registering its dispatch and provider bindings during the outer phase; requires reward configuration and analytics. */
+/** Production EventSub receipt server Layer with dispatch and provider bindings registered during the outer phase; requires reward configuration and analytics. */
 export const eventSubWebhookServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
   Layer.provide([eventSubDispatchLayer, twitchServiceLayer]),
 );
 
+/** Production EventSub receipt server, the module's default export for Alchemy namespace registration. */
 export default eventSubWebhookServerLayer;

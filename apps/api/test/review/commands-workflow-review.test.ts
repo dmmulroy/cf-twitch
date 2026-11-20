@@ -16,10 +16,7 @@ import {
   workflowExecutionLayerWithoutDependencies,
 } from "../../src/features/workflows/workflow-execution.ts";
 import { workflowJournalLayerWithoutDependencies } from "../../src/features/workflows/workflow-journal.ts";
-import {
-  WorkflowAlarm,
-  workflowAlarmTestLayer,
-} from "../../src/features/workflows/workflow-alarm.ts";
+import { workflowAlarmTestLayer } from "../../src/features/workflows/workflow-alarm.ts";
 import { SpotifyService } from "../../src/features/providers/spotify-service.ts";
 import { TwitchService } from "../../src/features/providers/twitch-service.ts";
 import { SongQueue } from "../../src/features/song-queue/song-queue.ts";
@@ -161,7 +158,7 @@ describe("Independent command-owner workflow review regressions", () => {
         yield* services.resume();
         expect(yield* Ref.get(services.refunded)).toBe(true);
         expect(yield* Ref.get(services.messages)).toEqual([
-          "@Viewer your song request was invalid and your points have been refunded. Did you use a valid Spotify track link?",
+          "@Viewer your song request was invalid and your points have been refunded. Redeem again with a valid Spotify track link.",
         ]);
       }).pipe(Effect.provide(sqlite)),
   );

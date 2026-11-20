@@ -7,12 +7,8 @@ import { SqlClient } from "effect/sql";
 import { recordingTwitchAnalyticsLayer } from "../../../test/support/recording-twitch-analytics.ts";
 import { RaidShoutoutInput, WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { WorkflowAlarm, WorkflowAlarmError, workflowAlarmTestLayer } from "./workflow-alarm.ts";
-import {
-  WorkflowJournal,
-  WorkflowStepFailure,
-  workflowJournalLayerWithoutDependencies,
-  type WorkflowStepPolicy,
-} from "./workflow-journal.ts";
+import { WorkflowJournal, workflowJournalLayerWithoutDependencies } from "./workflow-journal.ts";
+import { WorkflowStepFailure, type WorkflowStepPolicy } from "./workflow-step.ts";
 
 const input = WorkflowInput.cases.RaidShoutout.make({
   raid: Schema.decodeUnknownSync(RaidShoutoutInput)({
@@ -37,6 +33,7 @@ const rollback: WorkflowStepPolicy = { ...safe, rollback: true };
 const retryable = new WorkflowStepFailure({
   operation: "get-spotify-track",
   reason: "provider_unavailable",
+  workflowId: Option.none(),
   kind: "retryable",
   providerFailure: Option.none(),
   retryAfterMs: Option.none(),
@@ -262,6 +259,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
                       new WorkflowStepFailure({
                         operation: "get-spotify-track",
                         reason: "rate_limited",
+                        workflowId: Option.none(),
                         kind: "retryable",
                         providerFailure: Option.some("rate-limited"),
                         retryAfterMs: Option.some(10_000),

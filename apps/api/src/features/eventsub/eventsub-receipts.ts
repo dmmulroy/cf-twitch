@@ -1,9 +1,7 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cache, Context, Effect, HashMap, Layer, Option, Ref } from "effect";
-import { HttpClientError } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import type { SchemaError } from "effect/Schema";
 import {
   type AcceptedEventSubReceipt,
   EventSubReceiptConflict,
@@ -15,6 +13,29 @@ import type { EventSubMessageId } from "@cf-twitch/contracts/identity";
 import { EventSubHttpApi } from "./eventsub-http-api.ts";
 import { parseEventSubMessage } from "./eventsub-message.ts";
 import eventSubWebhookServerLayer, { EventSubWebhookServer } from "./eventsub-server.ts";
+
+/** Creates `Effect.catchTags` handlers translating receipt HTTP client failures into `EventSubReceiptError` for the identified message. */
+const eventSubReceiptClientErrorHandlers = (
+  operation: EventSubReceiptOperation,
+  messageId: EventSubMessageId,
+) => ({
+  HttpClientError: () =>
+    Effect.fail(
+      new EventSubReceiptError({
+        operation,
+        reason: "transport",
+        messageId: Option.some(messageId),
+      }),
+    ),
+  SchemaError: () =>
+    Effect.fail(
+      new EventSubReceiptError({
+        operation,
+        reason: "invalid_response",
+        messageId: Option.some(messageId),
+      }),
+    ),
+});
 
 /** Durable EventSub receipt acceptance; acceptance acknowledges persisted work, not downstream completion. */
 export interface IEventSubReceipts {
@@ -40,29 +61,6 @@ export interface IEventSubReceipts {
 export class EventSubReceipts extends Context.Service<EventSubReceipts, IEventSubReceipts>()(
   "@cf-twitch/EventSubReceipts",
 ) {}
-
-/** Creates `Effect.catchTags` handlers translating receipt HTTP client failures into `EventSubReceiptError` for the identified message. */
-const eventSubReceiptClientErrorHandlers = (
-  operation: EventSubReceiptOperation,
-  messageId: EventSubMessageId,
-) => ({
-  HttpClientError: (_: HttpClientError.HttpClientError) =>
-    Effect.fail(
-      new EventSubReceiptError({
-        operation,
-        reason: "transport",
-        messageId: Option.some(messageId),
-      }),
-    ),
-  SchemaError: (_: SchemaError) =>
-    Effect.fail(
-      new EventSubReceiptError({
-        operation,
-        reason: "invalid_response",
-        messageId: Option.some(messageId),
-      }),
-    ),
-});
 
 /** Effect that builds receipt clients with execution-scoped cache ownership, never globally cached Durable Object stubs. */
 export const makeEventSubReceipts = Effect.gen(function* () {

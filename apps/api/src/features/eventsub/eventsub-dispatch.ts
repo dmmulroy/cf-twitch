@@ -16,13 +16,13 @@ import { ChatCommandExecutor, executorLayer } from "../commands/chat-command-exe
 import { parseEventSubMessage } from "./eventsub-message.ts";
 
 /** Schema for a prepared Chat Command reply, persisted before delivery; preparation never sends to Twitch. */
-export const EventSubChatResponse = Schema.Struct({
+export const EventSubDispatchChatResponse = Schema.Struct({
   commandName: ChatCommandName,
   message: ChatMessageText,
 });
 
 /** Prepared Chat Command reply, ready for a durable sending intent. */
-export type EventSubChatResponse = typeof EventSubChatResponse.Type;
+export type EventSubDispatchChatResponse = typeof EventSubDispatchChatResponse.Type;
 
 /** Notification translation into workflow, stream, and Chat Command effects; the inbox owns leases and chat sending checkpoints. */
 export interface IEventSubDispatch {
@@ -37,7 +37,7 @@ export interface IEventSubDispatch {
    */
   readonly dispatch: (
     receipt: AcceptedEventSubReceipt,
-  ) => Effect.Effect<Option.Option<EventSubChatResponse>, EventSubReceiptError>;
+  ) => Effect.Effect<Option.Option<EventSubDispatchChatResponse>, EventSubReceiptError>;
 }
 
 /** Service tag for EventSub notification dispatch over the workflow, stream, and Chat Command capabilities. */
@@ -70,27 +70,27 @@ export const makeEventSubDispatch = Effect.gen(function* () {
 
       return yield* Match.value(message).pipe(
         Match.tagsExhaustive({
-          EventSubChallenge: () => Effect.succeed(Option.none<EventSubChatResponse>()),
+          EventSubChallenge: () => Effect.succeed(Option.none<EventSubDispatchChatResponse>()),
           EventSubRevocation: (revocation) =>
             Effect.logWarning("EventSub subscription revoked", {
               subscriptionType: revocation.subscription.type,
               status: revocation.subscription.status,
-            }).pipe(Effect.as(Option.none<EventSubChatResponse>())),
+            }).pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           UnhandledEventSubNotification: (notification) =>
             Effect.logWarning("EventSub subscription type is unhandled", {
               subscriptionType: notification.subscription.type,
-            }).pipe(Effect.as(Option.none<EventSubChatResponse>())),
+            }).pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           StreamOnlineNotification: (notification) =>
             stream
               .markOnline({
                 streamId: StreamId.make(notification.event.id),
                 startedAt: notification.event.started_at,
               })
-              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+              .pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           StreamOfflineNotification: () =>
             stream
               .markOffline({ endedAt: sourceTimestamp })
-              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+              .pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           RaidNotification: (notification) =>
             workflows
               .startRaidShoutout({
@@ -103,7 +103,7 @@ export const makeEventSubDispatch = Effect.gen(function* () {
                 },
                 viewers: notification.event.viewers,
               })
-              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+              .pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           RewardRedemptionNotification: (notification) =>
             Effect.gen(function* () {
               const event = notification.event;
@@ -124,7 +124,7 @@ export const makeEventSubDispatch = Effect.gen(function* () {
               else if (event.reward.id === configuration.rewardRouting.keyboardRaffleRewardId)
                 yield* workflows.startKeyboardRaffle(redemption);
 
-              return Option.none<EventSubChatResponse>();
+              return Option.none<EventSubDispatchChatResponse>();
             }),
           ChatMessageNotification: (notification) =>
             Effect.gen(function* () {
@@ -146,7 +146,7 @@ export const makeEventSubDispatch = Effect.gen(function* () {
                 Predicate.isTagged(prepared, "ChatCommandIgnored") ||
                 Option.isNone(prepared.message)
               )
-                return Option.none<EventSubChatResponse>();
+                return Option.none<EventSubDispatchChatResponse>();
 
               const chatMessage = yield* ChatMessageText.makeEffect(prepared.message.value).pipe(
                 Effect.mapError(

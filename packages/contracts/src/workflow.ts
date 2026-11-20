@@ -79,6 +79,26 @@ export const WorkflowLookup = Schema.TaggedUnion({
 /** Namespace-qualified deterministic workflow status lookup. */
 export type WorkflowLookup = typeof WorkflowLookup.Type;
 
+/** Returns the deterministic workflow identity of a start input: the redemption ID, or the raid's EventSub message ID. */
+export const workflowIdOfInput = (input: WorkflowInput): WorkflowId =>
+  WorkflowId.make(
+    WorkflowInput.match(input, {
+      SongRequest: ({ redemption }) => redemption.id,
+      KeyboardRaffle: ({ redemption }) => redemption.id,
+      RaidShoutout: ({ raid }) => raid.messageId,
+    }),
+  );
+
+/** Returns the deterministic workflow identity a status lookup selects. */
+export const workflowIdOfLookup = (input: WorkflowLookup): WorkflowId =>
+  WorkflowId.make(
+    WorkflowLookup.match(input, {
+      SongRequest: ({ redemptionId }) => redemptionId,
+      KeyboardRaffle: ({ redemptionId }) => redemptionId,
+      RaidShoutout: ({ messageId }) => messageId,
+    }),
+  );
+
 /** Schema for the workflow operations whose failures `WorkflowError` reports. */
 export const WorkflowOperation = Schema.Literals([
   "start",
@@ -115,7 +135,9 @@ export type WorkflowFailureReason = typeof WorkflowFailureReason.Type;
 
 /** Error raised when workflow persistence, scheduling, or transport fails; these are retryable intake failures, not business failure. */
 export class WorkflowError extends Schema.TaggedError<WorkflowError>()("WorkflowError", {
+  /** Workflow operation that failed. */
   operation: WorkflowOperation,
+  /** Classified cause; selects the message. */
   reason: WorkflowFailureReason,
   /** Workflow whose operation failed, when the failing code knows it. */
   workflowId: Schema.OptionFromNullOr(WorkflowId),
@@ -163,12 +185,12 @@ export class WorkflowError extends Schema.TaggedError<WorkflowError>()("Workflow
       Match.when(
         "transport",
         () =>
-          `Workflow service was unreachable during ${this.operation}. Retry the request; starting the same workflow again resumes the existing run.`,
+          `Workflow service was unreachable during ${this.operation}. Retry the request; workflow start and status are idempotent by workflow identity.`,
       ),
       Match.when(
         "invalid_response",
         () =>
-          `Workflow service returned an unreadable response during ${this.operation}. Retry the request; starting the same workflow again resumes the existing run.`,
+          `Workflow service returned an unreadable response during ${this.operation}. Retry the request; workflow start and status are idempotent by workflow identity.`,
       ),
       Match.exhaustive,
     );

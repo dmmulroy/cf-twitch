@@ -13,11 +13,13 @@ import type { ChannelPointRedemption } from "@cf-twitch/contracts/redemption";
 import {
   type RaidShoutoutInput,
   WorkflowError,
-  WorkflowId,
+  type WorkflowId,
   WorkflowInput,
   WorkflowLookup,
   type WorkflowOperation,
   type WorkflowRunStatus,
+  workflowIdOfInput,
+  workflowIdOfLookup,
 } from "@cf-twitch/contracts/workflow";
 import { WorkflowHttpApi } from "./workflow-http-api.ts";
 import workflowServersLayer, {
@@ -25,6 +27,45 @@ import workflowServersLayer, {
   RaidShoutoutSagaServer,
   SongRequestSagaServer,
 } from "./workflow-server.ts";
+
+// One run recorded by `workflowStartersTestLayer`.
+interface InMemoryWorkflowRun {
+  readonly input: WorkflowInput;
+  readonly status: WorkflowRunStatus;
+}
+
+/**
+ * Translates workflow HTTP client failures into `WorkflowError` for the identified workflow.
+ *
+ * @returns The effect, failing with `WorkflowError` reason `transport` or `invalid_response` instead of `HttpClientError` or `SchemaError`.
+ */
+const catchWorkflowClientErrors =
+  (operation: WorkflowOperation, workflowId: WorkflowId) =>
+  <A, R>(
+    effect: Effect.Effect<A, WorkflowError | HttpClientError.HttpClientError | SchemaError, R>,
+  ): Effect.Effect<A, WorkflowError, R> =>
+    effect.pipe(
+      Effect.catchTags({
+        HttpClientError: () =>
+          Effect.fail(
+            new WorkflowError({
+              operation,
+              reason: "transport",
+              workflowId: Option.some(workflowId),
+              stepName: Option.none(),
+            }),
+          ),
+        SchemaError: () =>
+          Effect.fail(
+            new WorkflowError({
+              operation,
+              reason: "invalid_response",
+              workflowId: Option.some(workflowId),
+              stepName: Option.none(),
+            }),
+          ),
+      }),
+    );
 
 /** Workflow start and status by deterministic identity; starting the same input again resumes the existing run. */
 export interface IWorkflowStarters {
@@ -64,53 +105,6 @@ export interface IWorkflowStarters {
 export class WorkflowStarters extends Context.Service<WorkflowStarters, IWorkflowStarters>()(
   "@cf-twitch/WorkflowStarters",
 ) {}
-
-const workflowIdOfInput = (input: WorkflowInput): WorkflowId =>
-  WorkflowId.make(
-    WorkflowInput.match(input, {
-      SongRequest: ({ redemption }) => redemption.id,
-      KeyboardRaffle: ({ redemption }) => redemption.id,
-      RaidShoutout: ({ raid }) => raid.messageId,
-    }),
-  );
-
-const workflowIdOfLookup = (input: WorkflowLookup): WorkflowId =>
-  WorkflowId.make(
-    WorkflowLookup.match(input, {
-      SongRequest: ({ redemptionId }) => redemptionId,
-      KeyboardRaffle: ({ redemptionId }) => redemptionId,
-      RaidShoutout: ({ messageId }) => messageId,
-    }),
-  );
-
-/** Translates workflow HTTP client failures into `WorkflowError` for the identified workflow. */
-const catchWorkflowClientErrors =
-  (operation: WorkflowOperation, workflowId: WorkflowId) =>
-  <A, R>(
-    effect: Effect.Effect<A, WorkflowError | HttpClientError.HttpClientError | SchemaError, R>,
-  ): Effect.Effect<A, WorkflowError, R> =>
-    effect.pipe(
-      Effect.catchTags({
-        HttpClientError: () =>
-          Effect.fail(
-            new WorkflowError({
-              operation,
-              reason: "transport",
-              workflowId: Option.some(workflowId),
-              stepName: Option.none(),
-            }),
-          ),
-        SchemaError: () =>
-          Effect.fail(
-            new WorkflowError({
-              operation,
-              reason: "invalid_response",
-              workflowId: Option.some(workflowId),
-              stepName: Option.none(),
-            }),
-          ),
-      }),
-    );
 
 /** Effect that builds execution-scoped HTTP clients for the three workflow namespaces; cache entries never retain an invocation stub globally. */
 export const makeWorkflowStarters = Effect.gen(function* () {
@@ -224,11 +218,6 @@ export const workflowStartersLayerWithoutDependencies = Layer.effect(
 export const workflowStartersLayer = workflowStartersLayerWithoutDependencies.pipe(
   Layer.provide(workflowServersLayer),
 );
-
-interface InMemoryWorkflowRun {
-  readonly input: WorkflowInput;
-  readonly status: WorkflowRunStatus;
-}
 
 /**
  * Layer that provides in-memory workflow start and status, keyed by workflow kind and deterministic identity.
