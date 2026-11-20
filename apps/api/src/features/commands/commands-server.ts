@@ -17,7 +17,7 @@ interface CommandsServerContract {
 export class CommandsServer extends Cloudflare.DurableObject<
   CommandsServer,
   CommandsServerContract
->()("CommandsDO") {}
+>()("CommandsDO", { transferredFrom: "CfTwitchApi" }) {}
 
 /** Runtime-only SQL acquisition validates and imports historical state before exposing HTTP. */
 export const commandsServerLayerWithoutDependencies =

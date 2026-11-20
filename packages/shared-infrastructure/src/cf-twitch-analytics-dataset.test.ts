@@ -1,6 +1,6 @@
 import * as Alchemy from "alchemy";
 import { assert, describe, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { ConfigProvider, Effect } from "effect";
 
 import { cfTwitchAnalyticsDataset } from "./cf-twitch-analytics-dataset.ts";
 
@@ -21,11 +21,25 @@ describe("cf-twitch Analytics Engine dataset", () => {
     Effect.gen(function* () {
       const local = yield* resolveDatasetForStage("local");
       const test = yield* resolveDatasetForStage("test-run123");
-      const production = yield* resolveDatasetForStage("prod");
+      const production = yield* resolveDatasetForStage("production");
 
       assert.notStrictEqual(local.dataset, test.dataset);
       assert.notStrictEqual(local.dataset, production.dataset);
       assert.notStrictEqual(test.dataset, production.dataset);
     }),
+  );
+
+  it.effect("uses Alchemy's hosted runtime stage binding without the planning Stage service", () =>
+    Effect.gen(function* () {
+      const dataset = yield* cfTwitchAnalyticsDataset;
+
+      assert.strictEqual(dataset.dataset, "cf-twitch-production");
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({ ALCHEMY_PHASE: "runtime", ALCHEMY_STAGE: "production" }),
+        ),
+      ),
+    ),
   );
 });

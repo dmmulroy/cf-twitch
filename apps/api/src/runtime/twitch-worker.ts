@@ -161,6 +161,7 @@ export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDepen
 /** Alchemy owns stage-qualified Worker names; existing production resources are never adopted implicitly. */
 export const twitchApiWorkerLayer = TwitchApiWorker.make(
   {
+    name: "cf-twitch-api",
     main: import.meta.url,
     compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
     dev: { port: 8787, strictPort: true },

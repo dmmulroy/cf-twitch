@@ -14,20 +14,18 @@ describe("cf-twitch infrastructure stage policy", () => {
     >();
   });
 
-  it.effect("accepts isolated local, personal, and test stages", () =>
+  it.effect("accepts production and isolated local, personal, and test stages", () =>
     Effect.gen(function* () {
+      yield* parseCfTwitchInfrastructureStage("production");
       yield* parseCfTwitchInfrastructureStage("local");
       yield* parseCfTwitchInfrastructureStage("dev_example");
       yield* parseCfTwitchInfrastructureStage("test-abc123");
     }),
   );
 
-  it.effect("rejects production and malformed stages", () =>
+  it.effect("rejects aliases and malformed stages", () =>
     Effect.gen(function* () {
       assert.isTrue(Option.isNone(yield* Effect.option(parseCfTwitchInfrastructureStage("prod"))));
-      assert.isTrue(
-        Option.isNone(yield* Effect.option(parseCfTwitchInfrastructureStage("production"))),
-      );
       assert.isTrue(
         Option.isNone(yield* Effect.option(parseCfTwitchInfrastructureStage("test_bad"))),
       );

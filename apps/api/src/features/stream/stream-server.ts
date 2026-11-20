@@ -35,7 +35,7 @@ type StreamLifecycleServerContract = {
 export class StreamLifecycleServer extends Cloudflare.DurableObject<
   StreamLifecycleServer,
   StreamLifecycleServerContract
->()("StreamLifecycleDO") {}
+>()("StreamLifecycleDO", { transferredFrom: "CfTwitchApi" }) {}
 
 const alarmError = () =>
   new StreamLifecycleError({

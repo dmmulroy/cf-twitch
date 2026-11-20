@@ -25,7 +25,7 @@ interface AchievementsServerContract {
 export class AchievementsServer extends Cloudflare.DurableObject<
   AchievementsServer,
   AchievementsServerContract
->()("AchievementsDO") {}
+>()("AchievementsDO", { transferredFrom: "CfTwitchApi" }) {}
 
 /** Captures infrastructure at init; SQL, migration, recovery and alarms execute only at runtime. */
 export const achievementsServerLayerWithoutDependencies = AchievementsServer.make<

@@ -5,7 +5,7 @@ import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Effect } from "effect";
 import twitchApiWorkerLayer, { TwitchApiWorker } from "./src/runtime/twitch-worker.ts";
 
-/** Deploy isolated stages only; production adoption requires the separately reviewed cutover procedure. */
+/** Deploy the exact production stage or isolated stages without adopting existing resources. */
 const CfTwitchApiStack = Alchemy.Stack(
   "CfTwitch",
   { providers: Cloudflare.providers(), state: Cloudflare.state() },
@@ -14,7 +14,7 @@ const CfTwitchApiStack = Alchemy.Stack(
     yield* parseCfTwitchInfrastructureStage(stage).pipe(
       Effect.catchTag("SchemaError", () =>
         Effect.die(
-          "CF Twitch stage is not permitted. Use local, dev_<name>, or a unique test-<id>; production cutover is gated.",
+          "CF Twitch stage is not permitted. Use production, local, dev_<name>, or a unique test-<id>.",
         ),
       ),
     );
