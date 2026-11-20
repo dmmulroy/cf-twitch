@@ -7,23 +7,52 @@ import {
 import {
   EventBusError,
   type DeadLetterEventItem,
+  type EventBusOperation,
   type EventBusSubscription,
   type PendingEventItem,
 } from "@cf-twitch/contracts/event-bus";
 import { IsoTimestamp, type EventId } from "@cf-twitch/contracts/identity";
+import type { IEventBusAdministration } from "./event-bus-administration.ts";
+import { EventBusAlarm, eventBusAlarmLayer, eventBusAlarmTestLayer } from "./event-bus-alarm.ts";
 import {
   EventBusDatabase,
+  eventBusDatabaseLayer,
+  eventBusDatabaseTestLayer,
   type DeadLetterRow,
   type PendingEventRow,
   type SubscriptionRow,
 } from "./event-bus-database.ts";
 import {
-  EventBusAdministration,
   EventHandler,
-  EventPublisher,
-  type IEventBusAdministration,
-  type IEventPublisher,
-} from "./event-bus-service.ts";
+  eventHandlerLayerWithoutDependencies,
+  eventHandlerTestLayer,
+} from "./event-handler.ts";
+import type { IEventPublisher } from "./event-publisher.ts";
+
+/** Event Bus authority inside `EventBusDO`: publication, administration, and alarm-driven retry processing. */
+export interface IEventBus extends IEventPublisher, IEventBusAdministration {
+  /**
+   * Delivers every due pending event, dead-letters exhausted or unreadable ones, purges expired
+   * dead letters, and reschedules the alarm.
+   *
+   * **Details**
+   *
+   * Runs one batch at a time. A subscriber failure reschedules the delivery with 1, 4, and 16 second
+   * backoff before it is dead-lettered for 30 days; it does not fail the batch.
+   *
+   * @returns Nothing, or fails with `EventBusError` when storage or the alarm is unavailable.
+   */
+  readonly processDue: () => Effect.Effect<void, EventBusError>;
+  /**
+   * Schedules the alarm for the earliest retry or dead-letter expiry, or clears it when none remain.
+   *
+   * @returns Nothing, or fails with `EventBusError` when storage or the alarm is unavailable.
+   */
+  readonly rebuildAlarm: () => Effect.Effect<void, EventBusError>;
+}
+
+/** Service for the Event Bus authority hosted by `EventBusDO`. */
+export class EventBus extends Context.Service<EventBus, IEventBus>()("@cf-twitch/EventBus") {}
 
 const MAX_ATTEMPTS = 3;
 
@@ -31,36 +60,15 @@ const BACKOFF_DELAYS_MS = [1_000, 4_000, 16_000] as const;
 
 const DLQ_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
-/** Alarm capability used to rebuild retry and DLQ timers from SQLite authority. */
-export interface IEventBusAlarm {
-  readonly scheduleAt: (timestamp: IsoTimestamp) => Effect.Effect<void, EventBusError>;
-  readonly clear: () => Effect.Effect<void, EventBusError>;
-}
-
-/** Event Bus wake-up boundary backed by Durable Object storage alarms. */
-export class EventBusAlarm extends Context.Service<EventBusAlarm, IEventBusAlarm>()(
-  "@cf-twitch/EventBusAlarm",
-) {}
-
-/** Recovery operation invoked by the physical Durable Object alarm. */
-export interface IEventBusProcessor {
-  readonly processDue: () => Effect.Effect<void, EventBusError>;
-  readonly rebuildAlarm: () => Effect.Effect<void, EventBusError>;
-}
-
-/** Event Bus retry and cleanup processor. */
-export class EventBusProcessor extends Context.Service<EventBusProcessor, IEventBusProcessor>()(
-  "@cf-twitch/EventBusProcessor",
-) {}
-
 const eventBusError = (
-  operation: EventBusError["operation"],
+  operation: EventBusOperation,
   reason: EventBusError["reason"],
   eventId: Option.Option<EventId> = Option.none(),
 ) => new EventBusError({ operation, reason, eventId });
 
 const parseComputedTimestamp = Schema.decodeEffect(IsoTimestamp);
 
+// Clock arithmetic always yields a valid ISO instant; a refinement failure would be a runtime defect.
 const timestampAt = (epochMillis: number) =>
   parseComputedTimestamp(new Date(epochMillis).toISOString()).pipe(Effect.orDie);
 
@@ -81,6 +89,7 @@ const subscriptionFromRow = (row: SubscriptionRow): EventBusSubscription => ({
   createdAt: row.created_at,
 });
 
+// Administration lists keep unreadable stored events visible as `Option.none()` instead of failing the page.
 const decodeEventOption = (encoded: string) => parseDomainEventJson(encoded).pipe(Effect.option);
 
 const pendingItemFromRow = (row: PendingEventRow): Effect.Effect<PendingEventItem> =>
@@ -107,7 +116,11 @@ const deadLetterItemFromRow = (row: DeadLetterRow): Effect.Effect<DeadLetterEven
     })),
   );
 
-/** Construct Event Bus publication, administration, and alarm processing services. */
+/**
+ * Creates the Event Bus authority over its database, event handler, and alarm.
+ *
+ * @returns The Event Bus service; constructing it does not fail.
+ */
 export const makeEventBus = Effect.gen(function* () {
   const database = yield* EventBusDatabase;
   const handler = yield* EventHandler;
@@ -123,7 +136,7 @@ export const makeEventBus = Effect.gen(function* () {
 
   const deliver = Effect.fn("EventBus.deliver")(function* (
     event: DomainEvent,
-    operation: EventBusError["operation"],
+    operation: EventBusOperation,
   ) {
     const subscriptions = yield* database.listSubscriptions();
 
@@ -131,23 +144,32 @@ export const makeEventBus = Effect.gen(function* () {
       yield* handler
         .handleDomainEvent(event)
         .pipe(
-          Effect.mapError(() =>
-            eventBusError(operation, "subscriber_unavailable", Option.some(event.id)),
+          Effect.catchTag("EventHandlerError", (error) =>
+            Effect.fail(
+              eventBusError(
+                operation,
+                error.reason === "consumer_unavailable"
+                  ? "subscriber_unavailable"
+                  : "subscriber_rejected",
+                Option.some(event.id),
+              ),
+            ),
           ),
         );
     }
   });
 
+  // The database labels failures by its own step; the receipt belongs to the caller's operation and event.
   const recordSuccess = Effect.fn("EventBus.recordSuccess")(function* (
     eventId: EventId,
-    operation: EventBusError["operation"],
+    operation: EventBusOperation,
   ) {
     const { now } = yield* nowAndAfter(0);
     yield* database
       .recordDelivered({ eventId, deliveredAt: now })
       .pipe(
-        Effect.mapError(() =>
-          eventBusError(operation, "persistence_unavailable", Option.some(eventId)),
+        Effect.catchTag("EventBusError", (error) =>
+          Effect.fail(eventBusError(operation, error.reason, Option.some(eventId))),
         ),
       );
   });
@@ -160,7 +182,7 @@ export const makeEventBus = Effect.gen(function* () {
       const { now, after: expiresAt } = yield* nowAndAfter(DLQ_RETENTION_MS);
       yield* database.moveToDeadLetter({
         pending,
-        error: "Stored Event Bus delivery is invalid",
+        error: eventBusError("retryDue", "stored_event_invalid", Option.some(pending.id)).message,
         attempts: attempt,
         failedAt: now,
         expiresAt,
@@ -181,7 +203,7 @@ export const makeEventBus = Effect.gen(function* () {
       const { now, after: expiresAt } = yield* nowAndAfter(DLQ_RETENTION_MS);
       yield* database.moveToDeadLetter({
         pending,
-        error: "Event subscriber unavailable",
+        error: result.failure.message,
         attempts: attempt,
         failedAt: now,
         expiresAt,
@@ -207,79 +229,39 @@ export const makeEventBus = Effect.gen(function* () {
     yield* rebuildAlarm();
   });
 
-  const processDue = Effect.fn("EventBus.processDue")(() =>
+  const processDue: IEventBus["processDue"] = Effect.fn("EventBus.processDue")(() =>
     dueProcessingSemaphore.withPermit(processDueWithoutPermit()),
   );
 
-  const publisher: IEventPublisher = {
-    publish: Effect.fn("EventPublisher.publish")(function* (event) {
-      const encodedEvent = yield* encodeDomainEventJson(event).pipe(
-        Effect.mapError(() =>
-          eventBusError("publish", "stored_event_invalid", Option.some(event.id)),
-        ),
-      );
+  const publish: IEventBus["publish"] = Effect.fn("EventBus.publish")(function* (event) {
+    const encodedEvent = yield* encodeDomainEventJson(event).pipe(
+      Effect.mapError(() => eventBusError("publish", "event_invalid", Option.some(event.id))),
+    );
 
-      const { now, after: firstRetryAt } = yield* nowAndAfter(BACKOFF_DELAYS_MS[0]);
+    const { now, after: firstRetryAt } = yield* nowAndAfter(BACKOFF_DELAYS_MS[0]);
 
-      const acceptance = yield* database.accept({
-        eventId: event.id,
-        encodedEvent,
-        now,
-        firstRetryAt,
-      });
+    const acceptance = yield* database.accept({
+      eventId: event.id,
+      encodedEvent,
+      now,
+      firstRetryAt,
+    });
 
-      if (acceptance !== "accepted") {
-        yield* rebuildAlarm();
-
-        return;
-      }
-
-      const delivery = yield* Effect.result(deliver(event, "publish"));
-
-      if (Result.isSuccess(delivery)) yield* recordSuccess(event.id, "publish");
+    if (acceptance !== "accepted") {
       yield* rebuildAlarm();
-    }),
-  };
 
-  const administration: IEventBusAdministration = {
-    getStats: Effect.fn("EventBusAdministration.getStats")(function* () {
-      return yield* database.counts();
-    }),
-    getStatus: Effect.fn("EventBusAdministration.getStatus")(function* () {
-      const [stats, nextRetryAt, nextDeadLetterExpiryAt] = yield* Effect.all([
-        database.counts(),
-        database.earliestRetryAt(),
-        database.earliestDeadLetterExpiryAt(),
-      ]);
+      return;
+    }
 
-      return {
-        healthy: true,
-        nextRetryAt,
-        nextDeadLetterExpiryAt,
-        stats,
-      };
-    }),
-    listPending: Effect.fn("EventBusAdministration.listPending")(function* (input) {
-      const page = yield* database.listPending(input);
+    // An accepted event is durable; a subscriber outage leaves it pending for the alarm to retry.
+    const delivery = yield* Effect.result(deliver(event, "publish"));
 
-      return {
-        items: yield* Effect.all(page.rows.map(pendingItemFromRow)),
-        totalCount: page.totalCount,
-        limit: input.limit,
-        offset: input.offset,
-      };
-    }),
-    listDeadLetters: Effect.fn("EventBusAdministration.listDeadLetters")(function* (input) {
-      const page = yield* database.listDeadLetters(input);
+    if (Result.isSuccess(delivery)) yield* recordSuccess(event.id, "publish");
+    yield* rebuildAlarm();
+  });
 
-      return {
-        items: yield* Effect.all(page.rows.map(deadLetterItemFromRow)),
-        totalCount: page.totalCount,
-        limit: input.limit,
-        offset: input.offset,
-      };
-    }),
-    replayDeadLetter: Effect.fn("EventBusAdministration.replayDeadLetter")(function* (input) {
+  const replayDeadLetter: IEventBus["replayDeadLetter"] = Effect.fn("EventBus.replayDeadLetter")(
+    function* (input) {
       const dead = yield* database.findDeadLetter(input.eventId);
 
       if (Option.isNone(dead)) {
@@ -306,7 +288,7 @@ export const makeEventBus = Effect.gen(function* () {
       }
 
       const { now } = yield* nowAndAfter(0);
-      const message = "Event subscriber unavailable";
+      const message = delivery.failure.message;
       yield* database.recordDeadLetterReplayFailure({
         eventId: input.eventId,
         error: message,
@@ -315,8 +297,11 @@ export const makeEventBus = Effect.gen(function* () {
       yield* rebuildAlarm();
 
       return { success: false, eventId: input.eventId, error: Option.some(message) };
-    }),
-    retryPending: Effect.fn("EventBusAdministration.retryPending")(function* (input) {
+    },
+  );
+
+  const retryPending: IEventBus["retryPending"] = Effect.fn("EventBus.retryPending")(
+    function* (input) {
       const pending = yield* database.findPending(input.eventId);
 
       if (Option.isNone(pending)) {
@@ -330,8 +315,48 @@ export const makeEventBus = Effect.gen(function* () {
         nextRetryAt: now,
       });
       yield* processDue();
+    },
+  );
+
+  return EventBus.of({
+    publish,
+    processDue,
+    rebuildAlarm,
+    replayDeadLetter,
+    retryPending,
+    getStats: Effect.fn("EventBus.getStats")(function* () {
+      return yield* database.counts();
     }),
-    deleteDeadLetter: Effect.fn("EventBusAdministration.deleteDeadLetter")(function* (input) {
+    getStatus: Effect.fn("EventBus.getStatus")(function* () {
+      const [stats, nextRetryAt, nextDeadLetterExpiryAt] = yield* Effect.all([
+        database.counts(),
+        database.earliestRetryAt(),
+        database.earliestDeadLetterExpiryAt(),
+      ]);
+
+      return { healthy: true, nextRetryAt, nextDeadLetterExpiryAt, stats };
+    }),
+    listPending: Effect.fn("EventBus.listPending")(function* (input) {
+      const page = yield* database.listPending(input);
+
+      return {
+        items: yield* Effect.all(page.rows.map(pendingItemFromRow)),
+        totalCount: page.totalCount,
+        limit: input.limit,
+        offset: input.offset,
+      };
+    }),
+    listDeadLetters: Effect.fn("EventBus.listDeadLetters")(function* (input) {
+      const page = yield* database.listDeadLetters(input);
+
+      return {
+        items: yield* Effect.all(page.rows.map(deadLetterItemFromRow)),
+        totalCount: page.totalCount,
+        limit: input.limit,
+        offset: input.offset,
+      };
+    }),
+    deleteDeadLetter: Effect.fn("EventBus.deleteDeadLetter")(function* (input) {
       if (!(yield* database.deleteDeadLetter(input.eventId))) {
         return yield* eventBusError(
           "deleteDeadLetter",
@@ -342,57 +367,58 @@ export const makeEventBus = Effect.gen(function* () {
 
       yield* rebuildAlarm();
     }),
-    purgeExpiredDeadLetters: Effect.fn("EventBusAdministration.purgeExpiredDeadLetters")(
-      function* () {
-        const { now } = yield* nowAndAfter(0);
-        const count = yield* database.purgeExpiredDeadLetters(now);
-        yield* rebuildAlarm();
+    purgeExpiredDeadLetters: Effect.fn("EventBus.purgeExpiredDeadLetters")(function* () {
+      const { now } = yield* nowAndAfter(0);
+      const count = yield* database.purgeExpiredDeadLetters(now);
+      yield* rebuildAlarm();
 
-        return count;
-      },
-    ),
-    listSubscriptions: Effect.fn("EventBusAdministration.listSubscriptions")(function* () {
+      return count;
+    }),
+    listSubscriptions: Effect.fn("EventBus.listSubscriptions")(function* () {
       return (yield* database.listSubscriptions()).map(subscriptionFromRow);
     }),
-    registerSubscription: Effect.fn("EventBusAdministration.registerSubscription")(
-      function* (input) {
-        const { now } = yield* nowAndAfter(0);
+    registerSubscription: Effect.fn("EventBus.registerSubscription")(function* (input) {
+      const { now } = yield* nowAndAfter(0);
 
-        return (yield* database.registerSubscriptions({
-          subscriber: input.subscriber,
-          eventTypes: input.eventTypes,
-          createdAt: now,
-        })).map(subscriptionFromRow);
-      },
-    ),
-    unregisterSubscription: Effect.fn("EventBusAdministration.unregisterSubscription")(
-      function* (input) {
-        if (!(yield* database.unregisterSubscription(input.subscriptionId))) {
-          return yield* eventBusError("unregisterSubscription", "subscription_not_found");
-        }
-      },
-    ),
-    reset: Effect.fn("EventBusAdministration.reset")(function* () {
+      return (yield* database.registerSubscriptions({
+        subscriber: input.subscriber,
+        eventTypes: input.eventTypes,
+        createdAt: now,
+      })).map(subscriptionFromRow);
+    }),
+    unregisterSubscription: Effect.fn("EventBus.unregisterSubscription")(function* (input) {
+      if (!(yield* database.unregisterSubscription(input.subscriptionId))) {
+        return yield* new EventBusError({
+          operation: "unregisterSubscription",
+          reason: "subscription_not_found",
+          eventId: Option.none(),
+          subscriptionId: Option.some(input.subscriptionId),
+        });
+      }
+    }),
+    reset: Effect.fn("EventBus.reset")(function* () {
       yield* database.reset();
       yield* alarm.clear();
     }),
-  };
-
-  return {
-    publisher: EventPublisher.of(publisher),
-    administration: EventBusAdministration.of(administration),
-    processor: EventBusProcessor.of({ processDue, rebuildAlarm }),
-  };
+  });
 });
 
-/** Event Bus services acquired once with SQL, consumer, and alarm requirements visible. */
-export const eventBusLayerWithoutDependencies = Layer.effectContext(
-  Effect.gen(function* () {
-    const services = yield* makeEventBus;
+/** Layer that provides the Event Bus and keeps its database, event handler, and alarm requirements visible. */
+export const eventBusLayerWithoutDependencies = Layer.effect(EventBus, makeEventBus);
 
-    return Context.make(EventPublisher, services.publisher).pipe(
-      Context.add(EventBusAdministration, services.administration),
-      Context.add(EventBusProcessor, services.processor),
-    );
-  }),
+/**
+ * Production Event Bus Layer selecting SQLite persistence, the native alarm, and Achievement routing.
+ *
+ * **Details**
+ *
+ * Still requires the Durable Object's SQL client and state, which exist only in the runtime phase,
+ * and `Achievements`, which `EventBusServer` captures during outer initialization and bridges in.
+ */
+export const eventBusLayer = eventBusLayerWithoutDependencies.pipe(
+  Layer.provide([eventBusDatabaseLayer, eventBusAlarmLayer, eventHandlerLayerWithoutDependencies]),
+);
+
+/** Layer that provides a complete in-memory Event Bus with an always-available subscriber and a recording alarm. */
+export const eventBusTestLayer = eventBusLayerWithoutDependencies.pipe(
+  Layer.provide([eventBusDatabaseTestLayer, eventBusAlarmTestLayer, eventHandlerTestLayer]),
 );

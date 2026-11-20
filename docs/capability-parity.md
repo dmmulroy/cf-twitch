@@ -184,6 +184,8 @@ Route `song_request_success`, `raffle_roll`, `stream_online`, and `stream_offlin
 
 Initial failure queues durably; retries use 1/4/16 seconds, then atomically dead-letter. Retention is 30 days. Manual replay either succeeds or honestly retains the dead letter; deleting missing work returns not found. Restart reconstructs due work from SQL. Corrupt pending data moves with its original raw evidence and a safe reason, while valid due work continues. Retry and expiry each use their own minimum deadline.
 
+Dead-letter `error` text and replay-failure messages are the `EventBusError` message for the classified reason (for example `subscriber_unavailable` or `stored_event_invalid`) instead of the baseline's fixed `Event subscriber unavailable` / `Stored Event Bus delivery is invalid` strings; rows written before this change keep their original text. HTTP alarm processing and handlers share one Event Bus instance per Durable Object, so due processing is serialized across both. [Event delivery tests](../apps/api/src/features/events/event-bus.test.ts) run against both the SQLite and the in-memory `eventBusDatabaseTestLayer` persistence.
+
 ## Providers and OAuth
 
 Persist credentials, expiry, token type, stream/auth state, and retry/scheduling evidence. Initial setup needs refresh credentials; subsequent refresh may omit rotation and retain the existing token. Cached tokens are usable offline only outside the refresh buffer; expired/inside-buffer offline credentials do not cause provider I/O. Live refresh coalesces, rechecks under serialization, and schedules five minutes before expiry. Network retries use 1/2/4 minutes; other transient failures use ten minutes. Revocation/missing refresh credentials persist reauthorization-required and cancel scheduling.

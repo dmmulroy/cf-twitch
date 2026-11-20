@@ -1,51 +1,48 @@
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
-import { EventBusAdministration, EventPublisher } from "./event-bus-service.ts";
-import { EventBusProcessor } from "./event-bus.ts";
+import { EventBus } from "./event-bus.ts";
 import { EventBusHttpApi } from "./event-bus-http-api.ts";
 
-/** Implements the Event Bus internal HTTP contract through application services. */
+/**
+ * Layer that implements the internal Event Bus HTTP API by delegating each endpoint to `EventBus`.
+ *
+ * **Details**
+ *
+ * Failures are returned as the typed `EventBusError` declared by every endpoint.
+ */
 export const eventBusHttpHandlersLayer = HttpApiBuilder.group(
   EventBusHttpApi,
   "eventBus",
   (handlers) =>
     Effect.gen(function* () {
-      const publisher = yield* EventPublisher;
-      const administration = yield* EventBusAdministration;
-      const processor = yield* EventBusProcessor;
+      const eventBus = yield* EventBus;
 
       return handlers
         .handle("publish", ({ payload }) =>
-          publisher.publish(payload).pipe(Effect.as({ success: true as const })),
+          eventBus.publish(payload).pipe(Effect.as({ success: true as const })),
         )
         .handle("processDue", () =>
-          processor.processDue().pipe(Effect.as({ success: true as const })),
+          eventBus.processDue().pipe(Effect.as({ success: true as const })),
         )
-        .handle("getStats", () => administration.getStats())
-        .handle("getStatus", () => administration.getStatus())
-        .handle("listPending", ({ payload }) => administration.listPending(payload))
-        .handle("listDeadLetters", ({ payload }) => administration.listDeadLetters(payload))
-        .handle("replayDeadLetter", ({ payload }) => administration.replayDeadLetter(payload))
+        .handle("getStats", () => eventBus.getStats())
+        .handle("getStatus", () => eventBus.getStatus())
+        .handle("listPending", ({ payload }) => eventBus.listPending(payload))
+        .handle("listDeadLetters", ({ payload }) => eventBus.listDeadLetters(payload))
+        .handle("replayDeadLetter", ({ payload }) => eventBus.replayDeadLetter(payload))
         .handle("retryPending", ({ payload }) =>
-          administration.retryPending(payload).pipe(Effect.as({ success: true as const })),
+          eventBus.retryPending(payload).pipe(Effect.as({ success: true as const })),
         )
         .handle("deleteDeadLetter", ({ payload }) =>
-          administration.deleteDeadLetter(payload).pipe(Effect.as({ success: true as const })),
+          eventBus.deleteDeadLetter(payload).pipe(Effect.as({ success: true as const })),
         )
         .handle("purgeExpiredDeadLetters", () =>
-          administration
-            .purgeExpiredDeadLetters()
-            .pipe(Effect.map((deletedCount) => ({ deletedCount }))),
+          eventBus.purgeExpiredDeadLetters().pipe(Effect.map((deletedCount) => ({ deletedCount }))),
         )
-        .handle("listSubscriptions", () => administration.listSubscriptions())
-        .handle("registerSubscription", ({ payload }) =>
-          administration.registerSubscription(payload),
-        )
+        .handle("listSubscriptions", () => eventBus.listSubscriptions())
+        .handle("registerSubscription", ({ payload }) => eventBus.registerSubscription(payload))
         .handle("unregisterSubscription", ({ payload }) =>
-          administration
-            .unregisterSubscription(payload)
-            .pipe(Effect.as({ success: true as const })),
+          eventBus.unregisterSubscription(payload).pipe(Effect.as({ success: true as const })),
         )
-        .handle("reset", () => administration.reset().pipe(Effect.as({ success: true as const })));
+        .handle("reset", () => eventBus.reset().pipe(Effect.as({ success: true as const })));
     }),
 ).pipe(Layer.orDie);
