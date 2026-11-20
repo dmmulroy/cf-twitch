@@ -179,6 +179,7 @@ export const StreamLifecycleFailureReason = Schema.Literals([
   "invalid_response",
   "effects_pending",
   "provider_unavailable",
+  "transport_unavailable",
 ]);
 
 /** Classified cause of a Stream Lifecycle failure. */
@@ -215,6 +216,8 @@ export class StreamLifecycleError extends Schema.TaggedError<StreamLifecycleErro
         return `Stream Lifecycle transition effects are still pending after ${this.operation}. Retry the same request to resume the saved transition checkpoint.`;
       case "provider_unavailable":
         return `Stream Lifecycle could not read the Twitch viewer count during ${this.operation}. Retry after Twitch is reachable.`;
+      case "transport_unavailable":
+        return `Stream Lifecycle service was unreachable during ${this.operation}. Read the Stream Lifecycle state to confirm the outcome, then retry the same request.`;
     }
   }
 }

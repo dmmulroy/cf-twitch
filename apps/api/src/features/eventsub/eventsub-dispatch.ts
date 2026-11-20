@@ -6,7 +6,7 @@ import { getChatCommandPermission } from "../commands/command-permissions.ts";
 import { StreamId } from "@cf-twitch/contracts/identity";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { WorkflowStarters } from "../workflows/workflow-starters.ts";
-import { StreamLifecycleClient } from "../stream/stream-lifecycle.ts";
+import { StreamLifecycleClient } from "../stream/stream-lifecycle-client.ts";
 import { ChatCommandExecutor } from "../commands/chat-command-executor.ts";
 import { parseEventSubMessage } from "./eventsub-message.ts";
 

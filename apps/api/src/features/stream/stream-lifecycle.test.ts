@@ -5,14 +5,15 @@ import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import { EventPublisher } from "../events/event-bus-service.ts";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
+import { StreamAlarm, streamAlarmTestLayer } from "./stream-alarm.ts";
 import { StreamDatabase, type IStreamDatabase } from "./stream-database.ts";
-import { StreamLifecycleClient } from "./stream-lifecycle.ts";
+import { StreamLifecycle, streamLifecycleLayerWithoutDependencies } from "./stream-lifecycle.ts";
 import {
-  StreamAlarm,
-  StreamViewerProvider,
-  streamLifecycleLayerWithoutDependencies,
-} from "./stream.ts";
+  StreamLifecycleClient,
+  streamLifecycleClientTestLayer,
+} from "./stream-lifecycle-client.ts";
 import { initialStreamState } from "./stream-state.ts";
+import { streamViewerProviderTestLayer } from "./stream-viewer-provider.ts";
 
 const startedAt = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T11:55:00.000Z");
 
@@ -84,20 +85,15 @@ describe("Stream Lifecycle", () => {
             }),
           ),
         ),
-        Layer.provide(
-          Layer.succeed(
-            StreamViewerProvider,
-            StreamViewerProvider.of({ getViewerCount: () => Effect.succeed(Option.none()) }),
-          ),
-        ),
+        Layer.provide(streamViewerProviderTestLayer),
         Layer.provide(NodeCrypto.layer),
       );
 
       yield* Effect.gen(function* () {
-        const stream = yield* StreamLifecycleClient;
+        const stream = yield* StreamLifecycle;
         const first = yield* Effect.result(stream.markOnline({ streamId, startedAt }));
         expect(first._tag).toBe("Failure");
-        expect((yield* Ref.get(state)).transitionCheckpoint).toMatchObject({
+        expect(Option.getOrThrow((yield* Ref.get(state)).transitionCheckpoint)).toMatchObject({
           spotifyTokenNotified: true,
           twitchTokenNotified: true,
           lifecycleEventPublished: false,
@@ -112,7 +108,7 @@ describe("Stream Lifecycle", () => {
       expect(ids).toHaveLength(2);
       expect(ids[1]).toBe(ids[0]);
       expect(yield* Ref.get(alarmCalls)).toBe(1);
-      expect((yield* Ref.get(state)).transitionCheckpoint).toBeNull();
+      expect(Option.isNone((yield* Ref.get(state)).transitionCheckpoint)).toBe(true);
     }),
   );
 
@@ -190,23 +186,13 @@ describe("Stream Lifecycle", () => {
         Layer.provide(
           Layer.succeed(EventPublisher, EventPublisher.of({ publish: () => Effect.void })),
         ),
-        Layer.provide(
-          Layer.succeed(
-            StreamAlarm,
-            StreamAlarm.of({ scheduleAt: () => Effect.void, clear: () => Effect.void }),
-          ),
-        ),
-        Layer.provide(
-          Layer.succeed(
-            StreamViewerProvider,
-            StreamViewerProvider.of({ getViewerCount: () => Effect.succeed(Option.none()) }),
-          ),
-        ),
+        Layer.provide(streamAlarmTestLayer),
+        Layer.provide(streamViewerProviderTestLayer),
         Layer.provide(NodeCrypto.layer),
       );
 
       yield* Effect.gen(function* () {
-        const stream = yield* StreamLifecycleClient;
+        const stream = yield* StreamLifecycle;
         const first = yield* Effect.forkChild(stream.markOnline({ streamId, startedAt }));
         yield* Deferred.await(firstReadEntered);
         const second = yield* Effect.forkChild(stream.markOnline({ streamId, startedAt }));
@@ -264,5 +250,64 @@ describe("Stream Lifecycle", () => {
         expect((yield* stream.getState()).isLive).toBe(false);
       }).pipe(Effect.provide(layer));
     }),
+  );
+
+  it.effect(
+    "client test Layer completes an online transition and records viewer peaks in memory",
+    () =>
+      Effect.gen(function* () {
+        const tokenCalls = yield* Ref.make<ReadonlyArray<string>>([]);
+        const published = yield* Ref.make<ReadonlyArray<string>>([]);
+
+        const controlledLayer = streamLifecycleClientTestLayer.pipe(
+          Layer.provide(
+            Layer.succeed(
+              ProviderAccessTokens,
+              ProviderAccessTokens.of({
+                getValidAccessToken: () => Effect.die("not used"),
+                setTokens: () => Effect.die("not used"),
+                onStreamOnline: (provider) =>
+                  Ref.update(tokenCalls, (calls) => [...calls, `online:${provider}`]),
+                onStreamOffline: (provider) =>
+                  Ref.update(tokenCalls, (calls) => [...calls, `offline:${provider}`]),
+              }),
+            ),
+          ),
+          Layer.provide(
+            Layer.succeed(
+              EventPublisher,
+              EventPublisher.of({
+                publish: (event) => Ref.update(published, (types) => [...types, event.type]),
+              }),
+            ),
+          ),
+          Layer.provide(NodeCrypto.layer),
+        );
+
+        yield* Effect.gen(function* () {
+          const stream = yield* StreamLifecycleClient;
+          yield* stream.markOnline({ streamId, startedAt });
+
+          const recordedAt = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T12:00:00.000Z");
+          yield* stream.recordViewerCount({ count: NonNegativeInt.make(7), recordedAt });
+
+          expect(yield* stream.getStatus()).toMatchObject({
+            healthy: true,
+            effectsPending: false,
+            state: { isLive: true, peakViewerCount: 7 },
+          });
+          expect(
+            (yield* stream.getViewerHistory({
+              since: Option.none(),
+              until: Option.none(),
+              limit: 10,
+              offset: 0,
+            })).snapshots,
+          ).toEqual([{ timestamp: recordedAt, viewerCount: 7 }]);
+        }).pipe(Effect.provide(controlledLayer));
+
+        expect(yield* Ref.get(tokenCalls)).toEqual(["online:spotify", "online:twitch"]);
+        expect(yield* Ref.get(published)).toEqual(["stream_online"]);
+      }),
   );
 });

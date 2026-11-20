@@ -7,7 +7,7 @@ import { StreamLifecycleState } from "@cf-twitch/contracts/stream";
 import { RaffleLeaderboardEntry } from "@cf-twitch/contracts/raffle";
 import { SongQueueLimit } from "@cf-twitch/contracts/song-queue";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
-import { StreamLifecycleClient } from "../stream/stream-lifecycle.ts";
+import { StreamLifecycleClient } from "../stream/stream-lifecycle-client.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { Raffle } from "../raffle/raffle-service.ts";

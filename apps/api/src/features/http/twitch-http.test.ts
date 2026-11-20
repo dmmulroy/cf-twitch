@@ -14,7 +14,7 @@ import { Raffle } from "../raffle/raffle-service.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { Commands } from "../commands/commands.ts";
 import { EventBusAdministration } from "../events/event-bus-service.ts";
-import { StreamLifecycleClient } from "../stream/stream-lifecycle.ts";
+import { StreamLifecycleClient } from "../stream/stream-lifecycle-client.ts";
 import { OAuthAuthorization } from "../oauth/oauth-authorization.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
 import { EventSubReceipts } from "../eventsub/eventsub-receipts.ts";

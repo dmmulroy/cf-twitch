@@ -1,15 +1,15 @@
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
-import { StreamLifecycleClient } from "./stream-lifecycle.ts";
+import { StreamLifecycle } from "./stream-lifecycle.ts";
 import { StreamLifecycleHttpApi } from "./stream-http-api.ts";
 
-/** Implements Stream Lifecycle internal HTTP operations through the local service. */
+/** Layer that serves the `StreamLifecycleDO` HTTP API by delegating to the local Stream Lifecycle. */
 export const streamLifecycleHttpHandlersLayer = HttpApiBuilder.group(
   StreamLifecycleHttpApi,
   "streamLifecycle",
   (handlers) =>
     Effect.gen(function* () {
-      const stream = yield* StreamLifecycleClient;
+      const stream = yield* StreamLifecycle;
 
       return handlers
         .handle("getState", () => stream.getState())

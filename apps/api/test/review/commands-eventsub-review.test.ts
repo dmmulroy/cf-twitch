@@ -20,7 +20,7 @@ import {
 } from "../../src/features/eventsub/eventsub-inbox.ts";
 import { WorkflowAlarm } from "../../src/features/workflows/workflow-alarm.ts";
 import { WorkflowStarters } from "../../src/features/workflows/workflow-starters.ts";
-import { StreamLifecycleClient } from "../../src/features/stream/stream-lifecycle.ts";
+import { StreamLifecycleClient } from "../../src/features/stream/stream-lifecycle-client.ts";
 import { TwitchService } from "../../src/features/providers/twitch-service.ts";
 import { SongQueue } from "../../src/features/song-queue/song-queue.ts";
 import { Raffle } from "../../src/features/raffle/raffle-service.ts";

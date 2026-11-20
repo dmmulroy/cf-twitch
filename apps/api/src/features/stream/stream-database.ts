@@ -1,5 +1,5 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { Context, Effect, Layer, Option, Predicate, Schema } from "effect";
+import { Context, Effect, Layer, Option, Predicate, Ref, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/sql";
 import { IsoTimestamp, NonNegativeInt } from "@cf-twitch/contracts/identity";
 import {
@@ -34,27 +34,76 @@ const LegacyViewerScheduleRow = Schema.Struct({
 
 type EncodedViewerSnapshotRow = typeof ViewerSnapshotRow.Encoded;
 
-/** Stream state and viewer evidence persistence operations. */
+/** One viewer-count observation to record against the state it was observed in. */
+export interface StreamViewerCountRecord {
+  /** State read before the observation; its peak is raised when `count` exceeds it. */
+  readonly state: PersistedStreamState;
+  readonly count: NonNegativeInt;
+  /** Source time of the observation; a second observation at the same time replaces it. */
+  readonly recordedAt: IsoTimestamp;
+}
+
+/** Page of viewer-count observations with the total matching count before pagination. */
+export interface StreamViewerHistoryPage {
+  readonly snapshots: ReadonlyArray<ViewerCountSnapshot>;
+  readonly totalCount: NonNegativeInt;
+}
+
+/**
+ * Stream Lifecycle persistence: the tagged state with its transition checkpoint, and viewer counts.
+ *
+ * **Details**
+ *
+ * Each operation fails with `StreamLifecycleError` whose reason is `persistence_unavailable` when
+ * SQL fails and `stored_state_invalid` when the stored state does not parse.
+ */
 export interface IStreamDatabase {
+  /**
+   * Returns the persisted state.
+   *
+   * @returns The state, or fails with `StreamLifecycleError` when storage fails or the row is
+   *   missing or invalid.
+   */
   readonly getState: () => Effect.Effect<PersistedStreamState, StreamLifecycleError>;
+  /**
+   * Replaces the persisted state, including its checkpoint, in one write.
+   *
+   * @returns Nothing, or fails with `StreamLifecycleError` when storage fails.
+   */
   readonly saveState: (state: PersistedStreamState) => Effect.Effect<void, StreamLifecycleError>;
-  readonly recordViewerCount: (input: {
-    readonly state: PersistedStreamState;
-    readonly count: NonNegativeInt;
-    readonly recordedAt: IsoTimestamp;
-  }) => Effect.Effect<PersistedStreamState, StreamLifecycleError>;
-  readonly getViewerHistory: (input: ViewerHistoryInput) => Effect.Effect<
-    {
-      readonly snapshots: ReadonlyArray<ViewerCountSnapshot>;
-      readonly totalCount: NonNegativeInt;
-    },
-    StreamLifecycleError
-  >;
+  /**
+   * Atomically records a viewer count and raises the state's peak when it is exceeded.
+   *
+   * @returns The state after the peak update, or fails with `StreamLifecycleError` when storage
+   *   fails.
+   */
+  readonly recordViewerCount: (
+    input: StreamViewerCountRecord,
+  ) => Effect.Effect<PersistedStreamState, StreamLifecycleError>;
+  /**
+   * Returns viewer counts within inclusive time bounds, oldest first.
+   *
+   * @returns The page and total count, or fails with `StreamLifecycleError` when storage fails or
+   *   stored rows are invalid.
+   */
+  readonly getViewerHistory: (
+    input: ViewerHistoryInput,
+  ) => Effect.Effect<StreamViewerHistoryPage, StreamLifecycleError>;
+  /**
+   * Returns how many viewer counts are stored.
+   *
+   * @returns The count, or fails with `StreamLifecycleError` when storage fails.
+   */
   readonly getViewerSnapshotCount: () => Effect.Effect<NonNegativeInt, StreamLifecycleError>;
+  /**
+   * Deletes every viewer count and restores the initial offline state in one transaction.
+   *
+   * @returns The initial state, or fails with `StreamLifecycleError` when storage fails.
+   */
   readonly reset: () => Effect.Effect<PersistedStreamState, StreamLifecycleError>;
 }
 
-/** Parsed Stream Lifecycle persistence with atomic state/checkpoint writes. */
+/** Service for Stream Lifecycle persistence; SQL representations stay private to this module. */
 export class StreamDatabase extends Context.Service<StreamDatabase, IStreamDatabase>()(
   "@cf-twitch/StreamDatabase",
 ) {}
@@ -95,11 +144,14 @@ const decodeCurrentStoredState = Schema.decodeEffect(Schema.fromJsonString(Persi
 
 const encodeState = Schema.encodeEffect(Schema.fromJsonString(PersistedStreamState));
 
+const decodeComputedIsoTimestamp = Schema.decodeEffect(IsoTimestamp);
+
 const streamError = (
   operation: StreamLifecycleError["operation"],
   reason: StreamLifecycleError["reason"],
 ) => new StreamLifecycleError({ operation, reason });
 
+/** Classifies SQL and stored-state failures of one Stream Lifecycle database operation. */
 const withDatabaseErrors = <A>(
   operation: StreamLifecycleError["operation"],
   effect: Effect.Effect<A, SqlError.SqlError | Schema.SchemaError | StreamLifecycleError>,
@@ -112,7 +164,18 @@ const withDatabaseErrors = <A>(
     }),
   );
 
-/** Construct stream persistence and migrate historical Agent JSON exactly once. */
+/**
+ * Creates Stream Lifecycle persistence over SQLite, importing historical Agent JSON exactly once.
+ *
+ * **Details**
+ *
+ * The authoritative representation is decoded before migrations write, so corrupt current or
+ * legacy state blocks startup instead of being reset. A legacy viewer poll schedule ID is
+ * replaced by its due instant from `cf_agents_schedules`.
+ *
+ * @returns The database service, or fails with `MigrationError`, `SqlError`, `SchemaError`, or
+ *   `StreamLifecycleError` (reason `stored_state_invalid`) when adoption cannot proceed.
+ */
 export const makeStreamDatabase: Effect.Effect<
   StreamDatabase["Service"],
   SqliteMigrator.MigrationError | SqlError.SqlError | Schema.SchemaError | StreamLifecycleError,
@@ -122,9 +185,9 @@ export const makeStreamDatabase: Effect.Effect<
 
   const migrateLegacyViewerSchedule = Effect.fn("StreamDatabase.migrateLegacyViewerSchedule")(
     function* (state: PersistedStreamState) {
-      if (!Predicate.isTagged("LiveStream")(state) || state.viewerPollScheduleId === null)
+      if (!Predicate.isTagged("LiveStream")(state) || Option.isNone(state.viewerPollScheduleId))
         return state;
-      const scheduleId = state.viewerPollScheduleId;
+      const scheduleId = state.viewerPollScheduleId.value;
 
       const scheduleTable = yield* sql`
       SELECT COUNT(*) AS count FROM sqlite_master
@@ -132,7 +195,7 @@ export const makeStreamDatabase: Effect.Effect<
     `.pipe(Effect.flatMap(parseCountRows));
 
       if ((scheduleTable[0]?.count ?? 0) === 0) {
-        return yield* streamError("getState", "stored_state_invalid");
+        return yield* streamError("migrateLegacyState", "stored_state_invalid");
       }
 
       const schedules = yield* sql`
@@ -141,21 +204,21 @@ export const makeStreamDatabase: Effect.Effect<
 
       const schedule = schedules[0];
 
-      if (schedule === undefined) return yield* streamError("getState", "stored_state_invalid");
+      if (schedule === undefined)
+        return yield* streamError("migrateLegacyState", "stored_state_invalid");
 
-      const dueAt = yield* Schema.decodeEffect(IsoTimestamp)(
+      const dueAt = yield* decodeComputedIsoTimestamp(
         new Date(schedule.time * 1_000).toISOString(),
       );
 
-      const checkpoint = state.transitionCheckpoint;
-
       return {
         ...state,
-        viewerPollScheduleId: dueAt,
-        transitionCheckpoint:
-          checkpoint !== null && checkpoint.viewerPollScheduleId === scheduleId
-            ? { ...checkpoint, viewerPollScheduleId: dueAt }
+        viewerPollScheduleId: Option.some(dueAt),
+        transitionCheckpoint: Option.map(state.transitionCheckpoint, (checkpoint) =>
+          Option.contains(checkpoint.viewerPollScheduleId, scheduleId)
+            ? { ...checkpoint, viewerPollScheduleId: Option.some(dueAt) }
             : checkpoint,
+        ),
       };
     },
   );
@@ -226,7 +289,7 @@ export const makeStreamDatabase: Effect.Effect<
 
   const saveState: IStreamDatabase["saveState"] = (state) =>
     withDatabaseErrors(
-      "getState",
+      "saveState",
       encodeState(state).pipe(
         Effect.flatMap(
           (encoded) => sql`UPDATE stream_lifecycle_state SET state = ${encoded} WHERE id = 1`,
@@ -321,8 +384,73 @@ export const makeStreamDatabase: Effect.Effect<
   });
 });
 
-/** Stream persistence Layer that keeps its SQL client requirement visible. */
+/** Layer that provides Stream Lifecycle persistence, leaving the SQL client visible. */
 export const streamDatabaseLayerWithoutDependencies = Layer.effect(
   StreamDatabase,
   makeStreamDatabase,
 );
+
+/** Layer that provides Stream Lifecycle persistence; the SQL client is the Durable Object's runtime binding. */
+export const streamDatabaseLayer = streamDatabaseLayerWithoutDependencies;
+
+/** Creates in-memory Stream Lifecycle persistence that follows the SQL implementation's semantics. */
+const makeStreamDatabaseTest = Effect.gen(function* () {
+  const state = yield* Ref.make(initialStreamState());
+  // Keyed by the exact timestamp text, like the SQL primary key; ordering compares text too.
+  const snapshots = yield* Ref.make<ReadonlyMap<IsoTimestamp, NonNegativeInt>>(new Map());
+
+  return StreamDatabase.of({
+    getState: () => Ref.get(state),
+    saveState: (next) => Ref.set(state, next),
+    recordViewerCount: (input) =>
+      Effect.gen(function* () {
+        yield* Ref.update(
+          snapshots,
+          (current) => new Map([...current, [input.recordedAt, input.count]]),
+        );
+
+        if (input.count <= input.state.peakViewerCount) return input.state;
+        const next = { ...input.state, peakViewerCount: input.count };
+        yield* Ref.set(state, next);
+
+        return next;
+      }),
+    getViewerHistory: (input) =>
+      Ref.get(snapshots).pipe(
+        Effect.map((current) => {
+          const since = Option.getOrElse(input.since, () => "0000-01-01T00:00:00.000Z");
+          const until = Option.getOrElse(input.until, () => "9999-12-31T23:59:59.999Z");
+
+          const matching = [...current]
+            .filter(([timestamp]) => timestamp >= since && timestamp <= until)
+            .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+          return {
+            snapshots: matching
+              .slice(input.offset, input.offset + input.limit)
+              .map(([timestamp, viewerCount]) => ({ timestamp, viewerCount })),
+            totalCount: matching.length,
+          };
+        }),
+      ),
+    getViewerSnapshotCount: () => Ref.get(snapshots).pipe(Effect.map((current) => current.size)),
+    reset: () =>
+      Effect.gen(function* () {
+        const initial = initialStreamState();
+        yield* Ref.set(snapshots, new Map());
+        yield* Ref.set(state, initial);
+
+        return initial;
+      }),
+  });
+});
+
+/**
+ * Layer that provides in-memory Stream Lifecycle persistence, starting from the initial state.
+ *
+ * **Details**
+ *
+ * Historical Agent adoption and storage failures are SQL-only; the database contract tests run the
+ * remaining behavior against both implementations.
+ */
+export const streamDatabaseTestLayer = Layer.effect(StreamDatabase, makeStreamDatabaseTest);
