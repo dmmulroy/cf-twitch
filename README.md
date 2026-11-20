@@ -43,5 +43,6 @@ Alchemy reads `apps/api/.env`; keep credentials out of Git. Development is a rea
 | [packages/shared-infrastructure](packages/shared-infrastructure/README.md) | Stage policy and infrastructure descriptors                         |
 | `apps/api/test`                                                            | Controlled-provider and cross-capability runtime verification       |
 | `tools/architecture`, `tools/verification`                                 | Executable architecture and verification gates                      |
+| `tools/traits`, `traits.ts`, `.agents/traits`                              | Traits configuration and project coding traits                      |
 
 Agents start with [AGENTS.md](AGENTS.md), which routes each task to its governing documentation.

@@ -30,13 +30,10 @@ export const makeRaffleRandom = Effect.gen(function* () {
         if (word < raffleRandomUpperBound) return RaffleNumber.make(1 + (word % 10_000));
       }
     },
-    (effect) =>
-      effect.pipe(
-        Effect.catchCauseIf(
-          (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
-          () => Effect.fail(randomnessUnavailable()),
-        ),
-      ),
+    Effect.catchCauseIf(
+      (cause) => Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
+      () => Effect.fail(randomnessUnavailable()),
+    ),
   );
 
   return RaffleRandom.of({ drawNumber });

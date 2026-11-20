@@ -118,6 +118,7 @@ export class RaffleError extends Schema.TaggedError<RaffleError>()("RaffleError"
     "randomness_unavailable",
   ]),
 }) {
+  /** Failure summary naming the raffle operation and classified reason. */
   override get message(): string {
     return `Raffle operation failed: ${this.operation} (${this.reason})`;
   }

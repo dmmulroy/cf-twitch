@@ -9,6 +9,7 @@ export class E2eHttpRequestError extends Schema.TaggedError<E2eHttpRequestError>
     cause: Schema.Unknown,
   },
 ) {
+  /** Failure summary naming the request method and URL. */
   override get message(): string {
     return `E2E HTTP ${this.method} request failed for ${this.url}`;
   }
@@ -23,6 +24,7 @@ export class E2eHttpResponseBodyError extends Schema.TaggedError<E2eHttpResponse
     cause: Schema.Unknown,
   },
 ) {
+  /** Failure summary naming the request method and URL whose body failed. */
   override get message(): string {
     return `E2E HTTP ${this.method} response body failed for ${this.url}`;
   }

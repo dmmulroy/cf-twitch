@@ -187,6 +187,7 @@ export class AchievementError extends Schema.TaggedError<AchievementError>()("Ac
     "transport_unavailable",
   ]),
 }) {
+  /** Failure summary naming the achievement operation and classified reason. */
   override get message(): string {
     return `Achievement operation failed: ${this.operation} (${this.reason})`;
   }
