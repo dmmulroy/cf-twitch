@@ -35,7 +35,6 @@ import {
   providerTokenLifecycleLayerWithoutDependencies,
 } from "../providers/provider-token-lifecycle.ts";
 import { spotifyServiceLayerWithoutDependencies } from "../providers/spotify-service.ts";
-import { SongQueue } from "./song-queue.ts";
 import { SongQueueAlarm } from "./song-queue-alarm.ts";
 import {
   SongQueueDatabase,
@@ -43,7 +42,10 @@ import {
 } from "./song-queue-database.ts";
 import { SongQueueHttpApi } from "./song-queue-http-api.ts";
 import { songQueueHttpHandlersLayer } from "./song-queue-http-handlers.ts";
-import { SongQueueCoordinator, songQueueLayerWithoutDependencies } from "./song-queue-service.ts";
+import {
+  SongQueueCoordinator,
+  songQueueCoordinatorLayerWithoutDependencies,
+} from "./song-queue-coordinator.ts";
 
 const songQueueLimit = (value: number): SongQueueLimit => SongQueueLimit.make(value);
 
@@ -254,7 +256,7 @@ const testLayer = Layer.unwrap(
       Layer.provideMerge(sqliteLayer),
     );
 
-    return songQueueLayerWithoutDependencies.pipe(
+    return songQueueCoordinatorLayerWithoutDependencies.pipe(
       Layer.provide([providerLayer, alarmLayer]),
       Layer.provideMerge(databaseLayer),
       Layer.merge(
@@ -270,7 +272,7 @@ const testLayer = Layer.unwrap(
   }),
 );
 
-describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
+describe("Song queue coordinator with real Spotify HTTP parsing and SQLite", () => {
   it.effect(
     "reconstructs missing deadlines from durable failures and caps outage polling at five minutes",
     () =>
@@ -306,7 +308,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
     "observes both Spotify endpoints concurrently while repeated tracks advance during an in-flight queue response",
     () =>
       Effect.gen(function* () {
-        const queue = yield* SongQueue;
+        const queue = yield* SongQueueCoordinator;
         const control = yield* SongQueueTestControl;
         yield* queue.persistRequest(pending("first"));
         yield* queue.persistRequest(pending("second"));
@@ -350,7 +352,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
     "invalidates mutation freshness, shares fresh reads for 15 seconds and keeps polling an empty offline queue",
     () =>
       Effect.gen(function* () {
-        const queue = yield* SongQueue;
+        const queue = yield* SongQueueCoordinator;
         const coordinator = yield* SongQueueCoordinator;
         const control = yield* SongQueueTestControl;
         yield* coordinator.startPolling();
@@ -377,7 +379,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
     "preserves stale queue on authoritative queue failure, falls back to queue current evidence, and resets durable backoff",
     () =>
       Effect.gen(function* () {
-        const queue = yield* SongQueue;
+        const queue = yield* SongQueueCoordinator;
         const coordinator = yield* SongQueueCoordinator;
         const database = yield* SongQueueDatabase;
         const control = yield* SongQueueTestControl;
@@ -422,7 +424,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
     "runs pending cleanup independently during provider outage and repairs scheduling failure from persisted intent",
     () =>
       Effect.gen(function* () {
-        const queue = yield* SongQueue;
+        const queue = yield* SongQueueCoordinator;
         const coordinator = yield* SongQueueCoordinator;
         const database = yield* SongQueueDatabase;
         const control = yield* SongQueueTestControl;
@@ -459,7 +461,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
 
   it.effect("serializes concurrent stale reads", () =>
     Effect.gen(function* () {
-      const queue = yield* SongQueue;
+      const queue = yield* SongQueueCoordinator;
       const control = yield* SongQueueTestControl;
       yield* Effect.all(
         [
@@ -477,7 +479,7 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
     "retains cleanup scheduling and the refresh lock after transactional snapshot failure",
     () =>
       Effect.gen(function* () {
-        const queue = yield* SongQueue;
+        const queue = yield* SongQueueCoordinator;
         const sql = yield* SqlClient.SqlClient;
         const control = yield* SongQueueTestControl;
         yield* Ref.update(control.playback, (state) => ({ ...state, queueSize: 1 }));
@@ -495,12 +497,12 @@ describe("Song queue service with real Spotify HTTP parsing and SQLite", () => {
     "round-trips the real versioned HTTP API with Option payloads, history and typed failures",
     () =>
       Effect.gen(function* () {
-        const queue = yield* SongQueue;
+        const queue = yield* SongQueueCoordinator;
         const control = yield* SongQueueTestControl;
 
         const httpLayer = HttpApiBuilder.layer(SongQueueHttpApi).pipe(
           Layer.provide(songQueueHttpHandlersLayer),
-          Layer.provide(Layer.succeed(SongQueue, queue)),
+          Layer.provide(Layer.succeed(SongQueueCoordinator, queue)),
           Layer.provide(cloudflareHttpServerLayer),
         );
 

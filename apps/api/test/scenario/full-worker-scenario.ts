@@ -37,7 +37,7 @@ import { spotifyServiceLayerWithoutDependencies } from "../../src/features/provi
 import { twitchServiceLayerWithoutDependencies } from "../../src/features/providers/twitch-service.ts";
 import { raffleClientLayerWithoutDependencies } from "../../src/features/raffle/raffle-client.ts";
 import { raffleServerLayer } from "../../src/features/raffle/raffle-server.ts";
-import { songQueueClientLayerWithoutDependencies } from "../../src/features/song-queue/song-queue-client.ts";
+import { songQueueLayerWithoutDependencies } from "../../src/features/song-queue/song-queue.ts";
 import { songQueueServerLayerWithoutDependencies } from "../../src/features/song-queue/song-queue-server.ts";
 import { streamLifecycleClientLayerWithoutDependencies } from "../../src/features/stream/stream-lifecycle-client.ts";
 import { streamLifecycleServerLayerWithoutDependencies } from "../../src/features/stream/stream-server.ts";
@@ -109,7 +109,7 @@ const songQueueServerLayer = songQueueServerLayerWithoutDependencies.pipe(
   Layer.provide(spotifyServiceLayer),
 );
 
-const songQueueLayer = songQueueClientLayerWithoutDependencies.pipe(
+const songQueueLayer = songQueueLayerWithoutDependencies.pipe(
   Layer.provide(songQueueServerLayer),
 );
 

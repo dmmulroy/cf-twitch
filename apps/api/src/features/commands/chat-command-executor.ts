@@ -15,7 +15,7 @@ import {
   computedChatCommandsLayerWithoutDependencies,
 } from "./computed-chat-commands.ts";
 import { commandsClientLayer } from "./commands-client.ts";
-import { songQueueClientLayer } from "../song-queue/song-queue-client.ts";
+import { songQueueLayer } from "../song-queue/song-queue.ts";
 import { raffleClientLayer } from "../raffle/raffle-client.ts";
 import { achievementsClientLayer } from "../achievements/achievements-client.ts";
 import { hasCommandPermission } from "./command-permissions.ts";
@@ -176,7 +176,7 @@ export const executorLayer = executorLayerWithoutDependencies.pipe(
   Layer.provide(computedChatCommandsLayerWithoutDependencies),
   Layer.provide([
     commandsClientLayer,
-    songQueueClientLayer,
+    songQueueLayer,
     raffleClientLayer,
     achievementsClientLayer,
   ]),

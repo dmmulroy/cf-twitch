@@ -24,7 +24,7 @@ import type {
 import { twitchServiceLayer } from "../features/providers/twitch-service.ts";
 import { raffleClientLayer } from "../features/raffle/raffle-client.ts";
 import type { RaffleServer } from "../features/raffle/raffle-server.ts";
-import { songQueueClientLayer } from "../features/song-queue/song-queue-client.ts";
+import { songQueueLayer } from "../features/song-queue/song-queue.ts";
 import type { SongQueueServer } from "../features/song-queue/song-queue-server.ts";
 import { streamLifecycleClientLayer } from "../features/stream/stream-lifecycle-client.ts";
 import type { StreamLifecycleServer } from "../features/stream/stream-server.ts";
@@ -84,7 +84,7 @@ const twitchApplicationLayer = Layer.mergeAll(
   eventSubReceiptsLayer,
   oauthAuthorizationLayer,
   raffleClientLayer,
-  songQueueClientLayer,
+  songQueueLayer,
   streamLifecycleClientLayer,
   twitchServiceLayer,
 ).pipe(

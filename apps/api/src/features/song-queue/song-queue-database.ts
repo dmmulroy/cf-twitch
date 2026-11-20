@@ -1,5 +1,5 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Context, Effect, Layer, Option, Ref, Schema } from "effect";
 import { SqlClient, type SqlError } from "effect/sql";
 import {
   IsoTimestamp,
@@ -11,10 +11,13 @@ import {
 import { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 import {
   SongQueueError,
+  type NowPlaying,
   type PendingSongRequest,
   type RequestHistoryQuery,
   type RequestHistoryItem,
   type SongQueueLimit,
+  type SongQueueOperation,
+  type SongQueueResult,
   type TopRequestedTrack,
   type TopSongRequester,
 } from "@cf-twitch/contracts/song-queue";
@@ -24,30 +27,77 @@ import {
   type SongQueueOccurrence,
 } from "./song-queue-reconciliation.ts";
 
-/** Durable polling intent survives eviction, including empty/offline Spotify responses. */
+/** Schema for the durable song queue polling intent, which survives Durable Object eviction. */
 export const SongQueueCoordination = Schema.Struct({
+  /** Epoch milliseconds of the last successful Spotify observation, absent until one succeeds. */
   lastSyncAt: Schema.OptionFromNullOr(Schema.Number),
+  /** Epoch milliseconds when the next Spotify refresh is due; `0` means immediately. */
   refreshDueAt: Schema.Number,
+  /** Epoch milliseconds when the next Pending Request cleanup is due; `0` means immediately. */
   cleanupDueAt: Schema.Number,
+  /** Spotify refresh failures since the last success, which select the persisted backoff. */
   consecutiveSyncFailures: NonNegativeInt,
 });
 
-/** Absolute polling deadlines are milliseconds since the Unix epoch. */
+/** Durable song queue polling intent with absolute deadlines in epoch milliseconds. */
 export interface SongQueueCoordination extends Schema.Schema.Type<typeof SongQueueCoordination> {}
 
-/** SQLite song queue capability owns atomic occurrence transitions and historical queries. */
+/** One parsed Spotify playback observation to reconcile with the saved Queue Occurrences. */
+export interface SongQueuePlaybackObservation {
+  /** Spotify Track currently playing, absent when playback is idle. */
+  readonly currentlyPlaying: Option.Option<SpotifyTrack>;
+  /** Upcoming Spotify Queue in provider order, excluding the current track. */
+  readonly upcoming: readonly SpotifyTrack[];
+  /** Instant of the observation, recorded as the playback departure time for Request History. */
+  readonly syncedAt: IsoTimestamp;
+}
+
+/**
+ * Song queue persistence: Pending Requests, Queue Occurrence snapshots, Request History, and
+ * polling intent.
+ *
+ * **Details**
+ *
+ * Read and request operations behave as documented on `ISongQueue`, failing with
+ * `SongQueueError` whose reason is `storage_unavailable` or `stored_data_invalid`.
+ */
 export interface ISongQueueDatabase extends Omit<ISongQueue, "refreshQueue"> {
-  readonly reconcilePlayback: (input: {
-    readonly currentlyPlaying: Option.Option<SpotifyTrack>;
-    readonly upcoming: readonly SpotifyTrack[];
-    readonly syncedAt: IsoTimestamp;
-  }) => Effect.Effect<void, SongQueueError>;
+  /**
+   * Atomically attributes an observation's Queue Occurrences and records a completed request.
+   *
+   * **Details**
+   *
+   * Moves the previous attributed current occurrence to Request History when it leaves playback,
+   * drops seen requests that disappeared, and expires never-seen requests older than one hour.
+   *
+   * @returns Nothing, or fails with `SongQueueError` when storage fails or stored rows are invalid;
+   *   a failure leaves the previous snapshot and history unchanged.
+   */
+  readonly reconcilePlayback: (
+    input: SongQueuePlaybackObservation,
+  ) => Effect.Effect<void, SongQueueError>;
+  /**
+   * Deletes Pending Requests requested before `before`.
+   *
+   * @returns Nothing, or fails with `SongQueueError` when storage fails.
+   */
   readonly cleanupPending: (before: IsoTimestamp) => Effect.Effect<void, SongQueueError>;
+  /**
+   * Returns the durable polling intent.
+   *
+   * @returns The coordination row, or fails with `SongQueueError` when storage fails or the row is
+   *   missing or invalid.
+   */
   readonly getCoordination: () => Effect.Effect<SongQueueCoordination, SongQueueError>;
+  /**
+   * Replaces the durable polling intent.
+   *
+   * @returns Nothing, or fails with `SongQueueError` when storage fails.
+   */
   readonly setCoordination: (input: SongQueueCoordination) => Effect.Effect<void, SongQueueError>;
 }
 
-/** Parsed song queue persistence keeps historical SQL representations private. */
+/** Service for song queue persistence; SQL representations stay private to this module. */
 export class SongQueueDatabase extends Context.Service<SongQueueDatabase, ISongQueueDatabase>()(
   "@cf-twitch/SongQueueDatabase",
 ) {}
@@ -269,18 +319,42 @@ const storedOccurrence = (
         },
 });
 
+/** Returns the request whose attributed current occurrence left playback in this observation. */
 const completedRequestEventId = (
   previous: readonly SongQueueOccurrence[],
   attributed: readonly SongQueueOccurrence[],
-): RedemptionId | null => {
+): Option.Option<RedemptionId> => {
   const previousCurrent = previous.find((item) => item.position === 0)?.track;
   const nextCurrent = attributed.find((item) => item.position === 0)?.track;
 
   return previousCurrent?.source === "user" &&
     (nextCurrent?.source !== "user" || previousCurrent.eventId !== nextCurrent.eventId)
-    ? previousCurrent.eventId
-    : null;
+    ? Option.some(previousCurrent.eventId)
+    : Option.none();
 };
+
+/** Returns the presented queue page: requested occurrences FIFO by request time, then autoplay. */
+const songQueuePage = (
+  occurrences: readonly SongQueueOccurrence[],
+  limit: SongQueueLimit,
+): SongQueueResult => {
+  const upcoming = occurrences.flatMap((item) => (item.position > 0 ? [item.track] : []));
+
+  const users = upcoming
+    .filter((track) => track.source === "user")
+    .toSorted((a, b) => Date.parse(a.requestedAt) - Date.parse(b.requestedAt));
+
+  return {
+    tracks: [...users, ...upcoming.filter((track) => track.source === "autoplay")].slice(0, limit),
+    totalCount: NonNegativeInt.make(upcoming.length),
+  };
+};
+
+/** Returns the Now Playing projection of a Queue Occurrence snapshot. */
+const nowPlaying = (occurrences: readonly SongQueueOccurrence[]): NowPlaying => ({
+  track: Option.fromUndefinedOr(occurrences.find((item) => item.position === 0)?.track),
+  position: 0,
+});
 
 const storedHistory = (
   row: Schema.Schema.Type<typeof StoredHistoryRequest>,
@@ -297,8 +371,9 @@ const storedHistory = (
   fulfilledAt: row.fulfilled_at,
 });
 
-const databaseFailure =
-  (operation: string) =>
+/** Returns a transform that classifies SQL and stored-row failures for one song queue operation. */
+const songQueueDatabaseFailure =
+  (operation: SongQueueOperation, eventId: Option.Option<RedemptionId> = Option.none()) =>
   <A, R>(
     effect: Effect.Effect<A, SqlError.SqlError | Schema.SchemaError | SongQueueError, R>,
   ): Effect.Effect<A, SongQueueError, R> =>
@@ -306,13 +381,23 @@ const databaseFailure =
       Effect.catchTags({
         SongQueueError: (error) => Effect.fail(error),
         SqlError: () =>
-          Effect.fail(new SongQueueError({ operation, reason: "storage_unavailable" })),
+          Effect.fail(new SongQueueError({ operation, reason: "storage_unavailable", eventId })),
         SchemaError: () =>
-          Effect.fail(new SongQueueError({ operation, reason: "stored_data_invalid" })),
+          Effect.fail(new SongQueueError({ operation, reason: "stored_data_invalid", eventId })),
       }),
     );
 
-/** Construct song queue SQL operations after additive, transactional baseline adoption. */
+/**
+ * Creates song queue persistence over SQLite after additive, transactional baseline adoption.
+ *
+ * **Details**
+ *
+ * Runs the `song_queue_schema_migrations` migration, which preserves historical Drizzle tables and
+ * imports legacy Agent polling state without copying opaque schedule IDs.
+ *
+ * @returns The database service, or fails with `MigrationError` or `SqlError` when adoption fails;
+ *   malformed legacy Agent state rolls the migration back.
+ */
 export const makeSongQueueDatabase = Effect.gen(function* () {
   yield* SqliteMigrator.run({ loader: songQueueMigrations, table: "song_queue_schema_migrations" });
   const sql = yield* SqlClient.SqlClient;
@@ -324,10 +409,11 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
   });
 
   const completePlayedRequest = Effect.fn("SongQueueDatabase.completePlayedRequest")(function* (
-    eventId: RedemptionId | null,
+    completed: Option.Option<RedemptionId>,
     syncedAt: IsoTimestamp,
   ) {
-    if (eventId === null) return;
+    if (Option.isNone(completed)) return;
+    const eventId = completed.value;
     yield* sql`INSERT OR IGNORE INTO request_history (event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at, fulfilled_at) SELECT event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at, ${syncedAt} FROM pending_requests WHERE event_id = ${eventId}`;
     yield* sql`DELETE FROM pending_requests WHERE event_id = ${eventId}`;
   });
@@ -369,53 +455,42 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
   });
 
   return SongQueueDatabase.of({
-    persistRequest: Effect.fn("SongQueueDatabase.persistRequest")(function* (input) {
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const inserted =
-            yield* sql`INSERT OR IGNORE INTO song_queue_receipts (event_id) VALUES (${input.eventId}) RETURNING event_id`;
+    persistRequest: Effect.fn("SongQueueDatabase.persistRequest")(
+      function* (input) {
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const inserted =
+              yield* sql`INSERT OR IGNORE INTO song_queue_receipts (event_id) VALUES (${input.eventId}) RETURNING event_id`;
 
-          if (inserted.length === 0) return;
-          yield* sql`INSERT INTO pending_requests (event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at) VALUES (${input.eventId}, ${input.track.id}, ${input.track.name}, ${JSON.stringify(input.track.artists)}, ${input.track.album}, ${Option.getOrNull(input.track.albumCoverUrl)}, ${input.requesterUserId}, ${input.requesterDisplayName}, ${input.requestedAt})`;
-          yield* sql`UPDATE song_queue_coordination SET last_sync_at = NULL, refresh_due_at = 0 WHERE singleton = 1`;
-        }),
-      );
-    }, databaseFailure("persistRequest")),
-    deleteRequest: Effect.fn("SongQueueDatabase.deleteRequest")(function* ({ eventId }) {
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          // Keep a compensation tombstone so late workflow replay cannot resurrect the request.
-          yield* sql`INSERT OR IGNORE INTO song_queue_receipts (event_id) VALUES (${eventId})`;
-          yield* sql`DELETE FROM pending_requests WHERE event_id = ${eventId}`;
-          yield* sql`UPDATE spotify_queue_snapshot SET source = 'autoplay', event_id = NULL, requester_user_id = NULL, requester_display_name = NULL, requested_at = NULL WHERE event_id = ${eventId}`;
-        }),
-      );
-    }, databaseFailure("deleteRequest")),
+            if (inserted.length === 0) return;
+            yield* sql`INSERT INTO pending_requests (event_id, track_id, track_name, artists, album, album_cover_url, requester_user_id, requester_display_name, requested_at) VALUES (${input.eventId}, ${input.track.id}, ${input.track.name}, ${JSON.stringify(input.track.artists)}, ${input.track.album}, ${Option.getOrNull(input.track.albumCoverUrl)}, ${input.requesterUserId}, ${input.requesterDisplayName}, ${input.requestedAt})`;
+            yield* sql`UPDATE song_queue_coordination SET last_sync_at = NULL, refresh_due_at = 0 WHERE singleton = 1`;
+          }),
+        );
+      },
+      (effect, input) =>
+        effect.pipe(songQueueDatabaseFailure("persistRequest", Option.some(input.eventId))),
+    ),
+    deleteRequest: Effect.fn("SongQueueDatabase.deleteRequest")(
+      function* ({ eventId }) {
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            // Keep a compensation tombstone so late workflow replay cannot resurrect the request.
+            yield* sql`INSERT OR IGNORE INTO song_queue_receipts (event_id) VALUES (${eventId})`;
+            yield* sql`DELETE FROM pending_requests WHERE event_id = ${eventId}`;
+            yield* sql`UPDATE spotify_queue_snapshot SET source = 'autoplay', event_id = NULL, requester_user_id = NULL, requester_display_name = NULL, requested_at = NULL WHERE event_id = ${eventId}`;
+          }),
+        );
+      },
+      (effect, input) =>
+        effect.pipe(songQueueDatabaseFailure("deleteRequest", Option.some(input.eventId))),
+    ),
     getCurrentlyPlaying: Effect.fn("SongQueueDatabase.getCurrentlyPlaying")(function* () {
-      return {
-        track: Option.fromUndefinedOr(
-          (yield* readOccurrences()).find((item) => item.position === 0)?.track,
-        ),
-        position: 0 as const,
-      };
-    }, databaseFailure("getCurrentlyPlaying")),
+      return nowPlaying(yield* readOccurrences());
+    }, songQueueDatabaseFailure("getCurrentlyPlaying")),
     getSongQueue: Effect.fn("SongQueueDatabase.getSongQueue")(function* ({ limit }) {
-      const upcoming = (yield* readOccurrences())
-        .filter((item) => item.position > 0)
-        .map((item) => item.track);
-
-      const users = upcoming
-        .filter((track) => track.source === "user")
-        .toSorted((a, b) => Date.parse(a.requestedAt) - Date.parse(b.requestedAt));
-
-      return {
-        tracks: [...users, ...upcoming.filter((track) => track.source === "autoplay")].slice(
-          0,
-          limit,
-        ),
-        totalCount: NonNegativeInt.make(upcoming.length),
-      };
-    }, databaseFailure("getSongQueue")),
+      return songQueuePage(yield* readOccurrences(), limit);
+    }, songQueueDatabaseFailure("getSongQueue")),
     getRequestHistory: Effect.fn("SongQueueDatabase.getRequestHistory")(function* (
       input: RequestHistoryQuery,
     ) {
@@ -437,14 +512,14 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
           return { requests: rows.map(storedHistory), totalCount };
         }),
       );
-    }, databaseFailure("getRequestHistory")),
+    }, songQueueDatabaseFailure("getRequestHistory")),
     getUserRequestCount: Effect.fn("SongQueueDatabase.getUserRequestCount")(function* ({ userId }) {
       return storedCount(
         yield* parseStoredCount(
           yield* sql`SELECT COUNT(*) AS count FROM request_history WHERE requester_user_id = ${userId}`,
         ),
       );
-    }, databaseFailure("getUserRequestCount")),
+    }, songQueueDatabaseFailure("getUserRequestCount")),
     getUserRequestCountByDisplayName: Effect.fn(
       "SongQueueDatabase.getUserRequestCountByDisplayName",
     )(function* ({ displayName }) {
@@ -453,7 +528,7 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
           yield* sql`SELECT COUNT(*) AS count FROM request_history WHERE requester_display_name = ${displayName}`,
         ),
       );
-    }, databaseFailure("getUserRequestCountByDisplayName")),
+    }, songQueueDatabaseFailure("getUserRequestCountByDisplayName")),
     getSessionRequestCount: Effect.fn("SongQueueDatabase.getSessionRequestCount")(function* ({
       since,
     }) {
@@ -462,14 +537,14 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
           yield* sql`SELECT COUNT(*) AS count FROM request_history WHERE julianday(fulfilled_at) >= julianday(${since})`,
         ),
       );
-    }, databaseFailure("getSessionRequestCount")),
+    }, songQueueDatabaseFailure("getSessionRequestCount")),
     getTopTracks: Effect.fn("SongQueueDatabase.getTopTracks")(
       ({ limit }) => getTrackStatistics(Option.none(), limit),
-      databaseFailure("getTopTracks"),
+      songQueueDatabaseFailure("getTopTracks"),
     ),
     getTopTracksByUser: Effect.fn("SongQueueDatabase.getTopTracksByUser")(
       ({ userId, limit }) => getTrackStatistics(Option.some(userId), limit),
-      databaseFailure("getTopTracksByUser"),
+      songQueueDatabaseFailure("getTopTracksByUser"),
     ),
     getTopRequesters: Effect.fn("SongQueueDatabase.getTopRequesters")(function* ({
       limit,
@@ -483,7 +558,7 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
         displayName: row.display_name,
         requestCount: row.request_count,
       }));
-    }, databaseFailure("getTopRequesters")),
+    }, songQueueDatabaseFailure("getTopRequesters")),
     checkDuplicateRequest: Effect.fn("SongQueueDatabase.checkDuplicateRequest")(function* ({
       userId,
       trackId,
@@ -499,7 +574,7 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
       );
 
       return count > 0;
-    }, databaseFailure("checkDuplicateRequest")),
+    }, songQueueDatabaseFailure("checkDuplicateRequest")),
     reconcilePlayback: Effect.fn("SongQueueDatabase.reconcilePlayback")(function* ({
       currentlyPlaying,
       upcoming,
@@ -530,10 +605,10 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
           yield* sql`UPDATE song_queue_coordination SET last_sync_at = ${Date.parse(syncedAt)}, consecutive_sync_failures = 0 WHERE singleton = 1`;
         }),
       );
-    }, databaseFailure("reconcilePlayback")),
+    }, songQueueDatabaseFailure("reconcilePlayback")),
     cleanupPending: Effect.fn("SongQueueDatabase.cleanupPending")(function* (before) {
       yield* sql`DELETE FROM pending_requests WHERE julianday(requested_at) < julianday(${before})`;
-    }, databaseFailure("cleanupPending")),
+    }, songQueueDatabaseFailure("cleanupPending")),
     getCoordination: Effect.fn("SongQueueDatabase.getCoordination")(function* () {
       const row = (yield* parseStoredCoordination(
         yield* sql`SELECT last_sync_at AS lastSyncAt, refresh_due_at AS refreshDueAt, cleanup_due_at AS cleanupDueAt, consecutive_sync_failures AS consecutiveSyncFailures FROM song_queue_coordination WHERE singleton = 1`,
@@ -546,15 +621,339 @@ export const makeSongQueueDatabase = Effect.gen(function* () {
         });
 
       return row;
-    }, databaseFailure("getCoordination")),
+    }, songQueueDatabaseFailure("getCoordination")),
     setCoordination: Effect.fn("SongQueueDatabase.setCoordination")(function* (input) {
       yield* sql`UPDATE song_queue_coordination SET last_sync_at = ${Option.getOrNull(input.lastSyncAt)}, refresh_due_at = ${input.refreshDueAt}, cleanup_due_at = ${input.cleanupDueAt}, consecutive_sync_failures = ${input.consecutiveSyncFailures} WHERE singleton = 1`;
-    }, databaseFailure("setCoordination")),
+    }, songQueueDatabaseFailure("setCoordination")),
   });
 });
 
-/** Song queue database Layer leaves the real SQL client requirement visible. */
+/** Layer that provides song queue persistence, leaving the SQL client visible. */
 export const songQueueDatabaseLayerWithoutDependencies = Layer.effect(
   SongQueueDatabase,
   makeSongQueueDatabase,
+);
+
+/** Layer that provides song queue persistence; the SQL client is the Durable Object's runtime binding. */
+export const songQueueDatabaseLayer = songQueueDatabaseLayerWithoutDependencies;
+
+/** In-memory Pending Request with the first time Spotify was observed playing or queueing it. */
+interface InMemorySongQueuePendingRequest {
+  readonly request: PendingSongRequest;
+  readonly firstSeenInSpotifyAt: Option.Option<IsoTimestamp>;
+}
+
+/** Complete in-memory song queue state, replaced atomically by each mutation. */
+interface InMemorySongQueueState {
+  readonly receipts: ReadonlySet<RedemptionId>;
+  readonly pending: ReadonlyMap<RedemptionId, InMemorySongQueuePendingRequest>;
+  readonly occurrences: readonly SongQueueOccurrence[];
+  readonly history: readonly RequestHistoryItem[];
+  readonly coordination: SongQueueCoordination;
+}
+
+/** Orders Request History rows the way SQL does: newest departure first, then event ID descending. */
+const newestHistoryFirst = (a: RequestHistoryItem, b: RequestHistoryItem): number =>
+  Date.parse(b.fulfilledAt) - Date.parse(a.fulfilledAt) ||
+  (a.eventId < b.eventId ? 1 : a.eventId > b.eventId ? -1 : 0);
+
+/** Returns played history ranked per group, keeping each group's count and newest row. */
+const rankHistory = <K extends string>(
+  history: readonly RequestHistoryItem[],
+  key: (item: RequestHistoryItem) => K,
+): ReadonlyArray<{
+  readonly key: K;
+  readonly latest: RequestHistoryItem;
+  readonly count: number;
+}> => {
+  const groups = new Map<K, { latest: RequestHistoryItem; count: number }>();
+
+  for (const item of history.toSorted(newestHistoryFirst)) {
+    const group = groups.get(key(item));
+
+    if (group === undefined) groups.set(key(item), { latest: item, count: 1 });
+    else group.count += 1;
+  }
+
+  return [...groups].map(([groupKey, group]) => ({ key: groupKey, ...group }));
+};
+
+/** Orders ranked groups by count descending, then key ascending. */
+const mostPlayedFirst = (
+  a: { readonly key: string; readonly count: number },
+  b: { readonly key: string; readonly count: number },
+): number => b.count - a.count || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
+/** Returns the in-memory state after reconciling one playback observation, mirroring the SQL transaction. */
+const reconcileInMemoryPlayback = (
+  state: InMemorySongQueueState,
+  { currentlyPlaying, upcoming, syncedAt }: SongQueuePlaybackObservation,
+): InMemorySongQueueState => {
+  const pendingRequests = [...state.pending.values()]
+    .map((entry) => entry.request)
+    .toSorted(
+      (a, b) =>
+        Date.parse(a.requestedAt) - Date.parse(b.requestedAt) ||
+        (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
+    );
+
+  const attributed = attributeSongQueueOccurrences({
+    previous: state.occurrences,
+    pending: pendingRequests,
+    currentlyPlaying,
+    upcoming,
+  });
+
+  const pending = new Map(state.pending);
+  let history = state.history;
+  const completed = completedRequestEventId(state.occurrences, attributed);
+
+  if (Option.isSome(completed)) {
+    const played = pending.get(completed.value);
+
+    if (played !== undefined && !history.some((item) => item.eventId === completed.value)) {
+      const { request } = played;
+      history = [
+        ...history,
+        {
+          eventId: request.eventId,
+          trackId: request.track.id,
+          trackName: request.track.name,
+          artists: request.track.artists,
+          album: request.track.album,
+          albumCoverUrl: request.track.albumCoverUrl,
+          requesterUserId: request.requesterUserId,
+          requesterDisplayName: request.requesterDisplayName,
+          requestedAt: request.requestedAt,
+          fulfilledAt: syncedAt,
+        },
+      ];
+    }
+
+    pending.delete(completed.value);
+  }
+
+  const attributedIds = new Set(
+    attributed.flatMap(({ track }) => (track.source === "user" ? [track.eventId] : [])),
+  );
+
+  for (const eventId of attributedIds) {
+    const entry = pending.get(eventId);
+
+    if (entry !== undefined)
+      pending.set(eventId, {
+        request: entry.request,
+        firstSeenInSpotifyAt: Option.orElse(entry.firstSeenInSpotifyAt, () =>
+          Option.some(syncedAt),
+        ),
+      });
+  }
+
+  const expiredBefore = Date.parse(syncedAt) - 3_600_000;
+
+  for (const [eventId, entry] of pending) {
+    const disappeared = Option.isSome(entry.firstSeenInSpotifyAt) && !attributedIds.has(eventId);
+
+    if (disappeared || Date.parse(entry.request.requestedAt) < expiredBefore)
+      pending.delete(eventId);
+  }
+
+  return {
+    receipts: state.receipts,
+    pending,
+    occurrences: attributed,
+    history,
+    coordination: {
+      lastSyncAt: Option.some(Date.parse(syncedAt)),
+      refreshDueAt: state.coordination.refreshDueAt,
+      cleanupDueAt: state.coordination.cleanupDueAt,
+      consecutiveSyncFailures: NonNegativeInt.make(0),
+    },
+  };
+};
+
+/** Creates an in-memory song queue database that follows the SQL implementation's semantics. */
+const makeSongQueueDatabaseTest = Effect.gen(function* () {
+  const state = yield* Ref.make<InMemorySongQueueState>({
+    receipts: new Set(),
+    pending: new Map(),
+    occurrences: [],
+    history: [],
+    coordination: {
+      lastSyncAt: Option.none(),
+      refreshDueAt: 0,
+      cleanupDueAt: 0,
+      consecutiveSyncFailures: NonNegativeInt.make(0),
+    },
+  });
+
+  const readHistory = Ref.get(state).pipe(Effect.map((current) => current.history));
+
+  const topTracks = (viewer: Option.Option<ViewerId>, limit: SongQueueLimit) =>
+    readHistory.pipe(
+      Effect.map((history): readonly TopRequestedTrack[] =>
+        rankHistory(
+          history.filter((item) =>
+            Option.match(viewer, {
+              onNone: () => true,
+              onSome: (userId) => item.requesterUserId === userId,
+            }),
+          ),
+          (item) => item.trackId,
+        )
+          .toSorted(mostPlayedFirst)
+          .slice(0, limit)
+          .map((group) => ({
+            trackId: group.latest.trackId,
+            trackName: group.latest.trackName,
+            artists: group.latest.artists,
+            requestCount: NonNegativeInt.make(group.count),
+          })),
+      ),
+    );
+
+  const countHistory = (matches: (item: RequestHistoryItem) => boolean) =>
+    readHistory.pipe(Effect.map((history) => NonNegativeInt.make(history.filter(matches).length)));
+
+  return SongQueueDatabase.of({
+    persistRequest: (input) =>
+      Ref.update(state, (current) => {
+        if (current.receipts.has(input.eventId)) return current;
+
+        return {
+          ...current,
+          receipts: new Set([...current.receipts, input.eventId]),
+          pending: new Map([
+            ...current.pending,
+            [input.eventId, { request: input, firstSeenInSpotifyAt: Option.none() }],
+          ]),
+          coordination: {
+            lastSyncAt: Option.none(),
+            refreshDueAt: 0,
+            cleanupDueAt: current.coordination.cleanupDueAt,
+            consecutiveSyncFailures: current.coordination.consecutiveSyncFailures,
+          },
+        };
+      }),
+    deleteRequest: ({ eventId }) =>
+      Ref.update(state, (current) => {
+        const pending = new Map(current.pending);
+        pending.delete(eventId);
+
+        return {
+          ...current,
+          receipts: new Set([...current.receipts, eventId]),
+          pending,
+          occurrences: current.occurrences.map((occurrence): SongQueueOccurrence =>
+            occurrence.track.source === "user" && occurrence.track.eventId === eventId
+              ? {
+                  position: occurrence.position,
+                  track: {
+                    id: occurrence.track.id,
+                    name: occurrence.track.name,
+                    artists: occurrence.track.artists,
+                    album: occurrence.track.album,
+                    albumCoverUrl: occurrence.track.albumCoverUrl,
+                    source: "autoplay",
+                  },
+                }
+              : occurrence,
+          ),
+        };
+      }),
+    getCurrentlyPlaying: () =>
+      Ref.get(state).pipe(Effect.map((current) => nowPlaying(current.occurrences))),
+    getSongQueue: ({ limit }) =>
+      Ref.get(state).pipe(Effect.map((current) => songQueuePage(current.occurrences, limit))),
+    getRequestHistory: (input) =>
+      readHistory.pipe(
+        Effect.map((history) => {
+          const matching = history
+            .filter(
+              (item) =>
+                Option.match(input.since, {
+                  onNone: () => true,
+                  onSome: (since) => Date.parse(item.fulfilledAt) >= Date.parse(since),
+                }) &&
+                Option.match(input.until, {
+                  onNone: () => true,
+                  onSome: (until) => Date.parse(item.fulfilledAt) <= Date.parse(until),
+                }),
+            )
+            .toSorted(newestHistoryFirst);
+
+          return {
+            requests: matching.slice(input.offset, input.offset + input.limit),
+            totalCount: NonNegativeInt.make(matching.length),
+          };
+        }),
+      ),
+    getUserRequestCount: ({ userId }) => countHistory((item) => item.requesterUserId === userId),
+    getUserRequestCountByDisplayName: ({ displayName }) =>
+      countHistory((item) => item.requesterDisplayName === displayName),
+    getSessionRequestCount: ({ since }) =>
+      countHistory((item) => Date.parse(item.fulfilledAt) >= Date.parse(since)),
+    getTopTracks: ({ limit }) => topTracks(Option.none(), limit),
+    getTopTracksByUser: ({ userId, limit }) => topTracks(Option.some(userId), limit),
+    getTopRequesters: ({ limit }) =>
+      readHistory.pipe(
+        Effect.map((history): readonly TopSongRequester[] =>
+          rankHistory(history, (item) => item.requesterUserId)
+            .toSorted(mostPlayedFirst)
+            .slice(0, limit)
+            .map((group) => ({
+              userId: group.latest.requesterUserId,
+              displayName: group.latest.requesterDisplayName,
+              requestCount: NonNegativeInt.make(group.count),
+            })),
+        ),
+      ),
+    checkDuplicateRequest: ({ userId, trackId, windowMinutes }) =>
+      Effect.gen(function* () {
+        const since = (yield* Clock.currentTimeMillis) - windowMinutes * 60_000;
+        const current = yield* Ref.get(state);
+
+        return (
+          [...current.pending.values()].some(
+            ({ request }) =>
+              request.requesterUserId === userId &&
+              request.track.id === trackId &&
+              Date.parse(request.requestedAt) >= since,
+          ) ||
+          current.history.some(
+            (item) =>
+              item.requesterUserId === userId &&
+              item.trackId === trackId &&
+              Date.parse(item.fulfilledAt) >= since,
+          )
+        );
+      }),
+    reconcilePlayback: (input) =>
+      Ref.update(state, (current) => reconcileInMemoryPlayback(current, input)),
+    cleanupPending: (before) =>
+      Ref.update(state, (current) => ({
+        ...current,
+        pending: new Map(
+          [...current.pending].filter(
+            ([, entry]) => Date.parse(entry.request.requestedAt) >= Date.parse(before),
+          ),
+        ),
+      })),
+    getCoordination: () => Ref.get(state).pipe(Effect.map((current) => current.coordination)),
+    setCoordination: (coordination) =>
+      Ref.update(state, (current) => ({ ...current, coordination })),
+  });
+});
+
+/**
+ * Layer that provides in-memory song queue persistence with the same observable behavior as SQL.
+ *
+ * **Details**
+ *
+ * Shares Queue Occurrence attribution and queue presentation with the SQL implementation; the
+ * database contract tests run against both. Historical adoption and storage failures are SQL-only.
+ */
+export const songQueueDatabaseTestLayer = Layer.effect(
+  SongQueueDatabase,
+  makeSongQueueDatabaseTest,
 );
