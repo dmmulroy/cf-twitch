@@ -10,9 +10,13 @@ import { Achievements } from "../achievements/achievements-service.ts";
 export class EventHandlerError extends Schema.TaggedError<EventHandlerError>()(
   "EventHandlerError",
   {
+    /** Handler operation that failed. */
     operation: Schema.Literals(["handleDomainEvent"]),
+    /** `consumer_unavailable` when the consumer could not accept the event now; `consumer_rejected` when it refused the event. */
     reason: Schema.Literals(["consumer_unavailable", "consumer_rejected"]),
+    /** Event whose delivery failed. */
     eventId: EventId,
+    /** Type of the event whose delivery failed. */
     eventType: DomainEventType,
   },
 ) {

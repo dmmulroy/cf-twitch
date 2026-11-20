@@ -6,6 +6,7 @@ import {
   EventBusError,
   EventBusSubscriber,
   EventBusSubscriptionId,
+  type EventBusOperation,
   type EventBusPageInput,
 } from "@cf-twitch/contracts/event-bus";
 import { EventId, IsoTimestamp, NonNegativeInt, PositiveInt } from "@cf-twitch/contracts/identity";
@@ -37,7 +38,7 @@ const SubscriptionRow = Schema.Struct({
 
 const CountRow = Schema.Struct({ count: NonNegativeInt });
 
-const TimestampRow = Schema.Struct({ timestamp: Schema.NullOr(IsoTimestamp) });
+const TimestampRow = Schema.Struct({ timestamp: Schema.OptionFromNullOr(IsoTimestamp) });
 
 const LegacyEventBusAgentState = Schema.Struct({
   retrySweepScheduleId: Schema.NullOr(Schema.String),
@@ -258,21 +259,19 @@ const parseCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
 
 const parseTimestampRows = Schema.decodeUnknownEffect(Schema.Array(TimestampRow));
 
-const operationError = (
-  operation: EventBusError["operation"],
-  reason: EventBusError["reason"] = "persistence_unavailable",
-  eventId: Option.Option<EventId> = Option.none(),
-) => new EventBusError({ operation, reason, eventId });
-
+// Database failures carry the business operation and the event the failing statement concerned.
 const withDatabaseErrors = <A>(
-  operation: EventBusError["operation"],
+  operation: EventBusOperation,
   effect: Effect.Effect<A, SqlError.SqlError | Schema.SchemaError | EventBusError>,
+  eventId: Option.Option<EventId> = Option.none(),
 ): Effect.Effect<A, EventBusError> =>
   effect.pipe(
     Effect.catchTags({
       EventBusError: (error) => Effect.fail(error),
-      SchemaError: () => Effect.fail(operationError(operation, "stored_row_invalid")),
-      SqlError: () => Effect.fail(operationError(operation)),
+      SchemaError: () =>
+        Effect.fail(new EventBusError({ operation, reason: "stored_row_invalid", eventId })),
+      SqlError: () =>
+        Effect.fail(new EventBusError({ operation, reason: "persistence_unavailable", eventId })),
     }),
   );
 
@@ -347,6 +346,7 @@ export const makeEventBusDatabase: Effect.Effect<
           return "accepted" as const;
         }),
       ),
+      Option.some(input.eventId),
     );
 
   const listDue: IEventBusDatabase["listDue"] = (now) =>
@@ -367,6 +367,7 @@ export const makeEventBusDatabase: Effect.Effect<
         Effect.flatMap(parsePendingRows),
         Effect.map((rows) => Option.fromNullishOr(rows[0])),
       ),
+      Option.some(eventId),
     );
 
   const reschedule: IEventBusDatabase["reschedule"] = (input) =>
@@ -375,6 +376,7 @@ export const makeEventBusDatabase: Effect.Effect<
       sql`UPDATE pending_events SET attempts = ${input.attempts}, next_retry_at = ${input.nextRetryAt} WHERE id = ${input.eventId}`.pipe(
         Effect.asVoid,
       ),
+      Option.some(input.eventId),
     );
 
   const recordDelivered: IEventBusDatabase["recordDelivered"] = (input) =>
@@ -387,6 +389,7 @@ export const makeEventBusDatabase: Effect.Effect<
           yield* sql`DELETE FROM dead_letter_queue WHERE id = ${input.eventId}`;
         }),
       ),
+      Option.some(input.eventId),
     );
 
   const moveToDeadLetter: IEventBusDatabase["moveToDeadLetter"] = (input) =>
@@ -403,6 +406,7 @@ export const makeEventBusDatabase: Effect.Effect<
           yield* sql`DELETE FROM pending_events WHERE id = ${input.pending.id}`;
         }),
       ),
+      Option.some(input.pending.id),
     );
 
   const listPending: IEventBusDatabase["listPending"] = (input) =>
@@ -449,6 +453,7 @@ export const makeEventBusDatabase: Effect.Effect<
         Effect.flatMap(parseDeadLetterRows),
         Effect.map((rows) => Option.fromNullishOr(rows[0])),
       ),
+      Option.some(eventId),
     );
 
   const recordDeadLetterReplayFailure: IEventBusDatabase["recordDeadLetterReplayFailure"] = (
@@ -461,6 +466,7 @@ export const makeEventBusDatabase: Effect.Effect<
         SET error = ${input.error}, last_failed_at = ${input.failedAt}
         WHERE id = ${input.eventId}
       `.pipe(Effect.asVoid),
+      Option.some(input.eventId),
     );
 
   const deleteDeadLetter: IEventBusDatabase["deleteDeadLetter"] = (eventId) =>
@@ -475,6 +481,7 @@ export const makeEventBusDatabase: Effect.Effect<
 
         return (before[0]?.count ?? 0) > 0;
       }),
+      Option.some(eventId),
     );
 
   const purgeExpiredDeadLetters: IEventBusDatabase["purgeExpiredDeadLetters"] = (now) =>
@@ -523,7 +530,7 @@ export const makeEventBusDatabase: Effect.Effect<
         )
       `.pipe(
         Effect.flatMap(parseTimestampRows),
-        Effect.map((rows) => Option.fromNullOr(rows[0]?.timestamp ?? null)),
+        Effect.map((rows) => Option.flatMap(Option.fromNullishOr(rows[0]), (row) => row.timestamp)),
       ),
     );
 
@@ -532,7 +539,7 @@ export const makeEventBusDatabase: Effect.Effect<
       "getStatus",
       sql`SELECT MIN(next_retry_at) AS timestamp FROM pending_events`.pipe(
         Effect.flatMap(parseTimestampRows),
-        Effect.map((rows) => Option.fromNullOr(rows[0]?.timestamp ?? null)),
+        Effect.map((rows) => Option.flatMap(Option.fromNullishOr(rows[0]), (row) => row.timestamp)),
       ),
     );
 
@@ -541,7 +548,7 @@ export const makeEventBusDatabase: Effect.Effect<
       "getStatus",
       sql`SELECT MIN(expires_at) AS timestamp FROM dead_letter_queue`.pipe(
         Effect.flatMap(parseTimestampRows),
-        Effect.map((rows) => Option.fromNullOr(rows[0]?.timestamp ?? null)),
+        Effect.map((rows) => Option.flatMap(Option.fromNullishOr(rows[0]), (row) => row.timestamp)),
       ),
     );
 

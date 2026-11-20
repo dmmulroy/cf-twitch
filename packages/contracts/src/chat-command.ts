@@ -48,10 +48,13 @@ const definitionBase = {
 };
 
 const storedFields = {
+  /** Command whose shared stored value this command renders; aliases share a value through it. */
   valueSourceName: ChatCommandName,
   counterSourceName: Schema.Null,
   handlerKey: Schema.Null,
+  /** Response template; `{value}` is replaced by the stored value after placeholder expansion. */
   outputTemplate: CommandTemplate,
+  /** Response sent when no value is stored or the stored value is empty. */
   emptyResponse: CommandTemplate,
 };
 
@@ -67,13 +70,16 @@ export const ChatCommandDefinition = Schema.Union([
     ...definitionBase,
     responseType: Schema.Literal("dynamic"),
     ...storedFields,
+    /** Lowest tier allowed to update the stored value from chat. */
     writePermission: ChatCommandPermission,
   }),
   Schema.Struct({
     ...definitionBase,
     responseType: Schema.Literal("computed"),
     valueSourceName: Schema.Null,
+    /** Command whose counter this command reads, or `Option.none()` to use its own name. */
     counterSourceName: Schema.OptionFromNullOr(ChatCommandName),
+    /** Runtime renderer key, such as `time` or `stats`; unknown keys render a configuration message. */
     handlerKey: CommandHandlerKey,
     outputTemplate: Schema.Null,
     emptyResponse: Schema.Null,
@@ -170,7 +176,9 @@ export const ChatCommandActor = Schema.Struct({
 export const UpdateChatCommandValue = Schema.Struct({
   name: ChatCommandName,
   value: ChatCommandValue,
+  /** Viewer making the change; their permission is checked against the current write tier. */
   actor: ChatCommandActor,
+  /** EventSub message ID that deduplicates redelivery, or `Option.none()` for an undeduplicated change. */
   operationId: Schema.OptionFromNullOr(EventSubMessageId),
 });
 
@@ -178,12 +186,14 @@ export const UpdateChatCommandValue = Schema.Struct({
 export const IncrementChatCommandCounter = Schema.Struct({
   name: ChatCommandName,
   increment: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
+  /** EventSub message ID that keyed the mutation, or `Option.none()` when the caller supplied none. */
   operationId: Schema.OptionFromNullOr(EventSubMessageId),
 });
 
 /** Command definition with its shared stored value resolved. */
 export const ChatCommandWithValue = Schema.Struct({
   command: ChatCommandDefinition,
+  /** Shared stored value, or `Option.none()` for computed commands and unset values. */
   value: Schema.OptionFromNullOr(ChatCommandValue),
 });
 
@@ -206,7 +216,9 @@ export const ChatCommandDebugSnapshot = Schema.Struct({
     dynamic: NonNegativeInt,
     computed: NonNegativeInt,
   }),
+  /** Count of committed registry changes, including imported history. */
   revision: NonNegativeInt,
+  /** Whether defaults were ever bootstrapped; stays true after every command is deleted. */
   initialized: Schema.Boolean,
 });
 
@@ -227,11 +239,15 @@ export type ChatCommandInput = typeof ChatCommandInput.Type;
 /** Prepared response does not imply delivery; receipt owner checkpoints before sending. */
 export const ChatCommandPreparation = Schema.Union([
   Schema.TaggedStruct("ChatCommandIgnored", {
+    /** Why nothing is sent: not a command, unknown, disabled, or below the command's read permission. */
     reason: Schema.Literals(["not_command", "unknown_command", "disabled", "permission_denied"]),
+    /** Command the text named, or `Option.none()` when the text is not a command. */
     commandName: Schema.OptionFromNullOr(ChatCommandName),
   }),
   Schema.TaggedStruct("ChatCommandPrepared", {
+    /** Canonical name of the command that produced the response. */
     commandName: ChatCommandName,
+    /** Response to send, or `Option.none()` when the command prepares nothing to send. */
     message: Schema.OptionFromNullOr(Schema.String),
   }),
 ]);
@@ -297,9 +313,13 @@ const unavailableRegistryWayForward = (operation: ChatCommandOperation): string 
 export class CommandInputParseError extends Schema.TaggedError<CommandInputParseError>()(
   "CommandInputParseError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["invalid_command_name", "operation_id_reused"]),
+    /** Command the operation concerned, or `Option.none()` when no name was resolved. */
     commandName: Schema.OptionFromNullOr(ChatCommandName),
+    /** EventSub message ID that keyed the mutation, or `Option.none()` when the caller supplied none. */
     operationId: Schema.OptionFromNullOr(EventSubMessageId),
   },
 ) {
@@ -320,8 +340,11 @@ export class CommandInputParseError extends Schema.TaggedError<CommandInputParse
 export class CommandNotFoundError extends Schema.TaggedError<CommandNotFoundError>()(
   "CommandNotFoundError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["unknown_command_name", "canonical_name_required"]),
+    /** Command name the caller gave, which may be an alias. */
     commandName: ChatCommandName,
   },
 ) {
@@ -342,9 +365,13 @@ export class CommandNotFoundError extends Schema.TaggedError<CommandNotFoundErro
 export class CommandAlreadyExistsError extends Schema.TaggedError<CommandAlreadyExistsError>()(
   "CommandAlreadyExistsError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["command_name_taken", "alias_name_taken"]),
+    /** Name requested for the new command. */
     commandName: ChatCommandName,
+    /** Canonical command that already owns the requested name. */
     existingCommandName: ChatCommandName,
   },
 ) {
@@ -365,14 +392,19 @@ export class CommandAlreadyExistsError extends Schema.TaggedError<CommandAlready
 export class CommandAliasConflictError extends Schema.TaggedError<CommandAliasConflictError>()(
   "CommandAliasConflictError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals([
       "alias_owned_by_another_command",
       "alias_repeated",
       "alias_matches_command_name",
     ]),
+    /** Command whose definition claims the alias. */
     commandName: ChatCommandName,
+    /** Alias that conflicts. */
     alias: ChatCommandName,
+    /** Command that already owns the alias; equals the alias when it collides with a canonical name. */
     ownerCommandName: ChatCommandName,
   },
 ) {
@@ -395,9 +427,13 @@ export class CommandAliasConflictError extends Schema.TaggedError<CommandAliasCo
 export class CommandInvalidDefinitionError extends Schema.TaggedError<CommandInvalidDefinitionError>()(
   "CommandInvalidDefinitionError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["missing_source_command", "incomplete_response_transition"]),
+    /** Command name the caller gave, which may be an alias. */
     commandName: ChatCommandName,
+    /** Missing source command, or `Option.none()` when the failure is not about a source. */
     sourceCommandName: Schema.OptionFromNullOr(ChatCommandName),
   },
 ) {
@@ -418,8 +454,11 @@ export class CommandInvalidDefinitionError extends Schema.TaggedError<CommandInv
 export class CommandNotUpdateableError extends Schema.TaggedError<CommandNotUpdateableError>()(
   "CommandNotUpdateableError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["static_response", "computed_response"]),
+    /** Command name the caller gave, which may be an alias. */
     commandName: ChatCommandName,
   },
 ) {
@@ -440,10 +479,15 @@ export class CommandNotUpdateableError extends Schema.TaggedError<CommandNotUpda
 export class CommandUpdatePermissionDeniedError extends Schema.TaggedError<CommandUpdatePermissionDeniedError>()(
   "CommandUpdatePermissionDeniedError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["write_permission_required"]),
+    /** Command name the caller gave, which may be an alias. */
     commandName: ChatCommandName,
+    /** Write tier the command currently requires. */
     requiredPermission: ChatCommandPermission,
+    /** Tier of the viewer who attempted the update. */
     actorPermission: ChatCommandPermission,
   },
 ) {
@@ -455,8 +499,11 @@ export class CommandUpdatePermissionDeniedError extends Schema.TaggedError<Comma
 
 /** Durable command storage or its internal transport is unavailable; no internal data is exposed. */
 export class CommandsDbError extends Schema.TaggedError<CommandsDbError>()("CommandsDbError", {
+  /** Registry or preparation operation that failed. */
   operation: ChatCommandOperation,
+  /** Classified cause; the message wording depends on it. */
   reason: Schema.Literals(["storage_unavailable", "transport_unavailable"]),
+  /** Command the operation concerned, or `Option.none()` when no name was resolved. */
   commandName: Schema.OptionFromNullOr(ChatCommandName),
 }) {
   /** Names the unavailable dependency and whether a mutation may already be saved. */
@@ -476,14 +523,17 @@ export class CommandsDbError extends Schema.TaggedError<CommandsDbError>()("Comm
 export class CommandsInvalidResponseError extends Schema.TaggedError<CommandsInvalidResponseError>()(
   "CommandsInvalidResponseError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["response_schema_mismatch"]),
+    /** Command the operation concerned, or `Option.none()` when no name was resolved. */
     commandName: Schema.OptionFromNullOr(ChatCommandName),
   },
 ) {
   /** Reports a contract mismatch between the Worker and the commands Durable Object. */
   override get message(): string {
-    return `Chat command registry response is invalid for ${chatCommandOperationDescriptions[this.operation]}: it does not match the registry contract. Check that the Worker and CommandsDO run the same release; ${unavailableRegistryWayForward(this.operation)}`;
+    return `Chat command registry response is invalid for ${chatCommandOperationDescriptions[this.operation]}: it does not match the registry contract. Check that the API and the command registry run the same release; ${unavailableRegistryWayForward(this.operation)}`;
   }
 }
 
@@ -491,7 +541,9 @@ export class CommandsInvalidResponseError extends Schema.TaggedError<CommandsInv
 export class CommandsStateParseError extends Schema.TaggedError<CommandsStateParseError>()(
   "CommandsStateParseError",
   {
+    /** Registry or preparation operation that failed. */
     operation: ChatCommandOperation,
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals([
       "snapshot_missing",
       "stored_snapshot_invalid",
@@ -507,13 +559,13 @@ export class CommandsStateParseError extends Schema.TaggedError<CommandsStatePar
 
     switch (this.reason) {
       case "snapshot_missing":
-        return `Chat command registry snapshot is missing for ${operation}. Inspect the commands_snapshot table and restore the registry before retrying.`;
+        return `Chat command registry snapshot is missing for ${operation}. Restore the stored command registry before retrying.`;
       case "stored_snapshot_invalid":
-        return `Chat command registry snapshot is unreadable for ${operation}. Inspect and repair the commands_snapshot row before retrying.`;
+        return `Chat command registry snapshot is unreadable for ${operation}. Inspect and repair the stored command registry before retrying.`;
       case "stored_references_invalid":
         return `Chat command registry snapshot has invalid command references for ${operation}. Inspect and repair the stored aliases and value sources before retrying.`;
       case "legacy_snapshot_invalid":
-        return `Chat command legacy Agent snapshot is invalid for ${operation}. Inspect and repair the cf_agents_state row before retrying the import.`;
+        return `Chat command registry import found invalid historical data for ${operation}. Inspect and repair the historical command registry before retrying the import.`;
       case "snapshot_encoding_failed":
         return `Chat command registry snapshot could not be encoded for ${operation}, so no change was saved. Inspect the logs for the rejected change before retrying.`;
     }
@@ -524,10 +576,15 @@ export class CommandsStateParseError extends Schema.TaggedError<CommandsStatePar
 export class ChatCommandRenderError extends Schema.TaggedError<ChatCommandRenderError>()(
   "ChatCommandRenderError",
   {
+    /** Preparation operation that failed. */
     operation: Schema.Literals(["prepareChatCommand"]),
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["response_too_long"]),
+    /** Canonical name of the command being prepared. */
     commandName: ChatCommandName,
+    /** Unicode code points in the rendered response. */
     renderedCodePoints: NonNegativeInt,
+    /** Unicode code points Twitch chat allows in one message. */
     maximumCodePoints: NonNegativeInt,
   },
 ) {
@@ -541,8 +598,11 @@ export class ChatCommandRenderError extends Schema.TaggedError<ChatCommandRender
 export class ChatCommandExecutionError extends Schema.TaggedError<ChatCommandExecutionError>()(
   "ChatCommandExecutionError",
   {
+    /** Preparation operation that failed. */
     operation: Schema.Literals(["prepareChatCommand"]),
+    /** Classified cause; the message wording depends on it. */
     reason: Schema.Literals(["song_queue_unavailable", "raffle_unavailable"]),
+    /** Canonical name of the command being prepared. */
     commandName: ChatCommandName,
   },
 ) {

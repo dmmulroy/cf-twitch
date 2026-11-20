@@ -6,6 +6,7 @@ import { HttpApiClient } from "effect/http-api";
 import {
   CommandsDbError,
   CommandsInvalidResponseError,
+  type ChatCommandName,
   type ChatCommandOperation,
   type CommandsError,
 } from "@cf-twitch/contracts/chat-command";
@@ -13,9 +14,10 @@ import { Commands } from "./commands.ts";
 import { CommandsHttpApi } from "./commands-http-api.ts";
 import commandsServerLayer, { CommandsServer } from "./commands-server.ts";
 
-// Registry errors decoded from the Durable Object pass through; transport and contract failures are classified here.
+// Registry errors decoded from the Durable Object pass through; transport and contract failures are classified here,
+// keeping the command name the caller asked about.
 const translateCommandsClientErrors =
-  (operation: ChatCommandOperation) =>
+  (operation: ChatCommandOperation, commandName: Option.Option<ChatCommandName> = Option.none()) =>
   <A, R>(
     request: Effect.Effect<
       A,
@@ -30,7 +32,7 @@ const translateCommandsClientErrors =
             new CommandsDbError({
               operation,
               reason: "transport_unavailable",
-              commandName: Option.none(),
+              commandName,
             }),
           ),
         SchemaError: () =>
@@ -38,7 +40,7 @@ const translateCommandsClientErrors =
             new CommandsInvalidResponseError({
               operation,
               reason: "response_schema_mismatch",
-              commandName: Option.none(),
+              commandName,
             }),
           ),
       }),
@@ -69,9 +71,13 @@ export const makeCommandsClient = Effect.gen(function* () {
   );
 
   return Commands.of({
-    getCommand: Effect.fn("CommandsClient.getCommand")(function* (input) {
-      return yield* (yield* httpClient).commands.getCommand({ payload: input });
-    }, translateCommandsClientErrors("getCommand")),
+    getCommand: Effect.fn("CommandsClient.getCommand")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.getCommand({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("getCommand", Option.some(input.name))),
+    ),
     getAllCommands: Effect.fn("CommandsClient.getAllCommands")(function* () {
       return yield* (yield* httpClient).commands.getAllCommands();
     }, translateCommandsClientErrors("getAllCommands")),
@@ -83,44 +89,78 @@ export const makeCommandsClient = Effect.gen(function* () {
       },
       translateCommandsClientErrors("getEnabledCommandsByPermission"),
     ),
-    getCommandValue: Effect.fn("CommandsClient.getCommandValue")(function* (input) {
-      return yield* (yield* httpClient).commands.getCommandValue({ payload: input });
-    }, translateCommandsClientErrors("getCommandValue")),
-    getCommandWithValue: Effect.fn("CommandsClient.getCommandWithValue")(function* (input) {
-      return yield* (yield* httpClient).commands.getCommandWithValue({ payload: input });
-    }, translateCommandsClientErrors("getCommandWithValue")),
+    getCommandValue: Effect.fn("CommandsClient.getCommandValue")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.getCommandValue({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("getCommandValue", Option.some(input.name))),
+    ),
+    getCommandWithValue: Effect.fn("CommandsClient.getCommandWithValue")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.getCommandWithValue({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("getCommandWithValue", Option.some(input.name))),
+    ),
     getEnabledCommandsWithValues: Effect.fn("CommandsClient.getEnabledCommandsWithValues")(
       function* () {
         return yield* (yield* httpClient).commands.getEnabledCommandsWithValues();
       },
       translateCommandsClientErrors("getEnabledCommandsWithValues"),
     ),
-    createCommand: Effect.fn("CommandsClient.createCommand")(function* (input) {
-      const client = (yield* httpClient).commands;
+    createCommand: Effect.fn("CommandsClient.createCommand")(
+      function* (input) {
+        const client = (yield* httpClient).commands;
 
-      // The generated client exposes one overload per union member, so discriminate before calling.
-      return yield* Match.value(input).pipe(
-        Match.when({ responseType: "static" }, (payload) => client.createCommand({ payload })),
-        Match.when({ responseType: "dynamic" }, (payload) => client.createCommand({ payload })),
-        Match.when({ responseType: "computed" }, (payload) => client.createCommand({ payload })),
-        Match.exhaustive,
-      );
-    }, translateCommandsClientErrors("createCommand")),
-    updateCommand: Effect.fn("CommandsClient.updateCommand")(function* (input) {
-      return yield* (yield* httpClient).commands.updateCommand({ payload: input });
-    }, translateCommandsClientErrors("updateCommand")),
-    deleteCommand: Effect.fn("CommandsClient.deleteCommand")(function* (input) {
-      return yield* (yield* httpClient).commands.deleteCommand({ payload: input });
-    }, translateCommandsClientErrors("deleteCommand")),
-    updateCommandValue: Effect.fn("CommandsClient.updateCommandValue")(function* (input) {
-      return yield* (yield* httpClient).commands.updateCommandValue({ payload: input });
-    }, translateCommandsClientErrors("updateCommandValue")),
-    getCommandCounter: Effect.fn("CommandsClient.getCommandCounter")(function* (input) {
-      return yield* (yield* httpClient).commands.getCommandCounter({ payload: input });
-    }, translateCommandsClientErrors("getCommandCounter")),
-    incrementCommandCounter: Effect.fn("CommandsClient.incrementCommandCounter")(function* (input) {
-      return yield* (yield* httpClient).commands.incrementCommandCounter({ payload: input });
-    }, translateCommandsClientErrors("incrementCommandCounter")),
+        // The generated client exposes one overload per union member, so discriminate before calling.
+        return yield* Match.value(input).pipe(
+          Match.when({ responseType: "static" }, (payload) => client.createCommand({ payload })),
+          Match.when({ responseType: "dynamic" }, (payload) => client.createCommand({ payload })),
+          Match.when({ responseType: "computed" }, (payload) => client.createCommand({ payload })),
+          Match.exhaustive,
+        );
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("createCommand", Option.some(input.name))),
+    ),
+    updateCommand: Effect.fn("CommandsClient.updateCommand")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.updateCommand({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("updateCommand", Option.some(input.name))),
+    ),
+    deleteCommand: Effect.fn("CommandsClient.deleteCommand")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.deleteCommand({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("deleteCommand", Option.some(input.name))),
+    ),
+    updateCommandValue: Effect.fn("CommandsClient.updateCommandValue")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.updateCommandValue({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("updateCommandValue", Option.some(input.name))),
+    ),
+    getCommandCounter: Effect.fn("CommandsClient.getCommandCounter")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.getCommandCounter({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("getCommandCounter", Option.some(input.name))),
+    ),
+    incrementCommandCounter: Effect.fn("CommandsClient.incrementCommandCounter")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.incrementCommandCounter({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(
+          translateCommandsClientErrors("incrementCommandCounter", Option.some(input.name)),
+        ),
+    ),
     getDebugSnapshot: Effect.fn("CommandsClient.getDebugSnapshot")(function* () {
       return yield* (yield* httpClient).commands.getDebugSnapshot();
     }, translateCommandsClientErrors("getDebugSnapshot")),

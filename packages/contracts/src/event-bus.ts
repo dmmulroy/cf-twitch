@@ -42,7 +42,9 @@ export type EventBusPageInput = typeof EventBusPageInput.Type;
 /** One event that is durably awaiting delivery or retry. */
 export const PendingEventItem = Schema.Struct({
   id: EventId,
+  /** Stored event, or `Option.none()` when its stored JSON is unreadable. */
   event: Schema.OptionFromNullOr(DomainEvent),
+  /** Delivery attempts made by retry processing; the initial publish attempt is not counted. */
   attempts: NonNegativeInt,
   nextRetryAt: IsoTimestamp,
   createdAt: IsoTimestamp,
@@ -65,11 +67,15 @@ export type PendingEventList = typeof PendingEventList.Type;
 /** One event retained after exhausting automatic delivery attempts. */
 export const DeadLetterEventItem = Schema.Struct({
   id: EventId,
+  /** Stored event, or `Option.none()` when its stored JSON is unreadable. */
   event: Schema.OptionFromNullOr(DomainEvent),
+  /** Safe failure description recorded by the last failed delivery or replay. */
   error: Schema.String,
   attempts: PositiveInt,
+  /** When the event was first accepted for delivery. */
   firstFailedAt: IsoTimestamp,
   lastFailedAt: IsoTimestamp,
+  /** End of the 30-day dead-letter retention, after which the entry is purged. */
   expiresAt: IsoTimestamp,
 });
 
@@ -89,8 +95,10 @@ export type DeadLetterEventList = typeof DeadLetterEventList.Type;
 
 /** Result of manually replaying one dead-letter event. */
 export const DeadLetterReplayResult = Schema.Struct({
+  /** Whether the subscriber accepted the replayed event; `false` keeps it dead-lettered. */
   success: Schema.Boolean,
   eventId: EventId,
+  /** Failure description when the replay was not accepted, otherwise `Option.none()`. */
   error: Schema.OptionFromNullOr(Schema.String),
 });
 
@@ -130,8 +138,11 @@ export type EventBusStats = typeof EventBusStats.Type;
 
 /** Event Bus scheduler and persistence health projection. */
 export const EventBusStatus = Schema.Struct({
+  /** Always `true` when the status could be read; read failures are errors instead. */
   healthy: Schema.Boolean,
+  /** Earliest pending retry, or `Option.none()` when nothing is pending. */
   nextRetryAt: Schema.OptionFromNullOr(IsoTimestamp),
+  /** Earliest dead-letter expiry, or `Option.none()` when the queue is empty. */
   nextDeadLetterExpiryAt: Schema.OptionFromNullOr(IsoTimestamp),
   stats: EventBusStats,
 });
@@ -184,9 +195,13 @@ const eventBusEventLabel = (eventId: Option.Option<EventId>): string =>
 
 /** Expected failure while applying Event Bus persistence or delivery policy. */
 export class EventBusError extends Schema.TaggedError<EventBusError>()("EventBusError", {
+  /** Event Bus operation that failed. */
   operation: EventBusOperation,
+  /** Classified cause; the message wording and retry guidance depend on it. */
   reason: EventBusErrorReason,
+  /** Event the operation concerned, or `Option.none()` for operations without one. */
   eventId: Schema.OptionFromNullOr(EventId),
+  /** Subscription the operation concerned; defaults to `Option.none()`. */
   subscriptionId: Schema.OptionFromNullOr(EventBusSubscriptionId).pipe(
     Schema.withConstructorDefault(Effect.succeed(Option.none())),
   ),
@@ -203,13 +218,13 @@ export class EventBusError extends Schema.TaggedError<EventBusError>()("EventBus
       case "alarm_unavailable":
         return `Event Bus alarm could not be scheduled during ${this.operation}. Pending deliveries are still stored; retry the operation to reschedule them.`;
       case "stored_row_invalid":
-        return `Event Bus stored row is invalid during ${this.operation}${event}. Inspect and repair the Event Bus tables before retrying.`;
+        return `Event Bus stored row is invalid during ${this.operation}${event}. Inspect and repair the stored Event Bus records before retrying.`;
       case "stored_event_invalid":
         return `Event Bus stored event is unreadable during ${this.operation}${event}. Inspect the dead-letter entry, then repair or delete it.`;
       case "event_invalid":
         return `Event Bus could not encode the event during ${this.operation}${event}. Check the event fields against the domain event contract and publish it again.`;
       case "invalid_response":
-        return `Event Bus response is invalid during ${this.operation}${event}: it does not match the Event Bus contract. Check that the Worker and EventBusDO run the same release, then read the event state before retrying.`;
+        return `Event Bus response is invalid during ${this.operation}${event}: it does not match the Event Bus contract. Check that the API and the Event Bus run the same release, then read the event state before retrying.`;
       case "subscriber_unavailable":
         return `Event Bus subscriber did not accept the delivery during ${this.operation}${event}. The event stays pending or dead-lettered; check the subscriber and replay it.`;
       case "subscriber_rejected":

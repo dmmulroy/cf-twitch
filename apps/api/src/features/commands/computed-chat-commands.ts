@@ -105,30 +105,46 @@ const writePermissionMessage = (required: ChatCommandPermission, commandName: st
 };
 
 // Registry failures after a value update was sent may hide a saved change, so viewers check before resending.
-const updateFailureMessage = (failure: CommandsError, target: string): string =>
-  Match.value(failure).pipe(
-    Match.tag(
-      "CommandNotFoundError",
-      () => `!${target} is not a command. Check the command name and try again.`,
-    ),
-    Match.tag(
-      "CommandNotUpdateableError",
-      () =>
-        `!${target} can't be updated from chat because its response is not editable. Choose a command with an editable value.`,
-    ),
-    Match.tag("CommandUpdatePermissionDeniedError", (denied) =>
+const updateFailureMessage = (failure: CommandsError, target: string): string => {
+  const unconfirmed = `Couldn't confirm the update to !${target} because commands are unavailable right now. Check !${target} before sending it again.`;
+
+  return Match.valueTags(failure, {
+    CommandNotFoundError: () =>
+      `Couldn't update !${target} because it is not a command. Check the command name and try again.`,
+    CommandNotUpdateableError: () =>
+      `Couldn't update !${target} because its response is not editable. Choose a command with an editable value.`,
+    CommandUpdatePermissionDeniedError: (denied) =>
       writePermissionMessage(denied.requiredPermission, target),
-    ),
-    Match.tag(
-      "CommandInputParseError",
-      () =>
-        `Couldn't update !${target} because this chat message was already used for a different update. Send the update in a new message.`,
-    ),
-    Match.orElse(
-      () =>
-        `Couldn't confirm the update to !${target} because commands are unavailable right now. Check !${target} before sending it again.`,
-    ),
-  );
+    CommandInputParseError: () =>
+      `Couldn't update !${target} because this chat message was already used for a different update. Send the update in a new message.`,
+    CommandAlreadyExistsError: () => unconfirmed,
+    CommandAliasConflictError: () => unconfirmed,
+    CommandInvalidDefinitionError: () => unconfirmed,
+    CommandsDbError: () => unconfirmed,
+    CommandsInvalidResponseError: () => unconfirmed,
+    CommandsStateParseError: () => unconfirmed,
+  });
+};
+
+// A failed increment may still have been counted; a new chat message would count it again.
+const skillIssueFailureMessage = (failure: CommandsError): string => {
+  const unconfirmed =
+    "Couldn't confirm that skill issue was counted because commands are unavailable right now. It may already be counted, so there's no need to send it again.";
+
+  return Match.valueTags(failure, {
+    CommandNotFoundError: () =>
+      "Couldn't count that skill issue because the !skillissue counter is missing. Ask a moderator to restore !skillissue.",
+    CommandInputParseError: () => unconfirmed,
+    CommandAlreadyExistsError: () => unconfirmed,
+    CommandAliasConflictError: () => unconfirmed,
+    CommandInvalidDefinitionError: () => unconfirmed,
+    CommandNotUpdateableError: () => unconfirmed,
+    CommandUpdatePermissionDeniedError: () => unconfirmed,
+    CommandsDbError: () => unconfirmed,
+    CommandsInvalidResponseError: () => unconfirmed,
+    CommandsStateParseError: () => unconfirmed,
+  });
+};
 
 /**
  * Creates computed command renderers over the registry and music, raffle, and achievement services.
@@ -350,19 +366,9 @@ export const makeComputedChatCommands = Effect.gen(function* () {
       })
       .pipe(Effect.result);
 
-    if (Result.isSuccess(result)) return `@dillon has ${result.success} SkillIssue so far`;
-
-    return Match.value(result.failure).pipe(
-      Match.tag(
-        "CommandNotFoundError",
-        () =>
-          "Couldn't count that skill issue because the !skillissue counter is missing. Ask a moderator to restore !skillissue.",
-      ),
-      Match.orElse(
-        () =>
-          "Couldn't confirm that skill issue was counted because commands are unavailable right now. It may already be counted, so there's no need to send it again.",
-      ),
-    );
+    return Result.isSuccess(result)
+      ? `@dillon has ${result.success} SkillIssue so far`
+      : skillIssueFailureMessage(result.failure);
   });
 
   const computedCommandRenderers = new Map<string, IComputedChatCommands["render"]>([
@@ -384,7 +390,7 @@ export const makeComputedChatCommands = Effect.gen(function* () {
       );
 
       return Option.isNone(renderer)
-        ? `!${context.command.name} is configured but has no live handler. Ask a moderator to fix the command's handler.`
+        ? `No live handler is configured for !${context.command.name}. Ask a moderator to fix the command's handler.`
         : yield* renderer.value(context);
     },
   );

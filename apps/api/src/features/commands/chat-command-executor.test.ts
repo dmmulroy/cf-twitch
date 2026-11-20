@@ -317,7 +317,7 @@ describe("Chat command preparation through real registry and executor", () => {
           "Only moderators can update !today. Ask a moderator to update it.",
         );
         expect(yield* response("!update keyboard nope", "moderator")).toBe(
-          "!keyboard can't be updated from chat because its response is not editable. Choose a command with an editable value.",
+          "Couldn't update !keyboard because its response is not editable. Choose a command with an editable value.",
         );
         expect(yield* response("!update leak new", "vip")).toBe("Updated !leak");
         expect(yield* response("!update leak new", "vip")).toBe("Updated !leak");
@@ -371,7 +371,7 @@ describe("Chat command preparation through real registry and executor", () => {
           patch: { handlerKey: "unregistered" },
         });
         expect(yield* response("!custom-time")).toBe(
-          "!custom-time is configured but has no live handler. Ask a moderator to fix the command's handler.",
+          "No live handler is configured for !custom-time. Ask a moderator to fix the command's handler.",
         );
       }).pipe(Effect.provide(testLayer)),
   );
