@@ -3,7 +3,13 @@ import { HttpApiBuilder } from "effect/http-api";
 import { Raffle } from "./raffle-service.ts";
 import { RaffleHttpApi } from "./raffle-http-api.ts";
 
-/** HTTP handlers delegate to the instance-local raffle authority. */
+/**
+ * Layer of raffle HTTP handlers that delegate each endpoint to the instance-local `Raffle` authority.
+ *
+ * **Details**
+ *
+ * Each endpoint returns the service's `RaffleError` unchanged, encoded by the HTTP contract's error schema.
+ */
 export const raffleHttpHandlersLayer = HttpApiBuilder.group(RaffleHttpApi, "raffle", (handlers) =>
   Effect.gen(function* () {
     const service = yield* Raffle;

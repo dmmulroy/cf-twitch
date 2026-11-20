@@ -15,7 +15,11 @@ import {
   CreateChatCommandInput,
   type ChatCommandPermission,
 } from "@cf-twitch/contracts/chat-command";
-import { RaffleError, RaffleLeaderboardEntry } from "@cf-twitch/contracts/raffle";
+import {
+  RaffleError,
+  RaffleLeaderboardEntry,
+  raffleErrorWithoutIdentifiers,
+} from "@cf-twitch/contracts/raffle";
 import { NowPlaying, QueuedTrack, SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { TwitchAnalytics, type ChatCommandMetric } from "../../runtime/twitch-analytics.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
@@ -142,8 +146,9 @@ const providerTestLayer = Layer.unwrap(
     const raffleFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("raffle"))
         return yield* new RaffleError({
-          operation: "command lookup",
+          operation: "getLeaderboard",
           reason: "transport_unavailable",
+          ...raffleErrorWithoutIdentifiers,
         });
     });
 

@@ -4,7 +4,7 @@ import { Effect, Layer, Option, Redacted } from "effect";
 import { HttpRouter } from "effect/http";
 import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
-import { RaffleError } from "@cf-twitch/contracts/raffle";
+import { RaffleError, raffleErrorWithoutIdentifiers } from "@cf-twitch/contracts/raffle";
 import { TwitchStatsApi } from "@cf-twitch/contracts/twitch-api";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
@@ -231,7 +231,13 @@ describe("Worker HTTP compatibility boundary", () => {
             }),
             Layer.mock(Raffle, {
               getLeaderboard: () =>
-                Effect.fail(new RaffleError({ operation: "getLeaderboard", reason })),
+                Effect.fail(
+                  new RaffleError({
+                    operation: "getLeaderboard",
+                    reason,
+                    ...raffleErrorWithoutIdentifiers,
+                  }),
+                ),
             }),
             Layer.mock(HttpResponseCache, { readThrough: ({ load }) => load }),
           ]),
