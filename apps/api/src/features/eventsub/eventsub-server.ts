@@ -14,7 +14,10 @@ import { workflowAlarmLayer } from "../workflows/workflow-alarm.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
 import { StreamLifecycleClient } from "../stream/stream-lifecycle.ts";
 import { streamLifecycleClientLayer } from "../stream/stream-lifecycle-client.ts";
-import { ChatCommandExecutor, executorLayer } from "../commands/chat-command-executor.ts";
+import {
+  ChatCommandExecutor,
+  chatCommandExecutorLayer,
+} from "../commands/chat-command-executor.ts";
 import { EventSubInbox, eventSubInboxLayerWithoutDependencies } from "./eventsub-inbox.ts";
 import { eventSubDispatchLayerWithoutDependencies } from "./eventsub-dispatch.ts";
 import { EventSubHttpApi } from "./eventsub-http-api.ts";
@@ -103,7 +106,7 @@ export const eventSubWebhookServerLayer = eventSubWebhookServerLayerWithoutDepen
     workflowStartersLayer,
     twitchServiceLayer,
     streamLifecycleClientLayer,
-    executorLayer,
+    chatCommandExecutorLayer,
   ]),
 );
 

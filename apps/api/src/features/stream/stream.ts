@@ -5,7 +5,7 @@ import { type DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import { StreamLifecycleError, type StreamTransitionCheckpoint } from "@cf-twitch/contracts/stream";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
-import { EventPublisher } from "../events/event-bus-service.ts";
+import { EventPublisher } from "../events/event-publisher.ts";
 import { StreamDatabase } from "./stream-database.ts";
 import { StreamLifecycleClient, type IStreamLifecycleClient } from "./stream-lifecycle.ts";
 import {

@@ -3,10 +3,13 @@ import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
 import { Effect, Layer, Option, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
-import { ChatCommandName, CreateChatCommandInput } from "@cf-twitch/contracts/chat-command";
+import {
+  ChatCommandName,
+  CommandsStateParseError,
+  CreateChatCommandInput,
+} from "@cf-twitch/contracts/chat-command";
 import { EventSubMessageId } from "@cf-twitch/contracts/identity";
-import { Commands } from "./commands.ts";
-import { commandsDatabaseLayerWithoutDependencies } from "./commands-database.ts";
+import { Commands, commandsLayer, commandsTestLayer } from "./commands.ts";
 import { defaultCommandMigrationIds } from "./command-defaults.ts";
 
 const name = (value: string) => ChatCommandName.make(value);
@@ -15,11 +18,14 @@ const operation = (value: string) => Option.some(EventSubMessageId.make(value));
 
 const sqliteLayer = SqliteClient.layer({ filename: ":memory:" });
 
-const commandsLayer = commandsDatabaseLayerWithoutDependencies.pipe(Layer.provide(sqliteLayer));
+const sqliteCommandsLayer = commandsLayer.pipe(Layer.provide(sqliteLayer));
 
 const createInput = Schema.decodeUnknownSync(CreateChatCommandInput);
 
-const dynamicInput = (command: string) =>
+const dynamicInput = (
+  command: string,
+  fields: { readonly valueSourceName?: string; readonly initialValue?: string } = {},
+) =>
   createInput({
     name: command,
     description: "Runtime note",
@@ -27,6 +33,7 @@ const dynamicInput = (command: string) =>
     responseType: "dynamic",
     permission: "everyone",
     initialValue: "initial",
+    ...fields,
   });
 
 const actor = { displayName: "ModeratorViewer", permission: "moderator" } as const;
@@ -76,7 +83,11 @@ const seedLegacyState = (state: string) =>
     yield* sql`INSERT INTO cf_agents_state (id, state) VALUES ('cf_state_row_id', ${state})`;
   });
 
-describe("Commands SQL authority", () => {
+// The in-memory test Layer must cross the same interface with the same registry behavior as SQLite.
+describe.each([
+  { store: "SQLite", registryLayer: sqliteCommandsLayer },
+  { store: "in-memory test", registryLayer: commandsTestLayer },
+])("Commands registry behavior ($store snapshot store)", ({ registryLayer }) => {
   it.effect(
     "treats prototype-shaped command names and operation identities as ordinary own keys",
     () =>
@@ -102,8 +113,274 @@ describe("Commands SQL authority", () => {
         expect(
           yield* commands.getCommand({ name: name("constructor") }).pipe(Effect.result),
         ).toHaveProperty("failure._tag", "CommandNotFoundError");
-      }).pipe(Effect.provide(commandsLayer)),
+      }).pipe(Effect.provide(registryLayer)),
   );
+
+  it.effect(
+    "creates a runtime command and atomically updates its shared value through an alias",
+    () =>
+      Effect.gen(function* () {
+        const commands = yield* Commands;
+        yield* commands.createCommand(dynamicInput("runtime"));
+        yield* commands.updateCommand({ name: name("runtime"), patch: { aliases: [name("rt")] } });
+        yield* commands.updateCommandValue({
+          name: name("rt"),
+          value: "updated",
+          actor,
+          operationId: Option.none(),
+        });
+        expect(yield* commands.getCommandWithValue({ name: name("runtime") })).toMatchObject({
+          value: Option.some("updated"),
+        });
+        yield* commands.updateCommandValue({
+          name: name("project"),
+          value: "shared",
+          actor,
+          operationId: Option.none(),
+        });
+        expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(
+          Option.some("shared"),
+        );
+      }).pipe(Effect.provide(registryLayer)),
+  );
+
+  it.effect(
+    "rejects duplicate names, alias collisions, duplicate aliases and missing sources without partial writes",
+    () =>
+      Effect.gen(function* () {
+        const commands = yield* Commands;
+        const before = yield* commands.getDebugSnapshot();
+        const duplicate = yield* commands.createCommand(dynamicInput("df")).pipe(Effect.result);
+        expect(duplicate).toHaveProperty("failure._tag", "CommandAlreadyExistsError");
+
+        for (const aliases of [
+          [name("keyboard")],
+          [name("df")],
+          [name("dupe"), name("dupe")],
+          [name("today")],
+        ]) {
+          expect(
+            yield* commands
+              .updateCommand({ name: name("today"), patch: { aliases } })
+              .pipe(Effect.result),
+          ).toHaveProperty("failure._tag", "CommandAliasConflictError");
+        }
+
+        const missing = yield* commands
+          .createCommand(
+            dynamicInput("missing-source", {
+              valueSourceName: "missing",
+              initialValue: "do not write",
+            }),
+          )
+          .pipe(Effect.result);
+
+        expect(missing).toHaveProperty("failure._tag", "CommandInvalidDefinitionError");
+        expect(missing).toHaveProperty("failure.reason", "missing_source_command");
+        expect(yield* commands.getDebugSnapshot()).toEqual(before);
+      }).pipe(Effect.provide(registryLayer)),
+  );
+
+  it.effect(
+    "rejects incomplete response transitions and accepts complete transitions while pruning obsolete state",
+    () =>
+      Effect.gen(function* () {
+        const commands = yield* Commands;
+        expect(
+          yield* commands
+            .updateCommand({ name: name("today"), patch: { responseType: "computed" } })
+            .pipe(Effect.result),
+        ).toHaveProperty("failure._tag", "CommandInvalidDefinitionError");
+        yield* commands.deleteCommand({ name: name("project") });
+        yield* commands.updateCommand({
+          name: name("today"),
+          patch: {
+            responseType: "computed",
+            valueSourceName: null,
+            counterSourceName: name("today"),
+            handlerKey: "time",
+            outputTemplate: null,
+            emptyResponse: null,
+            writePermission: null,
+          },
+        });
+        expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(Option.none());
+        expect(
+          yield* commands.incrementCommandCounter({
+            name: name("today"),
+            increment: 3,
+            operationId: Option.none(),
+          }),
+        ).toBe(3);
+      }).pipe(Effect.provide(registryLayer)),
+  );
+
+  it.effect("rechecks current write permission inside the transaction, not stale metadata", () =>
+    Effect.gen(function* () {
+      const commands = yield* Commands;
+      yield* commands.getCommand({ name: name("today") });
+      yield* commands.updateCommand({
+        name: name("today"),
+        patch: { writePermission: "broadcaster" },
+      });
+
+      const denied = yield* commands
+        .updateCommandValue({
+          name: name("today"),
+          value: "denied",
+          actor,
+          operationId: operation("denied"),
+        })
+        .pipe(Effect.result);
+
+      expect(denied).toHaveProperty("failure._tag", "CommandUpdatePermissionDeniedError");
+      expect(denied).toHaveProperty("failure.requiredPermission", "broadcaster");
+      expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(Option.some(""));
+      yield* commands.updateCommandValue({
+        name: name("today"),
+        value: "allowed",
+        actor: { ...actor, permission: "broadcaster" },
+        operationId: operation("denied"),
+      });
+      expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(
+        Option.some("allowed"),
+      );
+      expect(
+        yield* commands
+          .updateCommandValue({
+            name: name("keyboard"),
+            value: "no",
+            actor,
+            operationId: Option.none(),
+          })
+          .pipe(Effect.result),
+      ).toHaveProperty("failure._tag", "CommandNotUpdateableError");
+    }).pipe(Effect.provide(registryLayer)),
+  );
+
+  it.effect(
+    "recursively deletes value and counter dependents and requires canonical admin names",
+    () =>
+      Effect.gen(function* () {
+        const commands = yield* Commands;
+        yield* commands.createCommand(dynamicInput("grandchild", { valueSourceName: "project" }));
+        yield* commands.createCommand(
+          createInput({
+            name: "counter-child",
+            description: "Dependent",
+            category: "stats",
+            permission: "everyone",
+            responseType: "computed",
+            counterSourceName: "grandchild",
+            handlerKey: "skillissue",
+          }),
+        );
+        expect(
+          yield* commands.deleteCommand({ name: name("df") }).pipe(Effect.result),
+        ).toHaveProperty("failure._tag", "CommandNotFoundError");
+        yield* commands.deleteCommand({ name: name("today") });
+
+        for (const missing of ["today", "project", "grandchild", "counter-child"])
+          expect(
+            yield* commands.getCommand({ name: name(missing) }).pipe(Effect.result),
+          ).toHaveProperty("failure._tag", "CommandNotFoundError");
+      }).pipe(Effect.provide(registryLayer)),
+  );
+
+  it.effect(
+    "filters read permissions and disabled commands while administrative reads retain them",
+    () =>
+      Effect.gen(function* () {
+        const commands = yield* Commands;
+        yield* commands.updateCommand({ name: name("keyboard"), patch: { enabled: false } });
+
+        const available = yield* commands.getEnabledCommandsByPermission({
+          permission: "everyone",
+        });
+
+        expect(
+          available.some(
+            (command) =>
+              command.name === "keyboard" ||
+              command.name === "skillissue" ||
+              command.name === "update",
+          ),
+        ).toBe(false);
+        expect((yield* commands.getEnabledCommandsWithValues()).length).toBe(36);
+        expect((yield* commands.getAllCommands()).length).toBe(37);
+      }).pipe(Effect.provide(registryLayer)),
+  );
+
+  it.effect(
+    "deduplicates concurrent counter mutations and rejects different-input operation reuse",
+    () =>
+      Effect.gen(function* () {
+        const commands = yield* Commands;
+
+        const input = {
+          name: name("skillissue"),
+          increment: 1,
+          operationId: operation("same-message"),
+        };
+
+        expect(
+          yield* Effect.all(
+            [commands.incrementCommandCounter(input), commands.incrementCommandCounter(input)],
+            { concurrency: "unbounded" },
+          ),
+        ).toEqual([1, 1]);
+        expect(
+          yield* commands.incrementCommandCounter({ ...input, increment: 2 }).pipe(Effect.result),
+        ).toHaveProperty("failure._tag", "CommandInputParseError");
+        expect(
+          yield* commands
+            .updateCommandValue({
+              name: name("today"),
+              value: "different mutation",
+              actor,
+              operationId: input.operationId,
+            })
+            .pipe(Effect.result),
+        ).toHaveProperty("failure._tag", "CommandInputParseError");
+        expect(yield* commands.getCommandCounter({ name: name("skillissue") })).toBe(1);
+      }).pipe(Effect.provide(registryLayer)),
+  );
+
+  it.effect(
+    "replaying a value receipt never overwrites a later update, even after permission changes",
+    () =>
+      Effect.gen(function* () {
+        const commands = yield* Commands;
+
+        const input = {
+          name: name("today"),
+          value: "first",
+          actor,
+          operationId: operation("first"),
+        };
+
+        yield* commands.updateCommandValue(input);
+        yield* commands.updateCommandValue({
+          ...input,
+          value: "second",
+          operationId: operation("second"),
+        });
+        yield* commands.updateCommand({
+          name: name("today"),
+          patch: { writePermission: "broadcaster" },
+        });
+        yield* commands.updateCommandValue(input);
+        expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(
+          Option.some("second"),
+        );
+        expect(
+          yield* commands.updateCommandValue({ ...input, value: "tampered" }).pipe(Effect.result),
+        ).toHaveProperty("failure._tag", "CommandInputParseError");
+      }).pipe(Effect.provide(registryLayer)),
+  );
+});
+
+describe("Commands SQL authority", () => {
   it.effect("bootstraps all 37 exact defaults, alias and shared topic source", () =>
     Effect.gen(function* () {
       const commands = yield* Commands;
@@ -168,273 +445,7 @@ describe("Commands SQL authority", () => {
           command: { ...entry.command, createdAt: "<bootstrap instant>" },
         })),
       }).toMatchSnapshot();
-    }).pipe(Effect.provide(commandsLayer)),
-  );
-
-  it.effect(
-    "creates a runtime command and atomically updates its shared value through an alias",
-    () =>
-      Effect.gen(function* () {
-        const commands = yield* Commands;
-        yield* commands.createCommand(dynamicInput("runtime"));
-        yield* commands.updateCommand({ name: name("runtime"), patch: { aliases: [name("rt")] } });
-        yield* commands.updateCommandValue({
-          name: name("rt"),
-          value: "updated",
-          actor,
-          operationId: Option.none(),
-        });
-        expect(yield* commands.getCommandWithValue({ name: name("runtime") })).toMatchObject({
-          value: Option.some("updated"),
-        });
-        yield* commands.updateCommandValue({
-          name: name("project"),
-          value: "shared",
-          actor,
-          operationId: Option.none(),
-        });
-        expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(
-          Option.some("shared"),
-        );
-      }).pipe(Effect.provide(commandsLayer)),
-  );
-
-  it.effect(
-    "rejects duplicate names, alias collisions, duplicate aliases and missing sources without partial writes",
-    () =>
-      Effect.gen(function* () {
-        const commands = yield* Commands;
-        const before = yield* commands.getDebugSnapshot();
-        const duplicate = yield* commands.createCommand(dynamicInput("df")).pipe(Effect.result);
-        expect(duplicate).toHaveProperty("failure._tag", "CommandAlreadyExistsError");
-
-        for (const aliases of [
-          [name("keyboard")],
-          [name("df")],
-          [name("dupe"), name("dupe")],
-          [name("today")],
-        ]) {
-          expect(
-            yield* commands
-              .updateCommand({ name: name("today"), patch: { aliases } })
-              .pipe(Effect.result),
-          ).toHaveProperty("failure._tag", "CommandAliasConflictError");
-        }
-
-        const missing = yield* commands
-          .createCommand({
-            ...dynamicInput("missing-source"),
-            responseType: "dynamic",
-            valueSourceName: name("missing"),
-            initialValue: "do not write",
-          })
-          .pipe(Effect.result);
-
-        expect(missing).toHaveProperty("failure._tag", "CommandInvalidDefinitionError");
-        expect(yield* commands.getDebugSnapshot()).toEqual(before);
-      }).pipe(Effect.provide(commandsLayer)),
-  );
-
-  it.effect(
-    "rejects incomplete response transitions and accepts complete transitions while pruning obsolete state",
-    () =>
-      Effect.gen(function* () {
-        const commands = yield* Commands;
-        expect(
-          yield* commands
-            .updateCommand({ name: name("today"), patch: { responseType: "computed" } })
-            .pipe(Effect.result),
-        ).toHaveProperty("failure._tag", "CommandInvalidDefinitionError");
-        yield* commands.deleteCommand({ name: name("project") });
-        yield* commands.updateCommand({
-          name: name("today"),
-          patch: {
-            responseType: "computed",
-            valueSourceName: null,
-            counterSourceName: name("today"),
-            handlerKey: "time",
-            outputTemplate: null,
-            emptyResponse: null,
-            writePermission: null,
-          },
-        });
-        expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(Option.none());
-        expect(
-          yield* commands.incrementCommandCounter({
-            name: name("today"),
-            increment: 3,
-            operationId: Option.none(),
-          }),
-        ).toBe(3);
-      }).pipe(Effect.provide(commandsLayer)),
-  );
-
-  it.effect("rechecks current write permission inside the transaction, not stale metadata", () =>
-    Effect.gen(function* () {
-      const commands = yield* Commands;
-      yield* commands.getCommand({ name: name("today") });
-      yield* commands.updateCommand({
-        name: name("today"),
-        patch: { writePermission: "broadcaster" },
-      });
-
-      const denied = yield* commands
-        .updateCommandValue({
-          name: name("today"),
-          value: "denied",
-          actor,
-          operationId: operation("denied"),
-        })
-        .pipe(Effect.result);
-
-      expect(denied).toHaveProperty("failure._tag", "CommandUpdatePermissionDeniedError");
-      expect(denied).toHaveProperty("failure.requiredPermission", "broadcaster");
-      expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(Option.some(""));
-      yield* commands.updateCommandValue({
-        name: name("today"),
-        value: "allowed",
-        actor: { ...actor, permission: "broadcaster" },
-        operationId: operation("denied"),
-      });
-      expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(
-        Option.some("allowed"),
-      );
-      expect(
-        yield* commands
-          .updateCommandValue({
-            name: name("keyboard"),
-            value: "no",
-            actor,
-            operationId: Option.none(),
-          })
-          .pipe(Effect.result),
-      ).toHaveProperty("failure._tag", "CommandNotUpdateableError");
-    }).pipe(Effect.provide(commandsLayer)),
-  );
-
-  it.effect(
-    "recursively deletes value and counter dependents and requires canonical admin names",
-    () =>
-      Effect.gen(function* () {
-        const commands = yield* Commands;
-        yield* commands.createCommand({
-          ...dynamicInput("grandchild"),
-          responseType: "dynamic",
-          valueSourceName: name("project"),
-        });
-        yield* commands.createCommand(
-          createInput({
-            name: "counter-child",
-            description: "Dependent",
-            category: "stats",
-            permission: "everyone",
-            responseType: "computed",
-            counterSourceName: "grandchild",
-            handlerKey: "skillissue",
-          }),
-        );
-        expect(
-          yield* commands.deleteCommand({ name: name("df") }).pipe(Effect.result),
-        ).toHaveProperty("failure._tag", "CommandNotFoundError");
-        yield* commands.deleteCommand({ name: name("today") });
-
-        for (const missing of ["today", "project", "grandchild", "counter-child"])
-          expect(
-            yield* commands.getCommand({ name: name(missing) }).pipe(Effect.result),
-          ).toHaveProperty("failure._tag", "CommandNotFoundError");
-      }).pipe(Effect.provide(commandsLayer)),
-  );
-
-  it.effect(
-    "filters read permissions and disabled commands while administrative reads retain them",
-    () =>
-      Effect.gen(function* () {
-        const commands = yield* Commands;
-        yield* commands.updateCommand({ name: name("keyboard"), patch: { enabled: false } });
-
-        const available = yield* commands.getEnabledCommandsByPermission({
-          permission: "everyone",
-        });
-
-        expect(
-          available.some(
-            (command) =>
-              command.name === "keyboard" ||
-              command.name === "skillissue" ||
-              command.name === "update",
-          ),
-        ).toBe(false);
-        expect((yield* commands.getEnabledCommandsWithValues()).length).toBe(36);
-        expect((yield* commands.getAllCommands()).length).toBe(37);
-      }).pipe(Effect.provide(commandsLayer)),
-  );
-
-  it.effect(
-    "deduplicates concurrent counter mutations and rejects different-input operation reuse",
-    () =>
-      Effect.gen(function* () {
-        const commands = yield* Commands;
-
-        const input = {
-          name: name("skillissue"),
-          increment: 1,
-          operationId: operation("same-message"),
-        };
-
-        expect(
-          yield* Effect.all(
-            [commands.incrementCommandCounter(input), commands.incrementCommandCounter(input)],
-            { concurrency: "unbounded" },
-          ),
-        ).toEqual([1, 1]);
-        expect(
-          yield* commands.incrementCommandCounter({ ...input, increment: 2 }).pipe(Effect.result),
-        ).toHaveProperty("failure._tag", "CommandInputParseError");
-        expect(
-          yield* commands
-            .updateCommandValue({
-              name: name("today"),
-              value: "different mutation",
-              actor,
-              operationId: input.operationId,
-            })
-            .pipe(Effect.result),
-        ).toHaveProperty("failure._tag", "CommandInputParseError");
-        expect(yield* commands.getCommandCounter({ name: name("skillissue") })).toBe(1);
-      }).pipe(Effect.provide(commandsLayer)),
-  );
-
-  it.effect(
-    "replaying a value receipt never overwrites a later update, even after permission changes",
-    () =>
-      Effect.gen(function* () {
-        const commands = yield* Commands;
-
-        const input = {
-          name: name("today"),
-          value: "first",
-          actor,
-          operationId: operation("first"),
-        };
-
-        yield* commands.updateCommandValue(input);
-        yield* commands.updateCommandValue({
-          ...input,
-          value: "second",
-          operationId: operation("second"),
-        });
-        yield* commands.updateCommand({
-          name: name("today"),
-          patch: { writePermission: "broadcaster" },
-        });
-        yield* commands.updateCommandValue(input);
-        expect(yield* commands.getCommandValue({ name: name("today") })).toEqual(
-          Option.some("second"),
-        );
-        expect(
-          yield* commands.updateCommandValue({ ...input, value: "tampered" }).pipe(Effect.result),
-        ).toHaveProperty("failure._tag", "CommandInputParseError");
-      }).pipe(Effect.provide(commandsLayer)),
+    }).pipe(Effect.provide(sqliteCommandsLayer)),
   );
 
   it.effect(
@@ -457,12 +468,8 @@ describe("Commands SQL authority", () => {
           expect(yield* commands.getDebugSnapshot()).toMatchObject({ revision: 44 });
         });
 
-        yield* inspect.pipe(
-          Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
-        );
-        yield* inspect.pipe(
-          Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
-        );
+        yield* inspect.pipe(Effect.provide(commandsLayer, { local: true }));
+        yield* inspect.pipe(Effect.provide(commandsLayer, { local: true }));
         const sql = yield* SqlClient.SqlClient;
 
         const source = yield* parseStoredRows(
@@ -501,12 +508,8 @@ describe("Commands SQL authority", () => {
         expect(yield* commands.getDebugSnapshot()).toMatchObject({ revision: 45 });
       });
 
-      yield* inspect.pipe(
-        Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
-      );
-      yield* inspect.pipe(
-        Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
-      );
+      yield* inspect.pipe(Effect.provide(commandsLayer, { local: true }));
+      yield* inspect.pipe(Effect.provide(commandsLayer, { local: true }));
     }).pipe(Effect.provide(sqliteLayer)),
   );
 
@@ -532,12 +535,16 @@ describe("Commands SQL authority", () => {
 
           const result = yield* Effect.gen(function* () {
             yield* Commands;
-          }).pipe(
-            Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }),
-            Effect.result,
-          );
+          }).pipe(Effect.provide(commandsLayer, { local: true }), Effect.result);
 
-          expect(Result.isFailure(result)).toBe(true);
+          expect(result).toEqual(
+            Result.fail(
+              new CommandsStateParseError({
+                operation: "initializeRegistry",
+                reason: "legacy_snapshot_invalid",
+              }),
+            ),
+          );
           expect(yield* parseStoredRows(yield* sql`SELECT state FROM commands_snapshot`)).toEqual(
             [],
           );
@@ -559,12 +566,12 @@ describe("Commands SQL authority", () => {
             if (first !== undefined) yield* commands.deleteCommand({ name: first.name });
             all = yield* commands.getAllCommands();
           }
-        }).pipe(Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }));
+        }).pipe(Effect.provide(commandsLayer, { local: true }));
         yield* Effect.gen(function* () {
           const commands = yield* Commands;
           expect(yield* commands.getAllCommands()).toEqual([]);
           expect((yield* commands.getDebugSnapshot()).initialized).toBe(true);
-        }).pipe(Effect.provide(commandsDatabaseLayerWithoutDependencies, { local: true }));
+        }).pipe(Effect.provide(commandsLayer, { local: true }));
       }).pipe(Effect.provide(sqliteLayer)),
   );
 
@@ -574,11 +581,13 @@ describe("Commands SQL authority", () => {
         const commands = yield* Commands;
         const sql = yield* SqlClient.SqlClient;
         yield* sql`UPDATE commands_snapshot SET state = '{broken' WHERE singleton = 1`;
-        expect(yield* commands.getAllCommands().pipe(Effect.result)).toHaveProperty(
-          "failure._tag",
-          "CommandsStateParseError",
+        expect(yield* commands.getAllCommands().pipe(Effect.flip)).toEqual(
+          new CommandsStateParseError({
+            operation: "getAllCommands",
+            reason: "stored_snapshot_invalid",
+          }),
         );
-      }).pipe(Effect.provide(commandsDatabaseLayerWithoutDependencies));
+      }).pipe(Effect.provide(commandsLayer));
     }).pipe(Effect.provide(sqliteLayer)),
   );
 
@@ -635,7 +644,7 @@ describe("Commands SQL authority", () => {
               operationId: operation("message-2"),
             }),
           ).toBe(3);
-        }).pipe(Effect.provide(commandsDatabaseLayerWithoutDependencies));
+        }).pipe(Effect.provide(commandsLayer));
       }).pipe(Effect.provide(sqliteLayer)),
   );
 });

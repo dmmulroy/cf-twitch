@@ -40,7 +40,14 @@ function createHexCommandInput(now: string): typeof CreateChatCommandInput.Encod
   };
 }
 
-/** Additive default migrations applied exactly once, without overriding runtime edits. */
+/**
+ * Additive default migrations, each applied exactly once by ID without overriding runtime edits.
+ *
+ * **Details**
+ *
+ * A `create` migration adds its command only when no command or alias has the name; an
+ * `add-alias` migration adds the alias only when the target exists and the alias is unused.
+ */
 export const defaultCommandMigrations = [
   {
     id: "2026-05-27-add-plan-command",
@@ -65,10 +72,10 @@ export const defaultCommandMigrations = [
   },
 ] as const;
 
-/** Stable migration identities retained from the baseline registry. */
+/** Migration IDs a freshly bootstrapped registry records as already applied, retained from the baseline registry. */
 export const defaultCommandMigrationIds = defaultCommandMigrations.map((migration) => migration.id);
 
-/** All 37 historical defaults in original presentation order; parsed before persistence. */
+/** Returns all 37 historical default command inputs in original presentation order; they are parsed before persistence. */
 export function createDefaultCommandInputs(
   now: string,
 ): readonly (typeof CreateChatCommandInput.Encoded)[] {

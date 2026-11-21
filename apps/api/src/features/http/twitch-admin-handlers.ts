@@ -22,7 +22,7 @@ import {
 } from "@cf-twitch/contracts/chat-command";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { Commands } from "../commands/commands.ts";
-import { EventBusAdministration } from "../events/event-bus-service.ts";
+import { EventBusAdministration } from "../events/event-bus-administration.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { Raffle } from "../raffle/raffle-service.ts";

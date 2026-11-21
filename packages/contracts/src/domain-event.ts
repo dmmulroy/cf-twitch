@@ -46,13 +46,16 @@ export const RaffleRollEvent = Schema.Struct({
 })
   .check(
     Schema.makeFilter((event) => event.distance === Math.abs(event.roll - event.winningNumber), {
-      message: "Raffle distance must equal the absolute difference between the two numbers",
+      message:
+        "Raffle roll event distance must equal the absolute difference between the roll and the winning number. Recompute the distance and publish the event again.",
     }),
     Schema.makeFilter((event) => event.isWinner === (event.distance === 0), {
-      message: "Raffle winner status must equal whether the distance is zero",
+      message:
+        "Raffle roll event winner flag must be true exactly when the distance is zero. Recompute the winner flag and publish the event again.",
     }),
     Schema.makeFilter((event) => !(event.isWinner && event.isNewRecord), {
-      message: "A winning raffle roll cannot be a closest non-winning record",
+      message:
+        "Raffle roll event cannot be both a win and a closest non-winning record. Clear the record flag for winning rolls and publish the event again.",
     }),
   )
   .pipe(Schema.brand("RaffleRollEvent"));
@@ -101,12 +104,20 @@ const decodeDomainEventJson = Schema.decodeEffect(DomainEventJson);
 
 const encodeDomainEventToJson = Schema.encodeEffect(DomainEventJson);
 
-/** Decode persisted domain event JSON without an unchecked JSON.parse cast. */
+/**
+ * Parses persisted domain event JSON without an unchecked `JSON.parse` cast.
+ *
+ * @returns The domain event, or fails with `SchemaError` when the text is not JSON or does not match a domain event variant and its raffle evidence rules.
+ */
 export const parseDomainEventJson = (
   input: string,
 ): Effect.Effect<DomainEvent, Schema.SchemaError> => decodeDomainEventJson(input);
 
-/** Encode a parsed domain event into its stable persisted JSON representation. */
+/**
+ * Encodes a parsed domain event into its stable persisted JSON representation.
+ *
+ * @returns The JSON text, or fails with `SchemaError` when the event no longer satisfies its schema, such as a raffle event constructed without its evidence checks.
+ */
 export const encodeDomainEventJson = (
   event: DomainEvent,
 ): Effect.Effect<string, Schema.SchemaError> => encodeDomainEventToJson(event);

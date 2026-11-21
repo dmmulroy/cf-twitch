@@ -1,33 +1,63 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Effect, Layer, Match, Schema } from "effect";
+import { Effect, Layer, Match, Option, type Schema } from "effect";
 import type { HttpClientError } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
 import {
   CommandsDbError,
   CommandsInvalidResponseError,
+  type ChatCommandName,
+  type ChatCommandOperation,
   type CommandsError,
 } from "@cf-twitch/contracts/chat-command";
 import { Commands } from "./commands.ts";
 import { CommandsHttpApi } from "./commands-http-api.ts";
 import commandsServerLayer, { CommandsServer } from "./commands-server.ts";
 
-const translateCommandsClientErrors = <A, R>(
-  request: Effect.Effect<
-    A,
-    CommandsError | HttpClientError.HttpClientError | Schema.SchemaError,
-    R
-  >,
-  operation: string,
-): Effect.Effect<A, CommandsError, R> =>
-  request.pipe(
-    Effect.catchTags({
-      HttpClientError: () => Effect.fail(new CommandsDbError({ operation })),
-      SchemaError: () => Effect.fail(new CommandsInvalidResponseError({ operation })),
-    }),
-  );
+// Registry errors decoded from the Durable Object pass through; transport and contract failures are classified here,
+// keeping the command name the caller asked about.
+const translateCommandsClientErrors =
+  (operation: ChatCommandOperation, commandName: Option.Option<ChatCommandName> = Option.none()) =>
+  <A, R>(
+    request: Effect.Effect<
+      A,
+      CommandsError | HttpClientError.HttpClientError | Schema.SchemaError,
+      R
+    >,
+  ): Effect.Effect<A, CommandsError, R> =>
+    request.pipe(
+      Effect.catchTags({
+        HttpClientError: () =>
+          Effect.fail(
+            new CommandsDbError({
+              operation,
+              reason: "transport_unavailable",
+              commandName,
+            }),
+          ),
+        SchemaError: () =>
+          Effect.fail(
+            new CommandsInvalidResponseError({
+              operation,
+              reason: "response_schema_mismatch",
+              commandName,
+            }),
+          ),
+      }),
+    );
 
-/** Build invocation-scoped HTTP clients for the retained commands singleton, never caching DO stubs. */
+/**
+ * Creates the registry client for the `commands` Durable Object singleton.
+ *
+ * **Details**
+ *
+ * Each invocation builds its own HTTP client inside its scope; Durable Object stubs are never cached
+ * across invocations.
+ *
+ * @returns The registry service. Its operations fail with the registry errors decoded from the
+ * Durable Object, `CommandsDbError` when it cannot be reached, and `CommandsInvalidResponseError`
+ * when its response breaks the contract.
+ */
 export const makeCommandsClient = Effect.gen(function* () {
   const namespace = yield* CommandsServer;
 
@@ -41,102 +71,106 @@ export const makeCommandsClient = Effect.gen(function* () {
   );
 
   return Commands.of({
-    getCommand: Effect.fn("CommandsClient.getCommand")(function* (input) {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.getCommand({ payload: input }),
-        "getCommand",
-      );
-    }),
+    getCommand: Effect.fn("CommandsClient.getCommand")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.getCommand({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("getCommand", Option.some(input.name))),
+    ),
     getAllCommands: Effect.fn("CommandsClient.getAllCommands")(function* () {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.getAllCommands(),
-        "getAllCommands",
-      );
-    }),
+      return yield* (yield* httpClient).commands.getAllCommands();
+    }, translateCommandsClientErrors("getAllCommands")),
     getEnabledCommandsByPermission: Effect.fn("CommandsClient.getEnabledCommandsByPermission")(
       function* (input) {
-        return yield* translateCommandsClientErrors(
-          (yield* httpClient).commands.getEnabledCommandsByPermission({ payload: input }),
-          "getEnabledCommandsByPermission",
-        );
+        return yield* (yield* httpClient).commands.getEnabledCommandsByPermission({
+          payload: input,
+        });
       },
+      translateCommandsClientErrors("getEnabledCommandsByPermission"),
     ),
-    getCommandValue: Effect.fn("CommandsClient.getCommandValue")(function* (input) {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.getCommandValue({ payload: input }),
-        "getCommandValue",
-      );
-    }),
-    getCommandWithValue: Effect.fn("CommandsClient.getCommandWithValue")(function* (input) {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.getCommandWithValue({ payload: input }),
-        "getCommandWithValue",
-      );
-    }),
+    getCommandValue: Effect.fn("CommandsClient.getCommandValue")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.getCommandValue({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("getCommandValue", Option.some(input.name))),
+    ),
+    getCommandWithValue: Effect.fn("CommandsClient.getCommandWithValue")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.getCommandWithValue({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("getCommandWithValue", Option.some(input.name))),
+    ),
     getEnabledCommandsWithValues: Effect.fn("CommandsClient.getEnabledCommandsWithValues")(
       function* () {
-        return yield* translateCommandsClientErrors(
-          (yield* httpClient).commands.getEnabledCommandsWithValues(),
-          "getEnabledCommandsWithValues",
+        return yield* (yield* httpClient).commands.getEnabledCommandsWithValues();
+      },
+      translateCommandsClientErrors("getEnabledCommandsWithValues"),
+    ),
+    createCommand: Effect.fn("CommandsClient.createCommand")(
+      function* (input) {
+        const client = (yield* httpClient).commands;
+
+        // The generated client exposes one overload per union member, so discriminate before calling.
+        return yield* Match.value(input).pipe(
+          Match.when({ responseType: "static" }, (payload) => client.createCommand({ payload })),
+          Match.when({ responseType: "dynamic" }, (payload) => client.createCommand({ payload })),
+          Match.when({ responseType: "computed" }, (payload) => client.createCommand({ payload })),
+          Match.exhaustive,
         );
       },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("createCommand", Option.some(input.name))),
     ),
-    createCommand: Effect.fn("CommandsClient.createCommand")(function* (input) {
-      const client = (yield* httpClient).commands;
-
-      // The generated client exposes one overload per union member, so discriminate before calling.
-      const request = Match.value(input).pipe(
-        Match.when({ responseType: "static" }, (payload) => client.createCommand({ payload })),
-        Match.when({ responseType: "dynamic" }, (payload) => client.createCommand({ payload })),
-        Match.when({ responseType: "computed" }, (payload) => client.createCommand({ payload })),
-        Match.exhaustive,
-      );
-
-      return yield* translateCommandsClientErrors(request, "createCommand");
-    }),
-    updateCommand: Effect.fn("CommandsClient.updateCommand")(function* (input) {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.updateCommand({ payload: input }),
-        "updateCommand",
-      );
-    }),
-    deleteCommand: Effect.fn("CommandsClient.deleteCommand")(function* (input) {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.deleteCommand({ payload: input }),
-        "deleteCommand",
-      );
-    }),
-    updateCommandValue: Effect.fn("CommandsClient.updateCommandValue")(function* (input) {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.updateCommandValue({ payload: input }),
-        "updateCommandValue",
-      );
-    }),
-    getCommandCounter: Effect.fn("CommandsClient.getCommandCounter")(function* (input) {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.getCommandCounter({ payload: input }),
-        "getCommandCounter",
-      );
-    }),
-    incrementCommandCounter: Effect.fn("CommandsClient.incrementCommandCounter")(function* (input) {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.incrementCommandCounter({ payload: input }),
-        "incrementCommandCounter",
-      );
-    }),
+    updateCommand: Effect.fn("CommandsClient.updateCommand")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.updateCommand({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("updateCommand", Option.some(input.name))),
+    ),
+    deleteCommand: Effect.fn("CommandsClient.deleteCommand")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.deleteCommand({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("deleteCommand", Option.some(input.name))),
+    ),
+    updateCommandValue: Effect.fn("CommandsClient.updateCommandValue")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.updateCommandValue({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("updateCommandValue", Option.some(input.name))),
+    ),
+    getCommandCounter: Effect.fn("CommandsClient.getCommandCounter")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.getCommandCounter({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(translateCommandsClientErrors("getCommandCounter", Option.some(input.name))),
+    ),
+    incrementCommandCounter: Effect.fn("CommandsClient.incrementCommandCounter")(
+      function* (input) {
+        return yield* (yield* httpClient).commands.incrementCommandCounter({ payload: input });
+      },
+      (request, input) =>
+        request.pipe(
+          translateCommandsClientErrors("incrementCommandCounter", Option.some(input.name)),
+        ),
+    ),
     getDebugSnapshot: Effect.fn("CommandsClient.getDebugSnapshot")(function* () {
-      return yield* translateCommandsClientErrors(
-        (yield* httpClient).commands.getDebugSnapshot(),
-        "getDebugSnapshot",
-      );
-    }),
+      return yield* (yield* httpClient).commands.getDebugSnapshot();
+    }, translateCommandsClientErrors("getDebugSnapshot")),
   });
 });
 
-/** Commands HTTP client with explicit namespace and Alchemy execution requirements. */
+/** Layer that provides the registry HTTP client and keeps its `CommandsServer` namespace and Alchemy execution requirements visible. */
 export const commandsClientLayerWithoutDependencies = Layer.effect(Commands, makeCommandsClient);
 
-/** Ready commands client registers the matching physical Durable Object during planning. */
+/** Production registry client Layer; registers the matching `CommandsDO` namespace during planning. */
 export const commandsClientLayer = commandsClientLayerWithoutDependencies.pipe(
   Layer.provide(commandsServerLayer),
 );

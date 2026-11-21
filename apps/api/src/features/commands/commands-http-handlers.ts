@@ -3,7 +3,14 @@ import { HttpApiBuilder } from "effect/http-api";
 import { Commands } from "./commands.ts";
 import { CommandsHttpApi } from "./commands-http-api.ts";
 
-/** HTTP handlers delegate to the same atomic command service used by SQL integration tests. */
+/**
+ * Layer that implements the internal commands HTTP API by delegating each endpoint to `Commands`.
+ *
+ * **Details**
+ *
+ * Registry failures are returned as the typed `CommandsError` variants declared by the endpoint
+ * contract; administrator authentication belongs to the public Worker handlers.
+ */
 export const commandsHttpHandlersLayerWithoutDependencies = HttpApiBuilder.group(
   CommandsHttpApi,
   "commands",

@@ -1,11 +1,12 @@
 import { SqliteMigrator } from "@effect/sql-sqlite-do";
-import { Context, Effect, Layer, Option, Schema } from "effect";
+import { Context, Effect, Layer, Option, Ref, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/sql";
 import {
   DomainEventType,
   EventBusError,
   EventBusSubscriber,
   EventBusSubscriptionId,
+  type EventBusOperation,
   type EventBusPageInput,
 } from "@cf-twitch/contracts/event-bus";
 import { EventId, IsoTimestamp, NonNegativeInt, PositiveInt } from "@cf-twitch/contracts/identity";
@@ -37,7 +38,7 @@ const SubscriptionRow = Schema.Struct({
 
 const CountRow = Schema.Struct({ count: NonNegativeInt });
 
-const TimestampRow = Schema.Struct({ timestamp: Schema.NullOr(IsoTimestamp) });
+const TimestampRow = Schema.Struct({ timestamp: Schema.OptionFromNullOr(IsoTimestamp) });
 
 const LegacyEventBusAgentState = Schema.Struct({
   retrySweepScheduleId: Schema.NullOr(Schema.String),
@@ -68,29 +69,54 @@ export type EventAcceptance =
   | "already_delivered"
   | "dead_lettered";
 
-/** Persistence operations that preserve Event Bus terminal-state transactions. */
+/** Page of persistence rows with the total row count for pagination. */
+export interface EventBusRowPage<Row> {
+  /** Rows in the requested window. */
+  readonly rows: ReadonlyArray<Row>;
+  /** Total rows across every page. */
+  readonly totalCount: number;
+}
+
+/**
+ * Persistence operations that preserve Event Bus terminal-state transactions.
+ *
+ * Every operation fails with `EventBusError`: `persistence_unavailable` when storage fails and
+ * `stored_row_invalid` when a stored row does not match its schema.
+ */
 export interface IEventBusDatabase {
+  /**
+   * Accepts a producer event once, in one transaction.
+   *
+   * @returns `accepted` after storing a new pending row; `already_delivered` after removing stale
+   * pending or dead-letter copies of a delivered event; `already_pending` or `dead_lettered` when the
+   * event is already stored. Fails with `EventBusError` when storage is unavailable.
+   */
   readonly accept: (input: {
     readonly eventId: EventId;
     readonly encodedEvent: string;
     readonly now: IsoTimestamp;
     readonly firstRetryAt: IsoTimestamp;
   }) => Effect.Effect<EventAcceptance, EventBusError>;
+  /** Returns pending rows due at or before `now`, oldest due first. */
   readonly listDue: (
     now: IsoTimestamp,
   ) => Effect.Effect<ReadonlyArray<PendingEventRow>, EventBusError>;
+  /** Returns one pending row, or `Option.none()` when the event is not pending. */
   readonly findPending: (
     eventId: EventId,
   ) => Effect.Effect<Option.Option<PendingEventRow>, EventBusError>;
+  /** Sets a pending row's attempt count and next retry time. */
   readonly reschedule: (input: {
     readonly eventId: EventId;
     readonly attempts: NonNegativeInt;
     readonly nextRetryAt: IsoTimestamp;
   }) => Effect.Effect<void, EventBusError>;
+  /** Records a delivery receipt and removes pending and dead-letter copies in one transaction. */
   readonly recordDelivered: (input: {
     readonly eventId: EventId;
     readonly deliveredAt: IsoTimestamp;
   }) => Effect.Effect<void, EventBusError>;
+  /** Moves a pending row to the dead-letter queue in one transaction, keeping its original creation time. */
   readonly moveToDeadLetter: (input: {
     readonly pending: PendingEventRow;
     readonly error: string;
@@ -98,30 +124,29 @@ export interface IEventBusDatabase {
     readonly failedAt: IsoTimestamp;
     readonly expiresAt: IsoTimestamp;
   }) => Effect.Effect<void, EventBusError>;
-  readonly listPending: (input: EventBusPageInput) => Effect.Effect<
-    {
-      readonly rows: ReadonlyArray<PendingEventRow>;
-      readonly totalCount: number;
-    },
-    EventBusError
-  >;
-  readonly listDeadLetters: (input: EventBusPageInput) => Effect.Effect<
-    {
-      readonly rows: ReadonlyArray<DeadLetterRow>;
-      readonly totalCount: number;
-    },
-    EventBusError
-  >;
+  /** Returns a page of pending rows, newest first. */
+  readonly listPending: (
+    input: EventBusPageInput,
+  ) => Effect.Effect<EventBusRowPage<PendingEventRow>, EventBusError>;
+  /** Returns a page of dead-letter rows, most recently failed first. */
+  readonly listDeadLetters: (
+    input: EventBusPageInput,
+  ) => Effect.Effect<EventBusRowPage<DeadLetterRow>, EventBusError>;
+  /** Returns one dead-letter row, or `Option.none()` when the event is not dead-lettered. */
   readonly findDeadLetter: (
     eventId: EventId,
   ) => Effect.Effect<Option.Option<DeadLetterRow>, EventBusError>;
+  /** Records a failed manual replay on a dead-letter row. */
   readonly recordDeadLetterReplayFailure: (input: {
     readonly eventId: EventId;
     readonly error: string;
     readonly failedAt: IsoTimestamp;
   }) => Effect.Effect<void, EventBusError>;
+  /** Deletes one dead-letter row and returns whether it existed. */
   readonly deleteDeadLetter: (eventId: EventId) => Effect.Effect<boolean, EventBusError>;
+  /** Deletes dead-letter rows expiring at or before `now` and returns how many were deleted. */
   readonly purgeExpiredDeadLetters: (now: IsoTimestamp) => Effect.Effect<number, EventBusError>;
+  /** Returns pending, dead-letter, delivered, and subscription row counts. */
   readonly counts: () => Effect.Effect<
     {
       readonly pendingCount: number;
@@ -131,28 +156,40 @@ export interface IEventBusDatabase {
     },
     EventBusError
   >;
+  /** Returns the earliest retry or dead-letter expiry time, or `Option.none()` when nothing is scheduled. */
   readonly earliestWakeAt: () => Effect.Effect<Option.Option<IsoTimestamp>, EventBusError>;
+  /** Returns the earliest pending retry time, or `Option.none()` when nothing is pending. */
   readonly earliestRetryAt: () => Effect.Effect<Option.Option<IsoTimestamp>, EventBusError>;
+  /** Returns the earliest dead-letter expiry time, or `Option.none()` when the queue is empty. */
   readonly earliestDeadLetterExpiryAt: () => Effect.Effect<
     Option.Option<IsoTimestamp>,
     EventBusError
   >;
+  /** Returns every subscription row, ordered by subscriber and event type. */
   readonly listSubscriptions: () => Effect.Effect<ReadonlyArray<SubscriptionRow>, EventBusError>;
+  /** Adds missing subscriptions for a subscriber and returns all of its rows, ordered by event type. */
   readonly registerSubscriptions: (input: {
     readonly subscriber: EventBusSubscriber;
     readonly eventTypes: ReadonlyArray<DomainEventType>;
     readonly createdAt: IsoTimestamp;
   }) => Effect.Effect<ReadonlyArray<SubscriptionRow>, EventBusError>;
+  /** Deletes one subscription row and returns whether it existed. */
   readonly unregisterSubscription: (
     id: EventBusSubscriptionId,
   ) => Effect.Effect<boolean, EventBusError>;
+  /** Deletes pending, dead-letter, and delivered rows in one transaction; subscriptions remain. */
   readonly reset: () => Effect.Effect<void, EventBusError>;
 }
 
-/** Parsed Event Bus persistence with SQL records kept private to the feature. */
+/** Service for Event Bus persistence; SQL records stay private to the events feature. */
 export class EventBusDatabase extends Context.Service<EventBusDatabase, IEventBusDatabase>()(
   "@cf-twitch/EventBusDatabase",
 ) {}
+
+// Achievements subscribe to every domain event type from the first migration onward.
+const defaultAchievementEventTypes = DomainEventType.literals;
+
+const defaultSubscriptionCreatedAt = IsoTimestamp.make("1970-01-01T00:00:00.000Z");
 
 const initialMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -194,15 +231,10 @@ const initialMigration = Effect.gen(function* () {
     )
   `;
 
-  for (const eventType of [
-    "song_request_success",
-    "raffle_roll",
-    "stream_online",
-    "stream_offline",
-  ] as const) {
+  for (const eventType of defaultAchievementEventTypes) {
     yield* sql`
       INSERT OR IGNORE INTO event_subscriptions (id, subscriber, event_type, created_at)
-      VALUES (${`achievements:${eventType}`}, 'achievements', ${eventType}, '1970-01-01T00:00:00.000Z')
+      VALUES (${`achievements:${eventType}`}, 'achievements', ${eventType}, ${defaultSubscriptionCreatedAt})
     `;
   }
 });
@@ -210,6 +242,12 @@ const initialMigration = Effect.gen(function* () {
 const migrationLoader = SqliteMigrator.fromRecord({
   "1_preserve_event_bus_authority": initialMigration,
 });
+
+const decodeLegacyAgentState = Schema.decodeEffect(Schema.fromJsonString(LegacyEventBusAgentState));
+
+const parseLegacyStateRows = Schema.decodeUnknownEffect(
+  Schema.Array(Schema.Struct({ state: Schema.String })),
+);
 
 const parsePendingRows = Schema.decodeUnknownEffect(Schema.Array(PendingEventRow));
 
@@ -221,25 +259,34 @@ const parseCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
 
 const parseTimestampRows = Schema.decodeUnknownEffect(Schema.Array(TimestampRow));
 
-const operationError = (
-  operation: EventBusError["operation"],
-  reason: EventBusError["reason"] = "persistence_unavailable",
-  eventId: Option.Option<EventId> = Option.none(),
-) => new EventBusError({ operation, reason, eventId });
-
+// Database failures carry the business operation and the event the failing statement concerned.
 const withDatabaseErrors = <A>(
-  operation: EventBusError["operation"],
+  operation: EventBusOperation,
   effect: Effect.Effect<A, SqlError.SqlError | Schema.SchemaError | EventBusError>,
+  eventId: Option.Option<EventId> = Option.none(),
 ): Effect.Effect<A, EventBusError> =>
   effect.pipe(
     Effect.catchTags({
       EventBusError: (error) => Effect.fail(error),
-      SchemaError: () => Effect.fail(operationError(operation, "stored_event_invalid")),
-      SqlError: () => Effect.fail(operationError(operation)),
+      SchemaError: () =>
+        Effect.fail(new EventBusError({ operation, reason: "stored_row_invalid", eventId })),
+      SqlError: () =>
+        Effect.fail(new EventBusError({ operation, reason: "persistence_unavailable", eventId })),
     }),
   );
 
-/** Construct Event Bus persistence after compatibility migrations and Agent-state validation. */
+/**
+ * Creates SQLite Event Bus persistence after validating legacy Agent state and running migrations.
+ *
+ * **Details**
+ *
+ * The legacy `cf_agents_state` row is validated before any migration writes; a missing table is
+ * distinguished from a storage failure, which is never treated as empty state. Must run only in
+ * the Durable Object runtime phase.
+ *
+ * @returns The database service, or fails with `SchemaError` when legacy Agent state is invalid,
+ * and `SqlError` or `MigrationError` when storage or migration fails.
+ */
 export const makeEventBusDatabase: Effect.Effect<
   EventBusDatabase["Service"],
   SqliteMigrator.MigrationError | SqlError.SqlError | Schema.SchemaError,
@@ -255,15 +302,11 @@ export const makeEventBusDatabase: Effect.Effect<
   `.pipe(Effect.flatMap(parseCountRows));
 
   if ((legacyTable[0]?.count ?? 0) > 0) {
-    const legacyRows = yield* sql<{ readonly state: string }>`
+    const legacyRows = yield* sql`
       SELECT state FROM cf_agents_state WHERE id = 'cf_state_row_id' LIMIT 1
-    `;
+    `.pipe(Effect.flatMap(parseLegacyStateRows));
 
-    if (legacyRows[0] !== undefined) {
-      yield* Schema.decodeEffect(Schema.fromJsonString(LegacyEventBusAgentState))(
-        legacyRows[0].state,
-      );
-    }
+    if (legacyRows[0] !== undefined) yield* decodeLegacyAgentState(legacyRows[0].state);
   }
 
   yield* SqliteMigrator.run({ loader: migrationLoader, table: "event_bus_schema_migrations" });
@@ -303,6 +346,7 @@ export const makeEventBusDatabase: Effect.Effect<
           return "accepted" as const;
         }),
       ),
+      Option.some(input.eventId),
     );
 
   const listDue: IEventBusDatabase["listDue"] = (now) =>
@@ -323,6 +367,7 @@ export const makeEventBusDatabase: Effect.Effect<
         Effect.flatMap(parsePendingRows),
         Effect.map((rows) => Option.fromNullishOr(rows[0])),
       ),
+      Option.some(eventId),
     );
 
   const reschedule: IEventBusDatabase["reschedule"] = (input) =>
@@ -331,6 +376,7 @@ export const makeEventBusDatabase: Effect.Effect<
       sql`UPDATE pending_events SET attempts = ${input.attempts}, next_retry_at = ${input.nextRetryAt} WHERE id = ${input.eventId}`.pipe(
         Effect.asVoid,
       ),
+      Option.some(input.eventId),
     );
 
   const recordDelivered: IEventBusDatabase["recordDelivered"] = (input) =>
@@ -343,6 +389,7 @@ export const makeEventBusDatabase: Effect.Effect<
           yield* sql`DELETE FROM dead_letter_queue WHERE id = ${input.eventId}`;
         }),
       ),
+      Option.some(input.eventId),
     );
 
   const moveToDeadLetter: IEventBusDatabase["moveToDeadLetter"] = (input) =>
@@ -359,6 +406,7 @@ export const makeEventBusDatabase: Effect.Effect<
           yield* sql`DELETE FROM pending_events WHERE id = ${input.pending.id}`;
         }),
       ),
+      Option.some(input.pending.id),
     );
 
   const listPending: IEventBusDatabase["listPending"] = (input) =>
@@ -405,6 +453,7 @@ export const makeEventBusDatabase: Effect.Effect<
         Effect.flatMap(parseDeadLetterRows),
         Effect.map((rows) => Option.fromNullishOr(rows[0])),
       ),
+      Option.some(eventId),
     );
 
   const recordDeadLetterReplayFailure: IEventBusDatabase["recordDeadLetterReplayFailure"] = (
@@ -417,6 +466,7 @@ export const makeEventBusDatabase: Effect.Effect<
         SET error = ${input.error}, last_failed_at = ${input.failedAt}
         WHERE id = ${input.eventId}
       `.pipe(Effect.asVoid),
+      Option.some(input.eventId),
     );
 
   const deleteDeadLetter: IEventBusDatabase["deleteDeadLetter"] = (eventId) =>
@@ -431,6 +481,7 @@ export const makeEventBusDatabase: Effect.Effect<
 
         return (before[0]?.count ?? 0) > 0;
       }),
+      Option.some(eventId),
     );
 
   const purgeExpiredDeadLetters: IEventBusDatabase["purgeExpiredDeadLetters"] = (now) =>
@@ -479,7 +530,7 @@ export const makeEventBusDatabase: Effect.Effect<
         )
       `.pipe(
         Effect.flatMap(parseTimestampRows),
-        Effect.map((rows) => Option.fromNullOr(rows[0]?.timestamp ?? null)),
+        Effect.map((rows) => Option.flatMap(Option.fromNullishOr(rows[0]), (row) => row.timestamp)),
       ),
     );
 
@@ -488,7 +539,7 @@ export const makeEventBusDatabase: Effect.Effect<
       "getStatus",
       sql`SELECT MIN(next_retry_at) AS timestamp FROM pending_events`.pipe(
         Effect.flatMap(parseTimestampRows),
-        Effect.map((rows) => Option.fromNullOr(rows[0]?.timestamp ?? null)),
+        Effect.map((rows) => Option.flatMap(Option.fromNullishOr(rows[0]), (row) => row.timestamp)),
       ),
     );
 
@@ -497,7 +548,7 @@ export const makeEventBusDatabase: Effect.Effect<
       "getStatus",
       sql`SELECT MIN(expires_at) AS timestamp FROM dead_letter_queue`.pipe(
         Effect.flatMap(parseTimestampRows),
-        Effect.map((rows) => Option.fromNullOr(rows[0]?.timestamp ?? null)),
+        Effect.map((rows) => Option.flatMap(Option.fromNullishOr(rows[0]), (row) => row.timestamp)),
       ),
     );
 
@@ -579,8 +630,259 @@ export const makeEventBusDatabase: Effect.Effect<
   });
 });
 
-/** Event Bus persistence Layer that keeps its SQL client requirement visible. */
+/** Layer that provides SQLite Event Bus persistence and keeps its Durable Object SQL client requirement visible. */
 export const eventBusDatabaseLayerWithoutDependencies = Layer.effect(
   EventBusDatabase,
   makeEventBusDatabase,
+);
+
+/** Production Event Bus persistence Layer; the SQL client is a Durable Object runtime binding supplied by `EventBusServer`. */
+export const eventBusDatabaseLayer = eventBusDatabaseLayerWithoutDependencies;
+
+interface InMemoryEventBusRows {
+  readonly pending: ReadonlyMap<EventId, PendingEventRow>;
+  readonly deadLetters: ReadonlyMap<EventId, DeadLetterRow>;
+  readonly delivered: ReadonlyMap<EventId, IsoTimestamp>;
+  readonly subscriptions: ReadonlyMap<EventBusSubscriptionId, SubscriptionRow>;
+}
+
+const subscriptionRow = (
+  subscriber: EventBusSubscriber,
+  eventType: DomainEventType,
+  createdAt: IsoTimestamp,
+): SubscriptionRow => ({
+  id: EventBusSubscriptionId.make(`${subscriber}:${eventType}`),
+  subscriber,
+  event_type: eventType,
+  created_at: createdAt,
+});
+
+const withEntry = <K, V>(map: ReadonlyMap<K, V>, key: K, value: V): ReadonlyMap<K, V> =>
+  new Map(map).set(key, value);
+
+const withoutEntry = <K, V>(map: ReadonlyMap<K, V>, key: K): ReadonlyMap<K, V> => {
+  const next = new Map(map);
+  next.delete(key);
+
+  return next;
+};
+
+const earliest = (timestamps: ReadonlyArray<IsoTimestamp>): Option.Option<IsoTimestamp> =>
+  Option.fromNullishOr([...timestamps].sort()[0]);
+
+const pageOf = <Row>(rows: ReadonlyArray<Row>, input: EventBusPageInput): EventBusRowPage<Row> => ({
+  rows: rows.slice(input.offset, input.offset + input.limit),
+  totalCount: rows.length,
+});
+
+// SQLite orders TEXT with binary collation, so compare code units rather than locale order.
+const compareText = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+const byText =
+  <Row>(key: (row: Row) => string, direction: "ascending" | "descending") =>
+  (left: Row, right: Row): number =>
+    direction === "ascending"
+      ? compareText(key(left), key(right))
+      : compareText(key(right), key(left));
+
+/**
+ * Layer that provides in-memory Event Bus persistence with the same transactions, ordering, and
+ * default Achievement subscriptions as the SQLite tables.
+ *
+ * **Details**
+ *
+ * Each operation applies atomically to one immutable snapshot, matching the SQLite transactions.
+ * Timestamps compare as ISO text, as SQLite compares them.
+ */
+export const eventBusDatabaseTestLayer = Layer.effect(
+  EventBusDatabase,
+  Effect.gen(function* () {
+    const rows = yield* Ref.make<InMemoryEventBusRows>({
+      pending: new Map(),
+      deadLetters: new Map(),
+      delivered: new Map(),
+      subscriptions: new Map(
+        defaultAchievementEventTypes.map((eventType) => {
+          const row = subscriptionRow("achievements", eventType, defaultSubscriptionCreatedAt);
+
+          return [row.id, row];
+        }),
+      ),
+    });
+
+    const read = <A>(project: (state: InMemoryEventBusRows) => A) =>
+      Ref.get(rows).pipe(Effect.map(project));
+
+    return EventBusDatabase.of({
+      accept: (input) =>
+        Ref.modify(rows, (state): [EventAcceptance, InMemoryEventBusRows] => {
+          if (state.delivered.has(input.eventId))
+            return [
+              "already_delivered",
+              {
+                ...state,
+                pending: withoutEntry(state.pending, input.eventId),
+                deadLetters: withoutEntry(state.deadLetters, input.eventId),
+              },
+            ];
+
+          if (state.pending.has(input.eventId)) return ["already_pending", state];
+
+          if (state.deadLetters.has(input.eventId)) return ["dead_lettered", state];
+
+          return [
+            "accepted",
+            {
+              ...state,
+              pending: withEntry(state.pending, input.eventId, {
+                id: input.eventId,
+                event: input.encodedEvent,
+                attempts: 0,
+                next_retry_at: input.firstRetryAt,
+                created_at: input.now,
+              }),
+            },
+          ];
+        }),
+      listDue: (now) =>
+        read((state) =>
+          [...state.pending.values()]
+            .filter((row) => row.next_retry_at <= now)
+            .sort(byText((row) => `${row.next_retry_at}\u0000${row.id}`, "ascending")),
+        ),
+      findPending: (eventId) => read((state) => Option.fromNullishOr(state.pending.get(eventId))),
+      reschedule: (input) =>
+        Ref.update(rows, (state) =>
+          Option.match(Option.fromNullishOr(state.pending.get(input.eventId)), {
+            onNone: () => state,
+            onSome: (row) => ({
+              ...state,
+              pending: withEntry(state.pending, input.eventId, {
+                ...row,
+                attempts: input.attempts,
+                next_retry_at: input.nextRetryAt,
+              }),
+            }),
+          }),
+        ),
+      recordDelivered: (input) =>
+        Ref.update(rows, (state) => ({
+          ...state,
+          delivered: state.delivered.has(input.eventId)
+            ? state.delivered
+            : withEntry(state.delivered, input.eventId, input.deliveredAt),
+          pending: withoutEntry(state.pending, input.eventId),
+          deadLetters: withoutEntry(state.deadLetters, input.eventId),
+        })),
+      moveToDeadLetter: (input) =>
+        Ref.update(rows, (state) => ({
+          ...state,
+          deadLetters: withEntry(state.deadLetters, input.pending.id, {
+            id: input.pending.id,
+            event: input.pending.event,
+            error: input.error,
+            attempts: input.attempts,
+            first_failed_at: input.pending.created_at,
+            last_failed_at: input.failedAt,
+            expires_at: input.expiresAt,
+          }),
+          pending: withoutEntry(state.pending, input.pending.id),
+        })),
+      listPending: (input) =>
+        read((state) =>
+          pageOf(
+            [...state.pending.values()].sort(byText((row) => row.created_at, "descending")),
+            input,
+          ),
+        ),
+      listDeadLetters: (input) =>
+        read((state) =>
+          pageOf(
+            [...state.deadLetters.values()].sort(byText((row) => row.last_failed_at, "descending")),
+            input,
+          ),
+        ),
+      findDeadLetter: (eventId) =>
+        read((state) => Option.fromNullishOr(state.deadLetters.get(eventId))),
+      recordDeadLetterReplayFailure: (input) =>
+        Ref.update(rows, (state) =>
+          Option.match(Option.fromNullishOr(state.deadLetters.get(input.eventId)), {
+            onNone: () => state,
+            onSome: (row) => ({
+              ...state,
+              deadLetters: withEntry(state.deadLetters, input.eventId, {
+                ...row,
+                error: input.error,
+                last_failed_at: input.failedAt,
+              }),
+            }),
+          }),
+        ),
+      deleteDeadLetter: (eventId) =>
+        Ref.modify(rows, (state): [boolean, InMemoryEventBusRows] => [
+          state.deadLetters.has(eventId),
+          { ...state, deadLetters: withoutEntry(state.deadLetters, eventId) },
+        ]),
+      purgeExpiredDeadLetters: (now) =>
+        Ref.modify(rows, (state): [number, InMemoryEventBusRows] => {
+          const kept = [...state.deadLetters].filter(([, row]) => row.expires_at > now);
+
+          return [state.deadLetters.size - kept.length, { ...state, deadLetters: new Map(kept) }];
+        }),
+      counts: () =>
+        read((state) => ({
+          pendingCount: state.pending.size,
+          deadLetterCount: state.deadLetters.size,
+          deliveredCount: state.delivered.size,
+          subscriptionCount: state.subscriptions.size,
+        })),
+      earliestWakeAt: () =>
+        read((state) =>
+          earliest([
+            ...[...state.pending.values()].map((row) => row.next_retry_at),
+            ...[...state.deadLetters.values()].map((row) => row.expires_at),
+          ]),
+        ),
+      earliestRetryAt: () =>
+        read((state) => earliest([...state.pending.values()].map((row) => row.next_retry_at))),
+      earliestDeadLetterExpiryAt: () =>
+        read((state) => earliest([...state.deadLetters.values()].map((row) => row.expires_at))),
+      listSubscriptions: () =>
+        read((state) =>
+          [...state.subscriptions.values()].sort(
+            byText((row) => `${row.subscriber}\u0000${row.event_type}`, "ascending"),
+          ),
+        ),
+      registerSubscriptions: (input) =>
+        Ref.modify(rows, (state): [ReadonlyArray<SubscriptionRow>, InMemoryEventBusRows] => {
+          const subscriptions = new Map(state.subscriptions);
+
+          for (const eventType of input.eventTypes) {
+            const row = subscriptionRow(input.subscriber, eventType, input.createdAt);
+
+            if (!subscriptions.has(row.id)) subscriptions.set(row.id, row);
+          }
+
+          return [
+            [...subscriptions.values()]
+              .filter((row) => row.subscriber === input.subscriber)
+              .sort(byText((row) => row.event_type, "ascending")),
+            { ...state, subscriptions },
+          ];
+        }),
+      unregisterSubscription: (id) =>
+        Ref.modify(rows, (state): [boolean, InMemoryEventBusRows] => [
+          state.subscriptions.has(id),
+          { ...state, subscriptions: withoutEntry(state.subscriptions, id) },
+        ]),
+      reset: () =>
+        Ref.update(rows, (state) => ({
+          ...state,
+          pending: new Map(),
+          deadLetters: new Map(),
+          delivered: new Map(),
+        })),
+    });
+  }),
 );

@@ -11,8 +11,7 @@ import {
   TwitchConfiguration,
   twitchConfigurationLayer,
 } from "../../runtime/twitch-configuration.ts";
-import { eventPublisherLayer } from "../events/event-bus-client.ts";
-import { EventPublisher } from "../events/event-bus-service.ts";
+import { EventPublisher, eventPublisherLayer } from "../events/event-publisher.ts";
 import {
   ProviderAccessTokens,
   providerAccessTokensLayer,

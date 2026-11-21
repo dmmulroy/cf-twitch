@@ -6,8 +6,8 @@ import { HttpRouter } from "effect/http";
 import { TwitchAdminApi } from "@cf-twitch/contracts/twitch-api";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { AchievementId } from "@cf-twitch/contracts/achievement";
-import { commandsDatabaseLayerWithoutDependencies } from "../commands/commands-database.ts";
-import { EventBusAdministration } from "../events/event-bus-service.ts";
+import { commandsLayer } from "../commands/commands.ts";
+import { EventBusAdministration } from "../events/event-bus-administration.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
@@ -28,9 +28,7 @@ const withAdmin = <A, E, R>(
   test: (fetch: (request: Request) => Promise<Response>) => Effect.Effect<A, E, R>,
 ) => {
   const layers = Layer.mergeAll(
-    commandsDatabaseLayerWithoutDependencies.pipe(
-      Layer.provide(SqliteClient.layer({ filename: ":memory:" })),
-    ),
+    commandsLayer.pipe(Layer.provide(SqliteClient.layer({ filename: ":memory:" }))),
     Layer.succeed(TwitchConfiguration, httpTestConfiguration),
     Layer.mock(EventBusAdministration, {
       listPending: ({ limit, offset }) =>

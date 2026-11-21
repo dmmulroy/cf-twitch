@@ -9,7 +9,10 @@ import { achievementsClientLayer } from "../features/achievements/achievements-c
 import type { AchievementsServer } from "../features/achievements/achievements-server.ts";
 import { commandsClientLayer } from "../features/commands/commands-client.ts";
 import type { CommandsServer } from "../features/commands/commands-server.ts";
-import { eventBusAdministrationLayer } from "../features/events/event-bus-client.ts";
+import {
+  EventBusAdministration,
+  eventBusAdministrationLayer,
+} from "../features/events/event-bus-administration.ts";
 import type { EventBusServer } from "../features/events/event-bus-server.ts";
 import { eventSubReceiptsLayer } from "../features/eventsub/eventsub-client.ts";
 import type { EventSubWebhookServer } from "../features/eventsub/eventsub-server.ts";
@@ -39,7 +42,6 @@ import { twitchConfigurationLayer } from "./twitch-configuration.ts";
 import { twitchHttpTelemetrySafetyLayer, twitchTelemetryLayer } from "./twitch-telemetry.ts";
 import { Achievements } from "../features/achievements/achievements-service.ts";
 import { Commands } from "../features/commands/commands.ts";
-import { EventBusAdministration } from "../features/events/event-bus-service.ts";
 import { EventSubReceipts } from "../features/eventsub/eventsub-receipts.ts";
 import { OAuthAuthorization } from "../features/oauth/oauth-authorization.ts";
 import { TwitchService } from "../features/providers/twitch-service.ts";

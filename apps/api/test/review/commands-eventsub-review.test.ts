@@ -9,9 +9,8 @@ import { ProviderError } from "@cf-twitch/contracts/provider";
 import { twitchAnalyticsTestLayer } from "../../src/runtime/twitch-analytics.ts";
 import { TwitchConfiguration } from "../../src/runtime/twitch-configuration.ts";
 import { httpTestConfiguration } from "../../src/features/http/http-test-fixtures.ts";
-import { Commands } from "../../src/features/commands/commands.ts";
-import { commandsDatabaseLayerWithoutDependencies } from "../../src/features/commands/commands-database.ts";
-import { executorLayerWithoutDependencies } from "../../src/features/commands/chat-command-executor.ts";
+import { Commands, commandsLayer } from "../../src/features/commands/commands.ts";
+import { chatCommandExecutorLayerWithoutDependencies } from "../../src/features/commands/chat-command-executor.ts";
 import { computedChatCommandsLayerWithoutDependencies } from "../../src/features/commands/computed-chat-commands.ts";
 import { eventSubDispatchLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-dispatch.ts";
 import {
@@ -67,9 +66,9 @@ const receipt = Schema.decodeSync(AcceptedEventSubReceipt)({
 
 const sqlite = SqliteClient.layer({ filename: ":memory:" });
 
-const registryLayer = commandsDatabaseLayerWithoutDependencies;
+const registryLayer = commandsLayer;
 
-const executorLayer = executorLayerWithoutDependencies.pipe(
+const executorLayer = chatCommandExecutorLayerWithoutDependencies.pipe(
   Layer.provide(computedChatCommandsLayerWithoutDependencies),
   Layer.provide(registryLayer),
 );

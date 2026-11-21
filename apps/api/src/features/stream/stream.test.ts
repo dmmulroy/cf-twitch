@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
-import { EventPublisher } from "../events/event-bus-service.ts";
+import { EventPublisher } from "../events/event-publisher.ts";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
 import { StreamDatabase, type IStreamDatabase } from "./stream-database.ts";
 import { StreamLifecycleClient } from "./stream-lifecycle.ts";

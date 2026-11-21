@@ -4,17 +4,15 @@ import { Deferred, Effect, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { DomainEvent, encodeDomainEventJson } from "@cf-twitch/contracts/domain-event";
 import { EventId, IsoTimestamp, PageSize } from "@cf-twitch/contracts/identity";
+import { EventBusError } from "@cf-twitch/contracts/event-bus";
+import { EventBusAlarm } from "./event-bus-alarm.ts";
 import {
   EventBusDatabase,
-  eventBusDatabaseLayerWithoutDependencies,
+  eventBusDatabaseLayer,
+  eventBusDatabaseTestLayer,
 } from "./event-bus-database.ts";
-import {
-  EventBusAdministration,
-  EventHandler,
-  EventHandlerError,
-  EventPublisher,
-} from "./event-bus-service.ts";
-import { EventBusAlarm, EventBusProcessor, eventBusLayerWithoutDependencies } from "./event-bus.ts";
+import { EventHandler, EventHandlerError } from "./event-handler.ts";
+import { EventBus, eventBusLayerWithoutDependencies } from "./event-bus.ts";
 
 const eventId = Schema.decodeUnknownSync(EventId)("550e8400-e29b-41d4-a716-446655440000");
 
@@ -43,33 +41,40 @@ const timestampAfter = (milliseconds: number): IsoTimestamp =>
     new Date(Date.parse(timestamp) + milliseconds).toISOString(),
   );
 
-const makeEventBusTestLayer = (
-  handler: EventHandler["Service"],
-  alarmUpdates: Ref.Ref<ReadonlyArray<Option.Option<IsoTimestamp>>>,
-) => {
-  const databaseLayer = eventBusDatabaseLayerWithoutDependencies.pipe(
-    Layer.provide(SqliteClient.layer({ filename: ":memory:" })),
-  );
-
-  const applicationLayer = eventBusLayerWithoutDependencies.pipe(
-    Layer.provide(databaseLayer),
-    Layer.provide(Layer.succeed(EventHandler, handler)),
-    Layer.provide(
-      Layer.succeed(
-        EventBusAlarm,
-        EventBusAlarm.of({
-          scheduleAt: (scheduledAt) =>
-            Ref.update(alarmUpdates, (updates) => [...updates, Option.some(scheduledAt)]),
-          clear: () => Ref.update(alarmUpdates, (updates) => [...updates, Option.none()]),
-        }),
-      ),
+// The in-memory database Layer must cross the same interface with the same Event Bus behavior as SQLite.
+const databaseLayers = [
+  {
+    store: "SQLite",
+    databaseLayer: eventBusDatabaseLayer.pipe(
+      Layer.provide(SqliteClient.layer({ filename: ":memory:" })),
     ),
-  );
+  },
+  { store: "in-memory test", databaseLayer: eventBusDatabaseTestLayer },
+];
 
-  return Layer.merge(databaseLayer, applicationLayer);
-};
+describe.each(databaseLayers)("Event Bus ($store database)", ({ databaseLayer }) => {
+  const makeEventBusTestLayer = (
+    handler: EventHandler["Service"],
+    alarmUpdates: Ref.Ref<ReadonlyArray<Option.Option<IsoTimestamp>>>,
+  ) => {
+    const applicationLayer = eventBusLayerWithoutDependencies.pipe(
+      Layer.provide(databaseLayer),
+      Layer.provide(Layer.succeed(EventHandler, handler)),
+      Layer.provide(
+        Layer.succeed(
+          EventBusAlarm,
+          EventBusAlarm.of({
+            scheduleAt: (scheduledAt) =>
+              Ref.update(alarmUpdates, (updates) => [...updates, Option.some(scheduledAt)]),
+            clear: () => Ref.update(alarmUpdates, (updates) => [...updates, Option.none()]),
+          }),
+        ),
+      ),
+    );
 
-describe("Event Bus", () => {
+    return Layer.merge(databaseLayer, applicationLayer);
+  };
+
   it.effect("deduplicates producer retries after a transactional delivery receipt", () =>
     Effect.gen(function* () {
       const calls = yield* Ref.make(0);
@@ -83,10 +88,10 @@ describe("Event Bus", () => {
       );
 
       yield* Effect.gen(function* () {
-        const publisher = yield* EventPublisher;
+        const eventBus = yield* EventBus;
         const database = yield* EventBusDatabase;
-        yield* publisher.publish(event);
-        yield* publisher.publish(event);
+        yield* eventBus.publish(event);
+        yield* eventBus.publish(event);
 
         expect(yield* Ref.get(calls)).toBe(1);
         expect((yield* database.counts()).deliveredCount).toBe(1);
@@ -101,43 +106,56 @@ describe("Event Bus", () => {
 
       const layer = makeEventBusTestLayer(
         EventHandler.of({
-          handleDomainEvent: () =>
-            Effect.fail(new EventHandlerError({ reason: "consumer_unavailable" })),
+          handleDomainEvent: (delivered) =>
+            Effect.fail(
+              new EventHandlerError({
+                operation: "handleDomainEvent",
+                reason: "consumer_unavailable",
+                eventId: delivered.id,
+                eventType: delivered.type,
+              }),
+            ),
         }),
         alarmUpdates,
       );
 
       yield* Effect.gen(function* () {
-        const publisher = yield* EventPublisher;
-        const processor = yield* EventBusProcessor;
+        const eventBus = yield* EventBus;
         const database = yield* EventBusDatabase;
 
-        yield* publisher.publish(event);
+        yield* eventBus.publish(event);
         expect((yield* database.listPending(firstPage)).rows[0]?.attempts).toBe(0);
         expect(yield* Ref.get(alarmUpdates)).toContainEqual(Option.some(timestampAfter(1_000)));
 
         yield* TestClock.adjust(999);
-        yield* processor.processDue();
+        yield* eventBus.processDue();
         expect((yield* database.listPending(firstPage)).rows[0]?.attempts).toBe(0);
 
         yield* TestClock.adjust(1);
-        yield* processor.processDue();
+        yield* eventBus.processDue();
         expect((yield* database.listPending(firstPage)).rows[0]).toMatchObject({
           attempts: 1,
           next_retry_at: timestampAfter(5_000),
         });
 
         yield* TestClock.adjust(4_000);
-        yield* processor.processDue();
+        yield* eventBus.processDue();
         expect((yield* database.listPending(firstPage)).rows[0]).toMatchObject({
           attempts: 2,
           next_retry_at: timestampAfter(21_000),
         });
 
         yield* TestClock.adjust(16_000);
-        yield* processor.processDue();
+        yield* eventBus.processDue();
         const terminal = (yield* database.listDeadLetters(firstPage)).rows[0];
         expect(terminal?.attempts).toBe(3);
+        expect(terminal?.error).toBe(
+          new EventBusError({
+            operation: "retryDue",
+            reason: "subscriber_unavailable",
+            eventId: Option.some(eventId),
+          }).message,
+        );
         expect(
           new Date(terminal?.expires_at ?? 0).getTime() -
             new Date(terminal?.last_failed_at ?? 0).getTime(),
@@ -158,7 +176,7 @@ describe("Event Bus", () => {
 
       yield* Effect.gen(function* () {
         const database = yield* EventBusDatabase;
-        const processor = yield* EventBusProcessor;
+        const eventBus = yield* EventBus;
         const encodedReplayEvent = yield* encodeDomainEventJson(replayEvent);
 
         yield* database.accept({
@@ -174,7 +192,7 @@ describe("Event Bus", () => {
           firstRetryAt: timestamp,
         });
 
-        yield* processor.processDue();
+        yield* eventBus.processDue();
 
         const counts = yield* database.counts();
         expect(counts).toMatchObject({
@@ -186,7 +204,11 @@ describe("Event Bus", () => {
         expect(deadLetters.rows[0]).toMatchObject({
           id: eventId,
           event: "{corrupt-event-json",
-          error: "Stored Event Bus delivery is invalid",
+          error: new EventBusError({
+            operation: "retryDue",
+            reason: "stored_event_invalid",
+            eventId: Option.some(eventId),
+          }).message,
         });
       }).pipe(Effect.provide(layer));
     }),
@@ -204,7 +226,7 @@ describe("Event Bus", () => {
 
       yield* Effect.gen(function* () {
         const database = yield* EventBusDatabase;
-        const administration = yield* EventBusAdministration;
+        const eventBus = yield* EventBus;
         const encodedReplayEvent = yield* encodeDomainEventJson(replayEvent);
         yield* database.accept({
           eventId,
@@ -219,7 +241,7 @@ describe("Event Bus", () => {
           firstRetryAt: timestampAfter(10_000),
         });
 
-        const pending = yield* administration.listPending(firstPage);
+        const pending = yield* eventBus.listPending(firstPage);
 
         expect(pending.items.map((item) => item.event)).toEqual([
           Option.none(),
@@ -256,7 +278,7 @@ describe("Event Bus", () => {
 
       yield* Effect.gen(function* () {
         const database = yield* EventBusDatabase;
-        const processor = yield* EventBusProcessor;
+        const eventBus = yield* EventBus;
         const encodedEvent = yield* encodeDomainEventJson(event);
         yield* database.accept({
           eventId,
@@ -265,9 +287,9 @@ describe("Event Bus", () => {
           firstRetryAt: timestamp,
         });
 
-        const first = yield* Effect.forkChild(processor.processDue());
+        const first = yield* Effect.forkChild(eventBus.processDue());
         yield* Deferred.await(firstDeliveryEntered);
-        const second = yield* Effect.forkChild(processor.processDue());
+        const second = yield* Effect.forkChild(eventBus.processDue());
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
 
@@ -292,7 +314,7 @@ describe("Event Bus", () => {
 
       yield* Effect.gen(function* () {
         const database = yield* EventBusDatabase;
-        const administration = yield* EventBusAdministration;
+        const eventBus = yield* EventBus;
         const encodedEvent = yield* encodeDomainEventJson(event);
         const encodedReplayEvent = yield* encodeDomainEventJson(replayEvent);
         yield* database.accept({
@@ -318,7 +340,7 @@ describe("Event Bus", () => {
           expiresAt: timestampAfter(20_000),
         });
 
-        const status = yield* administration.getStatus();
+        const status = yield* eventBus.getStatus();
         expect(status.nextRetryAt).toEqual(Option.some(timestampAfter(10_000)));
         expect(status.nextDeadLetterExpiryAt).toEqual(Option.some(timestampAfter(20_000)));
       }).pipe(Effect.provide(layer));

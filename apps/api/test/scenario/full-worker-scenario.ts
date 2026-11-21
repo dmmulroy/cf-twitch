@@ -9,11 +9,9 @@ import { achievementsServerLayerWithoutDependencies } from "../../src/features/a
 import { commandsClientLayerWithoutDependencies } from "../../src/features/commands/commands-client.ts";
 import { computedChatCommandsLayerWithoutDependencies } from "../../src/features/commands/computed-chat-commands.ts";
 import { commandsServerLayerWithoutDependencies } from "../../src/features/commands/commands-server.ts";
-import { executorLayerWithoutDependencies } from "../../src/features/commands/chat-command-executor.ts";
-import {
-  eventBusAdministrationLayerWithoutDependencies,
-  eventPublisherLayerWithoutDependencies,
-} from "../../src/features/events/event-bus-client.ts";
+import { chatCommandExecutorLayerWithoutDependencies } from "../../src/features/commands/chat-command-executor.ts";
+import { eventBusAdministrationLayerWithoutDependencies } from "../../src/features/events/event-bus-administration.ts";
+import { eventPublisherLayerWithoutDependencies } from "../../src/features/events/event-publisher.ts";
 import { eventBusServerLayerWithoutDependencies } from "../../src/features/events/event-bus-server.ts";
 import { eventSubReceiptsLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-client.ts";
 import { EventSubReceipts } from "../../src/features/eventsub/eventsub-receipts.ts";
@@ -164,7 +162,7 @@ const computedCommandsLayer = computedChatCommandsLayerWithoutDependencies.pipe(
   Layer.provide([commandsLayer, songQueueLayer, raffleLayer, achievementsLayer]),
 );
 
-const commandExecutorLayer = executorLayerWithoutDependencies.pipe(
+const commandExecutorLayer = chatCommandExecutorLayerWithoutDependencies.pipe(
   Layer.provide([commandsLayer, computedCommandsLayer, twitchAnalyticsTestLayer]),
 );
 
