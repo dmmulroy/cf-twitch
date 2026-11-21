@@ -140,8 +140,7 @@ export const failedHttpService = (service: TwitchHttpService, reason: string): H
  * Translates a Song Queue failure by its classified reason.
  *
  * @returns `ServiceUnavailable` or `OutcomeUnknown` (503) for storage, coordination, transport or
- * provider outages; `StoredDataInvalid` or `InvalidServiceResponse` (500) for invalid data; and
- * `ServiceFailed` (500) for rejected internal input.
+ * provider outages; and `StoredDataInvalid` or `InvalidServiceResponse` (500) for invalid data.
  */
 export const songQueueHttpFailure = (
   error: SongQueueError,
@@ -157,8 +156,6 @@ export const songQueueHttpFailure = (
       return invalidHttpStoredData("songQueue");
     case "invalid_response":
       return invalidHttpServiceResult("songQueue");
-    case "invalid_input":
-      return failedHttpService("songQueue", error.reason);
   }
 };
 

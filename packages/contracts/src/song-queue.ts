@@ -199,7 +199,6 @@ export const SongQueueFailureReason = Schema.Literals([
   "storage_unavailable",
   "stored_data_invalid",
   "invalid_response",
-  "invalid_input",
   "provider_unavailable",
   "coordination_unavailable",
   "transport_unavailable",
@@ -235,8 +234,6 @@ export class SongQueueError extends Schema.TaggedError<SongQueueError>()("SongQu
         return `Song queue stored data failed validation during ${this.operation}. Inspect the stored song queue data before retrying.`;
       case "invalid_response":
         return `Song queue response failed validation during ${this.operation}. Read the song queue to confirm the outcome before retrying.`;
-      case "invalid_input":
-        return `Song queue input was rejected during ${this.operation}. Correct the request fields and send it again.`;
       case "provider_unavailable":
         return `Song queue could not read Spotify playback during ${this.operation}. Retry after Spotify is reachable; the last saved queue snapshot is kept.`;
       case "coordination_unavailable":
