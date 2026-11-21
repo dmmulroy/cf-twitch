@@ -1,15 +1,15 @@
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
-import { SongQueue } from "./song-queue.ts";
+import { SongQueueCoordinator } from "./song-queue-coordinator.ts";
 import { SongQueueHttpApi } from "./song-queue-http-api.ts";
 
-/** Song queue HTTP handlers delegate parsed requests to the instance-local application service. */
+/** Layer that serves the `SongQueueDO` HTTP API by delegating parsed requests to the coordinator. */
 export const songQueueHttpHandlersLayer = HttpApiBuilder.group(
   SongQueueHttpApi,
   "songQueue",
   (handlers) =>
     Effect.gen(function* () {
-      const queue = yield* SongQueue;
+      const queue = yield* SongQueueCoordinator;
 
       return handlers
         .handle("persistRequest", ({ payload }) => queue.persistRequest(payload))

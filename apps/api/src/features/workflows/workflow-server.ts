@@ -12,7 +12,7 @@ import { EventPublisher, eventPublisherLayer } from "../events/event-publisher.t
 import { Raffle } from "../raffle/raffle-service.ts";
 import { raffleClientLayer } from "../raffle/raffle-client.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
-import { songQueueClientLayer } from "../song-queue/song-queue-client.ts";
+import { songQueueLayer } from "../song-queue/song-queue.ts";
 import { SpotifyService, spotifyServiceLayer } from "../providers/spotify-service.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
 import { workflowAlarmLayer } from "./workflow-alarm.ts";
@@ -131,7 +131,7 @@ export const raidShoutoutSagaServerLayerWithoutDependencies = RaidShoutoutSagaSe
 const workflowDependenciesLayer = Layer.mergeAll(
   spotifyServiceLayer,
   twitchServiceLayer,
-  songQueueClientLayer,
+  songQueueLayer,
   raffleClientLayer,
   eventPublisherLayer,
 );

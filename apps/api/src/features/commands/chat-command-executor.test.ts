@@ -141,7 +141,7 @@ const providerTestLayer = Layer.unwrap(
 
       if ((yield* Ref.get(failedProviders)).includes("song"))
         return yield* new SongQueueError({
-          operation: "command lookup",
+          operation: "getCurrentlyPlaying",
           reason: "provider_unavailable",
         });
     });

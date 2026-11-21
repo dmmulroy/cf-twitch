@@ -2,10 +2,13 @@
 
 ## Ownership and boundaries
 
-- `SongQueue` is the application capability. Workflows persist a `PendingSongRequest` with the redemption ID in the historical `eventId` field; HTTP and commands read through the same capability.
-- `SongQueueDatabase` owns SQL representation, atomic playback reconciliation, played history, statistics and durable polling intent. The separate application service owns Spotify observation, freshness, stale fallback and alarm sequencing, keeping provider I/O outside SQL transactions.
-- `SongQueueAlarm` owns the Cloudflare alarm resource. One physical alarm serves the persisted refresh and cleanup deadlines. A recording alarm implementation is used in local tests; SQL is never simulated.
-- `SongQueueServer` retains physical class `SongQueueDO`; `SongQueueClient` uses singleton key `song-queue`. The client memoizes HTTP acquisition per Alchemy execution, not globally. Provider/configuration requirements remain visible until the Worker composition root.
+- `SongQueue` ([song-queue.ts](song-queue.ts)) is the application capability, implemented by the `SongQueueDO` HTTP client. Workflows persist a `PendingSongRequest` with the redemption ID in the historical `eventId` field; HTTP and commands read through the same capability.
+- `SongQueueCoordinator` ([song-queue-coordinator.ts](song-queue-coordinator.ts)) is the in-DO implementation behind that client. It owns Spotify observation, freshness, stale fallback and alarm sequencing, keeping provider I/O outside SQL transactions, and serves the DO's HTTP handlers.
+- `SongQueueDatabase` owns SQL representation, atomic playback reconciliation, played history, statistics and durable polling intent.
+- `SongQueueAlarm` owns the Cloudflare alarm resource. One physical alarm serves the persisted refresh and cleanup deadlines.
+- `SongQueueServer` retains physical class `SongQueueDO`; the `SongQueue` client uses singleton key `song-queue`. The client memoizes HTTP acquisition per Alchemy execution, not globally. Provider/configuration requirements remain visible until the Worker composition root.
+- `SongQueueError` carries a literal `operation`, a classified `reason`, and the Song Request's `eventId` when known. Its message names the operation and reason and ends with one next step. Retry guidance is truthful because every write is idempotent by redemption ID. The public HTTP envelope is rendered by the HTTP feature, not by this message.
+- Each service file exports `*Layer` and `*TestLayer`. The database test Layer is an in-memory implementation that shares attribution and presentation code with SQL; the [database tests](song-queue-database.test.ts) run the persistence contract against both. Coordinator tests still use real SQLite with a recording alarm.
 
 ## Preserved behavior
 
@@ -31,7 +34,7 @@ Follow [verification](../../../../../docs/verification.md#focused-feedback) for 
 
 - [Database tests](song-queue-database.test.ts): real SQLite imports, transactions, rollback/corruption, receipts/tombstones, TTL and statistics.
 - [Reconciliation properties](song-queue-reconciliation.test.ts): repeated occurrences, attribution ordering and played-only history.
-- [Service tests](song-queue-service.test.ts): provider parsing, stale fallback, concurrency, durable backoff and alarm repair through controlled HTTP.
+- [Coordinator tests](song-queue-coordinator.test.ts): provider parsing, stale fallback, concurrency, durable backoff and alarm repair through controlled HTTP.
 - [Native scenario](scenario/song-queue-scenario.workerd.ts): actual Worker → execution-scoped client → SongQueueDO → SQL graph with controlled Spotify behavior.
 
 ## Cutover limitations

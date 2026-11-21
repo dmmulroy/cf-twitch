@@ -257,7 +257,7 @@ const inMemoryOutboxTestLayer = (mode: ControlledTwitchProviderMode) =>
     Layer.provideMerge(
       Layer.mergeAll(
         controlledTwitchServiceLayer(mode),
-        recordingTwitchAnalyticsLayer,
+        twitchAnalyticsTestLayer,
         providerScenarioTransportLayer,
       ),
     ),

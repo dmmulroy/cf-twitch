@@ -14,7 +14,7 @@ import { SongQueueLimit } from "@cf-twitch/contracts/song-queue";
 import { Commands, commandsTestLayer } from "./commands.ts";
 import { commandsClientLayer } from "./commands-client.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
-import { songQueueClientLayer } from "../song-queue/song-queue-client.ts";
+import { songQueueLayer } from "../song-queue/song-queue.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { achievementsClientLayer } from "../achievements/achievements-client.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
@@ -406,12 +406,7 @@ export const computedChatCommandsLayerWithoutDependencies = Layer.effect(
 
 /** Production computed-response Layer selecting the Durable Object HTTP clients for each capability. */
 export const computedChatCommandsLayer = computedChatCommandsLayerWithoutDependencies.pipe(
-  Layer.provide([
-    commandsClientLayer,
-    songQueueClientLayer,
-    raffleClientLayer,
-    achievementsClientLayer,
-  ]),
+  Layer.provide([commandsClientLayer, songQueueLayer, raffleClientLayer, achievementsClientLayer]),
 );
 
 /**
