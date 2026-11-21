@@ -10,8 +10,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { IsoTimestamp, PageSize, RedemptionId, ViewerId } from "@cf-twitch/contracts/identity";
 import { RaffleNumber, RaffleRecordResult, RecordRaffleRoll } from "@cf-twitch/contracts/raffle";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
-import { Raffle } from "./raffle-service.ts";
-import { raffleLayer } from "./raffle-database.ts";
+import { Raffle, raffleLayer, raffleTestLayer } from "./raffle-service.ts";
 import { RaffleHttpApi } from "./raffle-http-api.ts";
 import { raffleHttpHandlersLayer } from "./raffle-http-handlers.ts";
 
@@ -44,9 +43,191 @@ const rollInput = (
     rolledAt: IsoTimestamp.make("2026-04-07T14:16:00.000Z"),
   });
 
-describe("Raffle real SQLite authority", () => {
+const raffleAuthorities = [
+  ["SQL authority over real SQLite", database],
+  ["in-memory raffleTestLayer", raffleTestLayer],
+] as const;
+
+for (const [authority, layer] of raffleAuthorities)
+  describe(`Raffle interface journeys: ${authority}`, () => {
+    it.effect(
+      "compensation before the first roll fences delayed generation and historical recording",
+      () =>
+        Effect.gen(function* () {
+          const raffle = yield* Raffle;
+          const input = rollInput("pre-compensated");
+          yield* raffle.deleteRollById({ rollId: input.id });
+          const { roll: _roll, winningNumber: _winning, ...draw } = input;
+          const refused = yield* raffle.getOrCreateRoll(draw).pipe(Effect.flip);
+          expect(refused).toMatchObject({
+            operation: "getOrCreateRoll",
+            reason: "compensated",
+            redemptionId: Option.some(input.id),
+            viewerId: Option.some(input.userId),
+          });
+          expect(refused.message).toBe(
+            "Raffle Roll was refused during getOrCreateRoll because the redemption was cancelled and its Roll removed. Read the redemption's workflow state instead of retrying.",
+          );
+          expect((yield* raffle.recordRoll(input).pipe(Effect.flip)).reason).toBe("compensated");
+          expect(yield* raffle.getLeaderboard({ sortBy: "rolls", limit: Option.none() })).toEqual(
+            [],
+          );
+        }).pipe(Effect.provide(layer)),
+    );
+    it.effect(
+      "replays immutable evidence, rejects conflicts, and never resurrects compensated draws",
+      () =>
+        Effect.gen(function* () {
+          const raffle = yield* Raffle;
+          const input = rollInput("once");
+          const first = yield* raffle.recordRoll(input);
+          yield* raffle.recordRoll(rollInput("better", 9_999));
+          expect(yield* raffle.recordRoll(input)).toEqual(first);
+
+          const conflicts: ReadonlyArray<RecordRaffleRoll> = [
+            rollInput("once", 9_950, 10_000, "different-viewer"),
+            rollInput("once", 9_950, 10_000, "viewer", "Different Viewer"),
+            rollInput("once", 8_000),
+            rollInput("once", 9_950, 9_999),
+            RecordRaffleRoll.make({
+              id: input.id,
+              userId: input.userId,
+              displayName: input.displayName,
+              roll: input.roll,
+              winningNumber: input.winningNumber,
+              rolledAt: IsoTimestamp.make("2026-04-07T14:17:00.000Z"),
+            }),
+          ];
+
+          for (const changed of conflicts) {
+            const conflict = yield* raffle.recordRoll(changed).pipe(Effect.flip);
+            expect(conflict.reason).toBe("idempotency_conflict");
+          }
+
+          yield* raffle.deleteRollById({ rollId: input.id });
+          yield* raffle.deleteRollById({ rollId: input.id });
+          expect(yield* raffle.recordRoll(input)).toEqual(first);
+          expect(
+            Option.getOrThrow(yield* raffle.getUserStats({ userId: input.userId })).totalRolls,
+          ).toBe(1);
+        }).pipe(Effect.provide(layer)),
+    );
+    it.effect(
+      "draws once under concurrent redemption delivery and retains receipt after compensation",
+      () =>
+        Effect.gen(function* () {
+          const raffle = yield* Raffle;
+          const { roll: _roll, winningNumber: _winning, ...input } = rollInput("random");
+
+          const results = yield* Effect.all(
+            Array.from({ length: 20 }, () => raffle.getOrCreateRoll(input)),
+            { concurrency: "unbounded" },
+          );
+
+          const first = Option.getOrThrow(Option.fromUndefinedOr(results[0]));
+          expect(results.every((result) => raffleRecordResultEquivalence(result, first))).toBe(
+            true,
+          );
+          expect(first.roll.roll).toBeGreaterThanOrEqual(1);
+          expect(first.roll.roll).toBeLessThanOrEqual(10_000);
+          expect(
+            Option.getOrThrow(yield* raffle.getUserStats({ userId: input.userId })).totalRolls,
+          ).toBe(1);
+          yield* raffle.deleteRollById({ rollId: input.id });
+          expect(yield* raffle.getOrCreateRoll(input)).toEqual(first);
+          expect(Option.isNone(yield* raffle.getUserStats({ userId: input.userId }))).toBe(true);
+        }).pipe(Effect.provide(layer)),
+    );
+    it.effect(
+      "strict global non-winning records exclude ties/winners and ranking follows latest names",
+      () =>
+        Effect.gen(function* () {
+          const raffle = yield* Raffle;
+          const first = yield* raffle.recordRoll(rollInput("first", 9_950, 10_000, "a", "OldName"));
+          const tie = yield* raffle.recordRoll(rollInput("tie", 9_950, 10_000, "b", "B"));
+
+          const winner = yield* raffle.recordRoll(
+            rollInput("win", 10_000, 10_000, "winner", "Winner"),
+          );
+
+          const betterInput = rollInput("better", 9_998, 10_000, "a", "NewName");
+
+          const better = yield* raffle.recordRoll({
+            id: betterInput.id,
+            userId: betterInput.userId,
+            displayName: betterInput.displayName,
+            roll: betterInput.roll,
+            winningNumber: betterInput.winningNumber,
+            rolledAt: IsoTimestamp.make("2026-04-07T15:00:00.000Z"),
+          });
+
+          expect([
+            first.roll.isNewRecord,
+            tie.roll.isNewRecord,
+            winner.roll.isNewRecord,
+            better.roll.isNewRecord,
+          ]).toEqual([true, false, false, true]);
+          expect(Option.getOrThrow(yield* raffle.getClosestRecord())).toMatchObject({
+            userId: "a",
+            displayName: "NewName",
+            distance: 2,
+          });
+          expect(
+            Option.isNone(yield* raffle.getUserStatsByDisplayName({ displayName: "OldName" })),
+          ).toBe(true);
+          expect(
+            (yield* raffle.getLeaderboard({
+              sortBy: "closest",
+              limit: Option.some(PageSize.make(3)),
+            })).map((row) => row.userId),
+          ).toEqual(["a", "b", "winner"]);
+          expect(
+            (yield* raffle.getLeaderboard({
+              sortBy: "wins",
+              limit: Option.some(PageSize.make(1)),
+            }))[0]?.userId,
+          ).toBe("winner");
+          expect(
+            (yield* raffle.getLeaderboard({
+              sortBy: "rolls",
+              limit: Option.some(PageSize.make(1)),
+            }))[0]?.userId,
+          ).toBe("a");
+        }).pipe(Effect.provide(layer)),
+    );
+    it.effect(
+      "generated number pairs preserve distance/winner/record laws through the real interface",
+      () =>
+        Effect.gen(function* () {
+          const raffle = yield* Raffle;
+
+          const raffleNumber = Arbitrary.schema(
+            Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10_000 })),
+          );
+
+          const pairs = yield* Arbitrary.sampleEffect(Arbitrary.all([raffleNumber, raffleNumber]), {
+            seed: 7123,
+            count: 150,
+          });
+
+          let best = Infinity;
+
+          for (const [index, [roll, winning]] of pairs.entries()) {
+            const result = yield* raffle.recordRoll(rollInput(`property-${index}`, roll, winning));
+            const distance = Math.abs(roll - winning);
+            expect(result.roll.distance).toBe(distance);
+            expect(result.roll.isWinner).toBe(distance === 0);
+            expect(result.roll.isNewRecord).toBe(distance > 0 && distance < best);
+
+            if (distance > 0) best = Math.min(best, distance);
+          }
+        }).pipe(Effect.provide(layer)),
+    );
+  });
+
+describe("Raffle SQL authority", () => {
   it.effect(
-    "compensation before the first roll commit fences delayed generation and historical recording",
+    "compensation tombstones survive rebuilding the SQL authority over the same database",
     () =>
       Effect.gen(function* () {
         const raffle = yield* Raffle;
@@ -62,68 +243,6 @@ describe("Raffle real SQLite authority", () => {
             "compensated",
           );
         }).pipe(Effect.provide(Layer.fresh(raffleLayer).pipe(Layer.provide(NodeCrypto.layer))));
-      }).pipe(Effect.provide(database)),
-  );
-  it.effect(
-    "replays immutable evidence, rejects conflicts, and never resurrects compensated draws",
-    () =>
-      Effect.gen(function* () {
-        const raffle = yield* Raffle;
-        const input = rollInput("once");
-        const first = yield* raffle.recordRoll(input);
-        yield* raffle.recordRoll(rollInput("better", 9_999));
-        expect(yield* raffle.recordRoll(input)).toEqual(first);
-
-        const conflicts: ReadonlyArray<RecordRaffleRoll> = [
-          rollInput("once", 9_950, 10_000, "different-viewer"),
-          rollInput("once", 9_950, 10_000, "viewer", "Different Viewer"),
-          rollInput("once", 8_000),
-          rollInput("once", 9_950, 9_999),
-          RecordRaffleRoll.make({
-            id: input.id,
-            userId: input.userId,
-            displayName: input.displayName,
-            roll: input.roll,
-            winningNumber: input.winningNumber,
-            rolledAt: IsoTimestamp.make("2026-04-07T14:17:00.000Z"),
-          }),
-        ];
-
-        for (const changed of conflicts) {
-          const conflict = yield* raffle.recordRoll(changed).pipe(Effect.flip);
-          expect(conflict.reason).toBe("idempotency_conflict");
-        }
-
-        yield* raffle.deleteRollById({ rollId: input.id });
-        yield* raffle.deleteRollById({ rollId: input.id });
-        expect(yield* raffle.recordRoll(input)).toEqual(first);
-        expect(
-          Option.getOrThrow(yield* raffle.getUserStats({ userId: input.userId })).totalRolls,
-        ).toBe(1);
-      }).pipe(Effect.provide(database)),
-  );
-  it.effect(
-    "draws once under concurrent redemption delivery and retains receipt after compensation",
-    () =>
-      Effect.gen(function* () {
-        const raffle = yield* Raffle;
-        const { roll: _roll, winningNumber: _winning, ...input } = rollInput("random");
-
-        const results = yield* Effect.all(
-          Array.from({ length: 20 }, () => raffle.getOrCreateRoll(input)),
-          { concurrency: "unbounded" },
-        );
-
-        const first = Option.getOrThrow(Option.fromUndefinedOr(results[0]));
-        expect(results.every((result) => raffleRecordResultEquivalence(result, first))).toBe(true);
-        expect(first.roll.roll).toBeGreaterThanOrEqual(1);
-        expect(first.roll.roll).toBeLessThanOrEqual(10_000);
-        expect(
-          Option.getOrThrow(yield* raffle.getUserStats({ userId: input.userId })).totalRolls,
-        ).toBe(1);
-        yield* raffle.deleteRollById({ rollId: input.id });
-        expect(yield* raffle.getOrCreateRoll(input)).toEqual(first);
-        expect(Option.isNone(yield* raffle.getUserStats({ userId: input.userId }))).toBe(true);
       }).pipe(Effect.provide(database)),
   );
   it.effect(
@@ -158,63 +277,6 @@ describe("Raffle real SQLite authority", () => {
     },
   );
 
-  it.effect(
-    "strict global non-winning records exclude ties/winners and ranking follows latest names",
-    () =>
-      Effect.gen(function* () {
-        const raffle = yield* Raffle;
-        const first = yield* raffle.recordRoll(rollInput("first", 9_950, 10_000, "a", "OldName"));
-        const tie = yield* raffle.recordRoll(rollInput("tie", 9_950, 10_000, "b", "B"));
-
-        const winner = yield* raffle.recordRoll(
-          rollInput("win", 10_000, 10_000, "winner", "Winner"),
-        );
-
-        const betterInput = rollInput("better", 9_998, 10_000, "a", "NewName");
-
-        const better = yield* raffle.recordRoll({
-          id: betterInput.id,
-          userId: betterInput.userId,
-          displayName: betterInput.displayName,
-          roll: betterInput.roll,
-          winningNumber: betterInput.winningNumber,
-          rolledAt: IsoTimestamp.make("2026-04-07T15:00:00.000Z"),
-        });
-
-        expect([
-          first.roll.isNewRecord,
-          tie.roll.isNewRecord,
-          winner.roll.isNewRecord,
-          better.roll.isNewRecord,
-        ]).toEqual([true, false, false, true]);
-        expect(Option.getOrThrow(yield* raffle.getClosestRecord())).toMatchObject({
-          userId: "a",
-          displayName: "NewName",
-          distance: 2,
-        });
-        expect(
-          Option.isNone(yield* raffle.getUserStatsByDisplayName({ displayName: "OldName" })),
-        ).toBe(true);
-        expect(
-          (yield* raffle.getLeaderboard({
-            sortBy: "closest",
-            limit: Option.some(PageSize.make(3)),
-          })).map((row) => row.userId),
-        ).toEqual(["a", "b", "winner"]);
-        expect(
-          (yield* raffle.getLeaderboard({
-            sortBy: "wins",
-            limit: Option.some(PageSize.make(1)),
-          }))[0]?.userId,
-        ).toBe("winner");
-        expect(
-          (yield* raffle.getLeaderboard({
-            sortBy: "rolls",
-            limit: Option.some(PageSize.make(1)),
-          }))[0]?.userId,
-        ).toBe("a");
-      }).pipe(Effect.provide(database)),
-  );
   it.effect("SQL rejects contradictory derived evidence independently of TypeScript", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -283,34 +345,6 @@ describe("Raffle real SQLite authority", () => {
       );
       expect(yield* raffle.getLeaderboard({ sortBy: "rolls", limit: Option.none() })).toEqual([]);
     }).pipe(Effect.provide(database)),
-  );
-  it.effect(
-    "generated number pairs preserve distance/winner/record laws through the real interface",
-    () =>
-      Effect.gen(function* () {
-        const raffle = yield* Raffle;
-
-        const raffleNumber = Arbitrary.schema(
-          Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10_000 })),
-        );
-
-        const pairs = yield* Arbitrary.sampleEffect(Arbitrary.all([raffleNumber, raffleNumber]), {
-          seed: 7123,
-          count: 150,
-        });
-
-        let best = Infinity;
-
-        for (const [index, [roll, winning]] of pairs.entries()) {
-          const result = yield* raffle.recordRoll(rollInput(`property-${index}`, roll, winning));
-          const distance = Math.abs(roll - winning);
-          expect(result.roll.distance).toBe(distance);
-          expect(result.roll.isWinner).toBe(distance === 0);
-          expect(result.roll.isNewRecord).toBe(distance > 0 && distance < best);
-
-          if (distance > 0) best = Math.min(best, distance);
-        }
-      }).pipe(Effect.provide(database)),
   );
   it.effect("serves real versioned HTTP and rejects caller-supplied derived fields", () =>
     Effect.gen(function* () {

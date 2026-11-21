@@ -6,7 +6,7 @@ import { Effect, Layer, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
 import { ChannelPointRedemption } from "@cf-twitch/contracts/redemption";
-import { RaffleError } from "@cf-twitch/contracts/raffle";
+import { RaffleError, raffleErrorWithoutIdentifiers } from "@cf-twitch/contracts/raffle";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 import { WorkflowInput } from "@cf-twitch/contracts/workflow";
@@ -75,7 +75,11 @@ const reviewServices = Effect.gen(function* () {
         recordWithoutReceipt.pipe(
           Effect.andThen(
             Effect.fail(
-              new RaffleError({ operation: "getOrCreateRoll", reason: "transport_unavailable" }),
+              new RaffleError({
+                operation: "getOrCreateRoll",
+                reason: "transport_unavailable",
+                ...raffleErrorWithoutIdentifiers,
+              }),
             ),
           ),
         ),

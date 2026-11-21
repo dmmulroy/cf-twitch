@@ -1,9 +1,9 @@
 import { NodeCrypto } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit, Layer, Option } from "effect";
 import { SecureRandom } from "effect/crypto";
 import { RaffleError } from "@cf-twitch/contracts/raffle";
-import { RaffleRandom, raffleRandomLayer } from "./raffle-random.ts";
+import { RaffleRandom, raffleRandomLayer, raffleRandomTestLayer } from "./raffle-random.ts";
 
 const uint32Bytes = (word: number): Uint8Array => {
   const bytes = new Uint8Array(4);
@@ -67,6 +67,9 @@ it.effect("projects a throwing SecureRandom primitive as typed randomness unavai
       new RaffleError({
         operation: "drawNumber",
         reason: "randomness_unavailable",
+        redemptionId: Option.none(),
+        viewerId: Option.none(),
+        viewerDisplayName: Option.none(),
       }),
     );
   }).pipe(
@@ -111,3 +114,19 @@ it.effect("Effect Crypto rejection sampling draws only inclusive integer raffle 
     expect(new Set(draws).size).toBeGreaterThan(1);
   }).pipe(Effect.provide(raffleRandomLayer), Effect.provide(NodeCrypto.layer)),
 );
+
+it.effect("raffleRandomTestLayer repeats the same in-range draws for every new Layer", () => {
+  const drawTwenty = Effect.gen(function* () {
+    const random = yield* RaffleRandom;
+
+    return yield* Effect.all(Array.from({ length: 20 }, () => random.drawNumber()));
+  }).pipe(Effect.provide(raffleRandomTestLayer));
+
+  return Effect.gen(function* () {
+    const first = yield* drawTwenty;
+
+    expect(yield* drawTwenty).toEqual(first);
+    expect(first.every((draw) => draw >= 1 && draw <= 10_000)).toBe(true);
+    expect(new Set(first).size).toBeGreaterThan(1);
+  });
+});

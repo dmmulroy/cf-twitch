@@ -1,4 +1,4 @@
-/** Frozen full baseline SQL migrations, independent of the new migration loader; no legacy runtime imports. */
+/** Baseline achievement SQL migration statements, frozen independently of the current migration loader and legacy runtime code. */
 export const historicalAchievementStatements = [
   "CREATE TABLE `achievement_definitions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`name` text NOT NULL,\n\t`description` text NOT NULL,\n\t`icon` text NOT NULL,\n\t`category` text NOT NULL,\n\t`threshold` integer,\n\t`trigger_event` text NOT NULL,\n\t`scope` text DEFAULT 'cumulative' NOT NULL\n)",
   "CREATE TABLE `user_achievements` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_display_name` text NOT NULL,\n\t`achievement_id` text NOT NULL,\n\t`progress` integer DEFAULT 0 NOT NULL,\n\t`unlocked_at` text,\n\t`announced` integer DEFAULT false NOT NULL,\n\t`event_id` text\n)",

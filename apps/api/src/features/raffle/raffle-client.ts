@@ -1,28 +1,67 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Effect, Layer, Schema } from "effect";
-import { HttpClientError } from "effect/http";
+import { Effect, Layer, type Schema } from "effect";
+import type { HttpClientError } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { RaffleError } from "@cf-twitch/contracts/raffle";
+import {
+  RaffleError,
+  type RaffleErrorIdentifiers,
+  type RaffleOperation,
+  raffleErrorIdentifiersForDisplayName,
+  raffleErrorIdentifiersForRoll,
+  raffleErrorIdentifiersForRollRemoval,
+  raffleErrorIdentifiersForViewer,
+  raffleErrorWithoutIdentifiers,
+} from "@cf-twitch/contracts/raffle";
 import { Raffle } from "./raffle-service.ts";
 import { RaffleHttpApi } from "./raffle-http-api.ts";
-import raffleServerLayer, { RaffleServer } from "./raffle-server.ts";
+import { RaffleServer, raffleServerLayer } from "./raffle-server.ts";
 
-type RaffleClientError = RaffleError | HttpClientError.HttpClientError | Schema.SchemaError;
-
+/**
+ * Translates raffle HTTP client failures into `RaffleError`.
+ *
+ * A transport failure or unreadable response leaves a mutation's outcome unknown; the error message
+ * directs callers to the idempotent retry each operation supports.
+ *
+ * @returns An `Effect.fn` transform whose effect fails only with `RaffleError`: the server's own
+ *   `RaffleError` unchanged, `transport_unavailable` for `HttpClientError`, and `invalid_response`
+ *   for `SchemaError`.
+ */
 const translateRaffleClientErrors =
-  (operation: string) =>
-  <A>(effect: Effect.Effect<A, RaffleClientError>): Effect.Effect<A, RaffleError> =>
-    effect.pipe(
+  <Args extends ReadonlyArray<unknown>>(
+    operation: RaffleOperation,
+    identify: (...args: Args) => RaffleErrorIdentifiers,
+  ) =>
+  <A>(
+    effect: Effect.Effect<A, RaffleError | HttpClientError.HttpClientError | Schema.SchemaError>,
+    ...args: Args
+  ): Effect.Effect<A, RaffleError> => {
+    const identifiers = identify(...args);
+
+    return effect.pipe(
       Effect.catchTags({
         RaffleError: (error) => Effect.fail(error),
         HttpClientError: () =>
-          Effect.fail(new RaffleError({ operation, reason: "transport_unavailable" })),
-        SchemaError: () => Effect.fail(new RaffleError({ operation, reason: "invalid_response" })),
+          Effect.fail(
+            new RaffleError({ operation, reason: "transport_unavailable", ...identifiers }),
+          ),
+        SchemaError: () =>
+          Effect.fail(new RaffleError({ operation, reason: "invalid_response", ...identifiers })),
       }),
     );
+  };
 
-/** Creates a singleton HTTP client per execution, never retaining invocation-scoped stubs globally. */
+/**
+ * Effect that builds the raffle client over the `KeyboardRaffleDO` namespace.
+ *
+ * **Details**
+ *
+ * One HTTP client is memoized per execution; invocation-scoped stubs are never retained globally.
+ *
+ * @returns The `Raffle` client; building it cannot fail. Its methods fail with the server's
+ *   `RaffleError`, or with `transport_unavailable` or `invalid_response` when the server cannot be
+ *   reached or understood.
+ */
 export const makeRaffleClient = Effect.gen(function* () {
   const namespace = yield* RaffleServer;
 
@@ -36,64 +75,72 @@ export const makeRaffleClient = Effect.gen(function* () {
   );
 
   return Raffle.of({
-    recordRoll: Effect.fn("RaffleClient.recordRoll")(function* (input) {
-      const http = yield* client;
+    recordRoll: Effect.fn("RaffleClient.recordRoll")(
+      function* (input) {
+        const http = yield* client;
 
-      return yield* http.raffle
-        .recordRoll({ payload: input })
-        .pipe(translateRaffleClientErrors("recordRoll"));
-    }),
-    getOrCreateRoll: Effect.fn("RaffleClient.getOrCreateRoll")(function* (input) {
-      const http = yield* client;
+        return yield* http.raffle.recordRoll({ payload: input });
+      },
+      translateRaffleClientErrors("recordRoll", raffleErrorIdentifiersForRoll),
+    ),
+    getOrCreateRoll: Effect.fn("RaffleClient.getOrCreateRoll")(
+      function* (input) {
+        const http = yield* client;
 
-      return yield* http.raffle
-        .getOrCreateRoll({ payload: input })
-        .pipe(translateRaffleClientErrors("getOrCreateRoll"));
-    }),
-    deleteRollById: Effect.fn("RaffleClient.deleteRollById")(function* (input) {
-      const http = yield* client;
+        return yield* http.raffle.getOrCreateRoll({ payload: input });
+      },
+      translateRaffleClientErrors("getOrCreateRoll", raffleErrorIdentifiersForRoll),
+    ),
+    deleteRollById: Effect.fn("RaffleClient.deleteRollById")(
+      function* (input) {
+        const http = yield* client;
 
-      return yield* http.raffle
-        .deleteRollById({ payload: input })
-        .pipe(translateRaffleClientErrors("deleteRollById"));
-    }),
-    getLeaderboard: Effect.fn("RaffleClient.getLeaderboard")(function* (input) {
-      const http = yield* client;
+        return yield* http.raffle.deleteRollById({ payload: input });
+      },
+      translateRaffleClientErrors("deleteRollById", raffleErrorIdentifiersForRollRemoval),
+    ),
+    getLeaderboard: Effect.fn("RaffleClient.getLeaderboard")(
+      function* (input) {
+        const http = yield* client;
 
-      return yield* http.raffle
-        .getLeaderboard({ payload: input })
-        .pipe(translateRaffleClientErrors("getLeaderboard"));
-    }),
-    getUserStats: Effect.fn("RaffleClient.getUserStats")(function* (input) {
-      const http = yield* client;
+        return yield* http.raffle.getLeaderboard({ payload: input });
+      },
+      translateRaffleClientErrors("getLeaderboard", () => raffleErrorWithoutIdentifiers),
+    ),
+    getUserStats: Effect.fn("RaffleClient.getUserStats")(
+      function* (input) {
+        const http = yield* client;
 
-      return yield* http.raffle
-        .getUserStats({ payload: input })
-        .pipe(translateRaffleClientErrors("getUserStats"));
-    }),
+        return yield* http.raffle.getUserStats({ payload: input });
+      },
+      translateRaffleClientErrors("getUserStats", raffleErrorIdentifiersForViewer),
+    ),
     getUserStatsByDisplayName: Effect.fn("RaffleClient.getUserStatsByDisplayName")(
       function* (input) {
         const http = yield* client;
 
-        return yield* http.raffle
-          .getUserStatsByDisplayName({ payload: input })
-          .pipe(translateRaffleClientErrors("getUserStatsByDisplayName"));
+        return yield* http.raffle.getUserStatsByDisplayName({ payload: input });
       },
+      translateRaffleClientErrors(
+        "getUserStatsByDisplayName",
+        raffleErrorIdentifiersForDisplayName,
+      ),
     ),
-    getClosestRecord: Effect.fn("RaffleClient.getClosestRecord")(function* () {
-      const http = yield* client;
+    getClosestRecord: Effect.fn("RaffleClient.getClosestRecord")(
+      function* () {
+        const http = yield* client;
 
-      return yield* http.raffle
-        .getClosestRecord()
-        .pipe(translateRaffleClientErrors("getClosestRecord"));
-    }),
+        return yield* http.raffle.getClosestRecord();
+      },
+      translateRaffleClientErrors("getClosestRecord", () => raffleErrorWithoutIdentifiers),
+    ),
   });
 });
 
-/** Provides the raffle client while leaving namespace binding selection explicit. */
+/** Layer that provides the raffle client while leaving the `KeyboardRaffleDO` namespace binding required. */
 export const raffleClientLayerWithoutDependencies = Layer.effect(Raffle, makeRaffleClient);
 
-/** Provides the raffle client and its physical Durable Object server. */
+/** Layer that provides the raffle client and registers its `KeyboardRaffleDO` server. */
 export const raffleClientLayer = raffleClientLayerWithoutDependencies.pipe(
   Layer.provide(raffleServerLayer),
 );

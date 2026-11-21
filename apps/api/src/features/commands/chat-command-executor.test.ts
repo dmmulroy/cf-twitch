@@ -6,6 +6,7 @@ import { TestClock } from "effect/testing";
 import {
   AchievementDefinition,
   AchievementError,
+  achievementErrorWithoutIdentifiers,
   UnlockedAchievement,
 } from "@cf-twitch/contracts/achievement";
 import {
@@ -16,7 +17,11 @@ import {
   CreateChatCommandInput,
   type ChatCommandPermission,
 } from "@cf-twitch/contracts/chat-command";
-import { RaffleError, RaffleLeaderboardEntry } from "@cf-twitch/contracts/raffle";
+import {
+  RaffleError,
+  RaffleLeaderboardEntry,
+  raffleErrorWithoutIdentifiers,
+} from "@cf-twitch/contracts/raffle";
 import { NowPlaying, QueuedTrack, SongQueueError } from "@cf-twitch/contracts/song-queue";
 import {
   TwitchAnalytics,
@@ -144,16 +149,18 @@ const providerTestLayer = Layer.unwrap(
     const raffleFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("raffle"))
         return yield* new RaffleError({
-          operation: "command lookup",
+          operation: "getLeaderboard",
           reason: "transport_unavailable",
+          ...raffleErrorWithoutIdentifiers,
         });
     });
 
     const achievementFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("achievements"))
         return yield* new AchievementError({
-          operation: "command lookup",
+          operation: "getDefinitions",
           reason: "transport_unavailable",
+          ...achievementErrorWithoutIdentifiers,
         });
     });
 

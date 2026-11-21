@@ -11,8 +11,7 @@ import {
 } from "@cf-twitch/contracts/identity";
 import { SongRequestSuccessEvent } from "@cf-twitch/contracts/domain-event";
 import { historicalAchievementStatements } from "./achievements-historical.fixture.ts";
-import { achievementsLayer } from "./achievements-database.ts";
-import { Achievements } from "./achievements-service.ts";
+import { Achievements, achievementsLayer } from "./achievements-service.ts";
 
 it.effect(
   "adopts the complete historical SQL state, not just the Agent live-stream projection",
