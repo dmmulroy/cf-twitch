@@ -5,7 +5,7 @@ import { TwitchHttpErrorBody, generateTwitchOpenApi } from "./twitch-api.ts";
 
 // Guards every generated OpenAPI field. Re-pinned when public errors became the discriminated
 // `TwitchHttpErrorBody` union under statuses 400/401/404/409/500/503; paths and operations are unchanged.
-const baselineOpenApiSha256 = "32e7c157f5c3f2554af02418c27afb3c758b63e054476274045d3934f9ca5829";
+const baselineOpenApiSha256 = "5a88c344d783c2efa689ac828dbb84e831bb8079fc770aebf424b21b8a41c7c0";
 
 const openApiOperationMethods = new Set([
   "get",
