@@ -14,7 +14,6 @@ import {
   eventBusAdministrationLayer,
 } from "../features/events/event-bus-administration.ts";
 import type { EventBusServer } from "../features/events/event-bus-server.ts";
-import { eventSubReceiptsLayer } from "../features/eventsub/eventsub-client.ts";
 import type { EventSubWebhookServer } from "../features/eventsub/eventsub-server.ts";
 import { httpResponseCacheLayer } from "../features/http/http-response-cache.ts";
 import { twitchHttpApiLayer } from "../features/http/twitch-http-api.ts";
@@ -42,7 +41,7 @@ import { twitchConfigurationLayer } from "./twitch-configuration.ts";
 import { twitchHttpTelemetrySafetyLayer, twitchTelemetryLayer } from "./twitch-telemetry.ts";
 import { Achievements } from "../features/achievements/achievements-service.ts";
 import { Commands } from "../features/commands/commands.ts";
-import { EventSubReceipts } from "../features/eventsub/eventsub-receipts.ts";
+import { EventSubReceipts, eventSubReceiptsLayer } from "../features/eventsub/eventsub-receipts.ts";
 import { OAuthAuthorization } from "../features/oauth/oauth-authorization.ts";
 import { TwitchService } from "../features/providers/twitch-service.ts";
 import { Raffle } from "../features/raffle/raffle-service.ts";

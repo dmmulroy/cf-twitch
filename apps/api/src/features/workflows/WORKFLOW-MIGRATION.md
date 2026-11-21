@@ -2,7 +2,7 @@
 
 ## State ownership
 
-The Effect implementation retains `saga_runs` and `saga_steps`. New runs have a `workflow_format` version-1 marker. The marker is **not** backfilled for historical runs. A missing marker prevents execution and alarm restoration with `WorkflowError` operation `legacy-state-gate`. Historical SQL remains untouched and status is readable. Legacy Agent JSON contains only `retryScheduleId` and `retryDueAt`, with callbacks in the separate schedules table; it is scheduling evidence rather than the source of business progress.
+The Effect implementation retains `saga_runs` and `saga_steps`. New runs have a `workflow_format` version-1 marker. The marker is **not** backfilled for historical runs. A missing marker prevents execution and alarm restoration with `WorkflowError` operation `legacy-state-gate`, reason `legacy_state`. Historical SQL remains untouched and status is readable. Legacy Agent JSON contains only `retryScheduleId` and `retryDueAt`, with callbacks in the separate schedules table; it is scheduling evidence rather than the source of business progress.
 
 Before routing production work here, complete the [work-disposition gate](../../../../../docs/production-cutover.md#2-work-disposition). That procedure owns drain/translation approval and ambiguous terminal outcomes; the representation requirements below define what translation must preserve.
 
@@ -10,7 +10,7 @@ The former saga object name was the redemption/message identity, but persisted s
 
 New raffle workflows use the raffle authority's atomic `getOrCreateRoll`, replacing two local random-number checkpoints with one remotely idempotent receipt. This is not a license to translate legacy `generate-winning-number` or `generate-user-roll` evidence by dropping it.
 
-Native EventSub state lives at storage key `eventsub-receipt`. New server startup detects this key and blocks adoption. The historical object does not retain exact signed raw bytes/digest; reconstructing JSON would lose the authenticated-content identity. Drain it before cutover or implement an explicit reviewed translation/disposition. Historical `sending` chat must become `uncertain`, never resent. No namespace transfer or adoption is configured here.
+Native EventSub state lives at storage key `eventsub-receipt`. New server startup detects this key and blocks adoption with `EventSubReceiptError` operation `legacy-state-gate`, reason `legacy_state`. The historical object does not retain exact signed raw bytes/digest; reconstructing JSON would lose the authenticated-content identity. Drain it before cutover or implement an explicit reviewed translation/disposition. Historical `sending` chat must become `uncertain`, never resent. No namespace transfer or adoption is configured here.
 
 ## New execution guarantees
 
@@ -30,7 +30,15 @@ The SQL receipt is persisted before dispatch, even if initial alarm scheduling f
 
 ## Service boundaries
 
-`WorkflowJournal` owns checkpoint/retry authority shared by the three orchestrations. `WorkflowExecution` owns compensation and fulfillment policy shared by HTTP start and alarms; `WorkflowAlarm` owns native alarm interop. `EventSubInbox` owns SQL/leases/sending, while `EventSubDispatch` owns notification translation and cross-feature routing. Keep those authorities separate so authentication/dispatch and persistence policy remain independently testable. [Architecture](../../../../../docs/architecture.md#composition-and-lifetime) owns HTTP client lifetime and Layer composition conventions.
+`WorkflowJournal` owns checkpoint/retry authority shared by the three orchestrations; `workflow-step.ts` owns the step vocabulary it shares with execution (`WorkflowStepFailure`, `WorkflowStepHalt`, `WorkflowStepPolicy`). `WorkflowExecution` owns compensation and fulfillment policy shared by HTTP start and alarms; `WorkflowAlarm` owns native alarm interop. `EventSubInbox` owns SQL/leases/sending, while `EventSubDispatch` owns notification translation and cross-feature routing. Keep those authorities separate so authentication/dispatch and persistence policy remain independently testable. [Architecture](../../../../../docs/architecture.md#composition-and-lifetime) owns HTTP client lifetime and Layer composition conventions.
+
+Each service file (`workflow-alarm.ts`, `workflow-journal.ts`, `workflow-execution.ts`, `workflow-starters.ts`, `eventsub-receipts.ts`, `eventsub-dispatch.ts`, `eventsub-inbox.ts`) declares its interface, tag, constructor, `*LayerWithoutDependencies`, production `*Layer`, and `*TestLayer`. SQL-backed production Layers build SQLite from the runtime `DurableObjectState`, so Durable Object servers capture only outer-phase capabilities and provide them with `Layer.succeed`. The EventSub server captures a ready `EventSubDispatch` rather than its four dependencies. SQL-backed test Layers substitute the in-memory alarm and leave `SqlClient` for the test to select; `workflowStartersTestLayer` and `eventSubReceiptsTestLayer` are in-memory implementations of the acceptance and conflict rules. `WorkflowAlarm.get` exposes the scheduled time so the in-memory alarm is observable.
+
+## Error vocabulary
+
+`WorkflowError`, `EventSubReceiptError`, `EventSubReceiptConflict`, `WorkflowAlarmError`, `WorkflowStepFailure`, and `WorkflowStepHalt` carry literal `operation` and `reason` unions plus the workflow or message identity when known. Their messages are derived from those fields, start with a fixed phrase, and end with one way forward. Step failures are classified by external operation (for example `get-spotify-track`, `update-redemption-status`) and keep the provider's failure kind as `providerFailure`.
+
+Persisted diagnostics (`saga_steps.last_error`, `saga_runs.error`, EventSub `lastError`, and analytics error strings) now use these messages. The step-state sentinels `unknown` and `exhausted` are unchanged. Compensation selects the invalid-track refund message by the `workflowStepInvalidTrackMessagePrefix` prefix (`Workflow Spotify track input is invalid`), which matches both the earlier exact text and the current message.
 
 ## Verification boundary
 

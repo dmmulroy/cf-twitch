@@ -1,4 +1,4 @@
-import { Effect, Predicate, Schema } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
 import { EventSubHeaders, EventSubReceiptError } from "@cf-twitch/contracts/eventsub";
 import {
   BroadcasterId,
@@ -19,10 +19,11 @@ const EventSubSubscription = Schema.Struct({
   condition: Schema.Record(Schema.String, Schema.Json),
   transport: Schema.Struct({
     method: Schema.Literal("webhook"),
-    callback: Schema.optionalKey(
+    callback: Schema.OptionFromOptionalKey(
       Schema.String.check(
         Schema.makeFilter((value) => URL.canParse(value), {
-          message: "EventSub callback must be an absolute URL",
+          message:
+            "EventSub callback must be an absolute URL. Correct the subscription's webhook callback.",
         }),
       ),
     ),
@@ -84,7 +85,7 @@ const ChatMessageEvent = Schema.Struct({
   ),
 });
 
-/** Parsed EventSub messages retain transport fields only until the dispatch adapter translates them. */
+/** Schema for signed EventSub messages, retaining transport fields only until the dispatch adapter translates them. */
 export const ParsedEventSubMessage = Schema.TaggedUnion({
   EventSubChallenge: { subscription: EventSubSubscription, challenge: Schema.NonEmptyString },
   EventSubRevocation: { subscription: EventSubSubscription },
@@ -99,10 +100,11 @@ export const ParsedEventSubMessage = Schema.TaggedUnion({
   },
 });
 
-/** Closed parsed notification variants with explicit unknown subscription policy. */
+/** Parsed EventSub message: a closed set of notification variants with an explicit unhandled-subscription variant. */
 export type ParsedEventSubMessage = typeof ParsedEventSubMessage.Type;
 
-const parseMessage = Schema.decodeEffect(Schema.toCodecJson(ParsedEventSubMessage));
+// The JSON body's shape is untrusted until this decode, so the decoder accepts unknown input.
+const parseMessage = Schema.decodeUnknownEffect(Schema.toCodecJson(ParsedEventSubMessage));
 
 const isEventSubJsonObject = (body: Schema.Json): body is Schema.JsonObject =>
   Predicate.isReadonlyObject(body);
@@ -129,53 +131,49 @@ const selectEventSubMessageTag = (
   return "UnhandledEventSubNotification";
 };
 
-/** Parse signed EventSub content and reject header/body subscription type or version disagreement. */
-export const parseEventSubMessage: (
+/**
+ * Parses signed EventSub content into a closed message variant selected by the signed headers.
+ *
+ * **Details**
+ *
+ * The message type and subscription type headers select the variant, overriding any `_tag` in the body.
+ *
+ * @param headers - Authenticated EventSub transport headers.
+ * @param body - JSON body whose bytes were authenticated with `headers`.
+ * @returns The parsed message, or fails with `EventSubReceiptError` reason `invalid` when the body is not an object, does not match its variant, or disagrees with the header subscription type or version.
+ */
+export const parseEventSubMessage = Effect.fn("EventSub.parseMessage")(function* (
   headers: EventSubHeaders,
   body: Schema.Json,
-) => Effect.Effect<ParsedEventSubMessage, EventSubReceiptError> = Effect.fn(
-  "EventSub.parseMessage",
-)(
-  function* (headers: EventSubHeaders, body: Schema.Json) {
-    if (!isEventSubJsonObject(body))
-      return yield* new EventSubReceiptError({
-        operation: "parse-message",
-        reason: "invalid",
-      });
+) {
+  const invalid = () =>
+    new EventSubReceiptError({
+      operation: "parse-message",
+      reason: "invalid",
+      messageId: Option.some(headers["twitch-eventsub-message-id"]),
+    });
 
-    // Own-entry reconstruction avoids Object.assign's __proto__ setter while the final entry overrides a body-supplied tag.
-    const message = yield* parseMessage(
-      Object.fromEntries([
-        ...Object.entries(body),
-        [
-          "_tag",
-          selectEventSubMessageTag(
-            headers["twitch-eventsub-message-type"],
-            headers["twitch-eventsub-subscription-type"],
-          ),
-        ],
-      ]),
-    );
+  if (!isEventSubJsonObject(body)) return yield* invalid();
 
-    if (
-      message.subscription.type !== headers["twitch-eventsub-subscription-type"] ||
-      message.subscription.version !== headers["twitch-eventsub-subscription-version"]
-    ) {
-      return yield* Effect.fail(
-        new EventSubReceiptError({
-          operation: "parse-message",
-          reason: "invalid",
-        }),
-      );
-    }
+  // Own-entry reconstruction avoids Object.assign's __proto__ setter while the final entry overrides a body-supplied tag.
+  const message = yield* parseMessage(
+    Object.fromEntries([
+      ...Object.entries(body),
+      [
+        "_tag",
+        selectEventSubMessageTag(
+          headers["twitch-eventsub-message-type"],
+          headers["twitch-eventsub-subscription-type"],
+        ),
+      ],
+    ]),
+  ).pipe(Effect.catchTag("SchemaError", () => Effect.fail(invalid())));
 
-    return message;
-  },
-  Effect.mapError(
-    () =>
-      new EventSubReceiptError({
-        operation: "parse-message",
-        reason: "invalid",
-      }),
-  ),
-);
+  if (
+    message.subscription.type !== headers["twitch-eventsub-subscription-type"] ||
+    message.subscription.version !== headers["twitch-eventsub-subscription-version"]
+  )
+    return yield* invalid();
+
+  return message;
+});

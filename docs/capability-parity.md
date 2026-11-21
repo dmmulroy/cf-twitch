@@ -101,7 +101,7 @@ Workflow identity is the redemption ID. Required order:
 4. Fulfill the redemption and record the point of no return.
 5. Send best-effort confirmation; publish stable `song_request_success` evidence.
 
-Pre-fulfillment permanent failure compensates in reverse order: remove the exact queue occurrence, delete the pending attribution, then confirm cancellation/refund. Invalid input and provider unavailability retain their different user messages. Remote persistence commit with a lost response requires cleanup by stable identity before refund, or explicit uncertainty.
+Pre-fulfillment permanent failure compensates in reverse order: remove the exact queue occurrence, delete the pending attribution, then confirm cancellation/refund. Invalid input and provider unavailability retain their different user messages; each refund message now ends with a next step (`Redeem again with a valid Spotify track link.` / `Try your request again later.`). Remote persistence commit with a lost response requires cleanup by stable identity before refund, or explicit uncertainty.
 
 Spotify queue mutation is non-idempotent: ambiguous completion becomes `OUTCOME_UNKNOWN`, not another add. After fulfillment, required publication exhaustion becomes `POST_COMMIT_FAILED`; it cannot trigger compensation. Failure evidence must survive a crash before compensation begins so replay preserves the original reason and message.
 

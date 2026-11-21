@@ -19,7 +19,7 @@ import { AcceptedEventSubReceipt, EventSubReceiptError } from "@cf-twitch/contra
 import { ChatMessageText, ProviderError } from "@cf-twitch/contracts/provider";
 import { TwitchService } from "../providers/twitch-service.ts";
 import { WorkflowAlarm, WorkflowAlarmError } from "../workflows/workflow-alarm.ts";
-import { EventSubDispatch, type EventSubChatResponse } from "./eventsub-dispatch.ts";
+import { EventSubDispatch, type EventSubDispatchChatResponse } from "./eventsub-dispatch.ts";
 import { EventSubInbox, eventSubInboxLayerWithoutDependencies } from "./eventsub-inbox.ts";
 
 const receipt = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
@@ -88,7 +88,7 @@ const recordingInbox = Effect.gen(function* () {
   const sends = yield* Ref.make(0);
   const dispatchFailure = yield* Ref.make(false);
   const sendFailure = yield* Ref.make<Option.Option<ProviderError>>(Option.none());
-  const response = yield* Ref.make<Option.Option<EventSubChatResponse>>(Option.none());
+  const response = yield* Ref.make<Option.Option<EventSubDispatchChatResponse>>(Option.none());
   const alarmFailure = yield* Ref.make(false);
   const dueAt = yield* Ref.make<Option.Option<number>>(Option.none());
   const sendStarted = yield* Deferred.make<void>();
@@ -107,6 +107,7 @@ const recordingInbox = Effect.gen(function* () {
                   new EventSubReceiptError({
                     operation: "dispatch",
                     reason: "dispatch",
+                    messageId: Option.none(),
                   }),
                 )
               : Ref.get(response),
@@ -130,10 +131,17 @@ const recordingInbox = Effect.gen(function* () {
         Ref.get(alarmFailure).pipe(
           Effect.flatMap((fail) =>
             fail
-              ? Effect.fail(new WorkflowAlarmError({ message: "Controlled alarm unavailable" }))
+              ? Effect.fail(
+                  new WorkflowAlarmError({
+                    operation: "set-alarm",
+                    reason: "storage_rejected",
+                    dueAt: Option.none(),
+                  }),
+                )
               : Ref.set(dueAt, due),
           ),
         ),
+      get: () => Ref.get(dueAt),
     }),
   );
 

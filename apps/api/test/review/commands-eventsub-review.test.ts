@@ -17,7 +17,7 @@ import {
   EventSubInbox,
   eventSubInboxLayerWithoutDependencies,
 } from "../../src/features/eventsub/eventsub-inbox.ts";
-import { WorkflowAlarm } from "../../src/features/workflows/workflow-alarm.ts";
+import { workflowAlarmTestLayer } from "../../src/features/workflows/workflow-alarm.ts";
 import { WorkflowStarters } from "../../src/features/workflows/workflow-starters.ts";
 import { StreamLifecycleClient } from "../../src/features/stream/stream-lifecycle-client.ts";
 import { TwitchService } from "../../src/features/providers/twitch-service.ts";
@@ -80,7 +80,7 @@ const inboxLayer = eventSubInboxLayerWithoutDependencies.pipe(Layer.provide(disp
 const commonLayer = Layer.mergeAll(
   twitchAnalyticsTestLayer,
   Layer.succeed(TwitchConfiguration, httpTestConfiguration),
-  Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
+  workflowAlarmTestLayer,
   Layer.mock(WorkflowStarters, {}),
   Layer.mock(StreamLifecycleClient, {}),
   Layer.mock(SongQueue, {}),
