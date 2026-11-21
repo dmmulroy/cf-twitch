@@ -6,20 +6,24 @@ import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { OAuthStateHttpApi } from "./oauth-state-http-api.ts";
 import { oauthStateHttpHandlersLayer } from "./oauth-state-http-handlers.ts";
-import { OAuthStateStore, oauthStateStoreLayerWithoutDependencies } from "./oauth-state-store.ts";
+import { OAuthStateStore, oauthStateStoreLayer } from "./oauth-state-store.ts";
 
 type OAuthStateServerContract = {
   readonly fetch: HttpEffect;
   readonly alarm: () => Effect.Effect<void>;
 };
 
-/** OAuth state namespace preserves the historical physical class and state-derived object identities. */
+/** Durable Object namespace of OAuth state, preserving the historical `OAuthStateDO` class and state-derived object names. */
 export class OAuthStateServer extends Cloudflare.DurableObject<
   OAuthStateServer,
   OAuthStateServerContract
 >()("OAuthStateDO") {}
 
-/** OAuth state server accesses native storage only inside the returned runtime Effect. */
+/**
+ * Layer that registers the OAuth state server; native storage is accessed only inside the returned runtime Effect.
+ *
+ * @throws Dies when the expiry alarm cannot read or update native storage, so the Workers runtime records the alarm as failed.
+ */
 export const oauthStateServerLayer = OAuthStateServer.make<Cloudflare.DurableObjectState>(
   Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
@@ -39,7 +43,7 @@ export const oauthStateServerLayer = OAuthStateServer.make<Cloudflare.DurableObj
       return { fetch, alarm: () => store.expireAttempt().pipe(Effect.orDie) };
     }).pipe(
       Effect.provide(
-        oauthStateStoreLayerWithoutDependencies.pipe(
+        oauthStateStoreLayer.pipe(
           Layer.provide(Layer.succeed(Cloudflare.DurableObjectState, state)),
         ),
       ),
@@ -48,4 +52,5 @@ export const oauthStateServerLayer = OAuthStateServer.make<Cloudflare.DurableObj
   }),
 );
 
+/** Default export of the OAuth state server registration Layer for the Worker composition root. */
 export default oauthStateServerLayer;

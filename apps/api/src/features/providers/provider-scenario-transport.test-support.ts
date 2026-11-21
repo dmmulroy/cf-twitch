@@ -3,24 +3,29 @@ import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } fr
 
 /** Synthetic provider transcript records only operation counts, never credentials or request bodies. */
 export interface IProviderScenarioTranscript {
+  /** Returns how many requests reached the controlled transport. */
   readonly readRequestCount: () => Effect.Effect<number>;
+  /** Returns the most recent 128 requests as method and path only. */
   readonly readRequests: () => Effect.Effect<readonly ProviderScenarioRequest[]>;
+  /** Waits until the first refresh-token grant reaches the controlled transport. */
   readonly awaitRefreshStarted: () => Effect.Effect<void>;
 }
 
 /** Bounded test transcript excludes query strings, headers, bodies and credentials. */
 export interface ProviderScenarioRequest {
+  /** HTTP method of the request. */
   readonly method: string;
+  /** URL path without query string. */
   readonly path: string;
 }
 
-/** Test control is separate from the production HttpClient capability. */
+/** Service that exposes the controlled transport's transcript to tests, separate from the production HttpClient capability. */
 export class ProviderScenarioTranscript extends Context.Service<
   ProviderScenarioTranscript,
   IProviderScenarioTranscript
 >()("@cf-twitch/test/ProviderScenarioTranscript") {}
 
-/** Track fixture crosses the real provider response parser in the workerd scenario. */
+/** Spotify track fixture that crosses the real provider response parser in the workerd scenario. */
 export const providerScenarioTrack = {
   id: "4uLU6hMCjMI75M1A2tKUQC",
   name: "Scenario Song",
@@ -186,7 +191,13 @@ const providerScenarioTwitchApiResponse = (
   return providerScenarioNoContent(request);
 };
 
-/** Controlled Effect HTTP transport never delegates to network fetch or live provider APIs. */
+/**
+ * Layer that provides a controlled Effect HTTP transport and its transcript; it never delegates to network fetch or live provider APIs.
+ *
+ * **Details**
+ *
+ * The bearer token after `scenario:` selects a provider mode such as `rate-limited`, `unauthorized` or `unknown`. Refresh tokens such as `scenario-revoked` select token endpoint outcomes.
+ */
 export const providerScenarioTransportLayer = Layer.effectContext(
   Effect.gen(function* () {
     const requestCount = yield* Ref.make(0);

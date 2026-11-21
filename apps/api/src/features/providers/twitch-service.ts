@@ -3,6 +3,7 @@ import {
   CreateShoutout,
   ProviderError,
   SendChatMessage,
+  type ProviderOperation,
   TwitchStreamInfo,
   UpdateRedemptionStatus,
   type ProviderEventSubSubscription,
@@ -22,38 +23,86 @@ import {
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
-import { ProviderAccessTokens } from "./provider-access-tokens.ts";
-import { providerAccessTokensLayer } from "./provider-token-client.ts";
-import { ProviderTokenExchange, providerTokenExchangeLayer } from "./provider-token-exchange.ts";
+import {
+  ProviderAccessTokens,
+  providerAccessTokensLayer,
+  providerAccessTokensTestLayer,
+} from "./provider-access-tokens.ts";
+import {
+  ProviderTokenExchange,
+  providerTokenExchangeLayer,
+  providerTokenExchangeTestLayer,
+} from "./provider-token-exchange.ts";
 import {
   confirmProviderMutationStatus,
   decodeProviderResponse,
   executeProviderRequest,
 } from "./provider-http.ts";
 
-/** Twitch provider operations distinguish confirmed delivery from unknown mutation outcomes. */
+/**
+ * Twitch Helix capability that distinguishes confirmed delivery from unknown mutation outcomes.
+ *
+ * **Details**
+ *
+ * Unknown mutation outcomes are never retried internally. Read operations use the app token; chat, shoutouts and redemption updates use the broadcaster's user token.
+ */
 export interface ITwitchService {
+  /**
+   * Returns live stream information for a Twitch login, or none while the stream is offline.
+   *
+   * @returns The stream information, or fails with `ProviderError` operation `getStreamInfo` when Twitch is unreachable, refuses the request or returns a malformed response.
+   */
   readonly getStreamInfo: (
     userLogin: string,
   ) => Effect.Effect<Option.Option<TwitchStreamInfo>, ProviderError>;
+  /**
+   * Sends a chat message as the broadcaster and confirms Twitch delivered it.
+   *
+   * @returns Nothing, or fails with `ProviderError` reason `chat-dropped` when Twitch declined to deliver the message, `outcome-unknown` when delivery cannot be confirmed, or another reason for refusal or token failure.
+   */
   readonly sendChatMessage: (input: SendChatMessage) => Effect.Effect<void, ProviderError>;
+  /**
+   * Sends a native shoutout from the broadcaster.
+   *
+   * @returns Nothing, or fails with `ProviderError` reason `outcome-unknown` when success cannot be confirmed, or another reason for refusal or token failure.
+   */
   readonly createShoutout: (input: CreateShoutout) => Effect.Effect<void, ProviderError>;
+  /**
+   * Fulfills or cancels a channel point redemption.
+   *
+   * @returns Nothing, or fails with `ProviderError` reason `outcome-unknown` when success cannot be confirmed, or another reason for refusal or token failure.
+   */
   readonly updateRedemptionStatus: (
     input: UpdateRedemptionStatus,
   ) => Effect.Effect<void, ProviderError>;
+  /**
+   * Creates an EventSub webhook subscription.
+   *
+   * @returns The created subscription, or fails with `ProviderError` reason `outcome-unknown` when creation cannot be confirmed, or another reason for refusal.
+   */
   readonly createEventSubSubscription: (
     input: CreateEventSubSubscription,
   ) => Effect.Effect<ProviderEventSubSubscription, ProviderError>;
+  /**
+   * Lists every EventSub subscription across at most 100 pages.
+   *
+   * @returns All subscriptions, or fails with `ProviderError` reason `invalid-response` when a page is malformed or more than 100 pages exist, or another reason when Twitch is unreachable or refuses the request.
+   */
   readonly listEventSubSubscriptions: () => Effect.Effect<
     readonly ProviderEventSubSubscription[],
     ProviderError
   >;
+  /**
+   * Deletes an EventSub subscription.
+   *
+   * @returns Nothing, or fails with `ProviderError` reason `outcome-unknown` when deletion cannot be confirmed, or another reason for refusal.
+   */
   readonly deleteEventSubSubscription: (
     subscriptionId: string,
   ) => Effect.Effect<void, ProviderError>;
 }
 
-/** Twitch HTTP provider owns Helix authorization, pagination and delivery evidence. */
+/** Service that owns Twitch Helix authorization, pagination and delivery evidence. */
 export class TwitchService extends Context.Service<TwitchService, ITwitchService>()(
   "@cf-twitch/TwitchService",
 ) {}
@@ -84,8 +133,8 @@ const TwitchSubscription = Schema.Struct({
 
 const TwitchSubscriptionResponse = Schema.Struct({
   data: Schema.Array(TwitchSubscription),
-  pagination: Schema.optionalKey(
-    Schema.Struct({ cursor: Schema.optionalKey(Schema.NonEmptyString) }),
+  pagination: Schema.OptionFromOptionalKey(
+    Schema.Struct({ cursor: Schema.OptionFromOptionalKey(Schema.NonEmptyString) }),
   ),
 });
 
@@ -140,7 +189,7 @@ const redemptionDecode = decodeProviderResponse(TwitchRedemptionResponse, {
   mutation: true,
 });
 
-/** Construct Twitch provider with app credentials independent of stream-aware user tokens. */
+/** Creates the Twitch service with app credentials independent of stream-aware user tokens. */
 export const makeTwitchService = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const configuration = yield* TwitchConfiguration;
@@ -174,7 +223,7 @@ export const makeTwitchService = Effect.gen(function* () {
   );
 
   const request = Effect.fn("TwitchService.request")(function* (
-    operation: string,
+    operation: ProviderOperation,
     outgoing: HttpClientRequest.HttpClientRequest,
     authorization: "app" | "user",
     mutation: boolean,
@@ -194,7 +243,7 @@ export const makeTwitchService = Effect.gen(function* () {
       ),
     }).pipe(
       Effect.tapError((error) =>
-        authorization === "app" && error.kind === "unauthorized"
+        authorization === "app" && error.reason === "unauthorized"
           ? invalidateTwitchAppAccessToken()
           : Effect.void,
       ),
@@ -247,8 +296,8 @@ export const makeTwitchService = Effect.gen(function* () {
         new ProviderError({
           provider: "twitch",
           operation: "sendChatMessage",
-          kind: "chat-dropped",
-          status: 200,
+          reason: "chat-dropped",
+          status: Option.some(200),
           retryAfterMs: Option.none(),
         }),
       );
@@ -346,20 +395,23 @@ export const makeTwitchService = Effect.gen(function* () {
               }),
             }).pipe(
               Effect.tapError((error) =>
-                error.kind === "unauthorized" ? invalidateTwitchAppAccessToken() : Effect.void,
+                error.reason === "unauthorized" ? invalidateTwitchAppAccessToken() : Effect.void,
               ),
               Effect.flatMap(subscriptionsDecode),
             );
 
-            const nextCursor = Option.fromUndefinedOr(response.pagination?.cursor);
+            const nextCursor = Option.flatMap(
+              response.pagination,
+              (pagination) => pagination.cursor,
+            );
 
             if (page === 100 && Option.isSome(nextCursor))
               return yield* Effect.fail(
                 new ProviderError({
                   provider: "twitch",
                   operation: "listEventSubSubscriptions",
-                  kind: "invalid-response",
-                  status: 200,
+                  reason: "invalid-response",
+                  status: Option.some(200),
                   retryAfterMs: Option.none(),
                 }),
               );
@@ -406,10 +458,21 @@ export const makeTwitchService = Effect.gen(function* () {
   });
 });
 
-/** Twitch provider with all dependency requirements available to real-interface tests. */
+/** Layer that provides the Twitch service with HTTP transport, configuration, access-token and token-exchange requirements visible. */
 export const twitchServiceLayerWithoutDependencies = Layer.effect(TwitchService, makeTwitchService);
 
-/** Twitch provider selects durable user tokens and provider app-token exchange. */
+/** Production Twitch service Layer that selects durable user tokens and provider app-token exchange. */
 export const twitchServiceLayer = twitchServiceLayerWithoutDependencies.pipe(
   Layer.provide([providerAccessTokensLayer, providerTokenExchangeLayer]),
+);
+
+/**
+ * Layer that provides the Twitch service over in-memory user tokens and app-token exchange.
+ *
+ * **Details**
+ *
+ * Leaves `HttpClient.HttpClient` and `TwitchConfiguration` required so tests supply a controlled Helix transport that cannot reach the network.
+ */
+export const twitchServiceTestLayer = twitchServiceLayerWithoutDependencies.pipe(
+  Layer.provide([providerAccessTokensTestLayer, providerTokenExchangeTestLayer]),
 );

@@ -1,17 +1,38 @@
-import { ProviderError, type OAuthProvider } from "@cf-twitch/contracts/provider";
+import {
+  ProviderError,
+  type OAuthProvider,
+  type ProviderFailureReason,
+  type ProviderOperation,
+} from "@cf-twitch/contracts/provider";
 import { Clock, DateTime, Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
-/** Provider HTTP status and transport classification never retains secret requests or response bodies. */
+/** Provider request whose response is classified into success or a `ProviderError`. */
+export interface ProviderHttpRequest {
+  /** Provider that receives the request. */
+  readonly provider: OAuthProvider;
+  /** Provider operation reported in spans and failures. */
+  readonly operation: ProviderOperation;
+  /** Fully built outgoing request, including credentials. */
+  readonly request: HttpClientRequest.HttpClientRequest;
+  /** Whether the request changes provider state, which turns lost or 5xx responses into `outcome-unknown`. */
+  readonly mutation: boolean;
+  /** Reason reported for HTTP 404, which Spotify player endpoints use for a missing active device. */
+  readonly notFound: "not-found" | "no-active-device";
+}
+
+/**
+ * Executes a provider request and classifies its HTTP status without retaining secret requests or response bodies.
+ *
+ * **Details**
+ *
+ * Default HTTP tracing is disabled so authorization headers and URLs are never collected. Requests time out after 30 seconds.
+ *
+ * @returns The 2xx response, or fails with `ProviderError`: `network` (or `outcome-unknown` for a mutation) when the transport fails or times out, `rate-limited` for 429 with its retry delay, `unauthorized` for 401, `input.notFound` for 404, `network`/`outcome-unknown` for 5xx, and `rejected` otherwise.
+ */
 export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderRequest")(function* (
   client: HttpClient.HttpClient,
-  input: {
-    readonly provider: OAuthProvider;
-    readonly operation: string;
-    readonly request: HttpClientRequest.HttpClientRequest;
-    readonly mutation: boolean;
-    readonly notFound: "not-found" | "no-active-device";
-  },
+  input: ProviderHttpRequest,
 ) {
   yield* Effect.annotateCurrentSpan({ provider: input.provider, operation: input.operation });
 
@@ -20,35 +41,29 @@ export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderReq
     // Keep the safe named operation span while preventing sensitive transport collection.
     Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
     Effect.timeout("30 seconds"),
-    Effect.mapError(
-      () =>
-        new ProviderError({
-          provider: input.provider,
-          operation: input.operation,
-          kind: input.mutation ? "outcome-unknown" : "network",
-          status: 0,
-          retryAfterMs: Option.none(),
-        }),
-    ),
+    Effect.catchTags({
+      HttpClientError: () => Effect.fail(providerTransportFailure(input)),
+      TimeoutError: () => Effect.fail(providerTransportFailure(input)),
+    }),
   );
 
   if (response.status >= 200 && response.status < 300) return response;
 
   const retryAfterMs =
     response.status === 429
-      ? yield* parseProviderRetryAfter(response.headers["retry-after"])
+      ? yield* parseProviderRetryAfter(Option.fromUndefinedOr(response.headers["retry-after"]))
       : Option.none<number>();
 
   return yield* Effect.fail(
     new ProviderError({
       provider: input.provider,
       operation: input.operation,
-      status: response.status,
-      kind: HttpClientResponse.matchStatus(response, {
-        429: () => "rate-limited" as const,
-        401: () => "unauthorized" as const,
-        404: () => input.notFound,
-        orElse: (response): ProviderError["kind"] => {
+      status: Option.some(response.status),
+      reason: HttpClientResponse.matchStatus(response, {
+        429: (): ProviderFailureReason => "rate-limited",
+        401: (): ProviderFailureReason => "unauthorized",
+        404: (): ProviderFailureReason => input.notFound,
+        orElse: (response): ProviderFailureReason => {
           if (response.status >= 500) return input.mutation ? "outcome-unknown" : "network";
 
           return "rejected";
@@ -59,15 +74,26 @@ export const executeProviderRequest = Effect.fn("ProviderHttp.executeProviderReq
   );
 });
 
+const providerTransportFailure = (input: ProviderHttpRequest) =>
+  new ProviderError({
+    provider: input.provider,
+    operation: input.operation,
+    reason: input.mutation ? "outcome-unknown" : "network",
+    status: Option.none(),
+    retryAfterMs: Option.none(),
+  });
+
+/** Parses a `Retry-After` header given in seconds or as an HTTP date into a bounded delay of 1 second to 15 minutes. */
 const parseProviderRetryAfter = Effect.fn("ProviderHttp.parseProviderRetryAfter")(function* (
-  header: string | undefined,
+  header: Option.Option<string>,
 ) {
-  const seconds = Number(header);
+  if (Option.isNone(header)) return Option.some(1000);
+  const seconds = Number(header.value);
 
   if (Number.isFinite(seconds))
     return Option.some(seconds > 0 ? Math.min(Math.ceil(seconds * 1000), 900_000) : 1000);
 
-  const retryAt = DateTime.make(header ?? "");
+  const retryAt = DateTime.make(header.value);
 
   if (Option.isNone(retryAt)) return Option.some(1000);
   const now = yield* Clock.currentTimeMillis;
@@ -77,12 +103,16 @@ const parseProviderRetryAfter = Effect.fn("ProviderHttp.parseProviderRetryAfter"
   );
 });
 
-/** Confirm the documented success statuses before acknowledging a bodyless provider mutation. */
+/**
+ * Confirms that a bodyless provider mutation response has one of its documented success statuses.
+ *
+ * @returns Nothing, or fails with `ProviderError` reason `outcome-unknown` when the status is undocumented, because the mutation may or may not have happened.
+ */
 export const confirmProviderMutationStatus = (
   response: HttpClientResponse.HttpClientResponse,
   input: {
     readonly provider: OAuthProvider;
-    readonly operation: string;
+    readonly operation: ProviderOperation;
     readonly statuses: readonly number[];
   },
 ): Effect.Effect<void, ProviderError> =>
@@ -92,18 +122,22 @@ export const confirmProviderMutationStatus = (
         new ProviderError({
           provider: input.provider,
           operation: input.operation,
-          status: response.status,
-          kind: "outcome-unknown",
+          status: Option.some(response.status),
+          reason: "outcome-unknown",
           retryAfterMs: Option.none(),
         }),
       );
 
-/** Decode provider success evidence without including raw malformed payloads in failures. */
+/**
+ * Creates a decoder of provider success JSON that never includes the raw malformed payload in failures.
+ *
+ * @returns A decoder whose result is the parsed body, or fails with `ProviderError` reason `invalid-response` (or `outcome-unknown` for a mutation) when the body does not match the schema.
+ */
 export const decodeProviderResponse = <A, I>(
   schema: Schema.Codec<A, I>,
   input: {
     readonly provider: OAuthProvider;
-    readonly operation: string;
+    readonly operation: ProviderOperation;
     readonly mutation: boolean;
   },
 ) => {
@@ -111,15 +145,25 @@ export const decodeProviderResponse = <A, I>(
 
   return (response: HttpClientResponse.HttpClientResponse): Effect.Effect<A, ProviderError> =>
     decode(response).pipe(
-      Effect.mapError(
-        () =>
-          new ProviderError({
-            provider: input.provider,
-            operation: input.operation,
-            kind: input.mutation ? "outcome-unknown" : "invalid-response",
-            status: response.status,
-            retryAfterMs: Option.none(),
-          }),
-      ),
+      Effect.catchTags({
+        HttpClientError: () => Effect.fail(providerDecodeFailure(input, response)),
+        SchemaError: () => Effect.fail(providerDecodeFailure(input, response)),
+      }),
     );
 };
+
+const providerDecodeFailure = (
+  input: {
+    readonly provider: OAuthProvider;
+    readonly operation: ProviderOperation;
+    readonly mutation: boolean;
+  },
+  response: HttpClientResponse.HttpClientResponse,
+) =>
+  new ProviderError({
+    provider: input.provider,
+    operation: input.operation,
+    reason: input.mutation ? "outcome-unknown" : "invalid-response",
+    status: Option.some(response.status),
+    retryAfterMs: Option.none(),
+  });

@@ -1,33 +1,68 @@
-import { ProviderError, ProviderTokens } from "@cf-twitch/contracts/provider";
+import {
+  ProviderError,
+  ProviderTokens,
+  type ProviderFailureReason,
+  type ProviderOperation,
+} from "@cf-twitch/contracts/provider";
 import { Clock, Context, Effect, Layer, Option, Redacted, Semaphore } from "effect";
 import {
+  ProviderTokenAlarm,
+  providerTokenAlarmLayer,
+  providerTokenAlarmTestLayer,
+} from "./provider-token-alarm.ts";
+import {
   ProviderTokenDatabase,
-  TokenProviderIdentity,
-  type ProviderTokenState,
+  providerTokenDatabaseLayer,
+  providerTokenDatabaseTestLayer,
 } from "./provider-token-database.ts";
-import { ProviderTokenExchange } from "./provider-token-exchange.ts";
+import {
+  ProviderTokenExchange,
+  providerTokenExchangeTestLayer,
+} from "./provider-token-exchange.ts";
+import { ProviderTokenIdentity } from "./provider-token-identity.ts";
+import type { ProviderTokenState } from "./provider-token-state.ts";
 
-/** Token alarm adapter owns Cloudflare alarm scheduling; SQL persists the repairable intent. */
-export interface IProviderTokenAlarm {
-  readonly setAlarm: (atMs: number) => Effect.Effect<void, ProviderError>;
-  readonly deleteAlarm: () => Effect.Effect<void, ProviderError>;
-}
-
-/** Durable token alarm capability provided only inside a running token Durable Object. */
-export class ProviderTokenAlarm extends Context.Service<ProviderTokenAlarm, IProviderTokenAlarm>()(
-  "@cf-twitch/ProviderTokenAlarm",
-) {}
-
-/** One physical provider token lifecycle shares in-flight refresh work across public callers. */
+/**
+ * Stream-aware token lifecycle of one physical provider token Durable Object.
+ *
+ * **Details**
+ *
+ * Tokens are usable until five minutes before expiry. Refresh happens only while the stream is live and is shared by concurrent callers.
+ */
 export interface IProviderTokenLifecycle {
+  /**
+   * Returns a usable access token, refreshing it first when it is inside the expiry buffer and the stream is live.
+   *
+   * @returns The access token, or fails with `ProviderError` reason `not-configured` before authorization, `reauthorization-required` after revocation, `offline` when the token needs refresh while the stream is offline, or a refresh or storage failure.
+   */
   readonly getValidToken: () => Effect.Effect<Redacted.Redacted<string>, ProviderError>;
+  /**
+   * Accepts newly authorized tokens, keeping the stored refresh token and scopes when the provider omitted them.
+   *
+   * @returns Nothing, or fails with `ProviderError` reason `reauthorization-required` when no refresh token is available, or a storage failure.
+   */
   readonly setTokens: (tokens: ProviderTokens) => Effect.Effect<void, ProviderError>;
+  /**
+   * Marks the stream live, schedules proactive refresh, and validates a configured token.
+   *
+   * @returns Nothing, or fails with the `ProviderError` of the token validation or storage.
+   */
   readonly onStreamOnline: () => Effect.Effect<void, ProviderError>;
+  /**
+   * Marks the stream offline and cancels scheduled refresh.
+   *
+   * @returns Nothing, or fails with `ProviderError` reason `persistence` or `stored-state-invalid` when storage fails.
+   */
   readonly onStreamOffline: () => Effect.Effect<void, ProviderError>;
+  /**
+   * Runs the scheduled refresh delivered by the token alarm.
+   *
+   * @returns Nothing, or fails with the `ProviderError` of the refresh or storage.
+   */
   readonly refreshTokenTick: () => Effect.Effect<void, ProviderError>;
 }
 
-/** Stream-aware refresh lifecycle with a five minute expiry safety buffer. */
+/** Service that runs the stream-aware refresh lifecycle of one provider's tokens with a five minute expiry safety buffer. */
 export class ProviderTokenLifecycle extends Context.Service<
   ProviderTokenLifecycle,
   IProviderTokenLifecycle
@@ -35,16 +70,26 @@ export class ProviderTokenLifecycle extends Context.Service<
 
 const refreshBufferMs = 300_000;
 
-/** Construct token lifecycle after SQL initialization, repairing any persisted alarm intent. */
+/**
+ * Creates the token lifecycle after storage initialization, repairing any persisted alarm intent.
+ *
+ * @returns The lifecycle, or fails with `ProviderError` when the stored state cannot be read or the alarm cannot be rescheduled.
+ */
 export const makeProviderTokenLifecycle = Effect.gen(function* () {
   const database = yield* ProviderTokenDatabase;
   const exchange = yield* ProviderTokenExchange;
   const alarm = yield* ProviderTokenAlarm;
-  const provider = yield* TokenProviderIdentity;
+  const provider = yield* ProviderTokenIdentity;
   const lock = yield* Semaphore.make(1);
 
-  const failure = (kind: ProviderError["kind"], operation: string) =>
-    new ProviderError({ provider, operation, kind, status: 0, retryAfterMs: Option.none() });
+  const failure = (reason: ProviderFailureReason, operation: ProviderOperation) =>
+    new ProviderError({
+      provider,
+      operation,
+      reason,
+      status: Option.none(),
+      retryAfterMs: Option.none(),
+    });
 
   const syncAlarm = Effect.fn("ProviderTokenLifecycle.syncAlarm")((state: ProviderTokenState) =>
     Option.isSome(state.nextRefreshAtMs)
@@ -133,7 +178,7 @@ export const makeProviderTokenLifecycle = Effect.gen(function* () {
               Effect.gen(function* () {
                 const current = yield* database.readState();
 
-                if (error.kind === "reauthorization-required") {
+                if (error.reason === "reauthorization-required") {
                   yield* persist({
                     ...current,
                     authorizationStatus: "reauthorization-required",
@@ -142,7 +187,7 @@ export const makeProviderTokenLifecycle = Effect.gen(function* () {
                   });
                 } else {
                   const shortRetry =
-                    (error.kind === "network" || error.kind === "rate-limited") &&
+                    (error.reason === "network" || error.reason === "rate-limited") &&
                     current.refreshRetryCount < 3;
 
                   const delayMs = shortRetry ? 60_000 * 2 ** current.refreshRetryCount : 600_000;
@@ -253,8 +298,28 @@ export const makeProviderTokenLifecycle = Effect.gen(function* () {
   });
 });
 
-/** Token lifecycle preserves SQL, HTTP exchange, alarm and physical identity requirements. */
+/** Layer that provides the token lifecycle with database, exchange, alarm and provider identity requirements visible. */
 export const providerTokenLifecycleLayerWithoutDependencies = Layer.effect(
   ProviderTokenLifecycle,
   makeProviderTokenLifecycle,
+);
+
+/**
+ * Production token lifecycle Layer that selects SQL storage and native alarms.
+ *
+ * **Details**
+ *
+ * Leaves `ProviderTokenExchange` required: the token server captures exchange during outer initialization and bridges it into the Durable Object runtime phase.
+ */
+export const providerTokenLifecycleLayer = providerTokenLifecycleLayerWithoutDependencies.pipe(
+  Layer.provide([providerTokenDatabaseLayer, providerTokenAlarmLayer]),
+);
+
+/** Layer that provides the token lifecycle over in-memory storage, alarm and provider exchange for the provider named by `ProviderTokenIdentity`. */
+export const providerTokenLifecycleTestLayer = providerTokenLifecycleLayerWithoutDependencies.pipe(
+  Layer.provide([
+    providerTokenDatabaseTestLayer,
+    providerTokenAlarmTestLayer,
+    providerTokenExchangeTestLayer,
+  ]),
 );

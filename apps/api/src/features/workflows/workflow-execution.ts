@@ -66,17 +66,19 @@ const providerFailure =
   (error: ProviderError): WorkflowStepFailure =>
     new WorkflowStepFailure({
       kind:
-        error.kind === "outcome-unknown" ||
-        error.kind === "network" ||
-        error.kind === "invalid-response"
+        error.reason === "outcome-unknown" ||
+        error.reason === "network" ||
+        error.reason === "invalid-response"
           ? safety === "non-idempotent"
             ? "unknown"
             : "retryable"
-          : error.kind === "rate-limited" || error.status >= 500 || error.kind === "persistence"
+          : error.reason === "rate-limited" ||
+              Option.exists(error.status, (status) => status >= 500) ||
+              error.reason === "persistence"
             ? "retryable"
             : "permanent",
       message:
-        error.kind === "not-found" && error.operation === "getTrack"
+        error.reason === "not-found" && error.operation === "getTrack"
           ? "Workflow Spotify track input is invalid"
           : error.message,
       retryAfterMs: error.retryAfterMs,

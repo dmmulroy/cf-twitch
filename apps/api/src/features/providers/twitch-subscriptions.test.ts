@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option } from "effect";
 import { TestClock } from "effect/testing";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import {
@@ -166,7 +166,7 @@ it.effect(
         Effect.result,
       );
 
-      expect(result).toHaveProperty("failure.kind", "invalid-response");
+      expect(result).toHaveProperty("failure.reason", "invalid-response");
       expect(pages).toBe(100);
     }),
 );
@@ -310,11 +310,11 @@ it.effect(
       yield* Effect.gen(function* () {
         const twitch = yield* TwitchService;
         expect(yield* twitch.getStreamInfo("failure").pipe(Effect.result)).toHaveProperty(
-          "failure.kind",
+          "failure.reason",
           "network",
         );
         expect(yield* twitch.getStreamInfo("revoked").pipe(Effect.result)).toHaveProperty(
-          "failure.kind",
+          "failure.reason",
           "unauthorized",
         );
         yield* twitch.getStreamInfo("recovered");
@@ -364,7 +364,7 @@ it.effect("Twitch pagination invalidates a revoked app token without retrying it
     yield* Effect.gen(function* () {
       const twitch = yield* TwitchService;
       expect(yield* twitch.listEventSubSubscriptions().pipe(Effect.result)).toHaveProperty(
-        "failure.kind",
+        "failure.reason",
         "unauthorized",
       );
       yield* twitch.getStreamInfo("after-revocation");
@@ -442,8 +442,8 @@ it.effect(
         Effect.result,
       );
 
-      expect(result).toHaveProperty("failure.kind", "outcome-unknown");
-      expect(result).toHaveProperty("failure.status", 200);
+      expect(result).toHaveProperty("failure.reason", "outcome-unknown");
+      expect(result).toHaveProperty("failure.status", Option.some(200));
     }),
 );
 
@@ -481,7 +481,7 @@ it.effect(
         Effect.result,
       );
 
-      expect(result).toHaveProperty("failure.kind", "network");
+      expect(result).toHaveProperty("failure.reason", "network");
       expect(JSON.stringify(result)).not.toContain("do-not-leak");
     }),
 );

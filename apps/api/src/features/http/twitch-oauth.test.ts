@@ -225,7 +225,13 @@ describe("OAuth HTTP protocol", () => {
           {
             ...fixtureAuthorization(),
             consumeAuthorizationState: () =>
-              Effect.fail(new OAuthError({ operation: "consume", reason: "persistence" })),
+              Effect.fail(
+                new OAuthError({
+                  operation: "consumeAttempt",
+                  reason: "persistence",
+                  provider: Option.some("spotify"),
+                }),
+              ),
           },
           (fetch) =>
             Effect.gen(function* () {
@@ -246,9 +252,9 @@ describe("OAuth HTTP protocol", () => {
               Effect.fail(
                 new ProviderError({
                   provider: "spotify",
-                  operation: "exchange",
-                  kind: "invalid-response",
-                  status: 200,
+                  operation: "exchangeAuthorizationCode",
+                  reason: "invalid-response",
+                  status: Option.some(200),
                   retryAfterMs: Option.none(),
                 }),
               ),

@@ -13,7 +13,7 @@ import { workflowHttpHandlersLayer } from "./workflow-http-handlers.ts";
 import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 import { DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
-import { ProviderError } from "@cf-twitch/contracts/provider";
+import { ProviderError, type ProviderOperation } from "@cf-twitch/contracts/provider";
 import { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 import { RaidShoutoutInput, WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { ChannelPointRedemption } from "@cf-twitch/contracts/redemption";
@@ -75,12 +75,12 @@ const raffleResult = Schema.decodeUnknownSync(RaffleRecordResult)({
   },
 });
 
-const providerError = (kind: ProviderError["kind"], operation: string) =>
+const providerError = (reason: ProviderError["reason"], operation: ProviderOperation) =>
   new ProviderError({
     provider: "twitch",
     operation,
-    kind,
-    status: kind === "rejected" ? 400 : 0,
+    reason,
+    status: reason === "rejected" ? Option.some(400) : Option.none(),
     retryAfterMs: Option.none(),
   });
 
@@ -114,7 +114,7 @@ const recordingServices = Effect.gen(function* () {
           Effect.andThen(Ref.get(rejectFulfill)),
           Effect.flatMap((reject) =>
             reject && input.status === "FULFILLED"
-              ? Effect.fail(providerError("rejected", "fulfill"))
+              ? Effect.fail(providerError("rejected", "updateRedemptionStatus"))
               : Effect.void,
           ),
         ),
@@ -126,7 +126,8 @@ const recordingServices = Effect.gen(function* () {
           if (yield* Ref.get(slowChat))
             return yield* Effect.never.pipe(Effect.ensuring(Ref.set(chatFinalized, true)));
 
-          if (yield* Ref.get(unknownChat)) return yield* providerError("outcome-unknown", "chat");
+          if (yield* Ref.get(unknownChat))
+            return yield* providerError("outcome-unknown", "sendChatMessage");
         }),
       createShoutout: () => record("shoutout"),
     }),

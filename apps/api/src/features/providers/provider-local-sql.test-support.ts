@@ -1,23 +1,25 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { NodeCrypto } from "@effect/platform-node";
 import { BroadcasterId, RewardId } from "@cf-twitch/contracts/identity";
-import { ProviderError, type OAuthProvider } from "@cf-twitch/contracts/provider";
+import {
+  ProviderError,
+  type OAuthProvider,
+  type ProviderOperation,
+} from "@cf-twitch/contracts/provider";
 import { Context, Effect, Layer, Option, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { ProviderAccessTokens } from "./provider-access-tokens.ts";
-import {
-  TokenProviderIdentity,
-  providerTokenDatabaseLayerWithoutDependencies,
-} from "./provider-token-database.ts";
+import { ProviderTokenAlarm } from "./provider-token-alarm.ts";
+import { providerTokenDatabaseLayerWithoutDependencies } from "./provider-token-database.ts";
 import { providerTokenExchangeLayer } from "./provider-token-exchange.ts";
+import { ProviderTokenIdentity } from "./provider-token-identity.ts";
 import {
-  ProviderTokenAlarm,
   ProviderTokenLifecycle,
   providerTokenLifecycleLayerWithoutDependencies,
 } from "./provider-token-lifecycle.ts";
 
-/** Fixture configuration contains only synthetic local credentials and never reads environment secrets. */
+/** Layer that provides fixture configuration with only synthetic local credentials; it never reads environment secrets. */
 export const providerLocalConfigurationLayer = Layer.succeed(TwitchConfiguration, {
   twitch: {
     clientId: "twitch-client",
@@ -40,52 +42,64 @@ const sqliteAlarmLayer = Layer.effect(
   ProviderTokenAlarm,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const provider = yield* TokenProviderIdentity;
+    const provider = yield* ProviderTokenIdentity;
 
-    const failure = () =>
+    const failure = (operation: ProviderOperation) => () =>
       new ProviderError({
         provider,
-        operation: "localSqliteAlarm",
-        kind: "persistence",
-        status: 0,
+        operation,
+        reason: "persistence",
+        status: Option.none(),
         retryAfterMs: Option.none(),
       });
 
     yield* sql`CREATE TABLE IF NOT EXISTS local_token_alarm (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), due_at_ms INTEGER NOT NULL)`.pipe(
-      Effect.mapError(failure),
+      Effect.mapError(failure("setTokenAlarm")),
     );
 
     return ProviderTokenAlarm.of({
       setAlarm: Effect.fn("LocalSqliteTokenAlarm.setAlarm")((atMs) =>
         sql`INSERT INTO local_token_alarm VALUES(1, ${atMs}) ON CONFLICT(singleton) DO UPDATE SET due_at_ms = excluded.due_at_ms`.pipe(
           Effect.asVoid,
-          Effect.mapError(failure),
+          Effect.mapError(failure("setTokenAlarm")),
         ),
       ),
       deleteAlarm: Effect.fn("LocalSqliteTokenAlarm.deleteAlarm")(() =>
-        sql`DELETE FROM local_token_alarm`.pipe(Effect.asVoid, Effect.mapError(failure)),
+        sql`DELETE FROM local_token_alarm`.pipe(
+          Effect.asVoid,
+          Effect.mapError(failure("deleteTokenAlarm")),
+        ),
       ),
     });
   }),
 );
 
-/** Local token lifecycle uses real SQLite for credentials and alarm intent, with HTTP exchange left injectable. */
+/**
+ * Creates a Layer that provides one provider's token lifecycle over real in-memory SQLite for credentials and alarm intent.
+ *
+ * **Details**
+ *
+ * Uses the real HTTP token exchange, leaving `HttpClient` and `TwitchConfiguration` required so tests supply a controlled transport. Also exposes the SQL client and alarm register for assertions.
+ *
+ * @param provider - Provider whose physical token Durable Object the lifecycle represents.
+ * @returns A Layer whose construction fails with `ProviderError` when SQLite initialization fails.
+ */
 export const providerLocalTokenLayer = (provider: OAuthProvider) => {
   const sqlite = SqliteClient.layer({ filename: ":memory:" });
 
   const resources = Layer.mergeAll(
     providerTokenDatabaseLayerWithoutDependencies,
     sqliteAlarmLayer,
-  ).pipe(Layer.provide(Layer.succeed(TokenProviderIdentity, provider)), Layer.provideMerge(sqlite));
+  ).pipe(Layer.provide(Layer.succeed(ProviderTokenIdentity, provider)), Layer.provideMerge(sqlite));
 
   return providerTokenLifecycleLayerWithoutDependencies.pipe(
     Layer.provideMerge(resources),
-    Layer.provide(Layer.succeed(TokenProviderIdentity, provider)),
+    Layer.provide(Layer.succeed(ProviderTokenIdentity, provider)),
     Layer.provide(providerTokenExchangeLayer),
   );
 };
 
-/** Full local access-token implementation delegates each provider to a distinct real SQL token lifecycle. */
+/** Layer that provides provider access tokens by delegating each provider to a distinct real SQLite token lifecycle. */
 export const providerLocalAccessTokensLayer = Layer.effect(
   ProviderAccessTokens,
   Effect.gen(function* () {
@@ -118,5 +132,5 @@ export const providerLocalAccessTokensLayer = Layer.effect(
   }),
 );
 
-/** Platform crypto in tests uses Node's real secure random implementation. */
+/** Layer that provides Node's real platform cryptography for tests. */
 export const providerLocalCryptoLayer = NodeCrypto.layer;

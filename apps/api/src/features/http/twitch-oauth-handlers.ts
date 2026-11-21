@@ -1,4 +1,4 @@
-import { Effect, Option, Predicate, Redacted, Schema } from "effect";
+import { Effect, Option, Redacted, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
@@ -122,17 +122,10 @@ export const twitchOAuthHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "oau
         .exchangeAuthorizationCode({ provider, redirectUri, code: Redacted.make(code) })
         .pipe(
           Effect.mapError((failure) => {
-            if (!Predicate.isTagged(failure, "ProviderError"))
-              return new HttpBoundaryError({
-                status: 500,
-                error: failure.message,
-                code: failure._tag,
-              });
-
-            const persistenceFailure = failure.kind === "persistence";
+            const persistenceFailure = failure.reason === "persistence";
             let code: string;
 
-            switch (failure.kind) {
+            switch (failure.reason) {
               case "invalid-response":
                 code = `${providerName(provider)}ParseError`;
                 break;

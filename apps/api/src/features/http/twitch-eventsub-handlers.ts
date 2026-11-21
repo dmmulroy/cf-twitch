@@ -17,14 +17,14 @@ import {
 } from "./http-boundary.ts";
 
 const providerCode = (error: ProviderError) => {
-  if (error.kind === "invalid-response") return "TwitchParseError";
+  if (error.reason === "invalid-response") return "TwitchParseError";
 
   if (error.operation === "createEventSubSubscription") return "TwitchSubscriptionCreateError";
 
   if (
     error.operation === "deleteEventSubSubscription" &&
-    error.kind !== "network" &&
-    error.kind !== "outcome-unknown"
+    error.reason !== "network" &&
+    error.reason !== "outcome-unknown"
   )
     return "TwitchSubscriptionDeleteError";
 

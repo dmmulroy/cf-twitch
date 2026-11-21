@@ -3,7 +3,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { OAuthStateHttpApi } from "./oauth-state-http-api.ts";
 import { OAuthStateStore } from "./oauth-state-store.ts";
 
-/** OAuth handlers delegate one-use validation to the storage transaction. */
+/** Layer that implements the OAuth state HTTP handlers, delegating one-use validation to the storage transaction. */
 export const oauthStateHttpHandlersLayer = HttpApiBuilder.group(
   OAuthStateHttpApi,
   "oauthState",

@@ -119,7 +119,7 @@ export const makeAchievementOutbox = Effect.gen(function* () {
         );
         yield* Effect.logWarning("Achievement announcement delivery failed", {
           effectId: effect.effectId,
-          kind: error.kind,
+          reason: error.reason,
           state: decision.state,
           attempts: decision.attempts,
         });
@@ -134,8 +134,8 @@ export const makeAchievementOutbox = Effect.gen(function* () {
               new ProviderError({
                 provider: "twitch",
                 operation: "sendChatMessage",
-                kind: "invalid-input",
-                status: 0,
+                reason: "invalid-input",
+                status: Option.none(),
                 retryAfterMs: Option.none(),
               }),
           ),
