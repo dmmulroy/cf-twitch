@@ -1,4 +1,4 @@
-/** OBS now playing overlay with bounded, independently validated same-origin polling. */
+/** HTML document of the OBS Now Playing overlay, which polls same-origin APIs with bounded, validated requests. */
 export const nowPlayingOverlayHtml = `
 		<!doctype html>
 		<html lang="en">
@@ -260,7 +260,7 @@ export const nowPlayingOverlayHtml = `
 							const parsed = parseResponse(await response.json());
 							return parsed || { status: "error" };
 						} catch (error) {
-							console.error("Overlay endpoint request failed", url, error);
+							console.error("Overlay endpoint request failed; the overlay keeps its last state and polls again in 5 seconds.", url, error);
 							return { status: "error" };
 						} finally {
 							clearTimeout(timeout);

@@ -1,9 +1,9 @@
-/** Baseline HTTP validation snapshots captured from the pinned read-only 4.3.5 parser oracle. */
+/** Baseline HTTP validation details captured from the pinned read-only 4.3.5 parser oracle, with each case's public error code. */
 export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/queue?limit=1.5&unknown=x&another=y",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         expected: "int",
@@ -23,7 +23,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/queue?limit=1&limit=2",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         expected: "number",
@@ -37,7 +37,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/queue?limit=NaN",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         expected: "number",
@@ -51,7 +51,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/queue?limit=Infinity",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         expected: "number",
@@ -65,7 +65,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/queue?limit=-1",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         origin: "number",
@@ -80,7 +80,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/queue?limit=101",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         origin: "number",
@@ -95,7 +95,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/queue?limit=",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         origin: "number",
@@ -110,7 +110,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/stats/top-requesters?nonce=1",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         code: "unrecognized_keys",
@@ -123,7 +123,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/stats/raffle/leaderboard?sortBy=wrong&limit=0&extra=x",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         code: "invalid_value",
@@ -150,7 +150,7 @@ export const httpValidationGoldenCases = [
   {
     method: "GET",
     path: "/api/admin/dlq?limit=101&offset=-2",
-    error: "Invalid query parameters",
+    code: "InvalidQueryParameters",
     details: [
       {
         origin: "number",
@@ -174,7 +174,7 @@ export const httpValidationGoldenCases = [
     method: "POST",
     path: "/api/admin/commands",
     body: {},
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         code: "invalid_union",
@@ -190,7 +190,7 @@ export const httpValidationGoldenCases = [
     method: "POST",
     path: "/api/admin/commands",
     body: 42,
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         code: "invalid_type",
@@ -204,7 +204,7 @@ export const httpValidationGoldenCases = [
     method: "POST",
     path: "/api/admin/commands",
     body: null,
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         code: "invalid_type",
@@ -218,7 +218,7 @@ export const httpValidationGoldenCases = [
     method: "POST",
     path: "/api/admin/commands",
     body: [],
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         code: "invalid_type",
@@ -238,7 +238,7 @@ export const httpValidationGoldenCases = [
       category: "wrong",
       permission: "no",
     },
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         origin: "string",
@@ -289,7 +289,7 @@ export const httpValidationGoldenCases = [
       extra: 1,
       other: 2,
     },
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         origin: "string",
@@ -350,7 +350,7 @@ export const httpValidationGoldenCases = [
       responseType: "static",
       createdAt: "bad",
     },
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         origin: "string",
@@ -375,7 +375,7 @@ export const httpValidationGoldenCases = [
       handlerKey: "f",
       initialCounter: -1,
     },
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         origin: "number",
@@ -399,7 +399,7 @@ export const httpValidationGoldenCases = [
       handlerKey: "f",
       initialCounter: 1.5,
     },
-    error: "Invalid command payload",
+    code: "InvalidCommandPayload",
     details: [
       {
         expected: "int",
@@ -414,7 +414,7 @@ export const httpValidationGoldenCases = [
     method: "PATCH",
     path: "/api/admin/commands/keyboard",
     body: {},
-    error: "Invalid command patch",
+    code: "InvalidCommandPayload",
     details: [
       {
         code: "custom",
@@ -430,7 +430,7 @@ export const httpValidationGoldenCases = [
     body: {
       enable: false,
     },
-    error: "Invalid command patch",
+    code: "InvalidCommandPayload",
     details: [
       {
         code: "unrecognized_keys",
@@ -450,7 +450,7 @@ export const httpValidationGoldenCases = [
       permission: "no",
       handlerKey: 42,
     },
-    error: "Invalid command patch",
+    code: "InvalidCommandPayload",
     details: [
       {
         origin: "string",
@@ -518,7 +518,7 @@ export const httpValidationGoldenCases = [
         "alias-20",
       ],
     },
-    error: "Invalid command patch",
+    code: "InvalidCommandPayload",
     details: [
       {
         origin: "string",
@@ -545,7 +545,7 @@ export const httpValidationGoldenCases = [
       writePermission: "not-a-role",
       counterSourceName: 123,
     },
-    error: "Invalid command patch",
+    code: "InvalidCommandPayload",
     details: [
       {
         expected: "string",
@@ -569,7 +569,7 @@ export const httpValidationGoldenCases = [
       category: 42,
       extra: 1,
     },
-    error: "Invalid command patch",
+    code: "InvalidCommandPayload",
     details: [
       {
         expected: "string",

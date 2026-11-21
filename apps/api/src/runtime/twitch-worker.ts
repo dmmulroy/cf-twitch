@@ -68,16 +68,6 @@ type TwitchHostedServers =
   | RaidShoutoutSagaServer
   | SongRequestSagaServer;
 
-// Native cache access is delayed until invocation; planning never touches a workerd I/O handle.
-const cloudflareResponseCacheLayer = httpResponseCacheLayer({
-  match: (request, options) =>
-    caches.open("cf-twitch-http").then((cache) => cache.match(request, options)),
-  put: (request, response) =>
-    caches.open("cf-twitch-http").then((cache) => cache.put(request, response)),
-  delete: (request, options) =>
-    caches.open("cf-twitch-http").then((cache) => cache.delete(request, options)),
-});
-
 const twitchApplicationLayer = Layer.mergeAll(
   achievementsClientLayer,
   commandsClientLayer,
@@ -144,7 +134,7 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
     HttpRouter.toHttpEffect(
       twitchHttpApiLayer.pipe(
         Layer.provide(runtimeServices),
-        Layer.provide(cloudflareResponseCacheLayer),
+        Layer.provide(httpResponseCacheLayer),
         Layer.provide(cloudflareHttpServerLayer),
         Layer.provideMerge(Layer.succeed(ErrorReporter.CurrentErrorReporters, errorReporters)),
       ),

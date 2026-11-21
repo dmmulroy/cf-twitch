@@ -272,7 +272,17 @@ const fullWorkerScenarioImplementation = Effect.gen(function* () {
   return { fetch };
 });
 
-/** Fresh local Worker with all thirteen production Durable Object classes and controlled providers. */
+/**
+ * Fresh local Worker with all thirteen production Durable Object classes and controlled providers.
+ *
+ * **Details**
+ *
+ * Adds scenario-only routes under `/__scenario/` for provider transcripts, EventSub receipt status
+ * and concurrent token refresh.
+ *
+ * @throws As a defect when construction fails or a scenario-only route meets a receipt, provider or
+ * schema failure, so the test fails loudly instead of rendering a public error.
+ */
 export const fullWorkerScenarioLayer = TwitchApiWorker.make(
   {
     main: import.meta.url,
@@ -287,13 +297,21 @@ export const fullWorkerScenarioLayer = TwitchApiWorker.make(
   ),
 ).pipe(Layer.provideMerge(twitchHttpTelemetrySafetyLayer));
 
-/** Deployable full-graph scenario output contains only its isolated local URL. */
+/**
+ * Scenario stack that deploys the full Worker graph locally and returns only its isolated URL.
+ *
+ * @throws As a defect when the local Worker reports no URL.
+ */
 export const fullWorkerScenarioStack = Effect.gen(function* () {
   const worker = yield* TwitchApiWorker;
 
-  if (worker.url === undefined) return yield* Effect.die("Full Worker scenario URL is unavailable");
+  if (worker.url === undefined)
+    return yield* Effect.die(
+      "Full Worker scenario URL is unavailable; check that the scenario Worker declares a dev host and port.",
+    );
 
   return { url: worker.url };
 }).pipe(Effect.provide(fullWorkerScenarioLayer));
 
+/** Full Worker scenario Layer exported as the module default, the entrypoint Alchemy loads for this Worker. */
 export default fullWorkerScenarioLayer;

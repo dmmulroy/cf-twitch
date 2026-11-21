@@ -10,7 +10,7 @@ import { twitchOAuthHandlersLayer } from "./twitch-oauth-handlers.ts";
 import { twitchEventSubHandlersLayer } from "./twitch-eventsub-handlers.ts";
 import { twitchOverlayHandlersLayer } from "./twitch-overlay-handlers.ts";
 
-/** All external handler groups; service providers are deliberately chosen only by the Worker root. */
+/** Layer that merges every public handler group; service providers are chosen only by the Worker root. */
 export const twitchHttpHandlersLayer = Layer.mergeAll(
   twitchPublicHandlersLayer,
   twitchStatsHandlersLayer,
@@ -21,11 +21,21 @@ export const twitchHttpHandlersLayer = Layer.mergeAll(
   twitchOverlayHandlersLayer,
 );
 
+// The pinned HttpApiBuilder captures construction-time reporters and reports before outer middleware,
+// so handler groups get none; the correlation middleware reports each failure once, with redaction.
 const twitchGeneratedHandlersLayer = twitchHttpHandlersLayer.pipe(
   Layer.provide(ErrorReporter.layer([] satisfies readonly [])),
 );
 
-/** Register the complete compatibility API with HttpRouter; no legacy router or provider is hidden here. */
+/**
+ * Layer that registers the complete public API with `HttpRouter`, behind request correlation.
+ *
+ * **Details**
+ *
+ * The correlation middleware assigns `x-request-id` and `x-trace-id`, renders unmatched routes and
+ * defects as public error bodies, and reports failures with redacted causes. Handler groups use
+ * empty error reporters so only the outer boundary reports.
+ */
 export const twitchHttpApiLayer = HttpApiBuilder.layer(TwitchHttpApi).pipe(
   Layer.provide(twitchGeneratedHandlersLayer),
   Layer.provide(twitchHttpCorrelationLayer),

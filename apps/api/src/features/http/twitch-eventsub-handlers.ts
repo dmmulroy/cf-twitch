@@ -3,7 +3,11 @@ import { Digest } from "effect/crypto";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { BroadcasterId } from "@cf-twitch/contracts/identity";
-import { TwitchHttpApi, TwitchSubscriptionResponse } from "@cf-twitch/contracts/twitch-api";
+import {
+  TwitchHttpApi,
+  TwitchSubscriptionResponse,
+  type TwitchHttpOperation,
+} from "@cf-twitch/contracts/twitch-api";
 import { ProviderEventSubSubscription, type ProviderError } from "@cf-twitch/contracts/provider";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
@@ -13,23 +17,20 @@ import {
   HttpBoundaryError,
   encodeHttpResponse,
   handleHttpBoundary,
+  invalidHttpServiceResponse,
   requireHttpAdministrator,
 } from "./http-boundary.ts";
+import { twitchProviderHttpFailure } from "./http-service-failures.ts";
 
-const providerCode = (error: ProviderError) => {
-  if (error.reason === "invalid-response") return "TwitchParseError";
-
-  if (error.operation === "createEventSubSubscription") return "TwitchSubscriptionCreateError";
-
-  if (
-    error.operation === "deleteEventSubSubscription" &&
-    error.reason !== "network" &&
-    error.reason !== "outcome-unknown"
-  )
-    return "TwitchSubscriptionDeleteError";
-
-  return "TwitchNetworkError";
-};
+/**
+ * Returns the historical per-subscription error code for a failed subscription creation.
+ *
+ * @returns `TwitchParseError` for an invalid Twitch response, otherwise `TwitchSubscriptionCreateError`.
+ */
+const subscriptionCreateErrorCode = (error: ProviderError) =>
+  error.reason === "invalid-response"
+    ? ("TwitchParseError" as const)
+    : ("TwitchSubscriptionCreateError" as const);
 
 const subscriptionList = Schema.Struct({
   subscriptions: Schema.Array(TwitchSubscriptionResponse),
@@ -52,7 +53,45 @@ const subscriptionConfigurations = (broadcasterId: BroadcasterId) => [
   { type: "channel.raid", version: "1", condition: { to_broadcaster_user_id: broadcasterId } },
 ];
 
-/** Webhook intake and authenticated subscription management preserve Twitch-facing URLs. */
+/**
+ * Returns whether a subscription creation failure is transient, so repeating setup may succeed.
+ *
+ * **Details**
+ *
+ * An unknown outcome counts as transient because setup skips subscriptions that already exist.
+ */
+const isTransientSubscriptionFailure = (kind: ProviderError["reason"]): boolean => {
+  switch (kind) {
+    case "network":
+    case "rate-limited":
+    case "outcome-unknown":
+    case "unauthorized":
+    case "persistence":
+      return true;
+    case "invalid-response":
+    case "rejected":
+    case "invalid-input":
+    case "not-found":
+    case "no-active-device":
+    case "chat-dropped":
+    case "not-configured":
+    case "offline":
+    case "reauthorization-required":
+    case "stored-state-invalid":
+    case "randomness":
+      return false;
+  }
+};
+
+/**
+ * Layer that serves the EventSub webhook and authenticated subscription management.
+ *
+ * **Details**
+ *
+ * Webhook intake authenticates exact signed bytes before parsing. Management endpoints require the
+ * administrator bearer token; setup skips matching enabled or pending subscriptions, so repeating
+ * setup after a partial failure is safe.
+ */
 export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
   TwitchHttpApi,
   "eventsub",
@@ -64,11 +103,20 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
       const receipts = yield* EventSubReceipts;
 
       const admin = <R>(
+        operation: TwitchHttpOperation,
         effect: Effect.Effect<HttpServerResponse.HttpServerResponse, HttpBoundaryError, R>,
       ) =>
         requireHttpAdministrator(configuration.administratorSecret, "EventSub management").pipe(
           Effect.andThen(effect),
-          handleHttpBoundary,
+          handleHttpBoundary(operation),
+        );
+
+      const listSubscriptions = twitch
+        .listEventSubSubscriptions()
+        .pipe(
+          Effect.catchTag("ProviderError", (error) =>
+            Effect.fail(twitchProviderHttpFailure(error, "listSubscriptions", Option.none())),
+          ),
         );
 
       return handlers
@@ -81,19 +129,11 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
         )
         .handleRaw("listSubscriptions", () =>
           admin(
+            "listSubscriptions",
             Effect.gen(function* () {
-              const subscriptions = yield* twitch.listEventSubSubscriptions().pipe(
-                Effect.mapError(
-                  (error) =>
-                    new HttpBoundaryError({
-                      status: 500,
-                      error: error.message,
-                      code: providerCode(error),
-                    }),
-                ),
-              );
+              const subscriptions = yield* listSubscriptions;
 
-              return yield* encodeHttpResponse(subscriptionList, {
+              return yield* encodeHttpResponse("twitch", subscriptionList, {
                 subscriptions,
                 total: subscriptions.length,
               });
@@ -102,38 +142,29 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
         )
         .handleRaw("deleteSubscription", ({ params }) =>
           admin(
+            "deleteSubscription",
             twitch.deleteEventSubSubscription(params.id).pipe(
-              Effect.match({
-                onSuccess: () =>
-                  HttpServerResponse.jsonUnsafe({
-                    success: true,
-                    message: "Subscription deleted successfully",
-                  }),
-                onFailure: (error) =>
-                  HttpServerResponse.jsonUnsafe(
-                    { success: false, message: error.message, code: providerCode(error) },
-                    { status: 500 },
-                  ),
-              }),
+              Effect.catchTag("ProviderError", (error) =>
+                Effect.fail(
+                  twitchProviderHttpFailure(error, "deleteSubscription", Option.some(params.id)),
+                ),
+              ),
+              Effect.as(
+                HttpServerResponse.jsonUnsafe({
+                  success: true,
+                  message: "Subscription deleted successfully",
+                }),
+              ),
             ),
           ),
         )
         .handleRaw("setupSubscriptions", () =>
           admin(
+            "setupSubscriptions",
             Effect.gen(function* () {
               const request = yield* HttpServerRequest.HttpServerRequest;
               const callbackUrl = `${new URL(request.originalUrl).origin}/webhooks/twitch`;
-              const existing = yield* twitch.listEventSubSubscriptions().pipe(Effect.result);
-
-              if (Result.isFailure(existing))
-                return HttpServerResponse.jsonUnsafe(
-                  {
-                    success: false,
-                    message: existing.failure.message,
-                    code: providerCode(existing.failure),
-                  },
-                  { status: 500 },
-                );
+              const existing = yield* listSubscriptions;
 
               const configurations = subscriptionConfigurations(
                 configuration.twitch.broadcaster.id,
@@ -141,17 +172,24 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
 
               const created: ProviderEventSubSubscription[] = [];
               const skipped: typeof configurations = [];
-              const errors: { type: string; error: string; code: string }[] = [];
+
+              const errors: {
+                type: string;
+                error: string;
+                code: ReturnType<typeof subscriptionCreateErrorCode>;
+              }[] = [];
+
+              const failureKinds: ProviderError["reason"][] = [];
 
               for (const config of configurations) {
                 if (
-                  existing.success.some(
+                  existing.some(
                     (subscription) =>
                       subscription.type === config.type &&
                       subscription.version === config.version &&
                       (subscription.status === "enabled" ||
                         subscription.status === "webhook_callback_verification_pending") &&
-                      Option.getOrNull(subscription.transport.callback) === callbackUrl &&
+                      Option.contains(subscription.transport.callback, callbackUrl) &&
                       Object.entries(config.condition).every(
                         ([key, value]) => subscription.condition[key] === value,
                       ),
@@ -170,55 +208,55 @@ export const twitchEventSubHandlersLayer = HttpApiBuilder.group(
                   .pipe(Effect.result);
 
                 if (Result.isSuccess(result)) created.push(result.success);
-                else
+                else {
+                  failureKinds.push(result.failure.reason);
                   errors.push({
                     type: config.type,
-                    error: result.failure.message,
-                    code: providerCode(result.failure),
+                    error: `Twitch subscription creation failed (${result.failure.reason}) for ${config.type}.`,
+                    code: subscriptionCreateErrorCode(result.failure),
                   });
+                }
+              }
+
+              if (errors.length > 0) {
+                const transient = failureKinds.every(isTransientSubscriptionFailure);
+
+                return yield* Effect.fail(
+                  new HttpBoundaryError({
+                    operation: "callService",
+                    status: transient ? 503 : 500,
+                    failure: {
+                      code: "SubscriptionSetupIncomplete",
+                      message: transient
+                        ? `Subscription setup incomplete: ${errors.length} of ${configurations.length} EventSub subscriptions could not be created because Twitch was temporarily unavailable; ${created.length} were created and ${skipped.length} already existed. Run setup again in a few seconds; it skips subscriptions that already exist.`
+                        : `Subscription setup incomplete: Twitch rejected ${errors.length} of ${configurations.length} EventSub subscriptions; ${created.length} were created and ${skipped.length} already existed. Check the errors in details and the Twitch app configuration before running setup again.`,
+                      details: { created, skipped, errors },
+                      retryable: transient,
+                    },
+                  }),
+                );
               }
 
               const subscriptions = yield* Schema.encodeEffect(
                 Schema.Array(TwitchSubscriptionResponse),
               )(created).pipe(
-                Effect.mapError(
-                  () => new HttpBoundaryError({ status: 502, error: "Invalid service response" }),
-                ),
+                Effect.mapError(() => invalidHttpServiceResponse("encodeResponse", "twitch")),
               );
 
-              return errors.length > 0
-                ? HttpServerResponse.jsonUnsafe(
-                    {
-                      success: false,
-                      message: "Some subscriptions failed to create",
-                      created: subscriptions,
-                      skipped,
-                      errors,
-                    },
-                    { status: 500 },
-                  )
-                : HttpServerResponse.jsonUnsafe({
-                    success: true,
-                    message: "All EventSub subscriptions are configured",
-                    subscriptions,
-                    skipped,
-                  });
+              return HttpServerResponse.jsonUnsafe({
+                success: true,
+                message: "All EventSub subscriptions are configured",
+                subscriptions,
+                skipped,
+              });
             }),
           ),
         )
         .handleRaw("cleanupSubscriptions", () =>
           admin(
+            "cleanupSubscriptions",
             Effect.gen(function* () {
-              const subscriptions = yield* twitch.listEventSubSubscriptions().pipe(
-                Effect.mapError(
-                  (error) =>
-                    new HttpBoundaryError({
-                      status: 500,
-                      error: error.message,
-                      code: providerCode(error),
-                    }),
-                ),
-              );
+              const subscriptions = yield* listSubscriptions;
 
               let deleted = 0;
               let failed = 0;
