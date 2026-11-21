@@ -3,7 +3,6 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   RaffleError,
   RecordRaffleRoll,
-  recordRaffleRollParseOptions,
   RaffleRecordResult,
   RaffleLeaderboardQuery,
   RaffleLeaderboardEntry,
@@ -11,7 +10,16 @@ import {
 } from "@cf-twitch/contracts/raffle";
 import { RedemptionId, ViewerId, IsoTimestamp } from "@cf-twitch/contracts/identity";
 
-/** Versioned raffle operations shared by the HTTP server and namespace client. */
+/** Parse options that reject caller-supplied derived Roll fields, which Effect 4.1 no longer enforces from schema annotations. */
+const recordRaffleRollParseOptions = { onExcessProperty: "error" } as const;
+
+/**
+ * Versioned raffle HTTP contract shared by the `KeyboardRaffleDO` server and its namespace client.
+ *
+ * **Details**
+ *
+ * Each endpoint mirrors one `IRaffle` method and fails with `RaffleError`.
+ */
 export class RaffleHttpApi extends HttpApi.make("RaffleHttpApi")
   .add(
     HttpApiGroup.make("raffle")

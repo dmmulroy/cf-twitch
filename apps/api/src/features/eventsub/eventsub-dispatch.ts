@@ -5,68 +5,97 @@ import { ChatMessageText } from "@cf-twitch/contracts/provider";
 import { getChatCommandPermission } from "../commands/command-permissions.ts";
 import { StreamId } from "@cf-twitch/contracts/identity";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
-import { WorkflowStarters } from "../workflows/workflow-starters.ts";
-import { StreamLifecycleClient } from "../stream/stream-lifecycle.ts";
-import { ChatCommandExecutor } from "../commands/chat-command-executor.ts";
+import {
+  WorkflowStarters,
+  workflowStartersLayer,
+  workflowStartersTestLayer,
+} from "../workflows/workflow-starters.ts";
+import {
+  StreamLifecycleClient,
+  streamLifecycleClientLayer,
+} from "../stream/stream-lifecycle-client.ts";
+import {
+  ChatCommandExecutor,
+  chatCommandExecutorLayer,
+} from "../commands/chat-command-executor.ts";
 import { parseEventSubMessage } from "./eventsub-message.ts";
 
-/** Prepared chat response is persisted before delivery; preparation never sends to Twitch. */
-export const EventSubChatResponse = Schema.Struct({
+/** Schema for a prepared Chat Command reply, persisted before delivery; preparation never sends to Twitch. */
+export const EventSubDispatchChatResponse = Schema.Struct({
   commandName: ChatCommandName,
   message: ChatMessageText,
 });
 
-/** Parsed command response ready for durable sending intent. */
-export type EventSubChatResponse = typeof EventSubChatResponse.Type;
+/** Prepared Chat Command reply, ready for a durable sending intent. */
+export type EventSubDispatchChatResponse = typeof EventSubDispatchChatResponse.Type;
 
-/** Dispatch owns notification translation while the inbox owns leases and chat sending checkpoints. */
+/** Notification translation into workflow, stream, and Chat Command effects; the inbox owns leases and chat sending checkpoints. */
 export interface IEventSubDispatch {
+  /**
+   * Applies one accepted notification to its owning capability and returns any Chat Command reply to send.
+   *
+   * **Details**
+   *
+   * Configured rewards start Song Request or Keyboard Raffle workflows, raids start the shoutout workflow, stream online/offline update the Stream Session, and chat messages prepare Chat Commands. Revocations and unhandled subscriptions are logged without domain mutation.
+   *
+   * @returns The prepared reply, `None` when nothing should be sent, or fails with `EventSubReceiptError` reason `dispatch` when parsing, the owning capability, or reply preparation fails; the inbox retries that failure.
+   */
   readonly dispatch: (
     receipt: AcceptedEventSubReceipt,
-  ) => Effect.Effect<Option.Option<EventSubChatResponse>, EventSubReceiptError>;
+  ) => Effect.Effect<Option.Option<EventSubDispatchChatResponse>, EventSubReceiptError>;
 }
 
-/** Parsed EventSub dispatcher composes real workflow, stream and command capabilities. */
+/** Service tag for EventSub notification dispatch over the workflow, stream, and Chat Command capabilities. */
 export class EventSubDispatch extends Context.Service<EventSubDispatch, IEventSubDispatch>()(
   "@cf-twitch/EventSubDispatch",
 ) {}
 
-/** Construct notification routing with parsed runtime reward configuration. */
+/** Effect that builds notification routing with the parsed runtime reward configuration. */
 export const makeEventSubDispatch = Effect.gen(function* () {
   const configuration = yield* TwitchConfiguration;
   const workflows = yield* WorkflowStarters;
   const stream = yield* StreamLifecycleClient;
   const commands = yield* ChatCommandExecutor;
 
-  const dispatch = Effect.fn("EventSubDispatch.dispatch")(
-    function* (receipt: AcceptedEventSubReceipt) {
+  const dispatch = Effect.fn("EventSubDispatch.dispatch")(function* (
+    receipt: AcceptedEventSubReceipt,
+  ) {
+    // The channel has one meaning: any parse, workflow, stream, or Chat Command failure is a retryable dispatch failure.
+    const dispatchFailed = () =>
+      new EventSubReceiptError({
+        operation: "dispatch",
+        reason: "dispatch",
+        messageId: Option.some(receipt.messageId),
+      });
+
+    return yield* Effect.gen(function* () {
       const message = yield* parseEventSubMessage(receipt.headers, receipt.body);
       // Signed source time is stable across redelivery; receivedAt is only first server-ingestion metadata.
       const sourceTimestamp = receipt.headers["twitch-eventsub-message-timestamp"];
 
       return yield* Match.value(message).pipe(
         Match.tagsExhaustive({
-          EventSubChallenge: () => Effect.succeed(Option.none<EventSubChatResponse>()),
+          EventSubChallenge: () => Effect.succeed(Option.none<EventSubDispatchChatResponse>()),
           EventSubRevocation: (revocation) =>
             Effect.logWarning("EventSub subscription revoked", {
               subscriptionType: revocation.subscription.type,
               status: revocation.subscription.status,
-            }).pipe(Effect.as(Option.none<EventSubChatResponse>())),
+            }).pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           UnhandledEventSubNotification: (notification) =>
             Effect.logWarning("EventSub subscription type is unhandled", {
               subscriptionType: notification.subscription.type,
-            }).pipe(Effect.as(Option.none<EventSubChatResponse>())),
+            }).pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           StreamOnlineNotification: (notification) =>
             stream
               .markOnline({
                 streamId: StreamId.make(notification.event.id),
                 startedAt: notification.event.started_at,
               })
-              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+              .pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           StreamOfflineNotification: () =>
             stream
               .markOffline({ endedAt: sourceTimestamp })
-              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+              .pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           RaidNotification: (notification) =>
             workflows
               .startRaidShoutout({
@@ -79,7 +108,7 @@ export const makeEventSubDispatch = Effect.gen(function* () {
                 },
                 viewers: notification.event.viewers,
               })
-              .pipe(Effect.as(Option.none<EventSubChatResponse>())),
+              .pipe(Effect.as(Option.none<EventSubDispatchChatResponse>())),
           RewardRedemptionNotification: (notification) =>
             Effect.gen(function* () {
               const event = notification.event;
@@ -100,7 +129,7 @@ export const makeEventSubDispatch = Effect.gen(function* () {
               else if (event.reward.id === configuration.rewardRouting.keyboardRaffleRewardId)
                 yield* workflows.startKeyboardRaffle(redemption);
 
-              return Option.none<EventSubChatResponse>();
+              return Option.none<EventSubDispatchChatResponse>();
             }),
           ChatMessageNotification: (notification) =>
             Effect.gen(function* () {
@@ -122,7 +151,7 @@ export const makeEventSubDispatch = Effect.gen(function* () {
                 Predicate.isTagged(prepared, "ChatCommandIgnored") ||
                 Option.isNone(prepared.message)
               )
-                return Option.none<EventSubChatResponse>();
+                return Option.none<EventSubDispatchChatResponse>();
 
               const chatMessage = yield* ChatMessageText.makeEffect(prepared.message.value).pipe(
                 Effect.mapError(
@@ -130,6 +159,7 @@ export const makeEventSubDispatch = Effect.gen(function* () {
                     new EventSubReceiptError({
                       operation: "prepare-chat",
                       reason: "invalid",
+                      messageId: Option.some(receipt.messageId),
                     }),
                 ),
               );
@@ -138,21 +168,24 @@ export const makeEventSubDispatch = Effect.gen(function* () {
             }),
         }),
       );
-    },
-    Effect.mapError(
-      () =>
-        new EventSubReceiptError({
-          operation: "dispatch",
-          reason: "dispatch",
-        }),
-    ),
-  );
+    }).pipe(Effect.mapError(dispatchFailed));
+  });
 
   return EventSubDispatch.of({ dispatch });
 });
 
-/** EventSub dispatch retains dependency requirements instead of fake production fallbacks. */
+/** Layer that provides EventSub dispatch; requires reward configuration, workflow starters, the stream lifecycle client, and the Chat Command executor. */
 export const eventSubDispatchLayerWithoutDependencies = Layer.effect(
   EventSubDispatch,
   makeEventSubDispatch,
+);
+
+/** Production dispatch Layer over the workflow, stream lifecycle, and Chat Command Durable Object clients; requires reward configuration. */
+export const eventSubDispatchLayer = eventSubDispatchLayerWithoutDependencies.pipe(
+  Layer.provide([workflowStartersLayer, streamLifecycleClientLayer, chatCommandExecutorLayer]),
+);
+
+/** Dispatch Layer over in-memory workflow starters; the test selects reward configuration, the stream lifecycle, and the Chat Command executor. */
+export const eventSubDispatchTestLayer = eventSubDispatchLayerWithoutDependencies.pipe(
+  Layer.provide(workflowStartersTestLayer),
 );

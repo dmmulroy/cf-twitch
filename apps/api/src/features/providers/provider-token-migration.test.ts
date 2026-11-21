@@ -4,9 +4,9 @@ import { Effect, Layer, Option, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import {
   ProviderTokenDatabase,
-  TokenProviderIdentity,
   providerTokenDatabaseLayerWithoutDependencies,
 } from "./provider-token-database.ts";
+import { ProviderTokenIdentity } from "./provider-token-identity.ts";
 
 const sqliteLayer = SqliteClient.layer({ filename: ":memory:" });
 
@@ -44,7 +44,7 @@ for (const provider of ["spotify", "twitch"] as const) {
           yield* sql`INSERT INTO cf_agents_schedules VALUES ('refresh-retry-2', 'refreshTokenTick', 'delayed', 1767225500)`;
 
           const layer = providerTokenDatabaseLayerWithoutDependencies.pipe(
-            Layer.provide(Layer.succeed(TokenProviderIdentity, provider)),
+            Layer.provide(Layer.succeed(ProviderTokenIdentity, provider)),
           );
 
           const imported = yield* Effect.gen(function* () {
@@ -122,14 +122,14 @@ for (const provider of ["spotify", "twitch"] as const) {
             }).pipe(
               Effect.provide(
                 providerTokenDatabaseLayerWithoutDependencies.pipe(
-                  Layer.provide(Layer.succeed(TokenProviderIdentity, provider)),
+                  Layer.provide(Layer.succeed(ProviderTokenIdentity, provider)),
                 ),
               ),
               Effect.result,
             );
 
-            expect(result).toHaveProperty("failure.operation", "LegacyAgentStateImportRequired");
-            expect(result).toHaveProperty("failure.kind", "persistence");
+            expect(result).toHaveProperty("failure.operation", "importLegacyTokenState");
+            expect(result).toHaveProperty("failure.reason", "stored-state-invalid");
             expect(yield* sql`SELECT state FROM cf_agents_state`).toEqual([{ state }]);
             expect(
               yield* sql`SELECT name FROM sqlite_master WHERE name = 'provider_token_state'`,
@@ -174,7 +174,7 @@ for (const provider of ["spotify", "twitch"] as const) {
           }).pipe(
             Effect.provide(
               providerTokenDatabaseLayerWithoutDependencies.pipe(
-                Layer.provide(Layer.succeed(TokenProviderIdentity, provider)),
+                Layer.provide(Layer.succeed(ProviderTokenIdentity, provider)),
               ),
             ),
           );

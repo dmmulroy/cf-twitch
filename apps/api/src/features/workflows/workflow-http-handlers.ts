@@ -3,7 +3,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { WorkflowExecution } from "./workflow-execution.ts";
 import { WorkflowHttpApi } from "./workflow-http-api.ts";
 
-/** HTTP workflow handlers share the same serialized execution service as native alarms. */
+/** Layer that serves the workflow HTTP contract from the same serialized execution service as native alarms. */
 export const workflowHttpHandlersLayer = HttpApiBuilder.group(
   WorkflowHttpApi,
   "workflow",

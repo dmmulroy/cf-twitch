@@ -5,10 +5,10 @@ import { Deferred, Effect, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
 import {
-  recordingTwitchAnalyticsLayer,
+  TwitchAnalytics,
+  twitchAnalyticsTestLayer,
   TwitchAnalyticsRecording,
-} from "../../../test/support/recording-twitch-analytics.ts";
-import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
+} from "../../runtime/twitch-analytics.ts";
 import { FetchHttpClient, HttpClient, HttpRouter } from "effect/http";
 import { HttpApiBuilder, HttpApiClient } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
@@ -19,7 +19,7 @@ import { AcceptedEventSubReceipt, EventSubReceiptError } from "@cf-twitch/contra
 import { ChatMessageText, ProviderError } from "@cf-twitch/contracts/provider";
 import { TwitchService } from "../providers/twitch-service.ts";
 import { WorkflowAlarm, WorkflowAlarmError } from "../workflows/workflow-alarm.ts";
-import { EventSubDispatch, type EventSubChatResponse } from "./eventsub-dispatch.ts";
+import { EventSubDispatch, type EventSubDispatchChatResponse } from "./eventsub-dispatch.ts";
 import { EventSubInbox, eventSubInboxLayerWithoutDependencies } from "./eventsub-inbox.ts";
 
 const receipt = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
@@ -79,10 +79,7 @@ const chatReceipt = Schema.decodeUnknownSync(AcceptedEventSubReceipt)({
   },
 });
 
-const sqlite = Layer.merge(
-  SqliteClient.layer({ filename: ":memory:" }),
-  recordingTwitchAnalyticsLayer,
-);
+const sqlite = Layer.merge(SqliteClient.layer({ filename: ":memory:" }), twitchAnalyticsTestLayer);
 
 const recordingInbox = Effect.gen(function* () {
   const analytics = yield* TwitchAnalytics;
@@ -91,7 +88,7 @@ const recordingInbox = Effect.gen(function* () {
   const sends = yield* Ref.make(0);
   const dispatchFailure = yield* Ref.make(false);
   const sendFailure = yield* Ref.make<Option.Option<ProviderError>>(Option.none());
-  const response = yield* Ref.make<Option.Option<EventSubChatResponse>>(Option.none());
+  const response = yield* Ref.make<Option.Option<EventSubDispatchChatResponse>>(Option.none());
   const alarmFailure = yield* Ref.make(false);
   const dueAt = yield* Ref.make<Option.Option<number>>(Option.none());
   const sendStarted = yield* Deferred.make<void>();
@@ -110,6 +107,7 @@ const recordingInbox = Effect.gen(function* () {
                   new EventSubReceiptError({
                     operation: "dispatch",
                     reason: "dispatch",
+                    messageId: Option.none(),
                   }),
                 )
               : Ref.get(response),
@@ -133,10 +131,17 @@ const recordingInbox = Effect.gen(function* () {
         Ref.get(alarmFailure).pipe(
           Effect.flatMap((fail) =>
             fail
-              ? Effect.fail(new WorkflowAlarmError({ message: "Controlled alarm unavailable" }))
+              ? Effect.fail(
+                  new WorkflowAlarmError({
+                    operation: "set-alarm",
+                    reason: "storage_rejected",
+                    dueAt: Option.none(),
+                  }),
+                )
               : Ref.set(dueAt, due),
           ),
         ),
+      get: () => Ref.get(dueAt),
     }),
   );
 
@@ -400,8 +405,8 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
             new ProviderError({
               provider: "twitch",
               operation: "sendChatMessage",
-              kind: "rate-limited",
-              status: 429,
+              reason: "rate-limited",
+              status: Option.some(429),
               retryAfterMs: Option.none(),
             }),
           ),
@@ -440,8 +445,8 @@ describe("EventSub inbox real SQLite public acceptance and recovery", () => {
           new ProviderError({
             provider: "twitch",
             operation: "sendChatMessage",
-            kind: "outcome-unknown",
-            status: 0,
+            reason: "outcome-unknown",
+            status: Option.none(),
             retryAfterMs: Option.none(),
           }),
         ),

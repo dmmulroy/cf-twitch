@@ -4,30 +4,51 @@ import {
   ChatCommandName,
   parseChatCommandName,
   type ChatCommandDefinition,
-  type ChatCommandError,
   type ChatCommandInput,
   type ChatCommandPermission,
+  type CommandsError,
 } from "@cf-twitch/contracts/chat-command";
 import { PageSize } from "@cf-twitch/contracts/identity";
 import type { RaffleLeaderboardEntry } from "@cf-twitch/contracts/raffle";
 import { SongQueueLimit } from "@cf-twitch/contracts/song-queue";
-import { Commands } from "./commands.ts";
+import { Commands, commandsTestLayer } from "./commands.ts";
+import { commandsClientLayer } from "./commands-client.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
+import { songQueueLayer } from "../song-queue/song-queue.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
+import { achievementsClientLayer } from "../achievements/achievements-client.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
+import { raffleClientLayer } from "../raffle/raffle-client.ts";
 
-interface ComputedCommandContext {
-  readonly command: ChatCommandDefinition;
+/** Invocation a computed command renders a response for. */
+export interface ComputedChatCommandContext {
+  /** Computed command definition whose handler key selects the renderer. */
+  readonly command: Extract<ChatCommandDefinition, { readonly responseType: "computed" }>;
+  /** Verified chat input that invoked the command. */
   readonly input: ChatCommandInput;
+  /** Text after the command name, or `Option.none()` when the viewer gave no argument. */
   readonly arg: Option.Option<string>;
 }
 
-/** Computed chat responses coordinate real music and reward capabilities without sending chat. */
+/** Computed chat responses that read music, raffle, achievement, and registry state without sending chat. */
 export interface IComputedChatCommands {
-  readonly render: (context: ComputedCommandContext) => Effect.Effect<string, ChatCommandError>;
+  /**
+   * Renders the chat response for a computed command, selected by its handler key.
+   *
+   * **Details**
+   *
+   * Most provider failures become a fallback response that explains the failure to the viewer.
+   * An unknown handler key renders a configuration message instead of failing.
+   *
+   * @returns The response text, or fails with `ChatCommandExecutionError` when `stats` cannot read
+   * song request counts or raffle results.
+   */
+  readonly render: (
+    context: ComputedChatCommandContext,
+  ) => Effect.Effect<string, ChatCommandExecutionError>;
 }
 
-/** Computed command behavior uses handler keys rather than hard-coded invocation names. */
+/** Service for computed chat command responses, dispatched by handler key rather than invocation name. */
 export class ComputedChatCommands extends Context.Service<
   ComputedChatCommands,
   IComputedChatCommands
@@ -75,15 +96,61 @@ const writePermissionMessage = (required: ChatCommandPermission, commandName: st
     case "everyone":
       return `!${commandName} can be updated by anyone.`;
     case "vip":
-      return `Only VIPs and moderators can update !${commandName}.`;
+      return `Only VIPs and moderators can update !${commandName}. Ask a VIP or moderator to update it.`;
     case "moderator":
-      return `Only moderators can update !${commandName}.`;
+      return `Only moderators can update !${commandName}. Ask a moderator to update it.`;
     case "broadcaster":
-      return `Only the broadcaster can update !${commandName}.`;
+      return `Only the broadcaster can update !${commandName}. Ask the broadcaster to update it.`;
   }
 };
 
-/** Construct computed handlers; provider failures retain each command's historical fallback policy. */
+// Registry failures after a value update was sent may hide a saved change, so viewers check before resending.
+const updateFailureMessage = (failure: CommandsError, target: string): string => {
+  const unconfirmed = `Couldn't confirm the update to !${target} because commands are unavailable right now. Check !${target} before sending it again.`;
+
+  return Match.valueTags(failure, {
+    CommandNotFoundError: () =>
+      `Couldn't update !${target} because it is not a command. Check the command name and try again.`,
+    CommandNotUpdateableError: () =>
+      `Couldn't update !${target} because its response is not editable. Choose a command with an editable value.`,
+    CommandUpdatePermissionDeniedError: (denied) =>
+      writePermissionMessage(denied.requiredPermission, target),
+    CommandInputParseError: () =>
+      `Couldn't update !${target} because this chat message was already used for a different update. Send the update in a new message.`,
+    CommandAlreadyExistsError: () => unconfirmed,
+    CommandAliasConflictError: () => unconfirmed,
+    CommandInvalidDefinitionError: () => unconfirmed,
+    CommandsDbError: () => unconfirmed,
+    CommandsInvalidResponseError: () => unconfirmed,
+    CommandsStateParseError: () => unconfirmed,
+  });
+};
+
+// A failed increment may still have been counted; a new chat message would count it again.
+const skillIssueFailureMessage = (failure: CommandsError): string => {
+  const unconfirmed =
+    "Couldn't confirm that skill issue was counted because commands are unavailable right now. It may already be counted, so there's no need to send it again.";
+
+  return Match.valueTags(failure, {
+    CommandNotFoundError: () =>
+      "Couldn't count that skill issue because the !skillissue counter is missing. Ask a moderator to restore !skillissue.",
+    CommandInputParseError: () => unconfirmed,
+    CommandAlreadyExistsError: () => unconfirmed,
+    CommandAliasConflictError: () => unconfirmed,
+    CommandInvalidDefinitionError: () => unconfirmed,
+    CommandNotUpdateableError: () => unconfirmed,
+    CommandUpdatePermissionDeniedError: () => unconfirmed,
+    CommandsDbError: () => unconfirmed,
+    CommandsInvalidResponseError: () => unconfirmed,
+    CommandsStateParseError: () => unconfirmed,
+  });
+};
+
+/**
+ * Creates computed command renderers over the registry and music, raffle, and achievement services.
+ *
+ * @returns The computed response service; constructing it does not fail.
+ */
 export const makeComputedChatCommands = Effect.gen(function* () {
   const commands = yield* Commands;
   const songQueue = yield* SongQueue;
@@ -93,7 +160,7 @@ export const makeComputedChatCommands = Effect.gen(function* () {
   const renderUpdate = Effect.fn("ComputedChatCommands.update")(function* ({
     input,
     arg,
-  }: ComputedCommandContext) {
+  }: ComputedChatCommandContext) {
     if (Option.isNone(arg) || arg.value.length === 0) return "Usage: !update <command> <value>";
     const targetRaw = arg.value.split(/\s+/)[0];
 
@@ -104,7 +171,8 @@ export const makeComputedChatCommands = Effect.gen(function* () {
     if (value.length === 0) return `Usage: !update ${target} <value>`;
     const name = yield* parseChatCommandName(target).pipe(Effect.result);
 
-    if (Result.isFailure(name)) return "Sorry, couldn't update the command.";
+    if (Result.isFailure(name))
+      return `Couldn't update !${target} because it is not a valid command name. Use letters, digits, or hyphens and try again.`;
 
     const result = yield* commands
       .updateCommandValue({
@@ -117,19 +185,14 @@ export const makeComputedChatCommands = Effect.gen(function* () {
 
     if (Result.isSuccess(result)) return `Updated !${target}`;
 
-    return Match.value(result.failure).pipe(
-      Match.tag("CommandNotUpdateableError", () => `!${target} is not updateable.`),
-      Match.tag("CommandUpdatePermissionDeniedError", (failure) =>
-        writePermissionMessage(failure.requiredPermission, target),
-      ),
-      Match.orElse(() => "Sorry, couldn't update the command."),
-    );
+    return updateFailureMessage(result.failure, target);
   });
 
   const renderSong = Effect.fn("ComputedChatCommands.song")(function* () {
     const result = yield* songQueue.getCurrentlyPlaying().pipe(Effect.result);
 
-    if (Result.isFailure(result)) return "Sorry, couldn't get the current song info.";
+    if (Result.isFailure(result))
+      return "Couldn't get the current song because the song queue is unavailable. Try !song again in a moment.";
 
     if (Option.isNone(result.success.track)) return "No track currently playing.";
     const track = result.success.track.value;
@@ -145,7 +208,8 @@ export const makeComputedChatCommands = Effect.gen(function* () {
       .getSongQueue({ limit: SongQueueLimit.make(4) })
       .pipe(Effect.result);
 
-    if (Result.isFailure(result)) return "Sorry, couldn't get the queue info.";
+    if (Result.isFailure(result))
+      return "Couldn't get the song queue because it is unavailable right now. Try !queue again in a moment.";
 
     if (result.success.tracks.length === 0) return "Queue is empty.";
 
@@ -155,14 +219,15 @@ export const makeComputedChatCommands = Effect.gen(function* () {
   const renderAchievements = Effect.fn("ComputedChatCommands.achievements")(function* ({
     input,
     arg,
-  }: ComputedCommandContext) {
+  }: ComputedChatCommandContext) {
     const target = Option.getOrElse(arg, () => input.viewer.displayName);
 
     const result = yield* achievements
       .getUnlockedAchievements({ userDisplayName: target })
       .pipe(Effect.result);
 
-    if (Result.isFailure(result)) return `Sorry, couldn't retrieve achievements for @${target}.`;
+    if (Result.isFailure(result))
+      return `Couldn't retrieve achievements for @${target} because achievements are unavailable right now. Try again in a moment.`;
 
     if (result.success.length === 0) return `@${target} hasn't unlocked any achievements yet.`;
 
@@ -174,7 +239,8 @@ export const makeComputedChatCommands = Effect.gen(function* () {
       .getLeaderboard({ sortBy: "wins", limit: Option.some(PageSize.make(5)) })
       .pipe(Effect.result);
 
-    if (Result.isFailure(result)) return "Sorry, couldn't retrieve the raffle leaderboard.";
+    if (Result.isFailure(result))
+      return "Couldn't retrieve the raffle leaderboard because raffle results are unavailable. Try !raffle-leaderboard again in a moment.";
 
     if (result.success.length === 0) return "No raffle rolls recorded yet.";
     const winners = result.success.filter((entry) => entry.totalWins > 0);
@@ -185,9 +251,10 @@ export const makeComputedChatCommands = Effect.gen(function* () {
   });
 
   const renderStats = Effect.fn("ComputedChatCommands.stats")(function* ({
+    command,
     input,
     arg,
-  }: ComputedCommandContext) {
+  }: ComputedChatCommandContext) {
     const self = Option.isNone(arg);
     const target = Option.getOrElse(arg, () => input.viewer.displayName);
 
@@ -221,12 +288,16 @@ export const makeComputedChatCommands = Effect.gen(function* () {
 
     if (Result.isFailure(songs))
       return yield* new ChatCommandExecutionError({
-        commandName: "stats",
+        operation: "prepareChatCommand",
+        reason: "song_queue_unavailable",
+        commandName: command.name,
       });
 
     if (Result.isFailure(raffleStats))
       return yield* new ChatCommandExecutionError({
-        commandName: "stats",
+        operation: "prepareChatCommand",
+        reason: "raffle_unavailable",
+        commandName: command.name,
       });
 
     const unlockedAchievementCount = Result.isSuccess(unlocked) ? unlocked.success.length : 0;
@@ -249,12 +320,13 @@ export const makeComputedChatCommands = Effect.gen(function* () {
 
   const renderCommands = Effect.fn("ComputedChatCommands.commands")(function* ({
     input,
-  }: ComputedCommandContext) {
+  }: ComputedChatCommandContext) {
     const result = yield* commands
       .getEnabledCommandsByPermission({ permission: input.viewer.permission })
       .pipe(Effect.result);
 
-    if (Result.isFailure(result)) return "Sorry, couldn't retrieve the commands list.";
+    if (Result.isFailure(result))
+      return "Couldn't retrieve the commands list because commands are unavailable right now. Try !commands again in a moment.";
 
     if (result.success.length === 0) return "No commands available.";
 
@@ -284,7 +356,7 @@ export const makeComputedChatCommands = Effect.gen(function* () {
   });
 
   const renderSkillIssue = Effect.fn("ComputedChatCommands.skillIssue")(function* (
-    context: ComputedCommandContext,
+    context: ComputedChatCommandContext,
   ) {
     const result = yield* commands
       .incrementCommandCounter({
@@ -294,9 +366,9 @@ export const makeComputedChatCommands = Effect.gen(function* () {
       })
       .pipe(Effect.result);
 
-    return Result.isFailure(result)
-      ? "Couldn't count that skill issue right now."
-      : `@dillon has ${result.success} SkillIssue so far`;
+    return Result.isSuccess(result)
+      ? `@dillon has ${result.success} SkillIssue so far`
+      : skillIssueFailureMessage(result.failure);
   });
 
   const computedCommandRenderers = new Map<string, IComputedChatCommands["render"]>([
@@ -313,22 +385,38 @@ export const makeComputedChatCommands = Effect.gen(function* () {
 
   const render: IComputedChatCommands["render"] = Effect.fn("ComputedChatCommands.render")(
     function* (context) {
-      const renderer =
-        context.command.handlerKey === null
-          ? undefined
-          : computedCommandRenderers.get(context.command.handlerKey);
+      const renderer = Option.fromNullishOr(
+        computedCommandRenderers.get(context.command.handlerKey),
+      );
 
-      return renderer === undefined
-        ? `!${context.command.name} is configured but has no live handler.`
-        : yield* renderer(context);
+      return Option.isNone(renderer)
+        ? `No live handler is configured for !${context.command.name}. Ask a moderator to fix the command's handler.`
+        : yield* renderer.value(context);
     },
   );
 
   return ComputedChatCommands.of({ render });
 });
 
-/** Computed response layer leaves real registry, music, and reward requirements visible. */
+/** Layer that provides computed responses and keeps the registry, song queue, achievement, and raffle requirements visible. */
 export const computedChatCommandsLayerWithoutDependencies = Layer.effect(
   ComputedChatCommands,
   makeComputedChatCommands,
+);
+
+/** Production computed-response Layer selecting the Durable Object HTTP clients for each capability. */
+export const computedChatCommandsLayer = computedChatCommandsLayerWithoutDependencies.pipe(
+  Layer.provide([commandsClientLayer, songQueueLayer, raffleClientLayer, achievementsClientLayer]),
+);
+
+/**
+ * Layer that provides computed responses over the in-memory registry.
+ *
+ * **Gotchas**
+ *
+ * Song queue, achievement, and raffle requirements stay visible until those capabilities export
+ * their own test Layers; tests provide controlled implementations of them.
+ */
+export const computedChatCommandsTestLayer = computedChatCommandsLayerWithoutDependencies.pipe(
+  Layer.provide(commandsTestLayer),
 );

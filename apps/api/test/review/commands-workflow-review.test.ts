@@ -6,17 +6,17 @@ import { Effect, Layer, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
 import { ChannelPointRedemption } from "@cf-twitch/contracts/redemption";
-import { RaffleError } from "@cf-twitch/contracts/raffle";
+import { RaffleError, raffleErrorWithoutIdentifiers } from "@cf-twitch/contracts/raffle";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 import { WorkflowInput } from "@cf-twitch/contracts/workflow";
-import { recordingTwitchAnalyticsLayer } from "../support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../src/runtime/twitch-analytics.ts";
 import {
   WorkflowExecution,
   workflowExecutionLayerWithoutDependencies,
 } from "../../src/features/workflows/workflow-execution.ts";
 import { workflowJournalLayerWithoutDependencies } from "../../src/features/workflows/workflow-journal.ts";
-import { WorkflowAlarm } from "../../src/features/workflows/workflow-alarm.ts";
+import { workflowAlarmTestLayer } from "../../src/features/workflows/workflow-alarm.ts";
 import { SpotifyService } from "../../src/features/providers/spotify-service.ts";
 import { TwitchService } from "../../src/features/providers/twitch-service.ts";
 import { SongQueue } from "../../src/features/song-queue/song-queue.ts";
@@ -51,9 +51,9 @@ const reviewServices = Effect.gen(function* () {
   const recordWithoutReceipt = Ref.set(remoteRecordExists, true);
 
   const dependencies = Layer.mergeAll(
-    recordingTwitchAnalyticsLayer,
+    twitchAnalyticsTestLayer,
     NodeCrypto.layer,
-    Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
+    workflowAlarmTestLayer,
     Layer.mock(SpotifyService, {
       getTrack: () => Effect.succeed(track),
       addToQueue: () => Effect.void,
@@ -75,7 +75,11 @@ const reviewServices = Effect.gen(function* () {
         recordWithoutReceipt.pipe(
           Effect.andThen(
             Effect.fail(
-              new RaffleError({ operation: "getOrCreateRoll", reason: "transport_unavailable" }),
+              new RaffleError({
+                operation: "getOrCreateRoll",
+                reason: "transport_unavailable",
+                ...raffleErrorWithoutIdentifiers,
+              }),
             ),
           ),
         ),
@@ -158,7 +162,7 @@ describe("Independent command-owner workflow review regressions", () => {
         yield* services.resume();
         expect(yield* Ref.get(services.refunded)).toBe(true);
         expect(yield* Ref.get(services.messages)).toEqual([
-          "@Viewer your song request was invalid and your points have been refunded. Did you use a valid Spotify track link?",
+          "@Viewer your song request was invalid and your points have been refunded. Redeem again with a valid Spotify track link.",
         ]);
       }).pipe(Effect.provide(sqlite)),
   );

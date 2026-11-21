@@ -18,7 +18,7 @@ import {
   TopSongRequester,
 } from "@cf-twitch/contracts/song-queue";
 
-/** Song queue HTTP endpoints are private versioned operations, not the public Twitch API URLs. */
+/** HTTP API group of private, versioned `SongQueueDO` operations; not the public Twitch API URLs. */
 export class SongQueueHttpApiGroup extends HttpApiGroup.make("songQueue")
   .add(
     HttpApiEndpoint.post("persistRequest", "/requests", {
@@ -110,7 +110,7 @@ export class SongQueueHttpApiGroup extends HttpApiGroup.make("songQueue")
     }),
   ) {}
 
-/** Shared HTTP contract preserves Option encoding and typed song queue errors across the DO boundary. */
+/** HTTP API served by `SongQueueDO`, preserving Option encoding and typed `SongQueueError` across the boundary. */
 export class SongQueueHttpApi extends HttpApi.make("SongQueueHttpApi")
   .add(SongQueueHttpApiGroup)
   .prefix("/v1") {}

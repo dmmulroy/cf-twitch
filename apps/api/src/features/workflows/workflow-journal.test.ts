@@ -4,15 +4,11 @@ import { describe, expect } from "vite-plus/test";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
-import { recordingTwitchAnalyticsLayer } from "../../../test/support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 import { RaidShoutoutInput, WorkflowInput } from "@cf-twitch/contracts/workflow";
-import { WorkflowAlarm, WorkflowAlarmError } from "./workflow-alarm.ts";
-import {
-  WorkflowJournal,
-  WorkflowStepFailure,
-  workflowJournalLayerWithoutDependencies,
-  type WorkflowStepPolicy,
-} from "./workflow-journal.ts";
+import { WorkflowAlarm, WorkflowAlarmError, workflowAlarmTestLayer } from "./workflow-alarm.ts";
+import { WorkflowJournal, workflowJournalLayerWithoutDependencies } from "./workflow-journal.ts";
+import { WorkflowStepFailure, type WorkflowStepPolicy } from "./workflow-step.ts";
 
 const input = WorkflowInput.cases.RaidShoutout.make({
   raid: Schema.decodeUnknownSync(RaidShoutoutInput)({
@@ -35,17 +31,17 @@ const unsafe: WorkflowStepPolicy = { ...safe, safety: "non-idempotent" };
 const rollback: WorkflowStepPolicy = { ...safe, rollback: true };
 
 const retryable = new WorkflowStepFailure({
+  operation: "get-spotify-track",
+  reason: "provider_unavailable",
+  workflowId: Option.none(),
   kind: "retryable",
-  message: "Provider temporarily unavailable",
+  providerFailure: Option.none(),
   retryAfterMs: Option.none(),
 });
 
-const testSql = Layer.merge(
-  SqliteClient.layer({ filename: ":memory:" }),
-  recordingTwitchAnalyticsLayer,
-);
+const testSql = Layer.merge(SqliteClient.layer({ filename: ":memory:" }), twitchAnalyticsTestLayer);
 
-const alarmLayer = Layer.succeed(WorkflowAlarm, { set: () => Effect.void });
+const alarmLayer = workflowAlarmTestLayer;
 
 const journalLayer = workflowJournalLayerWithoutDependencies.pipe(Layer.provide(alarmLayer));
 
@@ -65,10 +61,17 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
             Ref.get(failing).pipe(
               Effect.flatMap((fail) =>
                 fail
-                  ? Effect.fail(new WorkflowAlarmError({ message: "Watchdog unavailable" }))
+                  ? Effect.fail(
+                      new WorkflowAlarmError({
+                        operation: "set-alarm",
+                        reason: "storage_rejected",
+                        dueAt: Option.none(),
+                      }),
+                    )
                   : Effect.void,
               ),
             ),
+          get: () => Effect.succeed(Option.none<number>()),
         });
 
         const use = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowJournal>) =>
@@ -216,10 +219,17 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
             Ref.get(failAlarm).pipe(
               Effect.flatMap((fail) =>
                 fail
-                  ? Effect.fail(new WorkflowAlarmError({ message: "Alarm unavailable" }))
+                  ? Effect.fail(
+                      new WorkflowAlarmError({
+                        operation: "set-alarm",
+                        reason: "storage_rejected",
+                        dueAt: Option.none(),
+                      }),
+                    )
                   : Effect.void,
               ),
             ),
+          get: () => Effect.succeed(Option.none<number>()),
         });
 
         const use = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowJournal>) =>
@@ -244,8 +254,11 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
                   Effect.andThen(
                     Effect.fail(
                       new WorkflowStepFailure({
+                        operation: "get-spotify-track",
+                        reason: "rate_limited",
+                        workflowId: Option.none(),
                         kind: "retryable",
-                        message: "Provider temporarily unavailable",
+                        providerFailure: Option.some("rate-limited"),
                         retryAfterMs: Option.some(10_000),
                       }),
                     ),
@@ -419,7 +432,7 @@ describe("Workflow journal real SQLite checkpoint authority", () => {
         yield* journal
           .compensate("reserve", Schema.String, () => Effect.void, "idempotent")
           .pipe(Effect.result),
-      ).toMatchObject({ failure: { reason: "conflict" } });
+      ).toMatchObject({ failure: { reason: "already_fulfilled" } });
     }).pipe(withJournal, Effect.provide(testSql)),
   );
 

@@ -9,25 +9,37 @@ import {
   type ChatCommandError,
   ChatCommandPreparation,
 } from "@cf-twitch/contracts/chat-command";
-import { Commands } from "./commands.ts";
+import { Commands, commandsTestLayer } from "./commands.ts";
 import {
   ComputedChatCommands,
-  computedChatCommandsLayerWithoutDependencies,
+  computedChatCommandsLayer,
+  computedChatCommandsTestLayer,
 } from "./computed-chat-commands.ts";
 import { commandsClientLayer } from "./commands-client.ts";
-import { songQueueClientLayer } from "../song-queue/song-queue-client.ts";
-import { raffleClientLayer } from "../raffle/raffle-client.ts";
-import { achievementsClientLayer } from "../achievements/achievements-client.ts";
 import { hasCommandPermission } from "./command-permissions.ts";
 
-/** Prepare is replayable via message-keyed mutations; the receipt owner alone sends to Twitch. */
+/** Chat command preparation: parse, authorize, and render a response without sending it. */
 export interface IChatCommandExecutor {
+  /**
+   * Prepares the chat response for verified chat input, or reports why it is ignored.
+   *
+   * **Details**
+   *
+   * Value and counter mutations are keyed by the EventSub message ID, so preparing the same message
+   * again replays them. Only the EventSub receipt owner sends the prepared message to Twitch, after
+   * saving it durably. Ignored invocations and failures are recorded as chat command metrics.
+   *
+   * @returns The ignored or prepared result, or fails with `CommandInputParseError` when the command
+   * name is invalid, `ChatCommandRenderError` when the response exceeds 500 Unicode code points,
+   * `ChatCommandExecutionError` when `stats` cannot read its providers, and a registry error when
+   * commands cannot be read or a mutation fails.
+   */
   readonly prepare: (
     input: ChatCommandInput,
   ) => Effect.Effect<ChatCommandPreparation, ChatCommandError>;
 }
 
-/** Chat command execution parses, authorizes, renders, and enforces the Twitch response limit. */
+/** Service that parses, authorizes, renders, and enforces the Twitch response limit for chat commands. */
 export class ChatCommandExecutor extends Context.Service<
   ChatCommandExecutor,
   IChatCommandExecutor
@@ -35,7 +47,23 @@ export class ChatCommandExecutor extends Context.Service<
 
 const commandEmotes = ["PogChamp", "Kappa", "LUL", "SeemsGood", "HeyGuys"] as const;
 
-/** Construct the executor without a sender; prepared output must be durably saved before delivery. */
+const maximumChatResponseCodePoints = 500;
+
+// Metrics label failures with the command they concern; failures before name resolution use "invalid".
+const failedCommandMetricName = (error: ChatCommandError): string => {
+  if (!("commandName" in error)) return "invalid";
+  const commandName = error.commandName;
+
+  return Option.isOption(commandName)
+    ? Option.getOrElse(commandName, () => "invalid")
+    : commandName;
+};
+
+/**
+ * Creates the executor without a chat sender; prepared output must be durably saved before delivery.
+ *
+ * @returns The executor service; constructing it does not fail.
+ */
 export const makeChatCommandExecutor = Effect.gen(function* () {
   const commands = yield* Commands;
   const computed = yield* ComputedChatCommands;
@@ -74,7 +102,10 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
       Effect.mapError(
         () =>
           new CommandInputParseError({
-            operation: "prepare",
+            operation: "prepareChatCommand",
+            reason: "invalid_command_name",
+            commandName: Option.none(),
+            operationId: Option.some(input.messageId),
           }),
       ),
     );
@@ -105,9 +136,15 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
     const arg = args.length === 0 ? Option.none<string>() : Option.some(args.join(" "));
     const message = yield* renderCommandResponse(command, input, arg);
 
-    if (Array.from(message).length > 500)
+    const renderedCodePoints = Array.from(message).length;
+
+    if (renderedCodePoints > maximumChatResponseCodePoints)
       return yield* new ChatCommandRenderError({
+        operation: "prepareChatCommand",
+        reason: "response_too_long",
         commandName: command.name,
+        renderedCodePoints,
+        maximumCodePoints: maximumChatResponseCodePoints,
       });
     yield* Effect.logInfo("Chat command response prepared").pipe(
       Effect.annotateLogs({
@@ -130,7 +167,7 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
       // The durable receipt owner records success or send failure only after provider I/O.
       return yield* prepareResponse(input).pipe(
         Effect.tapError((error) => {
-          const command = "commandName" in error ? error.commandName : "invalid";
+          const command = failedCommandMetricName(error);
 
           return Effect.gen(function* () {
             yield* analytics.writeChatCommandMetric({
@@ -165,19 +202,25 @@ export const makeChatCommandExecutor = Effect.gen(function* () {
   return ChatCommandExecutor.of({ prepare });
 });
 
-/** Executor layer retains command registry and computed-provider capability requirements. */
-export const executorLayerWithoutDependencies = Layer.effect(
+/** Layer that provides the executor and keeps the registry, computed-response, and analytics requirements visible. */
+export const chatCommandExecutorLayerWithoutDependencies = Layer.effect(
   ChatCommandExecutor,
   makeChatCommandExecutor,
 );
 
-/** Ready executor resolves all real provider namespaces during Alchemy initialization. */
-export const executorLayer = executorLayerWithoutDependencies.pipe(
-  Layer.provide(computedChatCommandsLayerWithoutDependencies),
-  Layer.provide([
-    commandsClientLayer,
-    songQueueClientLayer,
-    raffleClientLayer,
-    achievementsClientLayer,
-  ]),
+/** Production executor Layer; resolves every provider namespace during Alchemy initialization and leaves analytics to the composition root. */
+export const chatCommandExecutorLayer = chatCommandExecutorLayerWithoutDependencies.pipe(
+  Layer.provide([computedChatCommandsLayer, commandsClientLayer]),
+);
+
+/**
+ * Layer that provides the executor over the in-memory registry and computed responses.
+ *
+ * **Gotchas**
+ *
+ * Analytics, song queue, achievement, and raffle requirements stay visible until those
+ * capabilities export their own test Layers; tests provide controlled implementations of them.
+ */
+export const chatCommandExecutorTestLayer = chatCommandExecutorLayerWithoutDependencies.pipe(
+  Layer.provide([computedChatCommandsTestLayer, commandsTestLayer]),
 );

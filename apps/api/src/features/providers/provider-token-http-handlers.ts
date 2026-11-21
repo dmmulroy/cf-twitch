@@ -3,7 +3,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { ProviderTokenHttpApi } from "./provider-token-http-api.ts";
 import { ProviderTokenLifecycle } from "./provider-token-lifecycle.ts";
 
-/** Token HTTP handlers select provider identity from their server, never from an untrusted payload. */
+/** Layer that implements the provider token HTTP handlers over the token lifecycle; provider identity comes from the server, never from an untrusted payload. */
 export const providerTokenHttpHandlersLayer = HttpApiBuilder.group(
   ProviderTokenHttpApi,
   "token",

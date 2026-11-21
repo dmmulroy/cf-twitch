@@ -3,7 +3,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { EventSubHttpApi } from "./eventsub-http-api.ts";
 import { EventSubInbox } from "./eventsub-inbox.ts";
 
-/** Receipt handlers use the same inbox authority as recovery alarms. */
+/** Layer that serves the EventSub receipt HTTP contract from the same inbox authority as recovery alarms. */
 export const eventSubHttpHandlersLayer = HttpApiBuilder.group(
   EventSubHttpApi,
   "receipts",

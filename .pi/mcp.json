@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "traits": {
+      "command": "pnpm",
+      "args": ["-w", "exec", "tools/traits/node_modules/.bin/traits"],
+      "timeout": 300,
+      "description": "Derive project coding traits and check changed files against them."
+    }
+  }
+}

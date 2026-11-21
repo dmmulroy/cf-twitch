@@ -1,48 +1,38 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer } from "effect";
 import { Digest } from "effect/crypto";
 import { HttpRouter } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
-import { StreamLifecycleError } from "@cf-twitch/contracts/stream";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import {
   TwitchConfiguration,
   twitchConfigurationLayer,
 } from "../../runtime/twitch-configuration.ts";
-import { eventPublisherLayer } from "../events/event-bus-client.ts";
-import { EventPublisher } from "../events/event-bus-service.ts";
-import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
-import { providerAccessTokensLayer } from "../providers/provider-token-client.ts";
+import { EventPublisher, eventPublisherLayer } from "../events/event-publisher.ts";
+import {
+  ProviderAccessTokens,
+  providerAccessTokensLayer,
+} from "../providers/provider-access-tokens.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
-import { streamDatabaseLayerWithoutDependencies } from "./stream-database.ts";
 import { StreamLifecycleHttpApi } from "./stream-http-api.ts";
 import { streamLifecycleHttpHandlersLayer } from "./stream-http-handlers.ts";
-import {
-  StreamAlarm,
-  StreamProcessor,
-  StreamViewerProvider,
-  streamLifecycleLayerWithoutDependencies,
-} from "./stream.ts";
+import { StreamLifecycle, streamLifecycleLayer } from "./stream-lifecycle.ts";
+import { streamViewerProviderLayerWithoutDependencies } from "./stream-viewer-provider.ts";
 
 type StreamLifecycleServerContract = {
   readonly fetch: HttpEffect;
   readonly alarm: () => Effect.Effect<void>;
 };
 
-/** Namespace service for the preserved physical StreamLifecycleDO class. */
+/** Durable Object namespace for the preserved physical `StreamLifecycleDO` class. */
 export class StreamLifecycleServer extends Cloudflare.DurableObject<
   StreamLifecycleServer,
   StreamLifecycleServerContract
 >()("StreamLifecycleDO") {}
 
-const alarmError = () =>
-  new StreamLifecycleError({
-    operation: "resumeTransitionEffects",
-    reason: "persistence_unavailable",
-  });
-
+/** Creates the `StreamLifecycleDO` runtime from services captured during outer initialization. */
 const makeStreamLifecycleServer = Effect.gen(function* () {
   const state = yield* Cloudflare.DurableObjectState;
   const accessTokens = yield* ProviderAccessTokens;
@@ -51,72 +41,52 @@ const makeStreamLifecycleServer = Effect.gen(function* () {
   const configuration = yield* TwitchConfiguration;
   const digestService = yield* Digest.Digest;
 
-  const streamAlarm = StreamAlarm.of({
-    scheduleAt: (timestamp) =>
-      Effect.tryPromise({
-        try: () => state.raw.storage.setAlarm(new Date(timestamp)),
-        catch: alarmError,
-      }),
-    clear: () =>
-      Effect.tryPromise({
-        try: () => state.raw.storage.deleteAlarm(),
-        catch: alarmError,
-      }),
-  });
-
-  const alarmLayer = Layer.succeed(StreamAlarm, streamAlarm);
-
-  const viewerLayer = Layer.succeed(
-    StreamViewerProvider,
-    StreamViewerProvider.of({
-      getViewerCount: () =>
-        twitch.getStreamInfo(configuration.twitch.broadcaster.displayName).pipe(
-          Effect.map((stream) => Option.map(stream, (value) => value.viewerCount)),
-          Effect.mapError(
-            () =>
-              new StreamLifecycleError({
-                operation: "recordViewerCount",
-                reason: "provider_unavailable",
-              }),
-          ),
-        ),
-    }),
+  const applicationLayer = streamLifecycleLayer.pipe(
+    Layer.provide([
+      SqliteClient.layer({ storage: state.raw.storage }),
+      Layer.succeed(Cloudflare.DurableObjectState, state),
+      streamViewerProviderLayerWithoutDependencies.pipe(
+        Layer.provide([
+          Layer.succeed(TwitchService, twitch),
+          Layer.succeed(TwitchConfiguration, configuration),
+        ]),
+      ),
+      Layer.succeed(ProviderAccessTokens, accessTokens),
+      Layer.succeed(EventPublisher, eventPublisher),
+      Layer.succeed(Digest.Digest, digestService),
+    ]),
   );
-
-  const databaseLayer = streamDatabaseLayerWithoutDependencies.pipe(
-    Layer.provide(SqliteClient.layer({ storage: state.raw.storage })),
-  );
-
-  const applicationLayer = streamLifecycleLayerWithoutDependencies.pipe(
-    Layer.provide(databaseLayer),
-    Layer.provide(alarmLayer),
-    Layer.provide(viewerLayer),
-    Layer.provide(Layer.succeed(ProviderAccessTokens, accessTokens)),
-    Layer.provide(Layer.succeed(EventPublisher, eventPublisher)),
-    Layer.provide(Layer.succeed(Digest.Digest, digestService)),
-  );
-
-  const handlersLayer = streamLifecycleHttpHandlersLayer.pipe(Layer.provide(applicationLayer));
 
   return Effect.gen(function* () {
     const apiLayer = HttpApiBuilder.layer(StreamLifecycleHttpApi).pipe(
-      Layer.provide(handlersLayer),
+      Layer.provide(streamLifecycleHttpHandlersLayer),
       Layer.provide(cloudflareHttpServerLayer),
     );
 
     const fetch = yield* HttpRouter.toHttpEffect(apiLayer);
-    const processor = yield* StreamProcessor;
-    yield* processor.resumeTransitionEffects().pipe(Effect.ignore);
-    yield* processor.rebuildAlarm();
+    const lifecycle = yield* StreamLifecycle;
+    yield* lifecycle.resumeTransitionEffects().pipe(Effect.ignore);
+    yield* lifecycle.rebuildAlarm();
 
     return {
       fetch,
-      alarm: () => processor.processAlarm().pipe(Effect.orDie),
+      alarm: () => lifecycle.processAlarm().pipe(Effect.orDie),
     };
   }).pipe(Effect.provide(applicationLayer), Effect.orDie);
 });
 
-/** Hosts StreamLifecycleDO while leaving every outgoing application capability visible. */
+/**
+ * Layer that hosts `StreamLifecycleDO`, leaving every outgoing application capability visible.
+ *
+ * **Details**
+ *
+ * Runtime initialization migrates storage, resumes incomplete transition effects best effort, and
+ * reinstalls the alarm before serving the Stream Lifecycle HTTP API.
+ *
+ * @throws {MigrationError | SqlError | SchemaError | StreamLifecycleError} As a defect when runtime
+ *   initialization cannot adopt storage or rebuild the alarm, and from the alarm handler when alarm
+ *   work fails so the platform retries the alarm.
+ */
 export const streamLifecycleServerLayerWithoutDependencies = StreamLifecycleServer.make<
   | Cloudflare.DurableObjectState
   | ProviderAccessTokens
@@ -126,7 +96,7 @@ export const streamLifecycleServerLayerWithoutDependencies = StreamLifecycleServ
   | Digest.Digest
 >(makeStreamLifecycleServer.pipe(Effect.orDie));
 
-/** Ready Stream Lifecycle server selects the production provider and Event Bus graph. */
+/** Layer that hosts `StreamLifecycleDO` with the production provider, token, and Event Bus graph. */
 export const streamLifecycleServerLayer = streamLifecycleServerLayerWithoutDependencies.pipe(
   Layer.provide(providerAccessTokensLayer),
   Layer.provide(eventPublisherLayer),
@@ -134,4 +104,5 @@ export const streamLifecycleServerLayer = streamLifecycleServerLayerWithoutDepen
   Layer.provide(twitchConfigurationLayer),
 );
 
+/** Default export: the production `StreamLifecycleDO` server Layer, discovered by Alchemy. */
 export default streamLifecycleServerLayer;

@@ -1,6 +1,7 @@
-import type { SpotifyTrackId } from "@cf-twitch/contracts/identity";
+import { SpotifyTrackId } from "@cf-twitch/contracts/identity";
 import {
   ProviderError,
+  type ProviderOperation,
   SpotifyConnectState,
   type SpotifyDevice,
 } from "@cf-twitch/contracts/provider";
@@ -9,41 +10,104 @@ import { Cause, Context, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { SecureRandom } from "effect/crypto";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
-import { ProviderAccessTokens } from "./provider-access-tokens.ts";
+import {
+  ProviderAccessTokens,
+  providerAccessTokensLayer,
+  providerAccessTokensTestLayer,
+} from "./provider-access-tokens.ts";
 import {
   confirmProviderMutationStatus,
   decodeProviderResponse,
   executeProviderRequest,
 } from "./provider-http.ts";
-import { providerAccessTokensLayer } from "./provider-token-client.ts";
-import { SpotifyTrackId as SpotifyTrackIdSchema } from "@cf-twitch/contracts/identity";
 
-/** Spotify queue reads are authoritative only after successful provider response decoding. */
-export interface SpotifyQueueSnapshot {
+/** Spotify queue observation, authoritative only after successful provider response decoding. */
+export interface SpotifyServiceQueueSnapshot {
+  /** Track currently in playback, or none when nothing is playing. */
   readonly currentlyPlaying: Option.Option<SpotifyTrack>;
+  /** Upcoming Spotify Queue in playback order, including autoplay tracks. */
   readonly queue: readonly SpotifyTrack[];
 }
 
-/** Spotify HTTP operations never retry unknown non-idempotent mutation outcomes. */
+/**
+ * Spotify Web API capability, including best-effort internal queue compensation.
+ *
+ * **Details**
+ *
+ * Unknown outcomes of non-idempotent mutations are never retried internally.
+ */
 export interface ISpotifyService {
+  /**
+   * Returns track metadata.
+   *
+   * @returns The track, or fails with `ProviderError` reason `not-found` for an unknown track ID, or another reason when Spotify is unreachable, refuses the request or returns a malformed response.
+   */
   readonly getTrack: (trackId: SpotifyTrackId) => Effect.Effect<SpotifyTrack, ProviderError>;
-  readonly getQueue: () => Effect.Effect<SpotifyQueueSnapshot, ProviderError>;
+  /**
+   * Returns the currently playing track and the upcoming Spotify Queue.
+   *
+   * @returns The snapshot, or fails with `ProviderError` reason `no-active-device` when no device is playing, or another reason for transport, refusal or malformed responses.
+   */
+  readonly getQueue: () => Effect.Effect<SpotifyServiceQueueSnapshot, ProviderError>;
+  /**
+   * Returns the currently playing track, or none when playback is paused or absent.
+   *
+   * @returns The track, or fails with `ProviderError` for transport, refusal or malformed responses.
+   */
   readonly getCurrentlyPlaying: () => Effect.Effect<Option.Option<SpotifyTrack>, ProviderError>;
+  /**
+   * Returns the queue and playback state, observed concurrently.
+   *
+   * **Details**
+   *
+   * When only the currently-playing observation fails, the queue's current track is used instead.
+   *
+   * @returns The playback, or fails with the `ProviderError` of the queue observation.
+   */
   readonly getPlayback: () => Effect.Effect<SpotifyPlayback, ProviderError>;
+  /**
+   * Appends a track to the Spotify Queue.
+   *
+   * @returns Nothing, or fails with `ProviderError` reason `outcome-unknown` when success cannot be confirmed, `no-active-device` when no device is playing, or another reason for refusal or token failure.
+   */
   readonly addToQueue: (trackId: SpotifyTrackId) => Effect.Effect<void, ProviderError>;
+  /**
+   * Skips to the next track.
+   *
+   * @returns Nothing, or fails with `ProviderError` reason `outcome-unknown` when success cannot be confirmed, or another reason for refusal or token failure.
+   */
   readonly skipTrack: () => Effect.Effect<void, ProviderError>;
+  /**
+   * Returns the active playback device, or none when no device is active.
+   *
+   * @returns The device, or fails with `ProviderError` for transport, refusal or malformed responses.
+   */
   readonly getActiveDevice: () => Effect.Effect<Option.Option<SpotifyDevice>, ProviderError>;
+  /**
+   * Reads internal Spotify Connect queue state for a device.
+   *
+   * @returns The Connect state, or fails with `ProviderError` reason `randomness` when a client token device ID cannot be generated, or another reason for transport, refusal or malformed responses.
+   */
   readonly getConnectState: (deviceId: string) => Effect.Effect<SpotifyConnectState, ProviderError>;
+  /**
+   * Removes the single upcoming occurrence of a track as best-effort compensation.
+   *
+   * **Gotchas**
+   *
+   * Returns `false` without removing anything when Connect state is unavailable, when several upcoming occurrences match, or when Spotify rejects the command. Returns `true` when the track is already absent.
+   *
+   * @returns Whether the track is no longer queued, or fails with `ProviderError` reason `no-active-device` when no device is active, or another reason when the removal outcome cannot be confirmed.
+   */
   readonly removeFromQueue: (trackId: SpotifyTrackId) => Effect.Effect<boolean, ProviderError>;
 }
 
-/** Spotify provider service includes official playback and best-effort internal queue compensation. */
+/** Service that owns Spotify playback operations and best-effort internal queue compensation. */
 export class SpotifyService extends Context.Service<SpotifyService, ISpotifyService>()(
   "@cf-twitch/SpotifyService",
 ) {}
 
 const SpotifyTrackResponse = Schema.Struct({
-  id: SpotifyTrackIdSchema,
+  id: SpotifyTrackId,
   name: Schema.String,
   artists: Schema.Array(Schema.Struct({ name: Schema.String })),
   album: Schema.Struct({
@@ -62,7 +126,7 @@ const SpotifyQueueResponse = Schema.Struct({
 const SpotifyCurrentlyPlayingResponse = Schema.Struct({
   is_playing: Schema.Boolean,
   item: Schema.NullOr(SpotifyTrackResponse),
-  progress_ms: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  progress_ms: Schema.OptionFromOptionalKey(Schema.NullOr(Schema.Number)),
 });
 
 const SpotifyDeviceResponse = Schema.Struct({
@@ -136,7 +200,7 @@ const connectDecode = decodeProviderResponse(SpotifyConnectResponse, {
   mutation: false,
 });
 
-/** Construct Spotify HTTP operations with real token, configuration and controlled-transport seams. */
+/** Creates the Spotify service over durable access tokens, runtime configuration and an Effect HTTP transport. */
 export const makeSpotifyService = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const tokens = yield* ProviderAccessTokens;
@@ -153,8 +217,8 @@ export const makeSpotifyService = Effect.gen(function* () {
             new ProviderError({
               provider: "spotify",
               operation: "generateProviderCommandId",
-              kind: "randomness",
-              status: 0,
+              reason: "randomness",
+              status: Option.none(),
               retryAfterMs: Option.none(),
             }),
           ),
@@ -163,7 +227,7 @@ export const makeSpotifyService = Effect.gen(function* () {
   );
 
   const request = Effect.fn("SpotifyService.request")(function* (
-    operation: string,
+    operation: ProviderOperation,
     outgoing: HttpClientRequest.HttpClientRequest,
     mutation = false,
   ) {
@@ -188,7 +252,7 @@ export const makeSpotifyService = Effect.gen(function* () {
   });
 
   const getQueue = Effect.fn("SpotifyService.getQueue")(function* (): Effect.fn.Return<
-    SpotifyQueueSnapshot,
+    SpotifyServiceQueueSnapshot,
     ProviderError
   > {
     const response = yield* request(
@@ -217,7 +281,7 @@ export const makeSpotifyService = Effect.gen(function* () {
         ? Option.map(Option.fromNullOr(playing.item), trackInfo)
         : Option.none<SpotifyTrack>(),
       isPlaying: playing.is_playing,
-      progressMs: playing.progress_ms ?? 0,
+      progressMs: Option.getOrElse(Option.flatMap(playing.progress_ms, Option.fromNullOr), () => 0),
     };
   });
 
@@ -357,8 +421,8 @@ export const makeSpotifyService = Effect.gen(function* () {
         new ProviderError({
           provider: "spotify",
           operation: "removeFromQueue",
-          kind: "no-active-device",
-          status: 404,
+          reason: "no-active-device",
+          status: Option.some(404),
           retryAfterMs: Option.none(),
         }),
       );
@@ -397,7 +461,7 @@ export const makeSpotifyService = Effect.gen(function* () {
     ).pipe(
       Effect.as(true),
       Effect.catchTag("ProviderError", (error) =>
-        error.kind === "rejected" ? Effect.succeed(false) : Effect.fail(error),
+        error.reason === "rejected" ? Effect.succeed(false) : Effect.fail(error),
       ),
     );
   });
@@ -415,13 +479,24 @@ export const makeSpotifyService = Effect.gen(function* () {
   });
 });
 
-/** Spotify service with configuration, HTTP transport and token requirements visible. */
+/** Layer that provides the Spotify service with configuration, HTTP transport, randomness and access-token requirements visible. */
 export const spotifyServiceLayerWithoutDependencies = Layer.effect(
   SpotifyService,
   makeSpotifyService,
 );
 
-/** Spotify service selects the durable token implementation, leaving runtime HTTP/configuration visible. */
+/** Production Spotify service Layer that selects durable access tokens, leaving runtime HTTP, configuration and randomness visible. */
 export const spotifyServiceLayer = spotifyServiceLayerWithoutDependencies.pipe(
   Layer.provide(providerAccessTokensLayer),
+);
+
+/**
+ * Layer that provides the Spotify service over in-memory access tokens.
+ *
+ * **Details**
+ *
+ * Leaves `HttpClient.HttpClient`, `TwitchConfiguration` and `SecureRandom` required so tests supply a controlled Spotify transport that cannot reach the network.
+ */
+export const spotifyServiceTestLayer = spotifyServiceLayerWithoutDependencies.pipe(
+  Layer.provide(providerAccessTokensTestLayer),
 );

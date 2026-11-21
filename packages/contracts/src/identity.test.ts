@@ -1,14 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Schema, SchemaIssue } from "effect";
-import { IsoTimestamp, NonNegativeInt, PositiveInt } from "./identity.ts";
+import { IsoTimestamp, NonNegativeInt } from "./identity.ts";
 
 const parseIsoTimestamp = Schema.decodeEffect(IsoTimestamp);
 
 const parseCalendarTimestamp = Schema.decodeUnknownOption(IsoTimestamp);
 
 const parseNonNegativeInt = Schema.decodeUnknownResult(NonNegativeInt);
-
-const parsePositiveInt = Schema.decodeUnknownResult(PositiveInt);
 
 const parseLegacyNonNegativeInt = Schema.decodeUnknownResult(
   Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -29,13 +27,6 @@ describe("integer count compatibility", () => {
           formatSchemaIssue(legacy.failure.issue),
         );
     }
-  });
-
-  it("retains the existing strictly positive integer alias", () => {
-    expect(Result.isSuccess(parsePositiveInt(1))).toBe(true);
-
-    for (const value of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN, 2 ** 53])
-      expect(Result.isFailure(parsePositiveInt(value))).toBe(true);
   });
 });
 

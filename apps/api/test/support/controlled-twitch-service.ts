@@ -18,8 +18,14 @@ export type ControlledTwitchProviderMode =
   | "dropped-chat";
 
 /**
- * Build the complete production Twitch HTTP service over a transport that cannot reach the network.
- * The selected bearer-token mode controls deterministic provider success and failure responses.
+ * Creates the complete production Twitch HTTP service over a transport that cannot reach the network.
+ *
+ * **Details**
+ *
+ * The selected bearer-token mode controls deterministic provider success and failure responses,
+ * which reach callers as `ProviderError` values from the service methods.
+ *
+ * @returns A Layer providing `TwitchService` with no remaining requirements.
  */
 export const controlledTwitchServiceLayer = (mode: ControlledTwitchProviderMode) => {
   const accessTokens = Layer.succeed(

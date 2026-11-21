@@ -18,6 +18,7 @@ import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { HttpRouter } from "effect/http";
 import {
   EventSubReceiptConflict,
+  EventSubReceiptError,
   type AcceptedEventSubReceipt,
 } from "@cf-twitch/contracts/eventsub";
 import { httpTestConfiguration as configuration } from "./http-test-fixtures.ts";
@@ -101,6 +102,7 @@ const withWebhook = <A, E, R>(
   ) => Effect.Effect<A, E, R>,
   twitch: Partial<ITwitchService> = {},
   cryptoLayer: Layer.Layer<Digest.Digest | SecureRandom.SecureRandom> = NodeCrypto.layer,
+  receiptStoreFailure: Option.Option<EventSubReceiptError> = Option.none(),
 ) =>
   Effect.gen(function* () {
     const clock = yield* Clock.Clock;
@@ -119,11 +121,17 @@ const withWebhook = <A, E, R>(
     const receiptLayer = Layer.mock(EventSubReceipts, {
       accept: (receipt) =>
         Effect.gen(function* () {
+          if (Option.isSome(receiptStoreFailure))
+            return yield* Effect.fail(receiptStoreFailure.value);
           const existing = receipts.find((entry) => entry.messageId === receipt.messageId);
 
           if (existing !== undefined && existing.contentDigest !== receipt.contentDigest)
             return yield* Effect.fail(
-              new EventSubReceiptConflict({ messageId: receipt.messageId }),
+              new EventSubReceiptConflict({
+                operation: "accept",
+                reason: "content_mismatch",
+                messageId: receipt.messageId,
+              }),
             );
 
           if (existing === undefined) receipts.push(receipt);
@@ -223,13 +231,54 @@ describe("authenticated EventSub HTTP ingress", () => {
 
             expect(response.status).toBe(503);
             expect(yield* Effect.promise(() => response.json())).toEqual({
-              error: "EventSub durable acceptance failed",
+              code: "EventSubAcceptanceFailed",
+              error:
+                "EventSub acceptance failed for message eventsub-test-message: the receipt could not be stored durably. Redeliver the same message; acceptance is idempotent by message ID.",
+              operation: "webhook",
+              message:
+                "EventSub acceptance failed for message eventsub-test-message: the receipt could not be stored durably. Redeliver the same message; acceptance is idempotent by message ID.",
+              details: { messageId: "eventsub-test-message" },
+              requestId: response.headers.get("x-request-id"),
+              retryable: true,
             });
             expect(receipts).toHaveLength(0);
           }),
         {},
         cryptoLayer,
       );
+    }),
+  );
+
+  it.effect("reports a retryable 503 only when the receipt store is unavailable", () =>
+    Effect.gen(function* () {
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(timestamp));
+
+      for (const [reason, status, code, retryable] of [
+        ["storage", 503, "EventSubAcceptanceFailed", true],
+        ["corrupt", 500, "StoredDataInvalid", false],
+        ["invalid_response", 500, "InvalidServiceResponse", false],
+      ] as const) {
+        yield* withWebhook(
+          (fetch) =>
+            Effect.gen(function* () {
+              const request = yield* Effect.promise(() => signedRequest({ timestamp }));
+              const response = yield* Effect.promise(() => fetch(request));
+
+              expect(response.status, reason).toBe(status);
+              expect(yield* Effect.promise(() => response.json()), reason).toMatchObject({
+                code,
+                operation: "webhook",
+                retryable,
+              });
+            }),
+          {},
+          NodeCrypto.layer,
+          Option.some(
+            new EventSubReceiptError({ operation: "accept", reason, messageId: Option.none() }),
+          ),
+        );
+      }
     }),
   );
 
@@ -257,8 +306,8 @@ describe("authenticated EventSub HTTP ingress", () => {
             const requestSpan = spans.find((span) => span.name === "HTTP request");
 
             expect(response.status).toBe(503);
-            expect(yield* Effect.promise(() => response.text())).not.toBe(
-              JSON.stringify({ error: "EventSub durable acceptance failed" }),
+            expect(yield* Effect.promise(() => response.text())).not.toContain(
+              "EventSubAcceptanceFailed",
             );
             expect(
               requestSpan?.status._tag === "Ended" && Exit.isFailure(requestSpan.status.exit)
@@ -290,12 +339,12 @@ describe("authenticated EventSub HTTP ingress", () => {
             [{ retry: "NaN" }, 400],
             [{ version: "" }, 400],
             [{ timestamp: "invalid" }, 400],
-            [{ timestamp: "2020-01-01T00:00:00Z" }, 403],
-            [{ timestamp: "2099-01-01T00:00:00Z" }, 403],
+            [{ timestamp: "2020-01-01T00:00:00Z" }, 401],
+            [{ timestamp: "2099-01-01T00:00:00Z" }, 401],
             [{ signature: "sha512=" + "0".repeat(64) }, 400],
             [{ signature: `sha256=${"0".repeat(62)}` }, 400],
             [{ signature: `sha256=${"g".repeat(64)}` }, 400],
-            [{ signature: `sha256=${"0".repeat(64)}` }, 403],
+            [{ signature: `sha256=${"0".repeat(64)}` }, 401],
           ] as const) {
             const request = yield* Effect.promise(() => signedRequest(input));
             const response = yield* Effect.promise(() => fetch(request));
@@ -316,7 +365,12 @@ describe("authenticated EventSub HTTP ingress", () => {
             signedRequest({ text: "{", signature: `sha256=${"0".repeat(64)}` }),
           );
 
-          expect((yield* Effect.promise(() => fetch(unsignedJson))).status).toBe(403);
+          const unsigned = yield* Effect.promise(() => fetch(unsignedJson));
+          expect(unsigned.status).toBe(401);
+          expect(yield* Effect.promise(() => unsigned.json())).toMatchObject({
+            code: "EventSubSignatureInvalid",
+            retryable: false,
+          });
           const signedJson = yield* Effect.promise(() => signedRequest({ text: "{" }));
           expect((yield* Effect.promise(() => fetch(signedJson))).status).toBe(400);
 
@@ -326,8 +380,8 @@ describe("authenticated EventSub HTTP ingress", () => {
 
           const invalidResponse = yield* Effect.promise(() => fetch(invalidUtf8));
           expect(invalidResponse.status).toBe(400);
-          expect(yield* Effect.promise(() => invalidResponse.json())).toEqual({
-            error: "Invalid EventSub body",
+          expect(yield* Effect.promise(() => invalidResponse.json())).toMatchObject({
+            code: "InvalidEventSubBody",
           });
           const text = JSON.stringify(envelope("unknown.subscription", { message: "🎵 café" }));
           const body = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(text)]);
@@ -393,10 +447,18 @@ describe("authenticated EventSub HTTP ingress", () => {
         );
 
         const response = yield* Effect.promise(() => fetch(oversize));
-        expect(response.status).toBe(413);
+        expect(response.status).toBe(400);
+        expect(yield* Effect.promise(() => response.json())).toMatchObject({
+          code: "EventSubBodyTooLarge",
+          details: { maximumBytes: 1_048_576 },
+        });
         const declared = yield* Effect.promise(() => signedRequest({}));
         declared.headers.set("content-length", "1048577");
-        expect((yield* Effect.promise(() => fetch(declared))).status).toBe(413);
+        const declaredResponse = yield* Effect.promise(() => fetch(declared));
+        expect(declaredResponse.status).toBe(400);
+        expect(yield* Effect.promise(() => declaredResponse.json())).toMatchObject({
+          code: "EventSubBodyTooLarge",
+        });
         expect(receipts).toHaveLength(0);
       }),
     ),
@@ -422,9 +484,11 @@ describe("authenticated EventSub HTTP ingress", () => {
           );
 
           const response = yield* Effect.promise(() => fetch(conflict));
-          expect(response.status).toBe(503);
-          expect(yield* Effect.promise(() => response.json())).toEqual({
-            error: "EventSub durable acceptance failed",
+          expect(response.status).toBe(409);
+          expect(yield* Effect.promise(() => response.json())).toMatchObject({
+            code: "EventSubReceiptConflict",
+            details: { messageId: "eventsub-test-message" },
+            retryable: false,
           });
           expect(receipts[0]?.contentDigest).toMatch(/^[0-9a-f]{64}$/u);
         }),
@@ -511,16 +575,21 @@ describe("EventSub management HTTP", () => {
           const response = yield* Effect.promise(() => fetch(managementRequest("/setup", "POST")));
           expect(response.status).toBe(500);
           expect(yield* Effect.promise(() => response.json())).toMatchObject({
-            success: false,
-            message: "Some subscriptions failed to create",
-            skipped: [],
-            created: expect.any(Array),
-            errors: [
-              expect.objectContaining({
-                type: "stream.offline",
-                code: "TwitchSubscriptionCreateError",
-              }),
-            ],
+            code: "SubscriptionSetupIncomplete",
+            operation: "setupSubscriptions",
+            details: {
+              skipped: [],
+              created: expect.any(Array),
+              errors: [
+                {
+                  type: "stream.offline",
+                  error: "Twitch subscription creation failed (rejected) for stream.offline.",
+                  code: "TwitchSubscriptionCreateError",
+                },
+              ],
+            },
+            // A rejected creation is permanent, so repeating setup is not reported as retryable.
+            retryable: false,
           });
           expect(attempted).toEqual([
             "stream.online",
@@ -547,8 +616,8 @@ describe("EventSub management HTTP", () => {
                 new ProviderError({
                   provider: "twitch",
                   operation: "createEventSubSubscription",
-                  kind: "rejected",
-                  status: 500,
+                  reason: "rejected",
+                  status: Option.some(500),
                   retryAfterMs: Option.none(),
                 }),
               )
@@ -601,8 +670,8 @@ describe("EventSub management HTTP", () => {
                 new ProviderError({
                   provider: "twitch",
                   operation: "deleteEventSubSubscription",
-                  kind: "rejected",
-                  status: 500,
+                  reason: "rejected",
+                  status: Option.some(500),
                   retryAfterMs: Option.none(),
                 }),
               )

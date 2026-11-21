@@ -1,8 +1,15 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect } from "effect";
+import { Data, Effect, Layer, Option, Predicate } from "effect";
 import { SqlClient } from "effect/sql";
-import { makeStreamDatabase } from "./stream-database.ts";
+import { IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
+import {
+  makeStreamDatabase,
+  StreamDatabase,
+  streamDatabaseLayerWithoutDependencies,
+  streamDatabaseTestLayer,
+} from "./stream-database.ts";
+import { LiveStreamState } from "./stream-state.ts";
 
 type LegacyTransitionIntent = Data.TaggedEnum<{
   readonly StreamOnlineIntent: {
@@ -76,14 +83,20 @@ describe("Stream Lifecycle database migration", () => {
       expect(state).toMatchObject({
         streamId: "stream-123",
         peakViewerCount: 41,
-        viewerPollScheduleId: "2026-01-30T12:00:00.000Z",
-        transitionCheckpoint: {
-          spotifyTokenNotified: true,
-          twitchTokenNotified: false,
-          lifecycleEventPublished: false,
-          viewerPollingUpdated: false,
-        },
+        viewerPollScheduleId: Option.some("2026-01-30T12:00:00.000Z"),
       });
+      expect(Option.getOrThrow(state.transitionCheckpoint)).toMatchObject({
+        spotifyTokenNotified: true,
+        twitchTokenNotified: false,
+        lifecycleEventPublished: false,
+        viewerPollingUpdated: false,
+      });
+      // Option fields keep the historical JSON representation: absence is stored as null.
+      expect(yield* sql`SELECT state FROM stream_lifecycle_state`).toEqual([
+        {
+          state: expect.stringContaining('"viewerPollScheduleId":null,"spotifyTokenNotified":true'),
+        },
+      ]);
       expect(yield* database.getViewerSnapshotCount()).toBe(1);
       expect(yield* sql`SELECT callback, type, time FROM cf_agents_schedules`).toEqual([
         { callback: "pollViewerCountTick", type: "scheduled", time: 1769774400 },
@@ -203,3 +216,88 @@ describe("Stream Lifecycle database migration", () => {
     }).pipe(Effect.provide(sqlLayer));
   });
 });
+
+const at = (value: string) => IsoTimestamp.make(value);
+
+const liveState = LiveStreamState.make({
+  streamId: StreamId.make("stream-123"),
+  startedAt: at("2026-01-30T11:55:00.000Z"),
+  peakViewerCount: 5,
+  viewerPollScheduleId: Option.none(),
+  transitionCheckpoint: Option.none(),
+});
+
+// The in-memory test Layer must stay observably equivalent to SQLite for every shared behavior.
+const streamDatabaseImplementations = [
+  [
+    "real SQLite",
+    streamDatabaseLayerWithoutDependencies.pipe(
+      Layer.provide(SqliteClient.layer({ filename: ":memory:" })),
+    ),
+  ],
+  ["in-memory test Layer", streamDatabaseTestLayer],
+] as const;
+
+for (const [implementation, layer] of streamDatabaseImplementations) {
+  describe(`Stream Lifecycle persistence contract (${implementation})`, () => {
+    it.effect("raises the peak only when exceeded and replaces a count at the same instant", () =>
+      Effect.gen(function* () {
+        const database = yield* StreamDatabase;
+        yield* database.saveState(liveState);
+
+        const lower = yield* database.recordViewerCount({
+          state: liveState,
+          count: NonNegativeInt.make(3),
+          recordedAt: at("2026-01-30T12:00:00.000Z"),
+        });
+
+        expect(lower).toBe(liveState);
+
+        const higher = yield* database.recordViewerCount({
+          state: liveState,
+          count: NonNegativeInt.make(9),
+          recordedAt: at("2026-01-30T12:00:00.000Z"),
+        });
+
+        expect(higher.peakViewerCount).toBe(9);
+        expect((yield* database.getState()).peakViewerCount).toBe(9);
+        expect(yield* database.getViewerSnapshotCount()).toBe(1);
+      }).pipe(Effect.provide(layer)),
+    );
+
+    it.effect("pages viewer history oldest first within inclusive bounds and resets", () =>
+      Effect.gen(function* () {
+        const database = yield* StreamDatabase;
+
+        for (const [minute, count] of [
+          ["03", 30],
+          ["01", 10],
+          ["02", 20],
+        ] as const) {
+          yield* database.recordViewerCount({
+            state: liveState,
+            count: NonNegativeInt.make(count),
+            recordedAt: at(`2026-01-30T12:${minute}:00.000Z`),
+          });
+        }
+
+        const page = yield* database.getViewerHistory({
+          since: Option.some(at("2026-01-30T12:01:00.000Z")),
+          until: Option.some(at("2026-01-30T12:02:00.000Z")),
+          limit: 1,
+          offset: 1,
+        });
+
+        expect(page).toEqual({
+          snapshots: [{ timestamp: "2026-01-30T12:02:00.000Z", viewerCount: 20 }],
+          totalCount: 2,
+        });
+
+        const reset = yield* database.reset();
+        expect(Predicate.isTagged("OfflineStream")(reset)).toBe(true);
+        expect(yield* database.getState()).toEqual(reset);
+        expect(yield* database.getViewerSnapshotCount()).toBe(0);
+      }).pipe(Effect.provide(layer)),
+    );
+  });
+}

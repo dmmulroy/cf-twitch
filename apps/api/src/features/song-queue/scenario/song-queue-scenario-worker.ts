@@ -9,10 +9,8 @@ import { HttpRouter } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../../runtime/cloudflare-http-server.ts";
 import { SpotifyService } from "../../providers/spotify-service.ts";
-import { SongQueue } from "../song-queue.ts";
-import { songQueueClientLayerWithoutDependencies } from "../song-queue-client.ts";
+import { SongQueue, songQueueLayerWithoutDependencies } from "../song-queue.ts";
 import { SongQueueHttpApi } from "../song-queue-http-api.ts";
-import { songQueueHttpHandlersLayer } from "../song-queue-http-handlers.ts";
 import {
   songQueueServerLayerWithoutDependencies,
   type SongQueueServer,
@@ -46,8 +44,8 @@ const localSpotifyLayer = Layer.effect(
               new ProviderError({
                 provider: "spotify",
                 operation: "getTrack",
-                kind: "not-found",
-                status: 404,
+                reason: "not-found",
+                status: Option.some(404),
                 retryAfterMs: Option.none(),
               }),
             ),
@@ -115,14 +113,52 @@ const localSpotifyLayer = Layer.effect(
 
 type SongQueueScenarioWorkerContract = { readonly fetch: HttpEffect };
 
-/** Scratch-only scenario Worker exercises the real song queue HTTP namespace client. */
+// Re-serves the song queue API through the execution-scoped HTTP client, so each scenario request
+// crosses Worker → SongQueue client → SongQueueDO. The DO's own handlers use its coordinator.
+const songQueueScenarioHandlersLayer = HttpApiBuilder.group(
+  SongQueueHttpApi,
+  "songQueue",
+  (handlers) =>
+    Effect.gen(function* () {
+      const queue = yield* SongQueue;
+
+      return handlers
+        .handle("persistRequest", ({ payload }) => queue.persistRequest(payload))
+        .handle("deleteRequest", ({ payload }) => queue.deleteRequest(payload))
+        .handle("getSongQueue", ({ payload }) => queue.getSongQueue(payload))
+        .handle("getCurrentlyPlaying", () => queue.getCurrentlyPlaying())
+        .handle("getRequestHistory", ({ payload }) => queue.getRequestHistory(payload))
+        .handle("getUserRequestCount", ({ payload }) => queue.getUserRequestCount(payload))
+        .handle("getUserRequestCountByDisplayName", ({ payload }) =>
+          queue.getUserRequestCountByDisplayName(payload),
+        )
+        .handle("getSessionRequestCount", ({ payload }) => queue.getSessionRequestCount(payload))
+        .handle("getTopTracks", ({ payload }) => queue.getTopTracks(payload))
+        .handle("getTopTracksByUser", ({ payload }) => queue.getTopTracksByUser(payload))
+        .handle("getTopRequesters", ({ payload }) => queue.getTopRequesters(payload))
+        .handle("checkDuplicateRequest", ({ payload }) => queue.checkDuplicateRequest(payload))
+        .handle("refreshQueue", () => queue.refreshQueue());
+    }),
+);
+
+/** Scratch-only scenario Worker that serves the song queue API through the real `SongQueue` HTTP client. */
 export class SongQueueScenarioWorker extends Cloudflare.Worker<
   SongQueueScenarioWorker,
   SongQueueScenarioWorkerContract,
   SongQueueServer
 >()("CfTwitchSongQueueScenarioWorker") {}
 
-/** Local workerd graph overrides the provider at the outer init binding boundary. */
+/**
+ * Layer for the local workerd scenario graph: Worker → `SongQueue` client → `SongQueueDO` → SQL.
+ *
+ * **Details**
+ *
+ * Replaces Spotify with a process-local model at the outer initialization boundary, so no
+ * external HTTP, token namespace, or production resource is reachable.
+ *
+ * @throws {MigrationError | SqlError | SongQueueError} As a defect from `SongQueueDO` startup when
+ *   storage cannot be migrated or polling cannot be restored.
+ */
 export const songQueueScenarioWorkerLayer = SongQueueScenarioWorker.make(
   {
     main: import.meta.url,
@@ -134,7 +170,7 @@ export const songQueueScenarioWorkerLayer = SongQueueScenarioWorker.make(
 
     const httpLayer = HttpApiBuilder.layer(SongQueueHttpApi).pipe(
       Layer.provide(
-        songQueueHttpHandlersLayer.pipe(Layer.provide(Layer.succeed(SongQueue, queue))),
+        songQueueScenarioHandlersLayer.pipe(Layer.provide(Layer.succeed(SongQueue, queue))),
       ),
       Layer.provide(cloudflareHttpServerLayer),
     );
@@ -148,7 +184,7 @@ export const songQueueScenarioWorkerLayer = SongQueueScenarioWorker.make(
     return { fetch };
   }).pipe(
     Effect.provide(
-      songQueueClientLayerWithoutDependencies.pipe(
+      songQueueLayerWithoutDependencies.pipe(
         Layer.provide(
           songQueueServerLayerWithoutDependencies.pipe(Layer.provide(localSpotifyLayer)),
         ),
@@ -157,11 +193,12 @@ export const songQueueScenarioWorkerLayer = SongQueueScenarioWorker.make(
   ),
 );
 
-/** Scratch scenario output contains only the local Worker URL. */
+/** Scenario stack output: only the local Worker URL. */
 export const songQueueScenarioStack = Effect.gen(function* () {
   const worker = yield* SongQueueScenarioWorker;
 
   return { url: worker.url };
 }).pipe(Effect.provide(songQueueScenarioWorkerLayer));
 
+/** Default export: the scenario Worker Layer, discovered by the local Alchemy test stage. */
 export default songQueueScenarioWorkerLayer;

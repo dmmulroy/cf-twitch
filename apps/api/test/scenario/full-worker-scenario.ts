@@ -9,14 +9,15 @@ import { achievementsServerLayerWithoutDependencies } from "../../src/features/a
 import { commandsClientLayerWithoutDependencies } from "../../src/features/commands/commands-client.ts";
 import { computedChatCommandsLayerWithoutDependencies } from "../../src/features/commands/computed-chat-commands.ts";
 import { commandsServerLayerWithoutDependencies } from "../../src/features/commands/commands-server.ts";
-import { executorLayerWithoutDependencies } from "../../src/features/commands/chat-command-executor.ts";
-import {
-  eventBusAdministrationLayerWithoutDependencies,
-  eventPublisherLayerWithoutDependencies,
-} from "../../src/features/events/event-bus-client.ts";
+import { chatCommandExecutorLayerWithoutDependencies } from "../../src/features/commands/chat-command-executor.ts";
+import { eventBusAdministrationLayerWithoutDependencies } from "../../src/features/events/event-bus-administration.ts";
+import { eventPublisherLayerWithoutDependencies } from "../../src/features/events/event-publisher.ts";
 import { eventBusServerLayerWithoutDependencies } from "../../src/features/events/event-bus-server.ts";
-import { eventSubReceiptsLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-client.ts";
-import { EventSubReceipts } from "../../src/features/eventsub/eventsub-receipts.ts";
+import { eventSubDispatchLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-dispatch.ts";
+import {
+  EventSubReceipts,
+  eventSubReceiptsLayerWithoutDependencies,
+} from "../../src/features/eventsub/eventsub-receipts.ts";
 import { eventSubWebhookServerLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-server.ts";
 import { httpTestConfiguration } from "../../src/features/http/http-test-fixtures.ts";
 import { oauthAuthorizationLayerWithoutDependencies } from "../../src/features/oauth/oauth-authorization.ts";
@@ -26,8 +27,10 @@ import {
   ProviderScenarioTranscript,
   providerScenarioTransportLayer,
 } from "../../src/features/providers/provider-scenario-transport.test-support.ts";
-import { ProviderAccessTokens } from "../../src/features/providers/provider-access-tokens.ts";
-import { providerAccessTokensLayerWithoutDependencies } from "../../src/features/providers/provider-token-client.ts";
+import {
+  ProviderAccessTokens,
+  providerAccessTokensLayerWithoutDependencies,
+} from "../../src/features/providers/provider-access-tokens.ts";
 import { providerTokenExchangeLayerWithoutDependencies } from "../../src/features/providers/provider-token-exchange.ts";
 import {
   spotifyTokenServerLayerWithoutDependencies,
@@ -37,11 +40,11 @@ import { spotifyServiceLayerWithoutDependencies } from "../../src/features/provi
 import { twitchServiceLayerWithoutDependencies } from "../../src/features/providers/twitch-service.ts";
 import { raffleClientLayerWithoutDependencies } from "../../src/features/raffle/raffle-client.ts";
 import { raffleServerLayer } from "../../src/features/raffle/raffle-server.ts";
-import { songQueueClientLayerWithoutDependencies } from "../../src/features/song-queue/song-queue-client.ts";
+import { songQueueLayerWithoutDependencies } from "../../src/features/song-queue/song-queue.ts";
 import { songQueueServerLayerWithoutDependencies } from "../../src/features/song-queue/song-queue-server.ts";
 import { streamLifecycleClientLayerWithoutDependencies } from "../../src/features/stream/stream-lifecycle-client.ts";
 import { streamLifecycleServerLayerWithoutDependencies } from "../../src/features/stream/stream-server.ts";
-import { workflowStartersLayerWithoutDependencies } from "../../src/features/workflows/workflow-client.ts";
+import { workflowStartersLayerWithoutDependencies } from "../../src/features/workflows/workflow-starters.ts";
 import {
   keyboardRaffleSagaServerLayerWithoutDependencies,
   raidShoutoutSagaServerLayerWithoutDependencies,
@@ -53,7 +56,7 @@ import {
 } from "../../src/runtime/twitch-worker.ts";
 import { TwitchConfiguration } from "../../src/runtime/twitch-configuration.ts";
 import { twitchHttpTelemetrySafetyLayer } from "../../src/runtime/twitch-telemetry.ts";
-import { recordingTwitchAnalyticsLayer } from "../support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../src/runtime/twitch-analytics.ts";
 
 const parseScenarioEventSubMessageId = Schema.decodeUnknownEffect(EventSubMessageId);
 
@@ -66,7 +69,7 @@ const configurationLayer = Layer.succeed(TwitchConfiguration, httpTestConfigurat
 const controlledPlatformLayer = Layer.mergeAll(
   configurationLayer,
   providerScenarioTransportLayer,
-  recordingTwitchAnalyticsLayer,
+  twitchAnalyticsTestLayer,
   NodeCrypto.layer,
 );
 
@@ -92,7 +95,7 @@ const twitchServiceLayer = twitchServiceLayerWithoutDependencies.pipe(
 );
 
 const achievementsServerLayer = achievementsServerLayerWithoutDependencies.pipe(
-  Layer.provide([twitchServiceLayer, recordingTwitchAnalyticsLayer]),
+  Layer.provide([twitchServiceLayer, twitchAnalyticsTestLayer]),
 );
 
 const achievementsLayer = achievementsClientLayerWithoutDependencies.pipe(
@@ -109,9 +112,7 @@ const songQueueServerLayer = songQueueServerLayerWithoutDependencies.pipe(
   Layer.provide(spotifyServiceLayer),
 );
 
-const songQueueLayer = songQueueClientLayerWithoutDependencies.pipe(
-  Layer.provide(songQueueServerLayer),
-);
+const songQueueLayer = songQueueLayerWithoutDependencies.pipe(Layer.provide(songQueueServerLayer));
 
 const eventBusServerLayer = eventBusServerLayerWithoutDependencies.pipe(
   Layer.provide(achievementsLayer),
@@ -144,7 +145,7 @@ const workflowDependenciesLayer = Layer.mergeAll(
   songQueueLayer,
   raffleLayer,
   eventPublisherLayer,
-  recordingTwitchAnalyticsLayer,
+  twitchAnalyticsTestLayer,
   NodeCrypto.layer,
 );
 
@@ -162,19 +163,16 @@ const computedCommandsLayer = computedChatCommandsLayerWithoutDependencies.pipe(
   Layer.provide([commandsLayer, songQueueLayer, raffleLayer, achievementsLayer]),
 );
 
-const commandExecutorLayer = executorLayerWithoutDependencies.pipe(
-  Layer.provide([commandsLayer, computedCommandsLayer, recordingTwitchAnalyticsLayer]),
+const commandExecutorLayer = chatCommandExecutorLayerWithoutDependencies.pipe(
+  Layer.provide([commandsLayer, computedCommandsLayer, twitchAnalyticsTestLayer]),
+);
+
+const eventSubDispatchLayer = eventSubDispatchLayerWithoutDependencies.pipe(
+  Layer.provide([workflowStartersLayer, streamLayer, commandExecutorLayer, configurationLayer]),
 );
 
 const eventSubServerLayer = eventSubWebhookServerLayerWithoutDependencies.pipe(
-  Layer.provide([
-    workflowStartersLayer,
-    twitchServiceLayer,
-    streamLayer,
-    commandExecutorLayer,
-    configurationLayer,
-    recordingTwitchAnalyticsLayer,
-  ]),
+  Layer.provide([eventSubDispatchLayer, twitchServiceLayer, twitchAnalyticsTestLayer]),
 );
 
 const eventSubReceiptsLayer = eventSubReceiptsLayerWithoutDependencies.pipe(
@@ -274,7 +272,17 @@ const fullWorkerScenarioImplementation = Effect.gen(function* () {
   return { fetch };
 });
 
-/** Fresh local Worker with all thirteen production Durable Object classes and controlled providers. */
+/**
+ * Fresh local Worker with all thirteen production Durable Object classes and controlled providers.
+ *
+ * **Details**
+ *
+ * Adds scenario-only routes under `/__scenario/` for provider transcripts, EventSub receipt status
+ * and concurrent token refresh.
+ *
+ * @throws As a defect when construction fails or a scenario-only route meets a receipt, provider or
+ * schema failure, so the test fails loudly instead of rendering a public error.
+ */
 export const fullWorkerScenarioLayer = TwitchApiWorker.make(
   {
     main: import.meta.url,
@@ -289,13 +297,21 @@ export const fullWorkerScenarioLayer = TwitchApiWorker.make(
   ),
 ).pipe(Layer.provideMerge(twitchHttpTelemetrySafetyLayer));
 
-/** Deployable full-graph scenario output contains only its isolated local URL. */
+/**
+ * Scenario stack that deploys the full Worker graph locally and returns only its isolated URL.
+ *
+ * @throws As a defect when the local Worker reports no URL.
+ */
 export const fullWorkerScenarioStack = Effect.gen(function* () {
   const worker = yield* TwitchApiWorker;
 
-  if (worker.url === undefined) return yield* Effect.die("Full Worker scenario URL is unavailable");
+  if (worker.url === undefined)
+    return yield* Effect.die(
+      "Full Worker scenario URL is unavailable; check that the scenario Worker declares a dev host and port.",
+    );
 
   return { url: worker.url };
 }).pipe(Effect.provide(fullWorkerScenarioLayer));
 
+/** Full Worker scenario Layer exported as the module default, the entrypoint Alchemy loads for this Worker. */
 export default fullWorkerScenarioLayer;

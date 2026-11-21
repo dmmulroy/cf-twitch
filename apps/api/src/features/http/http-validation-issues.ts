@@ -1,67 +1,19 @@
 import { Match, Option, Predicate, Schema, type SchemaAST, type SchemaIssue } from "effect";
+import type { TwitchHttpValidationIssue } from "@cf-twitch/contracts/twitch-api";
 
-const issuePath = Schema.Array(Schema.Union([Schema.String, Schema.Number]));
+type PublicIssue = TwitchHttpValidationIssue;
 
-const issueBase = { path: issuePath, message: Schema.String };
+type IssuePath = PublicIssue["path"];
+
+type IssueLiteralValue = Extract<PublicIssue, { readonly code: "invalid_value" }>["values"][number];
 
 const literalValue = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
 
-const publicIssue = Schema.Union([
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("invalid_type"),
-    expected: Schema.String,
-    format: Schema.optionalKey(Schema.Literal("safeint")),
-    received: Schema.optionalKey(Schema.Literals(["NaN", "Infinity"])),
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("too_small"),
-    origin: Schema.Literals(["number", "int", "string", "array"]),
-    minimum: Schema.Number,
-    inclusive: Schema.Literal(true),
-    note: Schema.optionalKey(Schema.String),
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("too_big"),
-    origin: Schema.Literals(["number", "int", "string", "array"]),
-    maximum: Schema.Number,
-    inclusive: Schema.Literal(true),
-    note: Schema.optionalKey(Schema.String),
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("invalid_value"),
-    values: Schema.Array(literalValue),
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("unrecognized_keys"),
-    keys: Schema.Array(Schema.String),
-  }),
-  Schema.Struct({ ...issueBase, code: Schema.Literal("custom") }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("invalid_format"),
-    origin: Schema.Literal("string"),
-    format: Schema.Literals(["regex", "datetime"]),
-    pattern: Schema.String,
-  }),
-  Schema.Struct({
-    ...issueBase,
-    code: Schema.Literal("invalid_union"),
-    errors: Schema.Array(Schema.Never),
-    note: Schema.Literal("No matching discriminator"),
-    discriminator: Schema.Literal("responseType"),
-  }),
-]);
+/** Command input value at an issue path; `Option.none()` when the key is absent from the JSON input. */
+type CommandInputValue = Option.Option<Schema.Json>;
 
-type PublicIssue = typeof publicIssue.Type;
-
-type IssuePath = typeof issuePath.Type;
-
-type CommandInputValue = Schema.Json | undefined;
+/** Schema AST node enclosing an issue, when the issue tree supplies one. */
+type ParentAst = Option.Option<SchemaAST.AST>;
 
 const filterMetadata = Schema.Union([
   Schema.Struct({
@@ -100,20 +52,21 @@ const isJsonArray = Schema.is(Schema.Array(Schema.Json));
 
 const isJsonObject = Schema.is(Schema.Record(Schema.String, Schema.Json));
 
+const describeJsonType = (input: Schema.Json): string =>
+  input === null
+    ? "null"
+    : isJsonArray(input)
+      ? "array"
+      : Predicate.isString(input)
+        ? "string"
+        : Predicate.isNumber(input)
+          ? "number"
+          : Predicate.isBoolean(input)
+            ? "boolean"
+            : "object";
+
 const receivedType = (input: CommandInputValue): string =>
-  input === undefined
-    ? "undefined"
-    : input === null
-      ? "null"
-      : isJsonArray(input)
-        ? "array"
-        : Predicate.isString(input)
-          ? "string"
-          : Predicate.isNumber(input)
-            ? "number"
-            : Predicate.isBoolean(input)
-              ? "boolean"
-              : "object";
+  Option.match(input, { onNone: () => "undefined", onSome: describeJsonType });
 
 const typeIssue = (expected: string, input: CommandInputValue, path: IssuePath): PublicIssue => ({
   expected,
@@ -122,10 +75,7 @@ const typeIssue = (expected: string, input: CommandInputValue, path: IssuePath):
   message: `Invalid input: expected ${expected}, received ${receivedType(input)}`,
 });
 
-const enumIssue = (
-  values: readonly (typeof literalValue.Type)[],
-  path: IssuePath,
-): PublicIssue => ({
+const enumIssue = (values: readonly IssueLiteralValue[], path: IssuePath): PublicIssue => ({
   code: "invalid_value",
   values,
   path,
@@ -155,7 +105,7 @@ const boundsIssue = (
     : { origin, code: "too_big", maximum: bound, inclusive: true, path, message };
 };
 
-/** Numeric query diagnostics preserve coercion, safe-integer and range evidence without echoing raw input. */
+/** Formats numeric query issues for coercion, safe-integer and range failures without echoing raw input. */
 export const formatHttpNumberIssues = (
   value: number,
   path: IssuePath,
@@ -215,7 +165,7 @@ export const formatHttpNumberIssues = (
   return issues;
 };
 
-/** Unknown query keys remain one ordered public issue rather than one issue per key. */
+/** Formats unknown query or body keys as one ordered issue rather than one issue per key. */
 export const formatHttpUnknownKeys = (
   keys: readonly string[],
   path: IssuePath = [],
@@ -226,7 +176,7 @@ export const formatHttpUnknownKeys = (
   message: `Unrecognized key${keys.length === 1 ? "" : "s"}: ${keys.map((key) => JSON.stringify(key)).join(", ")}`,
 });
 
-/** Enum diagnostics describe allowed values without returning the rejected input. */
+/** Formats an enumeration issue that lists the allowed values without returning the rejected input. */
 export const formatHttpEnumIssue = enumIssue;
 
 // Historical datetime pattern is error response metadata, never a second parser.
@@ -242,23 +192,23 @@ const datetimeIssue = (path: IssuePath): PublicIssue => ({
   message: "Invalid ISO datetime",
 });
 
-const getInputKey = (input: CommandInputValue, key: PropertyKey): CommandInputValue => {
-  if (isJsonArray(input) && Predicate.isNumber(key)) return input[key];
+const getInputKey = (input: CommandInputValue, key: PropertyKey): CommandInputValue =>
+  Option.flatMap(input, (json) => {
+    if (isJsonArray(json) && Predicate.isNumber(key)) return Option.fromUndefinedOr(json[key]);
 
-  if (isJsonObject(input) && Predicate.isString(key)) return input[key];
+    if (isJsonObject(json) && Predicate.isString(key)) return Option.fromUndefinedOr(json[key]);
 
-  return undefined;
-};
+    return Option.none();
+  });
 
-const expectedIssue = (
-  ast: SchemaAST.AST | undefined,
-  input: CommandInputValue,
-  path: IssuePath,
-): PublicIssue => {
-  if (Predicate.isTagged(ast, "Union")) {
-    const nonNull = ast.types.filter((member) => !Predicate.isTagged(member, "Null"));
+const expectedIssue = (ast: ParentAst, input: CommandInputValue, path: IssuePath): PublicIssue => {
+  if (Option.isNone(ast)) return typeIssue("string", input, path);
+  const node = ast.value;
 
-    if (nonNull.length === 1) return expectedIssue(nonNull[0], input, path);
+  if (Predicate.isTagged(node, "Union")) {
+    const nonNull = node.types.filter((member) => !Predicate.isTagged(member, "Null"));
+
+    if (nonNull.length === 1) return expectedIssue(Option.fromUndefinedOr(nonNull[0]), input, path);
 
     if (nonNull.every(Predicate.isTagged("Literal")))
       return enumIssue(
@@ -269,13 +219,13 @@ const expectedIssue = (
       );
   }
 
-  if (Predicate.isTagged(ast, "Literal"))
-    return enumIssue(Option.toArray(parseLiteral(ast.literal)), path);
+  if (Predicate.isTagged(node, "Literal"))
+    return enumIssue(Option.toArray(parseLiteral(node.literal)), path);
 
-  let expected = ast?._tag.toLowerCase() ?? "string";
+  let expected = node._tag.toLowerCase();
 
-  if (Predicate.isTagged(ast, "Objects")) expected = "object";
-  else if (Predicate.isTagged(ast, "Arrays")) expected = "array";
+  if (Predicate.isTagged(node, "Objects")) expected = "object";
+  else if (Predicate.isTagged(node, "Arrays")) expected = "array";
 
   return typeIssue(expected, input, path);
 };
@@ -293,7 +243,7 @@ function formatCompositeCommandIssue(
   for (const child of issue.issues) {
     if (Predicate.isTagged(child, "Pointer") && Predicate.isTagged(child.issue, "UnexpectedKey"))
       unexpected.push(...child.path.map(String));
-    else issues.push(...formatCommandIssue(child, input, path, issue.ast));
+    else issues.push(...formatCommandIssue(child, input, path, Option.some(issue.ast)));
   }
 
   if (unexpected.length > 0) issues.push(formatHttpUnknownKeys(unexpected, path));
@@ -306,19 +256,17 @@ function formatAnyOfCommandIssue(
   input: CommandInputValue,
   path: IssuePath,
 ): readonly PublicIssue[] {
-  const first = issue.issues[0];
+  const sole = issue.issues.length === 1 ? Option.fromUndefinedOr(issue.issues[0]) : Option.none();
 
-  if (path.length > 0 || !issue.ast.types.every(Predicate.isTagged("Objects"))) {
-    if (issue.issues.length === 1 && first !== undefined)
-      return formatCommandIssue(first, input, path, issue.ast);
+  if (path.length > 0 || !issue.ast.types.every(Predicate.isTagged("Objects")))
+    return Option.match(sole, {
+      onNone: () => [expectedIssue(Option.some(issue.ast), input, path)],
+      onSome: (only) => formatCommandIssue(only, input, path, Option.some(issue.ast)),
+    });
 
-    return [expectedIssue(issue.ast, input, path)];
-  }
+  if (!Option.exists(input, isJsonObject)) return [typeIssue("object", input, path)];
 
-  if (!isJsonObject(input)) return [typeIssue("object", input, path)];
-
-  if (issue.issues.length === 1 && first !== undefined)
-    return formatCommandIssue(first, input, path);
+  if (Option.isSome(sole)) return formatCommandIssue(sole.value, input, path, Option.none());
 
   return [
     {
@@ -332,14 +280,17 @@ function formatAnyOfCommandIssue(
   ];
 }
 
+const isObjectsAst = (ast: SchemaAST.AST): ast is SchemaAST.Objects =>
+  Predicate.isTagged(ast, "Objects");
+
 type FilterMetadata = typeof filterMetadata.Type;
 
 type FilterOrigin = "array" | "number" | "string";
 
-const filterOrigin = (parentAst: SchemaAST.AST | undefined): FilterOrigin => {
-  if (Predicate.isTagged(parentAst, "Arrays")) return "array";
+const filterOrigin = (parentAst: ParentAst): FilterOrigin => {
+  if (Option.exists(parentAst, Predicate.isTagged("Arrays"))) return "array";
 
-  if (Predicate.isTagged(parentAst, "Number")) return "number";
+  if (Option.exists(parentAst, Predicate.isTagged("Number"))) return "number";
 
   return "string";
 };
@@ -349,7 +300,7 @@ function formatKnownFilterMetadata(
   issue: SchemaIssue.Filter,
   input: CommandInputValue,
   path: IssuePath,
-  parentAst: SchemaAST.AST | undefined,
+  parentAst: ParentAst,
 ): readonly PublicIssue[] {
   const origin = filterOrigin(parentAst);
 
@@ -379,9 +330,11 @@ function formatKnownFilterMetadata(
 
     case "effect/schema/isInt":
     case "effect/schema/isFinite":
-      return Predicate.isNumber(input)
-        ? formatHttpNumberIssues(input, path, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
-        : formatCommandIssue(issue.issue, input, path, parentAst);
+      return Option.match(Option.filter(input, Predicate.isNumber), {
+        onNone: () => formatCommandIssue(issue.issue, input, path, parentAst),
+        onSome: (value) =>
+          formatHttpNumberIssues(value, path, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER),
+      });
   }
 }
 
@@ -389,7 +342,7 @@ function formatFilterCommandIssue(
   issue: SchemaIssue.Filter,
   input: CommandInputValue,
   path: IssuePath,
-  parentAst?: SchemaAST.AST,
+  parentAst: ParentAst,
 ): readonly PublicIssue[] {
   if (path[0] === "createdAt") return [datetimeIssue(path)];
   const metadata = parseFilterMetadata(issue.filter.annotations?.representation);
@@ -403,13 +356,16 @@ function formatPointerCommandIssue(
   issue: SchemaIssue.Pointer,
   input: CommandInputValue,
   path: IssuePath,
-  parentAst: SchemaAST.AST | undefined,
+  parentAst: ParentAst,
 ): readonly PublicIssue[] {
   const key = issue.path[0];
 
-  const childAst = Predicate.isTagged(parentAst, "Objects")
-    ? parentAst.propertySignatures.find((field) => field.name === key)?.type
-    : undefined;
+  const childAst = Option.filter(parentAst, isObjectsAst).pipe(
+    Option.flatMap((objects) =>
+      Option.fromUndefinedOr(objects.propertySignatures.find((field) => field.name === key)),
+    ),
+    Option.map((field) => field.type),
+  );
 
   return formatCommandIssue(
     issue.issue,
@@ -423,16 +379,17 @@ function formatCommandIssue(
   issue: SchemaIssue.Issue,
   input: CommandInputValue,
   path: IssuePath,
-  parentAst?: SchemaAST.AST,
+  parentAst: ParentAst,
 ): readonly PublicIssue[] {
   return Match.value(issue).pipe(
     Match.tags({
       Pointer: (pointer) => formatPointerCommandIssue(pointer, input, path, parentAst),
       Composite: (composite) => formatCompositeCommandIssue(composite, input, path),
       AnyOf: (anyOf) => formatAnyOfCommandIssue(anyOf, input, path),
-      InvalidType: (invalidType) => [expectedIssue(invalidType.ast, input, path)],
-      MissingKey: () => [expectedIssue(parentAst, undefined, path)],
-      Encoding: (encoding) => formatCommandIssue(encoding.issue, input, path, encoding.ast),
+      InvalidType: (invalidType) => [expectedIssue(Option.some(invalidType.ast), input, path)],
+      MissingKey: () => [expectedIssue(parentAst, Option.none(), path)],
+      Encoding: (encoding) =>
+        formatCommandIssue(encoding.issue, input, path, Option.some(encoding.ast)),
       Filter: (filter) => formatFilterCommandIssue(filter, input, path, parentAst),
       InvalidValue: (invalidValue) => [
         {
@@ -451,8 +408,15 @@ function formatCommandIssue(
   );
 }
 
-/** Format only the concrete command schemas' failure nodes into their historical HTTP issue envelopes. */
+/**
+ * Formats a command payload decode failure into historical field-level validation issues.
+ *
+ * **Details**
+ *
+ * Handles only the failure nodes the concrete command schemas produce; issues never echo the
+ * rejected input values.
+ */
 export const formatHttpCommandIssues = (
   error: Schema.SchemaError,
   input: Schema.Json,
-): readonly PublicIssue[] => formatCommandIssue(error.issue, input, []);
+): readonly PublicIssue[] => formatCommandIssue(error.issue, Option.some(input), [], Option.none());

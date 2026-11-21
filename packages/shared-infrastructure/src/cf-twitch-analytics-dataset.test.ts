@@ -42,4 +42,28 @@ describe("cf-twitch Analytics Engine dataset", () => {
       ),
     ),
   );
+
+  it.effect("rejects a planning stage that is not a permitted cf-twitch stage", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(resolveDatasetForStage("prod"));
+
+      assert.strictEqual(error._tag, "CfTwitchAnalyticsDatasetError");
+      assert.strictEqual(error.operation, "resolveCfTwitchAnalyticsDataset");
+      assert.strictEqual(error.reason, "StageNotPermitted");
+    }),
+  );
+
+  it.effect("rejects a hosted runtime whose Alchemy stage setting is not permitted", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(cfTwitchAnalyticsDataset);
+
+      assert.strictEqual(error.reason, "StageSettingInvalid");
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({ ALCHEMY_PHASE: "runtime", ALCHEMY_STAGE: "prod" }),
+        ),
+      ),
+    ),
+  );
 });

@@ -21,7 +21,7 @@ const SubscriptionIdInput = Schema.Struct({ subscriptionId: EventBusSubscription
 
 const UnitSuccess = Schema.Struct({ success: Schema.Literal(true) });
 
-/** Versioned Event Bus endpoints shared by the singleton server and invocation-scoped client. */
+/** Endpoint group for the versioned Event Bus operations shared by the singleton server and its invocation-scoped clients. */
 export class EventBusHttpApiGroup extends HttpApiGroup.make("eventBus")
   .add(
     HttpApiEndpoint.post("publish", "/events", {
@@ -116,7 +116,7 @@ export class EventBusHttpApiGroup extends HttpApiGroup.make("eventBus")
     }),
   ) {}
 
-/** Internal HTTP API hosted by the physical EventBusDO class. */
+/** Internal HTTP contract hosted by the `EventBusDO` singleton. */
 export class EventBusHttpApi extends HttpApi.make("EventBusHttpApi")
   .add(EventBusHttpApiGroup)
   .prefix("/v1") {}

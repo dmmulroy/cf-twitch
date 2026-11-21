@@ -1,11 +1,13 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "tools/traits"
 
 catalogMode: prefer
 
 catalog:
   "@cloudflare/workers-types": 5.20260825.1
+  "@effect/ai-typesafe": 4.1.4
   "@effect/platform-node": 4.1.4
   "@effect/sql-sqlite-do": 4.1.4
   "@effect/sql-sqlite-node": 4.1.4
@@ -17,6 +19,7 @@ catalog:
   alchemy: 2.0.0-beta.87
   effect: 4.1.4
   oxlint: 1.80.0
+  traits: 0.5.15
   typescript: 7.0.2
   vite: npm:@voidzero-dev/vite-plus-core@1.6.0
   vite-plus: 1.6.0

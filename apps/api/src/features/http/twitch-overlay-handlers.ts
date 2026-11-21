@@ -4,7 +4,7 @@ import { HttpServerResponse } from "effect/http";
 import { TwitchHttpApi } from "@cf-twitch/contracts/twitch-api";
 import { nowPlayingOverlayHtml } from "./now-playing-overlay.ts";
 
-/** OBS overlay HTML is static; provider metadata enters the DOM only via textContent. */
+/** Layer that serves the static OBS overlay HTML; provider metadata enters the DOM only via `textContent`. */
 export const twitchOverlayHandlersLayer = HttpApiBuilder.group(
   TwitchHttpApi,
   "overlay",

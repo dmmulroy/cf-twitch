@@ -67,4 +67,5 @@ export const oauthScenarioWorkerLayerWithoutDependencies = OAuthScenarioWorker.m
 /** Real native-storage OAuth scenario graph; no production Worker or provider HTTP is reachable. */
 export const oauthScenarioWorkerLayer = oauthScenarioWorkerLayerWithoutDependencies;
 
+/** Scenario Worker Layer exported as the module default, the entrypoint Alchemy loads for this Worker. */
 export default oauthScenarioWorkerLayer;

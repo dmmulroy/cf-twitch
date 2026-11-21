@@ -16,7 +16,7 @@ import {
 } from "@cf-twitch/contracts/chat-command";
 import { NonNegativeInt } from "@cf-twitch/contracts/identity";
 
-/** Versioned command registry HTTP operations; admin authentication belongs to the Worker edge. */
+/** Endpoint group for the versioned command registry operations; administrator authentication belongs to the Worker edge. */
 export class CommandsHttpApiGroup extends HttpApiGroup.make("commands")
   .add(
     HttpApiEndpoint.get("getAllCommands", "/commands", {
@@ -107,7 +107,7 @@ export class CommandsHttpApiGroup extends HttpApiGroup.make("commands")
     }),
   ) {}
 
-/** Shared internal HTTP contract for the physical CommandsDO singleton. */
+/** Internal HTTP contract shared by the `CommandsDO` singleton server and its generated client. */
 export class CommandsHttpApi extends HttpApi.make("CommandsHttpApi")
   .add(CommandsHttpApiGroup)
   .prefix("/v1") {}

@@ -1,4 +1,4 @@
-/** Frozen full baseline SQL migrations, independent of the new migration loader; no legacy runtime imports. */
+/** Baseline raffle SQL migration statements, frozen independently of the current migration loader and legacy runtime code. */
 export const historicalRaffleStatements = [
   "CREATE TABLE `rolls` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`display_name` text NOT NULL,\n\t`roll` integer NOT NULL,\n\t`winning_number` integer NOT NULL,\n\t`distance` integer NOT NULL,\n\t`is_winner` integer NOT NULL,\n\t`rolled_at` text NOT NULL\n)",
   "CREATE INDEX `idx_rolls_user_id` ON `rolls`(`user_id`)",

@@ -1,26 +1,32 @@
 import { Option } from "effect";
+import type { RedemptionId } from "@cf-twitch/contracts/identity";
 import type { PendingSongRequest, QueuedTrack } from "@cf-twitch/contracts/song-queue";
 import type { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 
-/** Snapshot positions preserve Spotify order independently of presentation priority. */
+/** One Queue Occurrence at its Spotify position; positions ignore presentation priority. */
 export interface SongQueueOccurrence {
+  /** Spotify order: `0` is Now Playing and upcoming occurrences start at `1`. */
   readonly position: number;
+  /** The occurrence's track with Viewer attribution, or `autoplay` when unattributed. */
   readonly track: QueuedTrack;
 }
 
+/** Request attributed to the current occurrence and the upcoming request it was promoted from. */
 interface CurrentSongQueueRequestSelection {
-  readonly request: PendingSongRequest | undefined;
-  readonly promotedEventId: string | undefined;
+  readonly request: Option.Option<PendingSongRequest>;
+  readonly promotedEventId: Option.Option<RedemptionId>;
 }
 
+/** Selects which Pending Request, if any, owns the currently playing occurrence. */
 const selectCurrentSongQueueRequest = (
-  previousCurrent: QueuedTrack | undefined,
+  previousCurrent: Option.Option<QueuedTrack>,
   previousUpcoming: readonly SongQueueOccurrence[],
-  pendingById: ReadonlyMap<string, PendingSongRequest>,
+  pendingById: ReadonlyMap<RedemptionId, PendingSongRequest>,
   currentlyPlaying: Option.Option<SpotifyTrack>,
   upcoming: readonly SpotifyTrack[],
 ): CurrentSongQueueRequestSelection => {
-  if (Option.isNone(currentlyPlaying)) return { request: undefined, promotedEventId: undefined };
+  if (Option.isNone(currentlyPlaying))
+    return { request: Option.none(), promotedEventId: Option.none() };
   const currentTrack = currentlyPlaying.value;
   const oldCount = previousUpcoming.filter((item) => item.track.id === currentTrack.id).length;
   const newCount = upcoming.filter((track) => track.id === currentTrack.id).length;
@@ -31,20 +37,32 @@ const selectCurrentSongQueueRequest = (
 
   if (newCount < oldCount && promotable?.source === "user")
     return {
-      request: pendingById.get(promotable.eventId),
-      promotedEventId: promotable.eventId,
+      request: Option.fromUndefinedOr(pendingById.get(promotable.eventId)),
+      promotedEventId: Option.some(promotable.eventId),
     };
 
   return {
-    request:
-      previousCurrent?.source === "user" && previousCurrent.id === currentTrack.id
-        ? pendingById.get(previousCurrent.eventId)
-        : undefined,
-    promotedEventId: undefined,
+    request: Option.flatMap(previousCurrent, (track) =>
+      track.source === "user" && track.id === currentTrack.id
+        ? Option.fromUndefinedOr(pendingById.get(track.eventId))
+        : Option.none(),
+    ),
+    promotedEventId: Option.none(),
   };
 };
 
-/** Attribute repeated track occurrences without stealing an already-playing autoplay track. */
+/**
+ * Attributes Spotify occurrences to Pending Requests without stealing an already-playing autoplay
+ * track.
+ *
+ * **Details**
+ *
+ * When repeated upcoming occurrences decrease, the oldest previously attributed upcoming
+ * occurrence is promoted to Now Playing; remaining occurrences keep their identities, and
+ * unattributed requests claim matching occurrences in request order.
+ *
+ * @returns The attributed occurrences, current first, then upcoming in Spotify order.
+ */
 export function attributeSongQueueOccurrences(input: {
   readonly previous: readonly SongQueueOccurrence[];
   readonly pending: readonly PendingSongRequest[];
@@ -52,7 +70,10 @@ export function attributeSongQueueOccurrences(input: {
   readonly upcoming: readonly SpotifyTrack[];
 }): readonly SongQueueOccurrence[] {
   const { previous, pending, currentlyPlaying, upcoming } = input;
-  const previousCurrent = previous.find((item) => item.position === 0)?.track;
+
+  const previousCurrent = Option.fromUndefinedOr(
+    previous.find((item) => item.position === 0)?.track,
+  );
 
   const previousUpcoming = previous
     .filter((item) => item.position > 0)
@@ -69,7 +90,8 @@ export function attributeSongQueueOccurrences(input: {
   );
 
   const reusable = previousUpcoming.flatMap(({ track }) => {
-    if (track.source !== "user" || track.eventId === current.promotedEventId) return [];
+    if (track.source !== "user" || Option.contains(current.promotedEventId, track.eventId))
+      return [];
     const request = pendingById.get(track.eventId);
 
     return request === undefined ? [] : [request];
@@ -80,25 +102,25 @@ export function attributeSongQueueOccurrences(input: {
   );
 
   const unassigned = pending.filter((request) => !previouslyAttributed.has(request.eventId));
-  const assigned = new Set(current.request === undefined ? [] : [current.request.eventId]);
+  const assigned = new Set(Option.toArray(current.request).map((request) => request.eventId));
 
   const occurrence = (
     track: SpotifyTrack,
     position: number,
-    request: PendingSongRequest | undefined,
+    request: Option.Option<PendingSongRequest>,
   ): SongQueueOccurrence => ({
     position,
-    track:
-      request === undefined
-        ? { ...track, source: "autoplay" }
-        : {
-            ...track,
-            source: "user",
-            eventId: request.eventId,
-            requesterUserId: request.requesterUserId,
-            requesterDisplayName: request.requesterDisplayName,
-            requestedAt: request.requestedAt,
-          },
+    track: Option.match(request, {
+      onNone: (): QueuedTrack => ({ ...track, source: "autoplay" }),
+      onSome: (owner): QueuedTrack => ({
+        ...track,
+        source: "user",
+        eventId: owner.eventId,
+        requesterUserId: owner.requesterUserId,
+        requesterDisplayName: owner.requesterDisplayName,
+        requestedAt: owner.requestedAt,
+      }),
+    }),
   });
 
   const result: SongQueueOccurrence[] = Option.isSome(currentlyPlaying)
@@ -106,15 +128,14 @@ export function attributeSongQueueOccurrences(input: {
     : [];
 
   for (const [index, track] of upcoming.entries()) {
-    const request =
-      reusable.find(
-        (candidate) => candidate.track.id === track.id && !assigned.has(candidate.eventId),
-      ) ??
-      unassigned.find(
-        (candidate) => candidate.track.id === track.id && !assigned.has(candidate.eventId),
-      );
+    const claims = (candidate: PendingSongRequest) =>
+      candidate.track.id === track.id && !assigned.has(candidate.eventId);
 
-    if (request !== undefined) assigned.add(request.eventId);
+    const request = Option.orElse(Option.fromUndefinedOr(reusable.find(claims)), () =>
+      Option.fromUndefinedOr(unassigned.find(claims)),
+    );
+
+    if (Option.isSome(request)) assigned.add(request.value.eventId);
     result.push(occurrence(track, index + 1, request));
   }
 

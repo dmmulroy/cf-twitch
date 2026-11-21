@@ -3,65 +3,73 @@ import type { AchievementDefinition, AchievementId } from "@cf-twitch/contracts/
 import type { DomainEvent } from "@cf-twitch/contracts/domain-event";
 import type { IsoTimestamp, StreamId } from "@cf-twitch/contracts/identity";
 
-/** Progress facts contain domain options, not nullable SQLite fields. */
+/** Achievement Progress facts an Achievement Rule reads, using domain options rather than nullable SQLite fields. */
 export interface AchievementProgressFact {
   readonly achievementId: AchievementId;
   readonly progress: number;
+  /** Time of the first unlock, or `None` while locked. */
   readonly unlockedAt: Option.Option<IsoTimestamp>;
+  /** Trigger event that last advanced a one-time event achievement, used to ignore its redelivery. */
   readonly eventId: Option.Option<string>;
 }
 
-/** Progress decision retains the first unlock time, even for repeated one-time events. */
+/** Progress change decided for one definition; it keeps the first unlock time, even for repeated one-time events. */
 export interface AchievementProgressDecision extends AchievementProgressFact {
   readonly definition: AchievementDefinition;
+  /** Whether this decision unlocks the achievement for the first time, requiring an announcement. */
   readonly newlyUnlocked: boolean;
 }
 
-/** Trigger increment can set streak progress rather than adding it cumulatively. */
+/** Domain evidence that advances every Achievement Definition with a matching trigger. */
 export interface AchievementTrigger {
   readonly event: AchievementDefinition["triggerEvent"];
+  /** Amount to add, or the new progress value when `mode` is `set`. */
   readonly increment: number;
+  /** `set` replaces progress, as Request Streak counts do; `increment` adds to it. */
   readonly mode: "increment" | "set";
+  /** Trigger identity; one-time event achievements ignore a trigger ID they already applied. */
   readonly eventId: string;
 }
 
 const achievementCanAdvance = (
   definition: AchievementDefinition,
-  existing: AchievementProgressFact | undefined,
+  existing: Option.Option<AchievementProgressFact>,
   trigger: AchievementTrigger,
   direct: boolean,
 ): boolean => {
   if (definition.triggerEvent !== trigger.event) return false;
 
-  if (
-    existing &&
-    Option.isSome(existing.unlockedAt) &&
-    (direct || Option.isSome(definition.threshold))
-  )
-    return false;
+  const unlockedBefore = Option.exists(existing, (fact) => Option.isSome(fact.unlockedAt));
+
+  if (unlockedBefore && (direct || Option.isSome(definition.threshold))) return false;
 
   return !(
     Option.isNone(definition.threshold) &&
-    existing &&
-    Option.contains(existing.eventId, trigger.eventId)
+    Option.exists(existing, (fact) => Option.contains(fact.eventId, trigger.eventId))
   );
 };
 
 const advanceAchievementProgress = (
   definition: AchievementDefinition,
-  existing: AchievementProgressFact | undefined,
+  existing: Option.Option<AchievementProgressFact>,
   trigger: AchievementTrigger,
   now: IsoTimestamp,
 ): AchievementProgressDecision => {
+  const previousProgress = Option.match(existing, {
+    onNone: () => 0,
+    onSome: (fact) => fact.progress,
+  });
+
   const progress =
-    trigger.mode === "set" ? trigger.increment : (existing?.progress ?? 0) + trigger.increment;
+    trigger.mode === "set" ? trigger.increment : previousProgress + trigger.increment;
 
   const unlocked = progress >= Option.getOrElse(definition.threshold, () => 1);
-  const alreadyUnlocked = existing !== undefined && Option.isSome(existing.unlockedAt);
+  const previousUnlock = Option.flatMap(existing, (fact) => fact.unlockedAt);
+  const alreadyUnlocked = Option.isSome(previousUnlock);
 
   const unlockedAt = unlocked
     ? alreadyUnlocked
-      ? existing.unlockedAt
+      ? previousUnlock
       : Option.some(now)
     : Option.none<IsoTimestamp>();
 
@@ -75,18 +83,29 @@ const advanceAchievementProgress = (
   };
 };
 
-/** Evaluate one trigger without I/O; threshold unlocks freeze, one-time progress may keep growing. */
+/**
+ * Decides the progress changes one trigger causes, without I/O.
+ *
+ * **Details**
+ *
+ * Threshold achievements stop advancing once unlocked. One-time event achievements keep counting
+ * domain events after unlocking, but ignore a trigger ID they already applied; direct triggers never
+ * advance an unlocked achievement.
+ */
 export function evaluateAchievementProgress(input: {
   readonly definitions: ReadonlyArray<AchievementDefinition>;
+  /** The Viewer's current progress by achievement; absent definitions have not been started. */
   readonly progress: ReadonlyMap<AchievementId, AchievementProgressFact>;
   readonly trigger: AchievementTrigger;
+  /** Unlock time recorded for achievements this trigger unlocks. */
   readonly now: IsoTimestamp;
+  /** Whether the trigger came from `recordEvent` rather than a domain event; direct triggers never advance an unlocked achievement. */
   readonly direct: boolean;
 }): ReadonlyArray<AchievementProgressDecision> {
   const decisions: AchievementProgressDecision[] = [];
 
   for (const definition of input.definitions) {
-    const existing = input.progress.get(definition.id);
+    const existing = Option.fromUndefinedOr(input.progress.get(definition.id));
 
     if (!achievementCanAdvance(definition, existing, input.trigger, input.direct)) continue;
     decisions.push(advanceAchievementProgress(definition, existing, input.trigger, input.now));
@@ -159,10 +178,19 @@ const raffleAchievementTriggers = (
     : []),
 ];
 
-/** All successful requests advance streaks, even offline; only a new online session resets them. */
+/**
+ * Returns the achievement triggers one domain event produces.
+ *
+ * **Details**
+ *
+ * Every successful Song Request advances the Request Streak, even while offline; only a new online
+ * Stream Session resets it. Stream transitions produce no triggers.
+ */
 export function achievementTriggersForEvent(input: {
   readonly event: DomainEvent;
+  /** Whether this Song Request is the Stream Opener of the current Stream Session. */
   readonly streamOpener: boolean;
+  /** The Viewer's Request Streak including this Song Request; three or more sets streak progress. */
   readonly nextStreak: number;
 }): ReadonlyArray<AchievementTrigger> {
   switch (input.event.type) {
@@ -176,15 +204,17 @@ export function achievementTriggersForEvent(input: {
   }
 }
 
-/** Stream watermark comparisons use instants, not lexical timezone representations. */
+/** Stream Session watermark the achievement authority accepted most recently; comparisons use instants, not text. */
 export interface AchievementSession {
   readonly status: "online" | "offline";
   readonly streamId: Option.Option<StreamId>;
+  /** Source start time of the online Stream Session; `None` while offline. */
   readonly startedAt: Option.Option<IsoTimestamp>;
+  /** Source time of the accepted transition, used to reject stale transitions. */
   readonly transitionAt: IsoTimestamp;
 }
 
-/** Return the accepted online session start for a possible Stream Opener request. */
+/** Returns the online Stream Session start a Song Request must follow strictly to qualify as Stream Opener. */
 export function achievementStreamOpenerStart(
   session: Option.Option<AchievementSession>,
   event: Extract<DomainEvent, { type: "song_request_success" }>,
@@ -200,7 +230,7 @@ export function achievementStreamOpenerStart(
   return session.value.startedAt;
 }
 
-/** Reject stale and mismatched stream transitions without resetting session progress. */
+/** Returns whether a stream transition is newer than the watermark and matches the current Stream Session. */
 export function acceptsAchievementTransition(
   session: Option.Option<AchievementSession>,
   event: Extract<DomainEvent, { type: "stream_online" | "stream_offline" }>,

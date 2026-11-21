@@ -3,7 +3,13 @@ import { HttpApiBuilder } from "effect/http-api";
 import { Achievements } from "./achievements-service.ts";
 import { AchievementsHttpApi } from "./achievements-http-api.ts";
 
-/** HTTP handlers delegate to the instance-local achievements authority. */
+/**
+ * Layer of achievements HTTP handlers that delegate each endpoint to the instance-local `Achievements` authority.
+ *
+ * **Details**
+ *
+ * Each endpoint returns the service's `AchievementError` unchanged, encoded by the HTTP contract's error schema.
+ */
 export const achievementsHttpHandlersLayer = HttpApiBuilder.group(
   AchievementsHttpApi,
   "achievements",

@@ -4,15 +4,15 @@ import { Effect, Layer, Option, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import {
   ProviderTokenDatabase,
-  TokenProviderIdentity,
   providerTokenDatabaseLayerWithoutDependencies,
-  type ProviderTokenState,
 } from "./provider-token-database.ts";
+import { ProviderTokenIdentity } from "./provider-token-identity.ts";
+import type { ProviderTokenState } from "./provider-token-state.ts";
 
 const sqliteLayer = SqliteClient.layer({ filename: ":memory:" });
 
 const databaseLayer = providerTokenDatabaseLayerWithoutDependencies.pipe(
-  Layer.provide(Layer.succeed(TokenProviderIdentity, "spotify")),
+  Layer.provide(Layer.succeed(ProviderTokenIdentity, "spotify")),
   Layer.provideMerge(sqliteLayer),
 );
 
@@ -59,7 +59,7 @@ describe("Provider token real SQLite persistence", () => {
         }).pipe(
           Effect.provide(
             providerTokenDatabaseLayerWithoutDependencies.pipe(
-              Layer.provide(Layer.succeed(TokenProviderIdentity, "spotify")),
+              Layer.provide(Layer.succeed(ProviderTokenIdentity, "spotify")),
             ),
             { local: true },
           ),
@@ -97,7 +97,8 @@ describe("Provider token real SQLite persistence", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`INSERT INTO provider_token_state VALUES (1, '{"secret":"must-not-leak"}')`;
         const result = yield* database.readState().pipe(Effect.result);
-        expect(result).toHaveProperty("failure.kind", "persistence");
+        expect(result).toHaveProperty("failure.operation", "readTokenState");
+        expect(result).toHaveProperty("failure.reason", "stored-state-invalid");
         expect(JSON.stringify(result)).not.toContain("must-not-leak");
         const rows = yield* sql`SELECT state_json FROM provider_token_state`;
         expect(rows).toEqual([{ state_json: '{"secret":"must-not-leak"}' }]);
@@ -117,7 +118,8 @@ describe("Provider token real SQLite persistence", () => {
           .writeState({ ...authorizedState, isStreamLive: false })
           .pipe(Effect.result);
 
-        expect(result).toHaveProperty("failure.kind", "persistence");
+        expect(result).toHaveProperty("failure.operation", "writeTokenState");
+        expect(result).toHaveProperty("failure.reason", "persistence");
         expect((yield* database.readState()).isStreamLive).toBe(true);
       }).pipe(Effect.provide(databaseLayer)),
   );
@@ -151,14 +153,14 @@ for (const state of [
         }).pipe(
           Effect.provide(
             providerTokenDatabaseLayerWithoutDependencies.pipe(
-              Layer.provide(Layer.succeed(TokenProviderIdentity, "twitch")),
+              Layer.provide(Layer.succeed(ProviderTokenIdentity, "twitch")),
             ),
           ),
           Effect.result,
         );
 
-        expect(result).toHaveProperty("failure.operation", "LegacyAgentStateImportRequired");
-        expect(result).toHaveProperty("failure.kind", "persistence");
+        expect(result).toHaveProperty("failure.operation", "importLegacyTokenState");
+        expect(result).toHaveProperty("failure.reason", "stored-state-invalid");
         expect(yield* sql`SELECT state FROM cf_agents_state`).toEqual([{ state }]);
         expect(yield* sql`SELECT callback FROM cf_agents_schedules`).toEqual([
           { callback: "refreshTokenTick" },

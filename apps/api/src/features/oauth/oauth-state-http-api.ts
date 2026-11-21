@@ -6,7 +6,7 @@ import {
 } from "@cf-twitch/contracts/oauth";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
-/** OAuth state HTTP contract exposes atomic creation and one-use consumption, not raw storage. */
+/** Internal HTTP contract of an OAuth state Durable Object, exposing atomic creation and one-use consumption rather than raw storage. */
 export class OAuthStateHttpApi extends HttpApi.make("OAuthStateHttpApi")
   .add(
     HttpApiGroup.make("oauthState")

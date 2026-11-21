@@ -1,4 +1,9 @@
-export { cfTwitchAnalyticsDataset } from "./cf-twitch-analytics-dataset.ts";
+export {
+  cfTwitchAnalyticsDataset,
+  CfTwitchAnalyticsDatasetError,
+  CfTwitchAnalyticsDatasetFailureReason,
+  CfTwitchAnalyticsDatasetOperation,
+} from "./cf-twitch-analytics-dataset.ts";
 
 export {
   CfTwitchInfrastructureStage,

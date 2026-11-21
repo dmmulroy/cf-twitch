@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -6,8 +7,8 @@ import { HttpRouter } from "effect/http";
 import { TwitchAdminApi } from "@cf-twitch/contracts/twitch-api";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { AchievementId } from "@cf-twitch/contracts/achievement";
-import { commandsDatabaseLayerWithoutDependencies } from "../commands/commands-database.ts";
-import { EventBusAdministration } from "../events/event-bus-service.ts";
+import { commandsLayer } from "../commands/commands.ts";
+import { EventBusAdministration } from "../events/event-bus-administration.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
@@ -15,6 +16,7 @@ import { TwitchConfiguration } from "../../runtime/twitch-configuration.ts";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { twitchAdminHandlersLayer } from "./twitch-admin-handlers.ts";
 import { httpTestConfiguration } from "./http-test-fixtures.ts";
+import { twitchHttpCorrelationLayer } from "./http-request-correlation.ts";
 
 const deliveredEventId = "00000000-0000-4000-8000-000000000001";
 
@@ -28,9 +30,7 @@ const withAdmin = <A, E, R>(
   test: (fetch: (request: Request) => Promise<Response>) => Effect.Effect<A, E, R>,
 ) => {
   const layers = Layer.mergeAll(
-    commandsDatabaseLayerWithoutDependencies.pipe(
-      Layer.provide(SqliteClient.layer({ filename: ":memory:" })),
-    ),
+    commandsLayer.pipe(Layer.provide(SqliteClient.layer({ filename: ":memory:" }))),
     Layer.succeed(TwitchConfiguration, httpTestConfiguration),
     Layer.mock(EventBusAdministration, {
       listPending: ({ limit, offset }) =>
@@ -101,8 +101,9 @@ const withAdmin = <A, E, R>(
 
   const api = HttpApiBuilder.layer(adminApi).pipe(
     Layer.provide(twitchAdminHandlersLayer),
+    Layer.provide(twitchHttpCorrelationLayer),
     Layer.provide(layers),
-    Layer.provide(cloudflareHttpServerLayer),
+    Layer.provide([cloudflareHttpServerLayer, NodeCrypto.layer]),
   );
 
   return Effect.acquireUseRelease(
@@ -189,6 +190,9 @@ describe("administrator HTTP with real SQLite command registry", () => {
           expect(missing.status).toBe(404);
           expect(yield* Effect.promise(() => missing.json())).toMatchObject({
             code: "CommandNotFoundError",
+            operation: "deleteCommand",
+            details: { commandName: "integration" },
+            retryable: false,
           });
         }),
       ),
@@ -214,6 +218,8 @@ describe("administrator HTTP with real SQLite command registry", () => {
           expect(duplicate.status).toBe(409);
           expect(yield* Effect.promise(() => duplicate.json())).toMatchObject({
             code: "CommandAlreadyExistsError",
+            operation: "createCommand",
+            details: { commandName: "keyboard" },
           });
 
           for (const patch of [{ enable: false }, {}, { responseType: "computed" }]) {
@@ -261,11 +267,19 @@ describe("administrator HTTP with real SQLite command registry", () => {
           error: "Consumer unavailable",
         });
 
-        for (const [path, method] of [
-          [`/dlq/${missingEventId}/replay`, "POST"],
-          [`/dlq/${missingEventId}`, "DELETE"],
+        for (const [path, method, operation] of [
+          [`/dlq/${missingEventId}/replay`, "POST", "replayDeadLetter"],
+          [`/dlq/${missingEventId}`, "DELETE", "deleteDeadLetter"],
         ] as const) {
-          expect((yield* Effect.promise(() => fetch(adminRequest(path, method)))).status).toBe(404);
+          const response = yield* Effect.promise(() => fetch(adminRequest(path, method)));
+          expect(response.status).toBe(404);
+          expect(yield* Effect.promise(() => response.json())).toMatchObject({
+            code: "DeadLetterNotFound",
+            operation,
+            details: { eventId: missingEventId },
+            requestId: response.headers.get("x-request-id"),
+            retryable: false,
+          });
         }
 
         const reset = yield* Effect.promise(() =>
@@ -284,6 +298,10 @@ describe("administrator HTTP with real SQLite command registry", () => {
         );
 
         expect(absent.status).toBe(404);
+        expect(yield* Effect.promise(() => absent.json())).toMatchObject({
+          code: "ViewerAchievementsNotFound",
+          details: { user: "Missing" },
+        });
       }),
     ),
   );

@@ -24,7 +24,7 @@ const executeRateLimitedRequest = (retryAfter: string | undefined) => {
 
   return executeProviderRequest(client, {
     provider: "spotify",
-    operation: "testRateLimit",
+    operation: "getQueue",
     request,
     mutation: false,
     notFound: "not-found",
@@ -41,7 +41,7 @@ it.effect("provider Retry-After accepts seconds and bounds invalid numeric value
       ["1000000", 900_000],
     ] as const) {
       const result = yield* executeRateLimitedRequest(header);
-      expect(result).toHaveProperty("failure.kind", "rate-limited");
+      expect(result).toHaveProperty("failure.reason", "rate-limited");
       expect(result).toHaveProperty("failure.retryAfterMs", Option.some(expected));
     }
   }),
@@ -59,7 +59,7 @@ it.effect("provider Retry-After accepts HTTP dates with deterministic bounds", (
       [undefined, 1000],
     ] as const) {
       const result = yield* executeRateLimitedRequest(header);
-      expect(result).toHaveProperty("failure.kind", "rate-limited");
+      expect(result).toHaveProperty("failure.reason", "rate-limited");
       expect(result).toHaveProperty("failure.retryAfterMs", Option.some(expected));
     }
   }),

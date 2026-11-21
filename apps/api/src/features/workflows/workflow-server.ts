@@ -1,32 +1,31 @@
-import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import type { HttpEffect } from "alchemy/Http";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { Digest } from "effect/crypto";
 import { HttpRouter } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { WorkflowError, type WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
-import { EventPublisher } from "../events/event-publisher.ts";
-import { eventPublisherLayer } from "../events/event-bus-client.ts";
+import { EventPublisher, eventPublisherLayer } from "../events/event-publisher.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
 import { raffleClientLayer } from "../raffle/raffle-client.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
-import { songQueueClientLayer } from "../song-queue/song-queue-client.ts";
+import { songQueueLayer } from "../song-queue/song-queue.ts";
 import { SpotifyService, spotifyServiceLayer } from "../providers/spotify-service.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
-import { workflowAlarmLayer } from "./workflow-alarm.ts";
-import { WorkflowJournal, workflowJournalLayerWithoutDependencies } from "./workflow-journal.ts";
-import {
-  WorkflowExecution,
-  workflowExecutionLayerWithoutDependencies,
-} from "./workflow-execution.ts";
+import { WorkflowExecution, workflowExecutionLayer } from "./workflow-execution.ts";
 import { WorkflowHttpApi } from "./workflow-http-api.ts";
 import { workflowHttpHandlersLayer } from "./workflow-http-handlers.ts";
 
 interface WorkflowServerContract {
+  /** Serves the versioned workflow HTTP contract for this run. */
   readonly fetch: HttpEffect;
+  /**
+   * Resumes the unfinished run when the Durable Object alarm fires.
+   *
+   * @throws {WorkflowError} As a defect when the journal fails, so the runtime retries the alarm.
+   */
   readonly alarm: () => Effect.Effect<void>;
 }
 
@@ -48,9 +47,10 @@ export class RaidShoutoutSagaServer extends Cloudflare.DurableObject<
   WorkflowServerContract
 >()("RaidShoutoutSagaDO") {}
 
+// Initialization dies when the journal cannot migrate or restore its alarm; a failed alarm resume also dies so the runtime retries it.
+// Each namespace accepts only its own workflow kind, so a misrouted start cannot create a run of another kind under this identity.
 const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
   Effect.gen(function* () {
-    const state = yield* Cloudflare.DurableObjectState;
     const spotify = yield* SpotifyService;
     const twitch = yield* TwitchService;
     const queue = yield* SongQueue;
@@ -61,15 +61,8 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
 
     // Only stable capabilities are captured during planning. SQL, migration and alarm acquisition are runtime-only.
     return Effect.gen(function* () {
-      const sqlLayer = SqliteClient.layer({ storage: state.raw.storage });
-
-      const journalLayer = workflowJournalLayerWithoutDependencies.pipe(
-        Layer.provide([sqlLayer, workflowAlarmLayer, Layer.succeed(TwitchAnalytics, analytics)]),
-      );
-
-      const executionLayer = workflowExecutionLayerWithoutDependencies.pipe(
+      const executionLayer = workflowExecutionLayer.pipe(
         Layer.provide([
-          journalLayer,
           Layer.succeed(SpotifyService, spotify),
           Layer.succeed(TwitchService, twitch),
           Layer.succeed(SongQueue, queue),
@@ -81,9 +74,8 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
       );
 
       return yield* Effect.gen(function* () {
-        const journal = yield* WorkflowJournal;
         const execution = yield* WorkflowExecution;
-        yield* journal.restoreAlarm();
+        yield* execution.restoreAlarm();
 
         const restrictedExecution = WorkflowExecution.of({
           ...execution,
@@ -94,6 +86,8 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
                   new WorkflowError({
                     operation: "start",
                     reason: "conflict",
+                    workflowId: Option.none(),
+                    stepName: Option.none(),
                   }),
                 ),
         });
@@ -110,21 +104,21 @@ const makeWorkflowServerRuntime = (kind: WorkflowInput["_tag"]) =>
         const fetch = yield* HttpRouter.toHttpEffect(httpLayer);
 
         return { fetch, alarm: () => execution.resume().pipe(Effect.orDie) };
-      }).pipe(Effect.provide(Layer.merge(executionLayer, journalLayer)));
+      }).pipe(Effect.provide(executionLayer));
     }).pipe(Effect.orDie);
   });
 
-/** Real song HTTP/SQL server with provider and durable dependency selection left visible. */
+/** Real song workflow HTTP/SQL server Layer, leaving provider and durable dependency selection visible. */
 export const songRequestSagaServerLayerWithoutDependencies = SongRequestSagaServer.make(
   makeWorkflowServerRuntime("SongRequest"),
 );
 
-/** Real raffle HTTP/SQL server with provider and durable dependency selection left visible. */
+/** Real raffle workflow HTTP/SQL server Layer, leaving provider and durable dependency selection visible. */
 export const keyboardRaffleSagaServerLayerWithoutDependencies = KeyboardRaffleSagaServer.make(
   makeWorkflowServerRuntime("KeyboardRaffle"),
 );
 
-/** Real raid HTTP/SQL server with provider and durable dependency selection left visible. */
+/** Real raid workflow HTTP/SQL server Layer, leaving provider and durable dependency selection visible. */
 export const raidShoutoutSagaServerLayerWithoutDependencies = RaidShoutoutSagaServer.make(
   makeWorkflowServerRuntime("RaidShoutout"),
 );
@@ -132,31 +126,32 @@ export const raidShoutoutSagaServerLayerWithoutDependencies = RaidShoutoutSagaSe
 const workflowDependenciesLayer = Layer.mergeAll(
   spotifyServiceLayer,
   twitchServiceLayer,
-  songQueueClientLayer,
+  songQueueLayer,
   raffleClientLayer,
   eventPublisherLayer,
 );
 
-/** Production song workflow server selects real providers and durable dependency clients. */
+/** Production song workflow server Layer over real providers and durable dependency clients. */
 export const songRequestSagaServerLayer = songRequestSagaServerLayerWithoutDependencies.pipe(
   Layer.provide(workflowDependenciesLayer),
 );
 
-/** Production raffle workflow server selects real providers and durable dependency clients. */
+/** Production raffle workflow server Layer over real providers and durable dependency clients. */
 export const keyboardRaffleSagaServerLayer = keyboardRaffleSagaServerLayerWithoutDependencies.pipe(
   Layer.provide(workflowDependenciesLayer),
 );
 
-/** Production raid workflow server selects real providers and durable dependency clients. */
+/** Production raid workflow server Layer over real providers and durable dependency clients. */
 export const raidShoutoutSagaServerLayer = raidShoutoutSagaServerLayerWithoutDependencies.pipe(
   Layer.provide(workflowDependenciesLayer),
 );
 
-/** All workflow namespaces are composed explicitly; no existing namespace is auto-transferred. */
+// All workflow namespaces are composed explicitly; no existing namespace is auto-transferred.
 const workflowServersLayer = Layer.mergeAll(
   songRequestSagaServerLayer,
   keyboardRaffleSagaServerLayer,
   raidShoutoutSagaServerLayer,
 );
 
+/** All three production workflow servers, the module's default export for Alchemy namespace registration. */
 export default workflowServersLayer;

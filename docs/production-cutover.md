@@ -2,6 +2,8 @@
 
 **Status (2026-11-20):** the rewrite already serves production. Alchemy deployed the `production` stage (Worker `cf-twitch-api`, 13 SQLite Durable Object namespaces) on 2026-09-14, replacing the legacy wrangler Worker. Redeploy only with [`scripts/deploy-production.sh`](../scripts/deploy-production.sh) (`pnpm deploy:production`): it verifies, plans, refuses any create/replace/delete, and asks for confirmation. The gates below describe the original cutover and still apply to any future data migration.
 
+**Next deploy (traits conformance):** the Worker and every Durable Object class must ship in one deploy. Typed errors that cross the Worker↔Durable Object HTTP boundary gained required fields (for example `EventBusError.subscriptionId`, `ProviderError.reason`/`status: Option`), so a mixed-version pair fails to decode those errors. Public HTTP error bodies also changed: they now carry `code`, `operation`, `message`, `details`, `requestId`, and `retryable`, `error` repeats `message`, 413 responses became 400, and a stale EventSub timestamp returns 401.
+
 Local verification proves neither compatibility with actual production data nor permission to change production resources. Keep the legacy host available until the gates below are approved. The current Stack exposes non-production stages only; enabling production, inventory access, adoption/transfer, deployment, and rollback each require separate operator authorization.
 
 This is an approval procedure, not a deployment script. No production inventory runner is included. Its implementation and authorization require separate review.

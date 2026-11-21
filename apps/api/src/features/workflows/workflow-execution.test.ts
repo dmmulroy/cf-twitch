@@ -10,10 +10,10 @@ import { HttpApiBuilder, HttpApiClient } from "effect/http-api";
 import { cloudflareHttpServerLayer } from "../../runtime/cloudflare-http-server.ts";
 import { WorkflowHttpApi } from "./workflow-http-api.ts";
 import { workflowHttpHandlersLayer } from "./workflow-http-handlers.ts";
-import { recordingTwitchAnalyticsLayer } from "../../../test/support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 import { DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
-import { ProviderError } from "@cf-twitch/contracts/provider";
+import { ProviderError, type ProviderOperation } from "@cf-twitch/contracts/provider";
 import { SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 import { RaidShoutoutInput, WorkflowInput } from "@cf-twitch/contracts/workflow";
 import { ChannelPointRedemption } from "@cf-twitch/contracts/redemption";
@@ -23,12 +23,7 @@ import { Raffle } from "../raffle/raffle-service.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { SpotifyService } from "../providers/spotify-service.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
-import { WorkflowAlarm } from "./workflow-alarm.ts";
-import { workflowJournalLayerWithoutDependencies } from "./workflow-journal.ts";
-import {
-  WorkflowExecution,
-  workflowExecutionLayerWithoutDependencies,
-} from "./workflow-execution.ts";
+import { WorkflowExecution, workflowExecutionTestLayer } from "./workflow-execution.ts";
 
 const songRedemption = Schema.decodeUnknownSync(ChannelPointRedemption)({
   id: "redemption-1",
@@ -75,12 +70,12 @@ const raffleResult = Schema.decodeUnknownSync(RaffleRecordResult)({
   },
 });
 
-const providerError = (kind: ProviderError["kind"], operation: string) =>
+const providerError = (reason: ProviderError["reason"], operation: ProviderOperation) =>
   new ProviderError({
     provider: "twitch",
     operation,
-    kind,
-    status: kind === "rejected" ? 400 : 0,
+    reason,
+    status: reason === "rejected" ? Option.some(400) : Option.none(),
     retryAfterMs: Option.none(),
   });
 
@@ -114,7 +109,7 @@ const recordingServices = Effect.gen(function* () {
           Effect.andThen(Ref.get(rejectFulfill)),
           Effect.flatMap((reject) =>
             reject && input.status === "FULFILLED"
-              ? Effect.fail(providerError("rejected", "fulfill"))
+              ? Effect.fail(providerError("rejected", "updateRedemptionStatus"))
               : Effect.void,
           ),
         ),
@@ -126,7 +121,8 @@ const recordingServices = Effect.gen(function* () {
           if (yield* Ref.get(slowChat))
             return yield* Effect.never.pipe(Effect.ensuring(Ref.set(chatFinalized, true)));
 
-          if (yield* Ref.get(unknownChat)) return yield* providerError("outcome-unknown", "chat");
+          if (yield* Ref.get(unknownChat))
+            return yield* providerError("outcome-unknown", "sendChatMessage");
         }),
       createShoutout: () => record("shoutout"),
     }),
@@ -156,15 +152,11 @@ const recordingServices = Effect.gen(function* () {
           ),
         ),
     }),
-    Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
     NodeCrypto.layer,
-    recordingTwitchAnalyticsLayer,
+    twitchAnalyticsTestLayer,
   );
 
-  const executionLayer = workflowExecutionLayerWithoutDependencies.pipe(
-    Layer.provide(workflowJournalLayerWithoutDependencies),
-    Layer.provide(dependencies),
-  );
+  const executionLayer = workflowExecutionTestLayer.pipe(Layer.provide(dependencies));
 
   const use = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowExecution>) =>
     effect.pipe(Effect.provide(executionLayer, { local: true }));

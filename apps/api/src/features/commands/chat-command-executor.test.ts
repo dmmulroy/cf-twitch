@@ -1,4 +1,3 @@
-import { SqliteClient } from "@effect/sql-sqlite-node";
 import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
 import { Cause, Context, Effect, Exit, Layer, Option, Predicate, Ref, Schema } from "effect";
@@ -7,24 +6,32 @@ import { TestClock } from "effect/testing";
 import {
   AchievementDefinition,
   AchievementError,
+  achievementErrorWithoutIdentifiers,
   UnlockedAchievement,
 } from "@cf-twitch/contracts/achievement";
 import {
+  ChatCommandExecutionError,
   ChatCommandInput,
   ChatCommandName,
+  ChatCommandRenderError,
   CreateChatCommandInput,
   type ChatCommandPermission,
 } from "@cf-twitch/contracts/chat-command";
-import { RaffleError, RaffleLeaderboardEntry } from "@cf-twitch/contracts/raffle";
+import {
+  RaffleError,
+  RaffleLeaderboardEntry,
+  raffleErrorWithoutIdentifiers,
+} from "@cf-twitch/contracts/raffle";
 import { NowPlaying, QueuedTrack, SongQueueError } from "@cf-twitch/contracts/song-queue";
-import { TwitchAnalytics, type ChatCommandMetric } from "../../runtime/twitch-analytics.ts";
+import {
+  TwitchAnalytics,
+  type TwitchAnalyticsChatCommandMetric,
+} from "../../runtime/twitch-analytics.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
-import { Commands } from "./commands.ts";
-import { ChatCommandExecutor, executorLayerWithoutDependencies } from "./chat-command-executor.ts";
-import { computedChatCommandsLayerWithoutDependencies } from "./computed-chat-commands.ts";
-import { commandsDatabaseLayerWithoutDependencies } from "./commands-database.ts";
+import { Commands, commandsTestLayer } from "./commands.ts";
+import { ChatCommandExecutor, chatCommandExecutorTestLayer } from "./chat-command-executor.ts";
 import { getChatCommandPermission, hasCommandPermission } from "./command-permissions.ts";
 
 const parseInput = Schema.decodeUnknownSync(ChatCommandInput);
@@ -104,7 +111,7 @@ interface TestObservations {
   readonly songCount: Ref.Ref<number>;
   readonly failedProviders: Ref.Ref<readonly ("song" | "raffle" | "achievements")[]>;
   readonly interruptedProviders: Ref.Ref<readonly ("song" | "raffle" | "achievements")[]>;
-  readonly metrics: Ref.Ref<readonly ChatCommandMetric[]>;
+  readonly metrics: Ref.Ref<readonly TwitchAnalyticsChatCommandMetric[]>;
   readonly lookups: Ref.Ref<readonly string[]>;
 }
 
@@ -126,7 +133,7 @@ const providerTestLayer = Layer.unwrap(
       [],
     );
 
-    const metrics = yield* Ref.make<readonly ChatCommandMetric[]>([]);
+    const metrics = yield* Ref.make<readonly TwitchAnalyticsChatCommandMetric[]>([]);
     const lookups = yield* Ref.make<readonly string[]>([]);
 
     const songFailure = Effect.gen(function* () {
@@ -134,7 +141,7 @@ const providerTestLayer = Layer.unwrap(
 
       if ((yield* Ref.get(failedProviders)).includes("song"))
         return yield* new SongQueueError({
-          operation: "command lookup",
+          operation: "getCurrentlyPlaying",
           reason: "provider_unavailable",
         });
     });
@@ -142,16 +149,18 @@ const providerTestLayer = Layer.unwrap(
     const raffleFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("raffle"))
         return yield* new RaffleError({
-          operation: "command lookup",
+          operation: "getLeaderboard",
           reason: "transport_unavailable",
+          ...raffleErrorWithoutIdentifiers,
         });
     });
 
     const achievementFailure = Effect.gen(function* () {
       if ((yield* Ref.get(failedProviders)).includes("achievements"))
         return yield* new AchievementError({
-          operation: "command lookup",
+          operation: "getDefinitions",
           reason: "transport_unavailable",
+          ...achievementErrorWithoutIdentifiers,
         });
     });
 
@@ -228,13 +237,8 @@ const providerTestLayer = Layer.unwrap(
   }),
 );
 
-const testLayer = executorLayerWithoutDependencies.pipe(
-  Layer.provideMerge(computedChatCommandsLayerWithoutDependencies),
-  Layer.provideMerge(
-    commandsDatabaseLayerWithoutDependencies.pipe(
-      Layer.provide(SqliteClient.layer({ filename: ":memory:" })),
-    ),
-  ),
+// The executor and the test's Commands handle share one in-memory registry: Layers are memoized by reference.
+const testLayer = Layer.mergeAll(chatCommandExecutorTestLayer, commandsTestLayer).pipe(
   Layer.provideMerge(providerTestLayer),
 );
 
@@ -320,15 +324,15 @@ describe("Chat command preparation through real registry and executor", () => {
         expect(yield* response("!update", "vip")).toBe("Usage: !update <command> <value>");
         expect(yield* response("!update today", "vip")).toBe("Usage: !update today <value>");
         expect(yield* response("!update today nope", "vip")).toBe(
-          "Only moderators can update !today.",
+          "Only moderators can update !today. Ask a moderator to update it.",
         );
         expect(yield* response("!update keyboard nope", "moderator")).toBe(
-          "!keyboard is not updateable.",
+          "Couldn't update !keyboard because its response is not editable. Choose a command with an editable value.",
         );
         expect(yield* response("!update leak new", "vip")).toBe("Updated !leak");
         expect(yield* response("!update leak new", "vip")).toBe("Updated !leak");
         expect(yield* response("!update leak different", "vip")).toBe(
-          "Sorry, couldn't update the command.",
+          "Couldn't update !leak because this chat message was already used for a different update. Send the update in a new message.",
         );
         const commands = yield* Commands;
         yield* commands.updateCommand({
@@ -336,7 +340,7 @@ describe("Chat command preparation through real registry and executor", () => {
           patch: { writePermission: "broadcaster" },
         });
         expect(yield* response("!update today blocked", "moderator", "new-id")).toBe(
-          "Only the broadcaster can update !today.",
+          "Only the broadcaster can update !today. Ask the broadcaster to update it.",
         );
       }).pipe(Effect.provide(testLayer)),
   );
@@ -377,7 +381,7 @@ describe("Chat command preparation through real registry and executor", () => {
           patch: { handlerKey: "unregistered" },
         });
         expect(yield* response("!custom-time")).toBe(
-          "!custom-time is configured but has no live handler.",
+          "No live handler is configured for !custom-time. Ask a moderator to fix the command's handler.",
         );
       }).pipe(Effect.provide(testLayer)),
   );
@@ -418,7 +422,9 @@ describe("Chat command preparation through real registry and executor", () => {
         } satisfies NowPlaying);
         expect(yield* response("!song")).toBe('Now playing: "Autoplay" by Artist');
         yield* Ref.set(observations.failedProviders, ["song"]);
-        expect(yield* response("!song")).toBe("Sorry, couldn't get the current song info.");
+        expect(yield* response("!song")).toBe(
+          "Couldn't get the current song because the song queue is unavailable. Try !song again in a moment.",
+        );
       }).pipe(Effect.provide(testLayer)),
   );
 
@@ -434,7 +440,9 @@ describe("Chat command preparation through real registry and executor", () => {
         expect(message).toContain('4. "Autoplay" by Artist');
         expect(message).not.toContain("5.");
         yield* Ref.set(observations.failedProviders, ["song"]);
-        expect(yield* response("!queue")).toBe("Sorry, couldn't get the queue info.");
+        expect(yield* response("!queue")).toBe(
+          "Couldn't get the song queue because it is unavailable right now. Try !queue again in a moment.",
+        );
       }).pipe(Effect.provide(testLayer)),
   );
 
@@ -456,7 +464,7 @@ describe("Chat command preparation through real registry and executor", () => {
         );
         yield* Ref.set(observations.failedProviders, ["achievements"]);
         expect(yield* response("!achievements OtherUser")).toBe(
-          "Sorry, couldn't retrieve achievements for @OtherUser.",
+          "Couldn't retrieve achievements for @OtherUser because achievements are unavailable right now. Try again in a moment.",
         );
       }).pipe(Effect.provide(testLayer)),
   );
@@ -482,14 +490,20 @@ describe("Chat command preparation through real registry and executor", () => {
       expect(yield* response("!stats")).toContain("Achievements: ?/?");
       const executor = yield* ChatCommandExecutor;
       yield* Ref.set(observations.failedProviders, ["song"]);
-      expect(yield* executor.prepare(input("!stats")).pipe(Effect.result)).toHaveProperty(
-        "failure.commandName",
-        "stats",
+      expect(yield* executor.prepare(input("!stats")).pipe(Effect.flip)).toEqual(
+        new ChatCommandExecutionError({
+          operation: "prepareChatCommand",
+          reason: "song_queue_unavailable",
+          commandName: name("stats"),
+        }),
       );
       yield* Ref.set(observations.failedProviders, ["raffle"]);
-      expect(yield* executor.prepare(input("!stats")).pipe(Effect.result)).toHaveProperty(
-        "failure.commandName",
-        "stats",
+      expect(yield* executor.prepare(input("!stats")).pipe(Effect.flip)).toEqual(
+        new ChatCommandExecutionError({
+          operation: "prepareChatCommand",
+          reason: "raffle_unavailable",
+          commandName: name("stats"),
+        }),
       );
     }).pipe(Effect.provide(testLayer)),
   );
@@ -509,7 +523,7 @@ describe("Chat command preparation through real registry and executor", () => {
       );
       yield* Ref.set(observations.failedProviders, ["raffle"]);
       expect(yield* response("!raffle-leaderboard")).toBe(
-        "Sorry, couldn't retrieve the raffle leaderboard.",
+        "Couldn't retrieve the raffle leaderboard because raffle results are unavailable. Try !raffle-leaderboard again in a moment.",
       );
     }).pipe(Effect.provide(testLayer)),
   );
@@ -536,13 +550,18 @@ describe("Chat command preparation through real registry and executor", () => {
           name: name("unicode"),
           patch: { outputTemplate: "x{value}" },
         });
-        expect(yield* executor.prepare(input("!unicode")).pipe(Effect.result)).toHaveProperty(
-          "failure._tag",
-          "ChatCommandRenderError",
+        expect(yield* executor.prepare(input("!unicode")).pipe(Effect.flip)).toEqual(
+          new ChatCommandRenderError({
+            operation: "prepareChatCommand",
+            reason: "response_too_long",
+            commandName: name("unicode"),
+            renderedCodePoints: 501,
+            maximumCodePoints: 500,
+          }),
         );
-        expect((yield* Ref.get(observations.metrics)).map((metric) => metric.status)).toEqual([
-          "error",
-        ]);
+        expect(
+          (yield* Ref.get(observations.metrics)).map((metric) => [metric.status, metric.command]),
+        ).toEqual([["error", "unicode"]]);
         yield* Ref.set(observations.playback, {
           track: Option.some({ ...track, name: "x".repeat(501) }),
           position: 0,

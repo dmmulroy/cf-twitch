@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { DomainEvent } from "./domain-event.ts";
 import { EventId, IsoTimestamp, NonNegativeInt, PageSize, PositiveInt } from "./identity.ts";
 
@@ -42,7 +42,9 @@ export type EventBusPageInput = typeof EventBusPageInput.Type;
 /** One event that is durably awaiting delivery or retry. */
 export const PendingEventItem = Schema.Struct({
   id: EventId,
+  /** Stored event, or `Option.none()` when its stored JSON is unreadable. */
   event: Schema.OptionFromNullOr(DomainEvent),
+  /** Delivery attempts made by retry processing; the initial publish attempt is not counted. */
   attempts: NonNegativeInt,
   nextRetryAt: IsoTimestamp,
   createdAt: IsoTimestamp,
@@ -65,11 +67,15 @@ export type PendingEventList = typeof PendingEventList.Type;
 /** One event retained after exhausting automatic delivery attempts. */
 export const DeadLetterEventItem = Schema.Struct({
   id: EventId,
+  /** Stored event, or `Option.none()` when its stored JSON is unreadable. */
   event: Schema.OptionFromNullOr(DomainEvent),
+  /** Safe failure description recorded by the last failed delivery or replay. */
   error: Schema.String,
   attempts: PositiveInt,
+  /** When the event was first accepted for delivery. */
   firstFailedAt: IsoTimestamp,
   lastFailedAt: IsoTimestamp,
+  /** End of the 30-day dead-letter retention, after which the entry is purged. */
   expiresAt: IsoTimestamp,
 });
 
@@ -89,8 +95,10 @@ export type DeadLetterEventList = typeof DeadLetterEventList.Type;
 
 /** Result of manually replaying one dead-letter event. */
 export const DeadLetterReplayResult = Schema.Struct({
+  /** Whether the subscriber accepted the replayed event; `false` keeps it dead-lettered. */
   success: Schema.Boolean,
   eventId: EventId,
+  /** Failure description when the replay was not accepted, otherwise `Option.none()`. */
   error: Schema.OptionFromNullOr(Schema.String),
 });
 
@@ -130,8 +138,11 @@ export type EventBusStats = typeof EventBusStats.Type;
 
 /** Event Bus scheduler and persistence health projection. */
 export const EventBusStatus = Schema.Struct({
+  /** Always `true` when the status could be read; read failures are errors instead. */
   healthy: Schema.Boolean,
+  /** Earliest pending retry, or `Option.none()` when nothing is pending. */
   nextRetryAt: Schema.OptionFromNullOr(IsoTimestamp),
+  /** Earliest dead-letter expiry, or `Option.none()` when the queue is empty. */
   nextDeadLetterExpiryAt: Schema.OptionFromNullOr(IsoTimestamp),
   stats: EventBusStats,
 });
@@ -139,10 +150,11 @@ export const EventBusStatus = Schema.Struct({
 /** Event Bus scheduler and persistence health projection. */
 export type EventBusStatus = typeof EventBusStatus.Type;
 
-/** Supported Event Bus operation names included in typed failures. */
+/** Schema for the Event Bus operations named by typed Event Bus failures. */
 export const EventBusOperation = Schema.Literals([
   "publish",
   "retryDue",
+  "scheduleAlarm",
   "listPending",
   "listDeadLetters",
   "replayDeadLetter",
@@ -157,25 +169,89 @@ export const EventBusOperation = Schema.Literals([
   "reset",
 ]);
 
-/** Supported Event Bus operation name. */
+/** Event Bus operation that failed. */
 export type EventBusOperation = typeof EventBusOperation.Type;
+
+/** Schema for the classified reasons an Event Bus operation fails. */
+export const EventBusErrorReason = Schema.Literals([
+  "persistence_unavailable",
+  "transport_unavailable",
+  "alarm_unavailable",
+  "stored_row_invalid",
+  "stored_event_invalid",
+  "event_invalid",
+  "invalid_response",
+  "subscriber_unavailable",
+  "subscriber_rejected",
+  "event_not_found",
+  "subscription_not_found",
+]);
+
+/** Classified reason an Event Bus operation failed. */
+export type EventBusErrorReason = typeof EventBusErrorReason.Type;
+
+const eventBusOperationDescriptions: Record<EventBusOperation, string> = {
+  publish: "event publication",
+  retryDue: "scheduled delivery retry",
+  scheduleAlarm: "retry scheduling",
+  listPending: "pending event listing",
+  listDeadLetters: "dead-letter listing",
+  replayDeadLetter: "dead-letter replay",
+  retryPending: "pending event retry",
+  deleteDeadLetter: "dead-letter deletion",
+  purgeExpiredDeadLetters: "expired dead-letter purge",
+  listSubscriptions: "subscription listing",
+  registerSubscription: "subscription registration",
+  unregisterSubscription: "subscription removal",
+  getStats: "Event Bus statistics",
+  getStatus: "Event Bus status",
+  reset: "Event Bus reset",
+};
+
+const eventBusEventLabel = (eventId: Option.Option<EventId>): string =>
+  Option.match(eventId, { onNone: () => "", onSome: (id) => ` for event ${id}` });
 
 /** Expected failure while applying Event Bus persistence or delivery policy. */
 export class EventBusError extends Schema.TaggedError<EventBusError>()("EventBusError", {
+  /** Event Bus operation that failed. */
   operation: EventBusOperation,
-  reason: Schema.Literals([
-    "persistence_unavailable",
-    "stored_event_invalid",
-    "invalid_response",
-    "subscriber_unavailable",
-    "event_not_found",
-    "subscription_not_found",
-    "subscription_conflict",
-  ]),
+  /** Classified cause; the message wording and retry guidance depend on it. */
+  reason: EventBusErrorReason,
+  /** Event the operation concerned, or `Option.none()` for operations without one. */
   eventId: Schema.OptionFromNullOr(EventId),
+  /** Subscription the operation concerned; defaults to `Option.none()`. */
+  subscriptionId: Schema.OptionFromNullOr(EventBusSubscriptionId).pipe(
+    Schema.withConstructorDefault(Effect.succeed(Option.none())),
+  ),
 }) {
-  /** Stable Event Bus failure description excludes event payloads and persistence details. */
+  /** Describes the failed operation and reason without event payloads or persistence details. */
   override get message(): string {
-    return `Event Bus ${this.operation} failed (${this.reason})`;
+    const event = eventBusEventLabel(this.eventId);
+    const operation = eventBusOperationDescriptions[this.operation];
+
+    switch (this.reason) {
+      case "persistence_unavailable":
+        return `Event Bus storage is unavailable during ${operation}${event}. Retry the same operation; Event Bus deduplicates deliveries by event ID.`;
+      case "transport_unavailable":
+        return `Event Bus could not be reached during ${operation}${event}, so the outcome is unknown. Retry the same operation; Event Bus deduplicates deliveries by event ID.`;
+      case "alarm_unavailable":
+        return `Event Bus alarm could not be scheduled during ${operation}. Pending deliveries are still stored; retry the operation to reschedule them.`;
+      case "stored_row_invalid":
+        return `Event Bus stored row is invalid during ${operation}${event}. Inspect and repair the stored Event Bus records before retrying.`;
+      case "stored_event_invalid":
+        return `Event Bus stored event is unreadable during ${operation}${event}. Inspect the dead-letter entry, then repair or delete it.`;
+      case "event_invalid":
+        return `Event Bus could not encode the event during ${operation}${event}. Check the event fields against the domain event contract and publish it again.`;
+      case "invalid_response":
+        return `Event Bus response is invalid during ${operation}${event}: it does not match the Event Bus contract. Check that the API and the Event Bus run the same release, then read the event state before retrying.`;
+      case "subscriber_unavailable":
+        return `Event Bus subscriber did not accept the delivery during ${operation}${event}. The event stays pending or dead-lettered; check the subscriber and replay it.`;
+      case "subscriber_rejected":
+        return `Event Bus subscriber rejected the delivery during ${operation}${event}. The event stays pending or dead-lettered; inspect it, then replay or delete it.`;
+      case "event_not_found":
+        return `Event Bus event not found during ${operation}${event}. Check the event ID against the pending and dead-letter lists and try again.`;
+      case "subscription_not_found":
+        return `Event Bus subscription not found during ${operation}${Option.match(this.subscriptionId, { onNone: () => "", onSome: (id) => ` for subscription ${id}` })}. List the subscriptions to find the current ID and try again.`;
+    }
   }
 }

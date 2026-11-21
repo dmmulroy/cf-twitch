@@ -28,6 +28,9 @@ const fixedRequestId = "00000000-0000-4000-8000-000000000000";
 
 const fixedRequestSecureRandom = SecureRandom.make((size) => new Uint8Array(size));
 
+const readResponseJson = (response: Response | undefined) =>
+  Effect.promise(async () => response?.clone().json());
+
 const findResponseSpan = (spans: readonly Tracer.NativeSpan[], response: Response | undefined) =>
   spans.find((span) => span.traceId === response?.headers.get("x-trace-id"));
 
@@ -62,10 +65,13 @@ const expectResponseCorrelations = (
 };
 
 const expectSafeErrorReports = (reports: readonly Error[], responses: readonly Response[]) => {
-  expect(reports.map((report) => report.message)).toEqual([
-    "HTTP request failed",
-    "HTTP request failed",
-  ]);
+  expect(reports.map((report) => report.message)).toEqual(
+    Array.from(
+      { length: 2 },
+      () =>
+        `HTTP request failed during handleRequest (defect). Inspect the logs and trace for request ID ${fixedRequestId}.`,
+    ),
+  );
 
   for (const [index, report] of reports.entries()) {
     expect(ErrorReporter.getAttributes(report)).toMatchObject({
@@ -236,9 +242,33 @@ describe("safe HTTP trace export", () => {
         expect(serverSpans[4]?.attributes.get("http.failure.classification")).toBe("defect");
         const exportedFailureExits = readExportedFailureExits(serverSpans.slice(0, 5));
         expect(exportedFailureExits).toHaveLength(3);
-        expect(exportedFailureExits.every((error) => error.message === "HTTP request failed")).toBe(
-          true,
-        );
+        expect(exportedFailureExits.map((error) => error.message)).toEqual([
+          `HTTP request failed during handleRequest (expected_http_failure). Inspect the logs and trace for request ID ${fixedRequestId}.`,
+          `HTTP request failed during handleRequest (defect). Inspect the logs and trace for request ID ${fixedRequestId}.`,
+          `HTTP request failed during handleRequest (defect). Inspect the logs and trace for request ID ${fixedRequestId}.`,
+        ]);
+        expect(yield* readResponseJson(responses[2])).toEqual({
+          code: "RouteNotFound",
+          error:
+            "No route matches GET /not-found. Check the method and path against the API documentation.",
+          operation: "routeRequest",
+          message:
+            "No route matches GET /not-found. Check the method and path against the API documentation.",
+          details: { method: "GET", path: "/not-found" },
+          requestId: fixedRequestId,
+          retryable: false,
+        });
+
+        for (const defect of responses.slice(3, 5))
+          expect(yield* readResponseJson(defect)).toEqual({
+            code: "InternalFailure",
+            error: `Internal server error while handling the request. Contact support with request ID ${fixedRequestId}.`,
+            operation: "handleRequest",
+            message: `Internal server error while handling the request. Contact support with request ID ${fixedRequestId}.`,
+            details: {},
+            requestId: fixedRequestId,
+            retryable: false,
+          });
         const mixedFailureSpan = findResponseSpan(serverSpans, responses[4]);
         expect(readSpanInterruptors(mixedFailureSpan)).toEqual([777]);
         const interruptedSpan = findResponseSpan(serverSpans, responses[5]);

@@ -6,8 +6,7 @@ import { SqlClient } from "effect/sql";
 import { RaffleNumber, RecordRaffleRoll } from "@cf-twitch/contracts/raffle";
 import { IsoTimestamp, RedemptionId, ViewerId } from "@cf-twitch/contracts/identity";
 import { historicalRaffleStatements } from "./raffle-historical.fixture.ts";
-import { raffleLayer } from "./raffle-database.ts";
-import { Raffle } from "./raffle-service.ts";
+import { Raffle, raffleLayer } from "./raffle-service.ts";
 
 it.effect(
   "adopts full historical raffle SQL with immutable record replay and original constraints",

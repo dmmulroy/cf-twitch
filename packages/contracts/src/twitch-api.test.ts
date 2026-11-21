@@ -1,11 +1,11 @@
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { Hex } from "effect/encoding";
-import { generateTwitchOpenApi } from "./twitch-api.ts";
+import { TwitchHttpErrorBody, generateTwitchOpenApi } from "./twitch-api.ts";
 
-// Guards every generated OpenAPI field. Re-pinned for Effect 4.1.4, whose generator flattens nested `anyOf`
-// unions and emits `Int`'s safe-integer bounds; the document is otherwise identical to the previous baseline.
-const baselineOpenApiSha256 = "fec9f9974d885c586e3ee042c4ac1ff8397b1c6fee8e6481e542ef94bda140dd";
+// Guards every generated OpenAPI field. Re-pinned when public errors became the discriminated
+// `TwitchHttpErrorBody` union under statuses 400/401/404/409/500/503; paths and operations are unchanged.
+const baselineOpenApiSha256 = "5a88c344d783c2efa689ac828dbb84e831bb8079fc770aebf424b21b8a41c7c0";
 
 const openApiOperationMethods = new Set([
   "get",
@@ -68,5 +68,42 @@ it("preserves privileged query parameters alongside administrator security", () 
       { name: "limit", in: "query", required: false },
       { name: "sortBy", in: "query", required: false },
     ],
+  });
+});
+
+it("declares public errors only under statuses that carry caller meaning", () => {
+  const responses = generateTwitchOpenApi().paths["/api/queue"]?.get?.responses ?? {};
+
+  expect(Object.keys(responses).sort()).toEqual(["200", "400", "401", "404", "409", "500", "503"]);
+});
+
+it("keeps every public error code unique so the code alone selects its details schema", () => {
+  const codes = TwitchHttpErrorBody.members.map((member) => member.fields.code.literal);
+
+  expect(new Set(codes).size).toBe(codes.length);
+});
+
+it("encodes Option-valued error details into their nullable wire form", () => {
+  const encoded = Schema.encodeSync(TwitchHttpErrorBody)({
+    code: "StreamReconciliationUnconfirmed",
+    error: "Reconciliation completed but failed to read final state",
+    operation: "reconcileStream",
+    message: "Stream reconciliation unconfirmed: read the stream state.",
+    details: {
+      action: "noop",
+      before: {
+        isLive: false,
+        startedAt: Option.none(),
+        endedAt: Option.none(),
+        peakViewerCount: 0,
+      },
+    },
+    requestId: "00000000-0000-4000-8000-000000000000",
+    retryable: false,
+  });
+
+  expect(encoded.details).toEqual({
+    action: "noop",
+    before: { isLive: false, startedAt: null, endedAt: null, peakViewerCount: 0 },
   });
 });

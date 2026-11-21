@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import {
   IsoTimestamp,
   NonNegativeInt,
@@ -8,16 +8,17 @@ import {
 } from "./identity.ts";
 import { SpotifyTrack } from "./spotify-track.ts";
 
-/** Bounded song queue page size; limits never exceed one hundred tracks. */
+/** Schema for a song queue page size between 1 and 100 tracks. */
 export const SongQueueLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })).pipe(
   Schema.brand("SongQueueLimit"),
 );
 
-/** Song queue page size accepted at HTTP and service boundaries. */
+/** Song queue page size between 1 and 100 tracks. */
 export type SongQueueLimit = typeof SongQueueLimit.Type;
 
-/** Pending song request identity is the redemption ID, not a track occurrence ID. */
+/** Schema for an accepted Song Request, identified by its redemption ID rather than a Queue Occurrence. */
 export const PendingSongRequest = Schema.Struct({
+  /** Redemption ID of the Song Request, kept under its historical `eventId` field name. */
   eventId: RedemptionId,
   track: SpotifyTrack,
   requesterUserId: ViewerId,
@@ -25,10 +26,10 @@ export const PendingSongRequest = Schema.Struct({
   requestedAt: IsoTimestamp,
 });
 
-/** A request persists before the external Spotify queue mutation. */
+/** Accepted Song Request, persisted before its Spotify queue mutation. */
 export interface PendingSongRequest extends Schema.Schema.Type<typeof PendingSongRequest> {}
 
-/** Spotify queue occurrences distinguish user attribution from autoplay. */
+/** Schema for a Queue Occurrence's track, attributed to a Viewer (`user`) or unattributed (`autoplay`). */
 export const QueuedTrack = Schema.Union([
   Schema.Struct({ ...SpotifyTrack.fields, source: Schema.Literal("autoplay") }),
   Schema.Struct({
@@ -41,28 +42,30 @@ export const QueuedTrack = Schema.Union([
   }),
 ]);
 
-/** Attribution belongs to a single occurrence even when track IDs repeat. */
+/** Queue Occurrence track whose attribution belongs to this occurrence even when track IDs repeat. */
 export type QueuedTrack = typeof QueuedTrack.Type;
 
-/** Now playing absence is explicit, and position zero is never an upcoming item. */
+/** Schema for Now Playing: the current occurrence or none, always at position zero. */
 export const NowPlaying = Schema.Struct({
+  /** Currently playing occurrence, or none when playback is idle. */
   track: Schema.OptionFromNullOr(QueuedTrack),
   position: Schema.Literal(0),
 });
 
-/** Current song queue occurrence, or no active playback. */
+/** Now Playing occurrence, or none when no playback is active. */
 export interface NowPlaying extends Schema.Schema.Type<typeof NowPlaying> {}
 
-/** Song queue presentation prioritizes requested FIFO ahead of Spotify autoplay order. */
+/** Schema for a song queue page: requested tracks in FIFO order ahead of Spotify autoplay order. */
 export const SongQueueResult = Schema.Struct({
   tracks: Schema.Array(QueuedTrack).check(Schema.isMaxLength(100)),
+  /** Number of upcoming occurrences before the page limit applies. */
   totalCount: NonNegativeInt,
 });
 
-/** The total count is measured before applying the page limit. */
+/** Song queue page whose total count is measured before the page limit applies. */
 export interface SongQueueResult extends Schema.Schema.Type<typeof SongQueueResult> {}
 
-/** Request history records only an attributed current occurrence leaving playback. */
+/** Schema for one Request History item: an attributed current occurrence that left playback. */
 export const RequestHistoryItem = Schema.Struct({
   eventId: RedemptionId,
   trackId: SpotifyTrackId,
@@ -73,17 +76,20 @@ export const RequestHistoryItem = Schema.Struct({
   requesterUserId: ViewerId,
   requesterDisplayName: Schema.NonEmptyString,
   requestedAt: IsoTimestamp,
+  /** Observed playback departure time; not Redemption Fulfillment. */
   fulfilledAt: IsoTimestamp,
 });
 
-/** Fulfilled timestamp means observed playback departure, never redemption fulfillment. */
+/** Request History item whose `fulfilledAt` is the observed playback departure, not Redemption Fulfillment. */
 export interface RequestHistoryItem extends Schema.Schema.Type<typeof RequestHistoryItem> {}
 
-/** Request history pagination uses inclusive instant bounds. */
+/** Schema for a Request History page query with inclusive `since`/`until` instant bounds. */
 export const RequestHistoryQuery = Schema.Struct({
   limit: SongQueueLimit,
   offset: NonNegativeInt.check(Schema.isLessThanOrEqualTo(10_000)),
+  /** Inclusive lower bound on playback departure, compared as an instant. */
   since: Schema.OptionFromNullOr(IsoTimestamp),
+  /** Inclusive upper bound on playback departure, compared as an instant. */
   until: Schema.OptionFromNullOr(IsoTimestamp),
 })
   .check(
@@ -92,24 +98,28 @@ export const RequestHistoryQuery = Schema.Struct({
         Option.isNone(query.since) ||
         Option.isNone(query.until) ||
         Date.parse(query.since.value) <= Date.parse(query.until.value),
-      { message: "Song queue history since must not follow until" },
+      {
+        message:
+          "Request history `since` is later than `until`. Send a `since` at or before `until`.",
+      },
     ),
   )
   .pipe(Schema.brand("RequestHistoryQuery"));
 
-/** History date filtering compares instants, including ISO timestamps with offsets. */
+/** Request History query whose date bounds compare instants, including timestamps with offsets. */
 export type RequestHistoryQuery = typeof RequestHistoryQuery.Type;
 
-/** Played request history page, newest playback departure first. */
+/** Schema for a Request History page, newest playback departure first. */
 export const RequestHistoryResult = Schema.Struct({
   requests: Schema.Array(RequestHistoryItem).check(Schema.isMaxLength(100)),
+  /** Number of matching history items before pagination. */
   totalCount: NonNegativeInt,
 });
 
-/** Total history matches are measured before pagination. */
+/** Request History page whose total count is measured before pagination. */
 export interface RequestHistoryResult extends Schema.Schema.Type<typeof RequestHistoryResult> {}
 
-/** Track statistics aggregate stable Spotify track IDs using latest played metadata. */
+/** Schema for a top requested Spotify Track, aggregated by track ID with its latest played metadata. */
 export const TopRequestedTrack = Schema.Struct({
   trackId: SpotifyTrackId,
   trackName: Schema.NonEmptyString,
@@ -117,62 +127,122 @@ export const TopRequestedTrack = Schema.Struct({
   requestCount: NonNegativeInt,
 });
 
-/** Played request count for one stable track identity. */
+/** Played Song Request count for one Spotify Track ID. */
 export interface TopRequestedTrack extends Schema.Schema.Type<typeof TopRequestedTrack> {}
 
-/** Viewer statistics aggregate stable viewer IDs using the latest display name. */
+/** Schema for a top song requester, aggregated by Viewer ID with the latest display name. */
 export const TopSongRequester = Schema.Struct({
   userId: ViewerId,
   displayName: Schema.NonEmptyString,
   requestCount: NonNegativeInt,
 });
 
-/** Played request count for one stable viewer identity. */
+/** Played Song Request count for one Viewer ID. */
 export interface TopSongRequester extends Schema.Schema.Type<typeof TopSongRequester> {}
 
-/** Song queue limit options are explicit rather than positional defaults. */
+/** Schema for a song queue query that takes only a page size. */
 export const SongQueueLimitInput = Schema.Struct({ limit: SongQueueLimit });
 
-/** Song request compensation uses the same durable redemption identity. */
+/** Schema for the redemption ID that identifies a Song Request to compensate. */
 export const SongRequestIdentityInput = Schema.Struct({ eventId: RedemptionId });
 
-/** Viewer song statistics use stable IDs, not display names. */
+/** Schema for a Viewer statistics query by stable Viewer ID, not display name. */
 export const SongQueueViewerInput = Schema.Struct({ userId: ViewerId });
 
-/** Display name lookup preserves the exact public API spelling. */
+/** Schema for a statistics query by exact display name, as spelled in the public API. */
 export const SongQueueDisplayNameInput = Schema.Struct({ displayName: Schema.NonEmptyString });
 
-/** Viewer top tracks combine identity with bounded pagination. */
+/** Schema for one Viewer's top tracks query with a page size. */
 export const SongQueueViewerTracksInput = Schema.Struct({
   userId: ViewerId,
   limit: SongQueueLimit,
 });
 
-/** Session counts include playback departures at the supplied instant. */
+/** Schema for a Stream Session count query; departures at exactly `since` are included. */
 export const SongQueueSessionInput = Schema.Struct({ since: IsoTimestamp });
 
-/** Duplicate song requests inspect pending and played requests inside a minute window. */
+/** Schema for a duplicate Song Request check over pending and played requests within `windowMinutes`. */
 export const SongQueueDuplicateInput = Schema.Struct({
   userId: ViewerId,
   trackId: SpotifyTrackId,
+  /** Minutes before now within which a pending or played request counts as a duplicate. */
   windowMinutes: SongQueueLimit,
 });
 
-/** Safe song queue failures retain operation and recoverable failure category. */
+/** Song queue operation names recorded on typed song queue failures. */
+export const SongQueueOperation = Schema.Literals([
+  "persistRequest",
+  "deleteRequest",
+  "getSongQueue",
+  "getCurrentlyPlaying",
+  "getRequestHistory",
+  "getUserRequestCount",
+  "getUserRequestCountByDisplayName",
+  "getSessionRequestCount",
+  "getTopTracks",
+  "getTopTracksByUser",
+  "getTopRequesters",
+  "checkDuplicateRequest",
+  "refreshQueue",
+  "reconcilePlayback",
+  "cleanupPending",
+  "getCoordination",
+  "setCoordination",
+  "scheduleAlarm",
+]);
+
+/** Song queue operation name recorded on typed song queue failures. */
+export type SongQueueOperation = typeof SongQueueOperation.Type;
+
+/** Classified cause of a song queue failure. */
+export const SongQueueFailureReason = Schema.Literals([
+  "storage_unavailable",
+  "stored_data_invalid",
+  "invalid_response",
+  "invalid_input",
+  "provider_unavailable",
+  "coordination_unavailable",
+  "transport_unavailable",
+]);
+
+/** Classified cause of a song queue failure. */
+export type SongQueueFailureReason = typeof SongQueueFailureReason.Type;
+
+/**
+ * Expected song queue failure carrying the operation, classified reason, and Song Request identity.
+ *
+ * **Details**
+ *
+ * Every song queue mutation is idempotent by redemption ID (receipts and compensation tombstones),
+ * so messages may direct callers to retry the same request after transient failures.
+ */
 export class SongQueueError extends Schema.TaggedError<SongQueueError>()("SongQueueError", {
-  operation: Schema.String,
-  reason: Schema.Literals([
-    "storage_unavailable",
-    "stored_data_invalid",
-    "invalid_response",
-    "invalid_input",
-    "provider_unavailable",
-    "coordination_unavailable",
-    "transport_unavailable",
-  ]),
+  /** Song queue operation that failed. */
+  operation: SongQueueOperation,
+  /** Classified cause of the failure. */
+  reason: SongQueueFailureReason,
+  /** Redemption ID of the Song Request involved, when the operation targets one. */
+  eventId: Schema.OptionFromNullOr(RedemptionId).pipe(
+    Schema.withConstructorDefault(Effect.succeed(Option.none<RedemptionId>())),
+  ),
 }) {
-  /** Song queue error messages do not include personal metadata or provider credentials. */
+  /** Message naming the failed operation and reason, without viewer metadata or credentials. */
   override get message(): string {
-    return `Song queue operation failed: ${this.operation} (${this.reason})`;
+    switch (this.reason) {
+      case "storage_unavailable":
+        return `Song queue storage was unavailable during ${this.operation}. Retry the same request; song queue writes are idempotent by redemption ID.`;
+      case "stored_data_invalid":
+        return `Song queue stored data failed validation during ${this.operation}. Inspect the stored song queue data before retrying.`;
+      case "invalid_response":
+        return `Song queue response failed validation during ${this.operation}. Read the song queue to confirm the outcome before retrying.`;
+      case "invalid_input":
+        return `Song queue input was rejected during ${this.operation}. Correct the request fields and send it again.`;
+      case "provider_unavailable":
+        return `Song queue could not read Spotify playback during ${this.operation}. Retry after Spotify is reachable; the last saved queue snapshot is kept.`;
+      case "coordination_unavailable":
+        return `Song queue polling alarm could not be scheduled during ${this.operation}. Retry the same request to schedule polling again.`;
+      case "transport_unavailable":
+        return `Song queue service was unreachable during ${this.operation}. Retry the same request; song queue writes are idempotent by redemption ID.`;
+    }
   }
 }

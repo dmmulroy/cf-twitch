@@ -17,18 +17,18 @@ import {
 } from "../../../test/support/controlled-twitch-service.ts";
 import {
   RecordedTwitchAnalyticsCall,
-  recordingTwitchAnalyticsLayer,
+  twitchAnalyticsTestLayer,
   TwitchAnalyticsRecording,
-} from "../../../test/support/recording-twitch-analytics.ts";
+} from "../../runtime/twitch-analytics.ts";
 import {
   ProviderScenarioTranscript,
   providerScenarioTransportLayer,
 } from "../providers/provider-scenario-transport.test-support.ts";
-import { Achievements } from "./achievements-service.ts";
-import { achievementsLayer } from "./achievements-database.ts";
+import { Achievements, achievementsLayer, achievementsTestLayer } from "./achievements-service.ts";
 import {
   AchievementOutbox,
   achievementOutboxLayerWithoutDependencies,
+  achievementOutboxTestLayer,
 } from "./achievement-outbox.ts";
 
 const outboxTestLayer = (mode: ControlledTwitchProviderMode) =>
@@ -37,7 +37,7 @@ const outboxTestLayer = (mode: ControlledTwitchProviderMode) =>
       Layer.mergeAll(
         achievementsLayer,
         controlledTwitchServiceLayer(mode),
-        recordingTwitchAnalyticsLayer,
+        twitchAnalyticsTestLayer,
         providerScenarioTransportLayer,
       ),
     ),
@@ -249,5 +249,74 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
         yield* sql`SELECT announcement_state,announcement_attempts FROM achievement_unlock_outbox`,
       ).toEqual([{ announcement_state: "abandoned", announcement_attempts: 0 }]);
     }).pipe(Effect.provide(outboxTestLayer("dropped-chat"))),
+  );
+});
+
+const inMemoryOutboxTestLayer = (mode: ControlledTwitchProviderMode) =>
+  Layer.mergeAll(achievementOutboxTestLayer, achievementsTestLayer).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        controlledTwitchServiceLayer(mode),
+        twitchAnalyticsTestLayer,
+        providerScenarioTransportLayer,
+      ),
+    ),
+  );
+
+describe("achievementOutboxTestLayer over achievementsTestLayer and controlled Twitch HTTP", () => {
+  it.effect(
+    "concurrent flushes announce and record each unlock once, then nothing is pending",
+    () =>
+      Effect.gen(function* () {
+        const achievements = yield* Achievements;
+        const outbox = yield* AchievementOutbox;
+        const transcript = yield* ProviderScenarioTranscript;
+        const analytics = yield* TwitchAnalyticsRecording;
+        yield* achievements.handleEvent(request);
+        expect(yield* outbox.hasPending()).toBe(true);
+        yield* Effect.all([outbox.flush(), outbox.flush()], { concurrency: "unbounded" });
+        yield* outbox.flush();
+        expect(yield* transcript.readRequestCount()).toBe(1);
+        expect(yield* analytics.readRecordedTwitchAnalyticsCalls()).toHaveLength(1);
+        expect(yield* outbox.hasPending()).toBe(false);
+      }).pipe(Effect.provide(inMemoryOutboxTestLayer("normal"))),
+  );
+  it.effect("rate-limited announcements honor Retry-After and stop after three safe retries", () =>
+    Effect.gen(function* () {
+      const achievements = yield* Achievements;
+      const outbox = yield* AchievementOutbox;
+      const transcript = yield* ProviderScenarioTranscript;
+      yield* achievements.handleEvent(request);
+      yield* outbox.flush();
+      yield* TestClock.adjust("11999 millis");
+      yield* outbox.flush();
+      expect(yield* transcript.readRequestCount()).toBe(1);
+      yield* TestClock.adjust("1 millis");
+      yield* outbox.flush();
+      expect(yield* transcript.readRequestCount()).toBe(2);
+
+      for (let retry = 0; retry < 2; retry++) {
+        yield* TestClock.adjust("12 seconds");
+        yield* outbox.flush();
+      }
+
+      yield* TestClock.adjust("1 day");
+      yield* outbox.flush();
+      expect(yield* transcript.readRequestCount()).toBe(4);
+      expect(yield* outbox.hasPending()).toBe(false);
+    }).pipe(Effect.provide(inMemoryOutboxTestLayer("rate-limited"))),
+  );
+  it.effect("an unknown chat outcome is never retried", () =>
+    Effect.gen(function* () {
+      const achievements = yield* Achievements;
+      const outbox = yield* AchievementOutbox;
+      const transcript = yield* ProviderScenarioTranscript;
+      yield* achievements.handleEvent(request);
+      yield* outbox.flush();
+      yield* TestClock.adjust("1 day");
+      yield* outbox.flush();
+      expect(yield* transcript.readRequestCount()).toBe(1);
+      expect(yield* outbox.hasPending()).toBe(false);
+    }).pipe(Effect.provide(inMemoryOutboxTestLayer("unknown"))),
   );
 });

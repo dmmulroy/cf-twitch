@@ -6,21 +6,20 @@ import { TestClock } from "effect/testing";
 import { AcceptedEventSubReceipt } from "@cf-twitch/contracts/eventsub";
 import { ChatCommandName } from "@cf-twitch/contracts/chat-command";
 import { ProviderError } from "@cf-twitch/contracts/provider";
-import { recordingTwitchAnalyticsLayer } from "../support/recording-twitch-analytics.ts";
+import { twitchAnalyticsTestLayer } from "../../src/runtime/twitch-analytics.ts";
 import { TwitchConfiguration } from "../../src/runtime/twitch-configuration.ts";
 import { httpTestConfiguration } from "../../src/features/http/http-test-fixtures.ts";
-import { Commands } from "../../src/features/commands/commands.ts";
-import { commandsDatabaseLayerWithoutDependencies } from "../../src/features/commands/commands-database.ts";
-import { executorLayerWithoutDependencies } from "../../src/features/commands/chat-command-executor.ts";
+import { Commands, commandsLayer } from "../../src/features/commands/commands.ts";
+import { chatCommandExecutorLayerWithoutDependencies } from "../../src/features/commands/chat-command-executor.ts";
 import { computedChatCommandsLayerWithoutDependencies } from "../../src/features/commands/computed-chat-commands.ts";
 import { eventSubDispatchLayerWithoutDependencies } from "../../src/features/eventsub/eventsub-dispatch.ts";
 import {
   EventSubInbox,
   eventSubInboxLayerWithoutDependencies,
 } from "../../src/features/eventsub/eventsub-inbox.ts";
-import { WorkflowAlarm } from "../../src/features/workflows/workflow-alarm.ts";
+import { workflowAlarmTestLayer } from "../../src/features/workflows/workflow-alarm.ts";
 import { WorkflowStarters } from "../../src/features/workflows/workflow-starters.ts";
-import { StreamLifecycleClient } from "../../src/features/stream/stream-lifecycle.ts";
+import { StreamLifecycleClient } from "../../src/features/stream/stream-lifecycle-client.ts";
 import { TwitchService } from "../../src/features/providers/twitch-service.ts";
 import { SongQueue } from "../../src/features/song-queue/song-queue.ts";
 import { Raffle } from "../../src/features/raffle/raffle-service.ts";
@@ -67,9 +66,9 @@ const receipt = Schema.decodeSync(AcceptedEventSubReceipt)({
 
 const sqlite = SqliteClient.layer({ filename: ":memory:" });
 
-const registryLayer = commandsDatabaseLayerWithoutDependencies;
+const registryLayer = commandsLayer;
 
-const executorLayer = executorLayerWithoutDependencies.pipe(
+const executorLayer = chatCommandExecutorLayerWithoutDependencies.pipe(
   Layer.provide(computedChatCommandsLayerWithoutDependencies),
   Layer.provide(registryLayer),
 );
@@ -79,9 +78,9 @@ const dispatchLayer = eventSubDispatchLayerWithoutDependencies.pipe(Layer.provid
 const inboxLayer = eventSubInboxLayerWithoutDependencies.pipe(Layer.provide(dispatchLayer));
 
 const commonLayer = Layer.mergeAll(
-  recordingTwitchAnalyticsLayer,
+  twitchAnalyticsTestLayer,
   Layer.succeed(TwitchConfiguration, httpTestConfiguration),
-  Layer.succeed(WorkflowAlarm, { set: () => Effect.void }),
+  workflowAlarmTestLayer,
   Layer.mock(WorkflowStarters, {}),
   Layer.mock(StreamLifecycleClient, {}),
   Layer.mock(SongQueue, {}),
@@ -108,8 +107,8 @@ describe("Independent EventSub chat delivery integration", () => {
                       new ProviderError({
                         provider: "twitch",
                         operation: "sendChatMessage",
-                        kind: "rate-limited",
-                        status: 429,
+                        reason: "rate-limited",
+                        status: Option.some(429),
                         retryAfterMs: Option.none(),
                       }),
                     )

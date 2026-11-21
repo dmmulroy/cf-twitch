@@ -5,8 +5,14 @@ import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Effect } from "effect";
 import twitchApiWorkerLayer, { TwitchApiWorker } from "./src/runtime/twitch-worker.ts";
 
-/** Deploy the exact production stage or isolated stages without adopting existing resources. */
-const CfTwitchApiStack = Alchemy.Stack(
+/**
+ * Alchemy Stack that deploys the exact production stage or isolated stages without adopting existing resources.
+ *
+ * **Gotchas**
+ *
+ * An unpermitted stage name stops planning with a defect before any resource is declared.
+ */
+export const CfTwitchApiStack = Alchemy.Stack(
   "CfTwitch",
   { providers: Cloudflare.providers(), state: Cloudflare.state() },
   Effect.gen(function* () {
@@ -27,7 +33,8 @@ const CfTwitchApiStack = Alchemy.Stack(
 /** Unresolved typed Stack output used by infrastructure composition and verification tooling. */
 export type CfTwitchApiStackOutput = Effect.Success<typeof CfTwitchApiStack>["output"];
 
-/** Resolved deployment output contains only the public endpoint, never credentials. */
+/** Resolved deployment output, which contains only the public endpoint and never credentials. */
 export type CfTwitchApiStackDeployment = Input.Resolve<CfTwitchApiStackOutput>;
 
+/** Default export: the CF Twitch API Stack, discovered by Alchemy. */
 export default CfTwitchApiStack;

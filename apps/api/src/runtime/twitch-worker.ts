@@ -9,9 +9,11 @@ import { achievementsClientLayer } from "../features/achievements/achievements-c
 import type { AchievementsServer } from "../features/achievements/achievements-server.ts";
 import { commandsClientLayer } from "../features/commands/commands-client.ts";
 import type { CommandsServer } from "../features/commands/commands-server.ts";
-import { eventBusAdministrationLayer } from "../features/events/event-bus-client.ts";
+import {
+  EventBusAdministration,
+  eventBusAdministrationLayer,
+} from "../features/events/event-bus-administration.ts";
 import type { EventBusServer } from "../features/events/event-bus-server.ts";
-import { eventSubReceiptsLayer } from "../features/eventsub/eventsub-client.ts";
 import type { EventSubWebhookServer } from "../features/eventsub/eventsub-server.ts";
 import { httpResponseCacheLayer } from "../features/http/http-response-cache.ts";
 import { twitchHttpApiLayer } from "../features/http/twitch-http-api.ts";
@@ -24,7 +26,7 @@ import type {
 import { twitchServiceLayer } from "../features/providers/twitch-service.ts";
 import { raffleClientLayer } from "../features/raffle/raffle-client.ts";
 import type { RaffleServer } from "../features/raffle/raffle-server.ts";
-import { songQueueClientLayer } from "../features/song-queue/song-queue-client.ts";
+import { songQueueLayer } from "../features/song-queue/song-queue.ts";
 import type { SongQueueServer } from "../features/song-queue/song-queue-server.ts";
 import { streamLifecycleClientLayer } from "../features/stream/stream-lifecycle-client.ts";
 import type { StreamLifecycleServer } from "../features/stream/stream-server.ts";
@@ -39,8 +41,7 @@ import { twitchConfigurationLayer } from "./twitch-configuration.ts";
 import { twitchHttpTelemetrySafetyLayer, twitchTelemetryLayer } from "./twitch-telemetry.ts";
 import { Achievements } from "../features/achievements/achievements-service.ts";
 import { Commands } from "../features/commands/commands.ts";
-import { EventBusAdministration } from "../features/events/event-bus-service.ts";
-import { EventSubReceipts } from "../features/eventsub/eventsub-receipts.ts";
+import { EventSubReceipts, eventSubReceiptsLayer } from "../features/eventsub/eventsub-receipts.ts";
 import { OAuthAuthorization } from "../features/oauth/oauth-authorization.ts";
 import { TwitchService } from "../features/providers/twitch-service.ts";
 import { Raffle } from "../features/raffle/raffle-service.ts";
@@ -67,16 +68,6 @@ type TwitchHostedServers =
   | RaidShoutoutSagaServer
   | SongRequestSagaServer;
 
-// Native cache access is delayed until invocation; planning never touches a workerd I/O handle.
-const cloudflareResponseCacheLayer = httpResponseCacheLayer({
-  match: (request, options) =>
-    caches.open("cf-twitch-http").then((cache) => cache.match(request, options)),
-  put: (request, response) =>
-    caches.open("cf-twitch-http").then((cache) => cache.put(request, response)),
-  delete: (request, options) =>
-    caches.open("cf-twitch-http").then((cache) => cache.delete(request, options)),
-});
-
 const twitchApplicationLayer = Layer.mergeAll(
   achievementsClientLayer,
   commandsClientLayer,
@@ -84,7 +75,7 @@ const twitchApplicationLayer = Layer.mergeAll(
   eventSubReceiptsLayer,
   oauthAuthorizationLayer,
   raffleClientLayer,
-  songQueueClientLayer,
+  songQueueLayer,
   streamLifecycleClientLayer,
   twitchServiceLayer,
 ).pipe(
@@ -93,14 +84,21 @@ const twitchApplicationLayer = Layer.mergeAll(
   Layer.provide(FetchHttpClient.layer),
 );
 
-/** Public Twitch API Worker and its thirteen HTTP-only Durable Object namespaces. */
+/** Worker declaration for the public Twitch API and its thirteen HTTP-only Durable Object namespaces. */
 export class TwitchApiWorker extends Cloudflare.Worker<
   TwitchApiWorker,
   TwitchWorkerHandlers,
   TwitchHostedServers
 >()("CfTwitchApi") {}
 
-/** Capture application capabilities at init while leaving concrete providers selectable by the host. */
+/**
+ * Effect that captures application capabilities at init while leaving concrete providers selectable by the host.
+ *
+ * **Details**
+ *
+ * Captured services are bridged into the per-invocation router with `Layer.succeed`; the router
+ * itself is memoized per execution so no scope escapes its invocation.
+ */
 export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function* () {
   const achievements = yield* Achievements;
   const commands = yield* Commands;
@@ -136,7 +134,7 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
     HttpRouter.toHttpEffect(
       twitchHttpApiLayer.pipe(
         Layer.provide(runtimeServices),
-        Layer.provide(cloudflareResponseCacheLayer),
+        Layer.provide(httpResponseCacheLayer),
         Layer.provide(cloudflareHttpServerLayer),
         Layer.provideMerge(Layer.succeed(ErrorReporter.CurrentErrorReporters, errorReporters)),
       ),
@@ -148,7 +146,12 @@ export const twitchWorkerImplementationWithoutDependencies = Effect.gen(function
   return { fetch };
 });
 
-/** Initialize the production capability graph during Alchemy planning and runtime cold start. */
+/**
+ * Effect that initializes the production capability graph during Alchemy planning and runtime cold start.
+ *
+ * @throws A defect when runtime configuration, telemetry settings, or the analytics dataset stage
+ *   are invalid; the Worker cannot start without them.
+ */
 export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDependencies.pipe(
   Effect.provide(twitchApplicationLayer),
   Effect.provide(twitchConfigurationLayer),
@@ -158,7 +161,14 @@ export const twitchWorkerImplementation = twitchWorkerImplementationWithoutDepen
   Effect.orDie,
 );
 
-/** Alchemy owns stage-qualified Worker names; existing production resources are never adopted implicitly. */
+/**
+ * Layer that declares the `cf-twitch-api` Worker with its implementation and telemetry safety.
+ *
+ * **Details**
+ *
+ * Alchemy owns stage-qualified Worker names; existing production resources are never adopted
+ * implicitly.
+ */
 export const twitchApiWorkerLayer = TwitchApiWorker.make(
   {
     name: "cf-twitch-api",
@@ -175,4 +185,5 @@ export const twitchApiWorkerLayer = TwitchApiWorker.make(
   Layer.provideMerge(twitchHttpTelemetrySafetyLayer),
 );
 
+/** Default export: the production Twitch API Worker Layer, discovered by Alchemy. */
 export default twitchApiWorkerLayer;

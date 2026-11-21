@@ -1,4 +1,5 @@
-import { SqliteMigrator } from "@effect/sql-sqlite-do";
+import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-do";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Clock, Context, Effect, Layer, Match, Option, Result, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/sql";
 import type { SchemaError } from "effect/Schema";
@@ -7,36 +8,22 @@ import {
   WorkflowError,
   WorkflowId,
   WorkflowInput,
+  type WorkflowOperation,
   WorkflowRunStatus,
   WorkflowStatus,
+  workflowIdOfInput,
 } from "@cf-twitch/contracts/workflow";
-import { WorkflowAlarm, WorkflowAlarmError } from "./workflow-alarm.ts";
-import { TwitchAnalytics, type SagaLifecycleMetric } from "../../runtime/twitch-analytics.ts";
-
-/** Step failure classification states the safety guarantee for a subsequent attempt. */
-export class WorkflowStepFailure extends Schema.TaggedError<WorkflowStepFailure>()(
-  "WorkflowStepFailure",
-  {
-    kind: Schema.Literals(["retryable", "permanent", "unknown"]),
-    message: Schema.String,
-    retryAfterMs: Schema.OptionFromNullOr(Schema.Number),
-  },
-) {}
-
-/** Durable control flow is not a persistence error and must never trigger automatic refund itself. */
-export class WorkflowStepHalt extends Schema.TaggedError<WorkflowStepHalt>()("WorkflowStepHalt", {
-  stepName: Schema.String,
-  reason: Schema.Literals(["retry", "failed", "unknown"]),
-  message: Schema.String,
-}) {}
-
-/** Checkpoint policy declares total attempts and whether interruption permits replay. */
-export interface WorkflowStepPolicy {
-  readonly attempts: number;
-  readonly timeoutMs: number;
-  readonly safety: "idempotent" | "non-idempotent";
-  readonly rollback: boolean;
-}
+import {
+  WorkflowAlarm,
+  WorkflowAlarmError,
+  workflowAlarmLayer,
+  workflowAlarmTestLayer,
+} from "./workflow-alarm.ts";
+import {
+  TwitchAnalytics,
+  type TwitchAnalyticsSagaLifecycleMetric,
+} from "../../runtime/twitch-analytics.ts";
+import { WorkflowStepFailure, WorkflowStepHalt, type WorkflowStepPolicy } from "./workflow-step.ts";
 
 const StoredWorkflowRun = Schema.Struct({
   id: WorkflowId,
@@ -48,6 +35,8 @@ const StoredWorkflowRun = Schema.Struct({
   error: Schema.OptionFromNullOr(Schema.String),
 });
 
+type StoredWorkflowRun = typeof StoredWorkflowRun.Type;
+
 const StoredWorkflowStep = Schema.Struct({
   step_name: Schema.NonEmptyString,
   state: Schema.Literals(["PENDING", "SUCCEEDED", "FAILED", "COMPENSATION_PENDING", "COMPENSATED"]),
@@ -58,13 +47,24 @@ const StoredWorkflowStep = Schema.Struct({
   last_error: Schema.OptionFromNullOr(Schema.String),
 });
 
+type StoredWorkflowStep = typeof StoredWorkflowStep.Type;
+
 const parseRunRows = Schema.decodeUnknownEffect(Schema.Array(StoredWorkflowRun));
 
 const parseStepRows = Schema.decodeUnknownEffect(Schema.Array(StoredWorkflowStep));
 
+const parseFormatRows = Schema.decodeUnknownEffect(
+  Schema.Array(Schema.Struct({ version: Schema.Literal(1) })),
+);
+
 const parseWorkflowInput = Schema.decodeEffect(Schema.fromJsonString(WorkflowInput));
 
 const encodeWorkflowInput = Schema.encodeEffect(Schema.fromJsonString(WorkflowInput));
+
+// `last_error` sentinels are durable step state, not messages: replay reads them to choose the halt reason.
+const unknownOutcomeSentinel = "unknown";
+
+const exhaustedSentinel = "exhausted";
 
 const migration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -84,54 +84,102 @@ const migration = Effect.gen(function* () {
 
 const migrationLoader = SqliteMigrator.fromRecord({ "1_workflow_journal": migration });
 
-type WorkflowJournalBoundaryError =
-  | SchemaError
-  | SqlError.SqlError
-  | WorkflowAlarmError
-  | WorkflowError;
+type WorkflowJournalBoundaryError = SchemaError | SqlError.SqlError | WorkflowAlarmError;
 
+const journalBoundaryError = (
+  operation: WorkflowOperation,
+  reason: "storage" | "corrupt" | "schedule",
+  stepName: Option.Option<string>,
+) => Effect.fail(new WorkflowError({ operation, reason, workflowId: Option.none(), stepName }));
+
+/**
+ * Translates journal storage, codec, and alarm failures into `WorkflowError`; journal errors pass through unchanged.
+ *
+ * @returns The effect, failing with `WorkflowError` reason `storage`, `corrupt`, or `schedule` instead of `SqlError`, `SchemaError`, or `WorkflowAlarmError`.
+ */
 const catchWorkflowJournalBoundaryErrors =
-  (operation: string) =>
+  (operation: WorkflowOperation) =>
   <A, R>(
-    effect: Effect.Effect<A, WorkflowJournalBoundaryError, R>,
+    effect: Effect.Effect<A, WorkflowJournalBoundaryError | WorkflowError, R>,
   ): Effect.Effect<A, WorkflowError, R> =>
     effect.pipe(
       Effect.catchTags({
-        SqlError: () => Effect.fail(new WorkflowError({ operation, reason: "storage" })),
-        SchemaError: () => Effect.fail(new WorkflowError({ operation, reason: "corrupt" })),
-        WorkflowAlarmError: () => Effect.fail(new WorkflowError({ operation, reason: "schedule" })),
+        SqlError: () => journalBoundaryError(operation, "storage", Option.none()),
+        SchemaError: () => journalBoundaryError(operation, "corrupt", Option.none()),
+        WorkflowAlarmError: () => journalBoundaryError(operation, "schedule", Option.none()),
       }),
     );
 
+/**
+ * Translates checkpoint storage, codec, and alarm failures into `WorkflowError` for the named step; halts pass through unchanged.
+ *
+ * @returns The effect, failing with `WorkflowError` reason `storage`, `corrupt`, or `schedule` instead of `SqlError`, `SchemaError`, or `WorkflowAlarmError`.
+ */
 const catchWorkflowStepBoundaryErrors =
-  (operation: string) =>
+  (operation: "checkpoint" | "compensate", stepName: string) =>
   <A, R>(
-    effect: Effect.Effect<A, WorkflowJournalBoundaryError | WorkflowStepHalt, R>,
+    effect: Effect.Effect<A, WorkflowJournalBoundaryError | WorkflowError | WorkflowStepHalt, R>,
   ): Effect.Effect<A, WorkflowError | WorkflowStepHalt, R> =>
     effect.pipe(
       Effect.catchTags({
-        SqlError: () => Effect.fail(new WorkflowError({ operation, reason: "storage" })),
-        SchemaError: () => Effect.fail(new WorkflowError({ operation, reason: "corrupt" })),
-        WorkflowAlarmError: () => Effect.fail(new WorkflowError({ operation, reason: "schedule" })),
+        SqlError: () => journalBoundaryError(operation, "storage", Option.some(stepName)),
+        SchemaError: () => journalBoundaryError(operation, "corrupt", Option.some(stepName)),
+        WorkflowAlarmError: () =>
+          journalBoundaryError(operation, "schedule", Option.some(stepName)),
       }),
     );
 
-/** Journal owns checkpoint replay, durable retry budgets, and point-of-no-return evidence. */
+/** Checkpoint replay, durable retry budgets, and point-of-no-return evidence for one workflow run. */
 export interface IWorkflowJournal {
+  /**
+   * Persists the canonical input of a new run, or confirms an identical input for an existing run.
+   *
+   * @returns Nothing, or fails with `WorkflowError` reason `conflict` when the input differs from the existing run, `storage`/`corrupt` when SQL fails or stored data is unreadable, and `schedule` when the alarm cannot be set.
+   */
   readonly initialize: (input: WorkflowInput) => Effect.Effect<void, WorkflowError>;
+  /**
+   * Returns the run's canonical input, or `None` when no run exists.
+   *
+   * @returns The input, or fails with `WorkflowError` reason `legacy_state` for runs without the current format marker, and `storage`/`corrupt` for SQL or codec failures.
+   */
   readonly getInput: () => Effect.Effect<Option.Option<WorkflowInput>, WorkflowError>;
+  /**
+   * Returns the run's operational status, or `None` when no run exists.
+   *
+   * @returns The status, or fails with `WorkflowError` reason `storage`/`corrupt` for SQL or codec failures.
+   */
   readonly getStatus: () => Effect.Effect<Option.Option<WorkflowRunStatus>, WorkflowError>;
+  /**
+   * Records a lifecycle status and diagnostic, then re-arms or clears the alarm.
+   *
+   * @returns Nothing, or fails with `WorkflowError` reason `missing_run`, `legacy_state`, `storage`, `corrupt`, or `schedule`.
+   */
   readonly transition: (
     status: WorkflowStatus,
     error: Option.Option<string>,
   ) => Effect.Effect<void, WorkflowError>;
+  /**
+   * Schedules the alarm for the earliest retry of an unfinished run, or cancels it for finished runs.
+   *
+   * @returns Nothing, or fails with `WorkflowError` reason `legacy_state`, `storage`, `corrupt`, or `schedule`.
+   */
   readonly restoreAlarm: () => Effect.Effect<void, WorkflowError>;
+  /**
+   * Runs `operation` at most as allowed by `policy`, replaying a stored result instead of repeating a completed step.
+   *
+   * @returns The step result, or fails with `WorkflowStepHalt` when the step waits for retry, fails, or has an unknown outcome, and with `WorkflowError` when journal storage, codecs, or the alarm fail.
+   */
   readonly checkpoint: <A, I>(
     name: string,
     schema: Schema.Codec<A, I>,
     operation: Effect.Effect<A, WorkflowStepFailure>,
     policy: WorkflowStepPolicy,
   ) => Effect.Effect<A, WorkflowError | WorkflowStepHalt>;
+  /**
+   * Undoes a completed rollback step using its stored undo evidence, at most once.
+   *
+   * @returns Nothing, or fails with `WorkflowError` reason `already_fulfilled` after the point of no return, `corrupt` when undo evidence is missing or unreadable, and `WorkflowStepHalt` when the undo operation halts.
+   */
   readonly compensate: <A, I>(
     name: string,
     schema: Schema.Codec<A, I>,
@@ -140,12 +188,16 @@ export interface IWorkflowJournal {
   ) => Effect.Effect<void, WorkflowError | WorkflowStepHalt>;
 }
 
-/** Persisted workflow journal is local to one Durable Object SQL database. */
+/** Service tag for the workflow journal, local to one Durable Object SQL database. */
 export class WorkflowJournal extends Context.Service<WorkflowJournal, IWorkflowJournal>()(
   "@cf-twitch/WorkflowJournal",
 ) {}
 
-/** Build checkpoint persistence after migrations, with runtime alarm authority explicit. */
+/**
+ * Effect that runs journal migrations and builds checkpoint persistence over SQL, the alarm, and analytics.
+ *
+ * @returns The journal, or fails with `SqlError`/`MigrationError` when migrations cannot run.
+ */
 export const makeWorkflowJournal = Effect.gen(function* () {
   yield* SqliteMigrator.run({ loader: migrationLoader, table: "workflow_schema_migrations" });
   const sql = yield* SqlClient.SqlClient;
@@ -153,8 +205,8 @@ export const makeWorkflowJournal = Effect.gen(function* () {
   const analytics = yield* TwitchAnalytics;
 
   const emitLifecycle = Effect.fn("WorkflowJournal.emitLifecycle")(function* (
-    run: typeof StoredWorkflowRun.Type,
-    event: SagaLifecycleMetric["event"],
+    run: StoredWorkflowRun,
+    event: TwitchAnalyticsSagaLifecycleMetric["event"],
     identity: string,
     stepName: Option.Option<string>,
     error: Option.Option<string>,
@@ -189,23 +241,25 @@ export const makeWorkflowJournal = Effect.gen(function* () {
       return yield* new WorkflowError({
         operation: "read-run",
         reason: "corrupt",
+        workflowId: Option.none(),
+        stepName: Option.none(),
       });
 
     return Option.fromUndefinedOr(rows[0]);
   });
 
   const requireCurrentWorkflowFormat = Effect.fn("WorkflowJournal.requireCurrentWorkflowFormat")(
-    function* (run: typeof StoredWorkflowRun.Type) {
-      const formats = yield* sql`SELECT version FROM workflow_format WHERE id=${run.id}`;
+    function* (run: StoredWorkflowRun) {
+      const formats = yield* parseFormatRows(
+        yield* sql`SELECT version FROM workflow_format WHERE id=${run.id}`,
+      );
 
-      const parsed = yield* Schema.decodeUnknownEffect(
-        Schema.Array(Schema.Struct({ version: Schema.Literal(1) })),
-      )(formats);
-
-      if (parsed.length !== 1)
+      if (formats.length !== 1)
         return yield* new WorkflowError({
           operation: "legacy-state-gate",
-          reason: "corrupt",
+          reason: "legacy_state",
+          workflowId: Option.some(run.id),
+          stepName: Option.none(),
         });
     },
   );
@@ -216,7 +270,9 @@ export const makeWorkflowJournal = Effect.gen(function* () {
     if (Option.isNone(row))
       return yield* new WorkflowError({
         operation: "require-run",
-        reason: "corrupt",
+        reason: "missing_run",
+        workflowId: Option.none(),
+        stepName: Option.none(),
       });
     yield* requireCurrentWorkflowFormat(row.value);
 
@@ -244,13 +300,15 @@ export const makeWorkflowJournal = Effect.gen(function* () {
   }, catchWorkflowJournalBoundaryErrors("get-input"));
 
   const initialize = Effect.fn("WorkflowJournal.initialize")(function* (input: WorkflowInput) {
-    const id = WorkflowId.make(
-      WorkflowInput.match(input, {
-        SongRequest: ({ redemption }) => redemption.id,
-        KeyboardRaffle: ({ redemption }) => redemption.id,
-        RaidShoutout: ({ raid }) => raid.messageId,
-      }),
-    );
+    const id = workflowIdOfInput(input);
+
+    const conflict = () =>
+      new WorkflowError({
+        operation: "initialize",
+        reason: "conflict",
+        workflowId: Option.some(id),
+        stepName: Option.none(),
+      });
 
     const json = yield* encodeWorkflowInput(input);
     yield* sql.withTransaction(
@@ -258,22 +316,14 @@ export const makeWorkflowJournal = Effect.gen(function* () {
         const existing = yield* findRun();
 
         if (Option.isSome(existing)) {
-          if (existing.value.id !== id)
-            return yield* new WorkflowError({
-              operation: "initialize",
-              reason: "conflict",
-            });
+          if (existing.value.id !== id) return yield* conflict();
 
           // Schema encoding establishes canonical field order; a direct caller cannot mutate original input on replay.
           const canonical = yield* encodeWorkflowInput(
             yield* parseWorkflowInput(existing.value.params_json),
           );
 
-          if (canonical !== json)
-            return yield* new WorkflowError({
-              operation: "initialize",
-              reason: "conflict",
-            });
+          if (canonical !== json) return yield* conflict();
 
           return;
         }
@@ -357,14 +407,29 @@ export const makeWorkflowJournal = Effect.gen(function* () {
     Effect.gen(function* () {
       const run = yield* requireRun();
       const existing = yield* readStep(run.id, name);
+      // The codec depends on the caller's step schema, so it cannot be instantiated once at module scope.
       const decode = Schema.decodeEffect(Schema.fromJsonString(schema));
       const encode = Schema.encodeEffect(Schema.fromJsonString(schema));
 
-      const halt = (reason: WorkflowStepHalt["reason"], message: string) =>
-        new WorkflowStepHalt({ stepName: name, reason, message });
+      const halt = (reason: WorkflowStepHalt["reason"], detail: string) =>
+        new WorkflowStepHalt({
+          operation: "checkpoint",
+          workflowId: run.id,
+          stepName: name,
+          reason,
+          detail,
+        });
+
+      const corruptStep = () =>
+        new WorkflowError({
+          operation: "checkpoint",
+          reason: "corrupt",
+          workflowId: Option.some(run.id),
+          stepName: Option.some(name),
+        });
 
       const replayCompletedCheckpoint = Effect.fn("WorkflowJournal.replayCompletedCheckpoint")(
-        function* (step: typeof StoredWorkflowStep.Type) {
+        function* (step: StoredWorkflowStep) {
           const completed =
             step.state === "SUCCEEDED" ||
             step.state === "COMPENSATED" ||
@@ -372,20 +437,12 @@ export const makeWorkflowJournal = Effect.gen(function* () {
 
           if (!completed) return Option.none<A>();
 
-          if (Option.isNone(step.result_json))
-            return yield* new WorkflowError({
-              operation: name,
-              reason: "corrupt",
-            });
+          if (Option.isNone(step.result_json)) return yield* corruptStep();
           const result = yield* decode(step.result_json.value);
 
           if (!policy.rollback) return Option.some(result);
 
-          if (Option.isNone(step.undo_json))
-            return yield* new WorkflowError({
-              operation: name,
-              reason: "corrupt",
-            });
+          if (Option.isNone(step.undo_json)) return yield* corruptStep();
           yield* decode(step.undo_json.value);
 
           return Option.some(result);
@@ -393,42 +450,55 @@ export const makeWorkflowJournal = Effect.gen(function* () {
       );
 
       const haltFailedCheckpoint = Effect.fn("WorkflowJournal.haltFailedCheckpoint")(function* (
-        step: typeof StoredWorkflowStep.Type,
+        step: StoredWorkflowStep,
       ) {
         if (step.state !== "FAILED") return;
+        const lastError = Option.getOrNull(step.last_error);
 
-        return yield* halt(
-          Option.getOrNull(step.last_error) === "unknown" ? "unknown" : "failed",
-          Option.getOrElse(step.last_error, () => "Workflow step retry budget exhausted"),
-        );
+        if (lastError === unknownOutcomeSentinel)
+          return yield* halt(
+            "unknown",
+            "Workflow step ended with an unknown outcome. Reconcile the external effect before retrying; it is not retried automatically.",
+          );
+
+        if (lastError === null || lastError === exhaustedSentinel)
+          return yield* halt(
+            "failed",
+            "Workflow step retry budget exhausted. Inspect the workflow status before retrying manually.",
+          );
+
+        return yield* halt("failed", lastError);
       });
 
       const protectInterruptedCheckpoint = Effect.fn(
         "WorkflowJournal.protectInterruptedCheckpoint",
-      )(function* (step: typeof StoredWorkflowStep.Type) {
+      )(function* (step: StoredWorkflowStep) {
         const interruptedNonIdempotent =
           policy.safety === "non-idempotent" &&
           Option.isNone(step.next_retry_at) &&
           step.attempt > 0;
 
         if (!interruptedNonIdempotent) return;
-        yield* sql`UPDATE saga_steps SET state='FAILED',last_error='unknown' WHERE saga_id=${run.id} AND step_name=${name}`;
+        yield* sql`UPDATE saga_steps SET state='FAILED',last_error=${unknownOutcomeSentinel} WHERE saga_id=${run.id} AND step_name=${name}`;
 
         return yield* halt(
           "unknown",
-          "Workflow non-idempotent effect interrupted before durable success evidence",
+          "Workflow non-idempotent effect interrupted before durable success evidence. Reconcile the external effect before retrying; it is not retried automatically.",
         );
       });
 
       const deferEarlyCheckpointRetry = Effect.fn("WorkflowJournal.deferEarlyCheckpointRetry")(
-        function* (step: typeof StoredWorkflowStep.Type) {
+        function* (step: StoredWorkflowStep) {
           if (Option.isNone(step.next_retry_at)) return;
           const retryAt = Date.parse(step.next_retry_at.value);
 
           if (retryAt <= (yield* Clock.currentTimeMillis)) return;
           yield* alarm.set(Option.some(retryAt));
 
-          return yield* halt("retry", "Workflow retry is not due yet");
+          return yield* halt(
+            "retry",
+            "Workflow retry is not due yet. Wait for the workflow alarm to resume the step.",
+          );
         },
       );
 
@@ -453,9 +523,12 @@ export const makeWorkflowJournal = Effect.gen(function* () {
       const attempt = Option.isSome(existing) ? existing.value.attempt + 1 : 1;
 
       if (attempt > policy.attempts) {
-        yield* sql`UPDATE saga_steps SET state='FAILED',next_retry_at=NULL,last_error='exhausted' WHERE saga_id=${run.id} AND step_name=${name}`;
+        yield* sql`UPDATE saga_steps SET state='FAILED',next_retry_at=NULL,last_error=${exhaustedSentinel} WHERE saga_id=${run.id} AND step_name=${name}`;
 
-        return yield* halt("failed", "Workflow interrupted attempts exhausted the retry budget");
+        return yield* halt(
+          "failed",
+          "Workflow interrupted attempts exhausted the retry budget. Inspect the workflow status before retrying manually.",
+        );
       }
 
       // Prepared intent is provably safe to dispatch if scheduling fails. Only the dispatch guard below consumes an attempt.
@@ -479,8 +552,11 @@ export const makeWorkflowJournal = Effect.gen(function* () {
           orElse: () =>
             Effect.fail(
               new WorkflowStepFailure({
+                operation: "run-step",
+                reason: "timed_out",
+                workflowId: Option.some(run.id),
                 kind: policy.safety === "non-idempotent" ? "unknown" : "retryable",
-                message: "Workflow step timed out",
+                providerFailure: Option.none(),
                 retryAfterMs: Option.none(),
               }),
             ),
@@ -501,10 +577,13 @@ export const makeWorkflowJournal = Effect.gen(function* () {
           yield* sql`UPDATE saga_steps SET next_retry_at=${new Date(due).toISOString()},last_error=${error.message} WHERE saga_id=${run.id} AND step_name=${name}`;
           yield* alarm.set(Option.some(due));
 
-          return yield* halt("retry", "Workflow step scheduled for durable retry");
+          return yield* halt(
+            "retry",
+            "Workflow step scheduled for durable retry. Wait for the workflow alarm to resume the step.",
+          );
         }
 
-        yield* sql`UPDATE saga_steps SET state='FAILED',last_error=${error.kind === "unknown" ? "unknown" : error.message},next_retry_at=NULL WHERE saga_id=${run.id} AND step_name=${name}`;
+        yield* sql`UPDATE saga_steps SET state='FAILED',last_error=${error.kind === "unknown" ? unknownOutcomeSentinel : error.message},next_retry_at=NULL WHERE saga_id=${run.id} AND step_name=${name}`;
         yield* emitLifecycle(
           run,
           "step_failed",
@@ -541,7 +620,7 @@ export const makeWorkflowJournal = Effect.gen(function* () {
 
       return outcome.success;
     }).pipe(
-      catchWorkflowStepBoundaryErrors(name),
+      catchWorkflowStepBoundaryErrors("checkpoint", name),
       Effect.withSpan("WorkflowJournal.checkpoint", { attributes: { stepName: name } }),
     );
 
@@ -556,8 +635,10 @@ export const makeWorkflowJournal = Effect.gen(function* () {
 
       if (Option.isSome(run.fulfilled_at))
         return yield* new WorkflowError({
-          operation: name,
-          reason: "conflict",
+          operation: "compensate",
+          reason: "already_fulfilled",
+          workflowId: Option.some(run.id),
+          stepName: Option.some(name),
         });
       const step = yield* readStep(run.id, name);
 
@@ -571,9 +652,12 @@ export const makeWorkflowJournal = Effect.gen(function* () {
 
       if (Option.isNone(step.value.undo_json) || Option.isNone(step.value.result_json))
         return yield* new WorkflowError({
-          operation: name,
+          operation: "compensate",
           reason: "corrupt",
+          workflowId: Option.some(run.id),
+          stepName: Option.some(name),
         });
+      // The codec depends on the caller's undo schema, so it cannot be instantiated once at module scope.
       const decode = Schema.decodeEffect(Schema.fromJsonString(schema));
       yield* decode(step.value.result_json.value);
       const undo = yield* decode(step.value.undo_json.value);
@@ -591,7 +675,7 @@ export const makeWorkflowJournal = Effect.gen(function* () {
         Option.some(name),
         Option.none(),
       );
-    }).pipe(catchWorkflowStepBoundaryErrors(`compensate:${name}`));
+    }).pipe(catchWorkflowStepBoundaryErrors("compensate", name));
 
   return WorkflowJournal.of({
     initialize,
@@ -604,8 +688,33 @@ export const makeWorkflowJournal = Effect.gen(function* () {
   });
 });
 
-/** SQL-backed workflow journal with explicit alarm and SQL requirements for runtime composition. */
+// Built inside the Durable Object runtime phase, where `DurableObjectState` is available; never during planning.
+const durableObjectSqliteLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const state = yield* Cloudflare.DurableObjectState;
+
+    return SqliteClient.layer({ storage: state.raw.storage });
+  }),
+);
+
+/** Layer that provides the SQL workflow journal; requires SQL, the alarm, and analytics. */
 export const workflowJournalLayerWithoutDependencies = Layer.effect(
   WorkflowJournal,
   makeWorkflowJournal,
+);
+
+/**
+ * Production journal Layer over the Durable Object's SQLite storage and native alarm; requires the runtime `DurableObjectState` and analytics.
+ *
+ * **Gotchas**
+ *
+ * Building runs migrations and fails with `SqlError` or `MigrationError` when they cannot run.
+ */
+export const workflowJournalLayer = workflowJournalLayerWithoutDependencies.pipe(
+  Layer.provide([durableObjectSqliteLayer, workflowAlarmLayer]),
+);
+
+/** Journal Layer over the in-memory alarm; the test selects the SQL database and analytics recorder. */
+export const workflowJournalTestLayer = workflowJournalLayerWithoutDependencies.pipe(
+  Layer.provide(workflowAlarmTestLayer),
 );
