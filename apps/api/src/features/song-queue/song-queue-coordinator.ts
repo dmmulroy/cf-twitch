@@ -13,6 +13,7 @@ import {
   songQueueDatabaseLayer,
   songQueueDatabaseTestLayer,
 } from "./song-queue-database.ts";
+import { spotifyServiceTestLayer } from "../providers/spotify-service.ts";
 
 /** Milliseconds a successful Spotify observation stays fresh before reads refresh it. */
 const SONG_QUEUE_FRESHNESS_MS = 15_000;
@@ -281,8 +282,9 @@ export const songQueueCoordinatorLayer = songQueueCoordinatorLayerWithoutDepende
  *
  * **Details**
  *
- * The Spotify provider stays a visible requirement so each test selects a controlled provider.
+ * Uses the Spotify service test Layer, so `HttpClient` and `SecureRandom` stay visible for each
+ * test to select a controlled Spotify transport.
  */
 export const songQueueCoordinatorTestLayer = songQueueCoordinatorLayerWithoutDependencies.pipe(
-  Layer.provide([songQueueDatabaseTestLayer, songQueueAlarmTestLayer]),
+  Layer.provide([songQueueDatabaseTestLayer, songQueueAlarmTestLayer, spotifyServiceTestLayer]),
 );

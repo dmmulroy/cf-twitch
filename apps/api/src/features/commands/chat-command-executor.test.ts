@@ -31,7 +31,11 @@ import { SongQueue } from "../song-queue/song-queue.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
 import { Commands, commandsTestLayer } from "./commands.ts";
-import { ChatCommandExecutor, chatCommandExecutorTestLayer } from "./chat-command-executor.ts";
+import {
+  ChatCommandExecutor,
+  chatCommandExecutorLayerWithoutDependencies,
+} from "./chat-command-executor.ts";
+import { computedChatCommandsLayerWithoutDependencies } from "./computed-chat-commands.ts";
 import { getChatCommandPermission, hasCommandPermission } from "./command-permissions.ts";
 
 const parseInput = Schema.decodeUnknownSync(ChatCommandInput);
@@ -237,9 +241,11 @@ const providerTestLayer = Layer.unwrap(
   }),
 );
 
-// The executor and the test's Commands handle share one in-memory registry: Layers are memoized by reference.
-const testLayer = Layer.mergeAll(chatCommandExecutorTestLayer, commandsTestLayer).pipe(
-  Layer.provideMerge(providerTestLayer),
+// The executor and the test's Commands handle share one in-memory registry: Layers are memoized by
+// reference. Computed responses read the controlled providers above.
+const testLayer = chatCommandExecutorLayerWithoutDependencies.pipe(
+  Layer.provideMerge(computedChatCommandsLayerWithoutDependencies),
+  Layer.provideMerge(Layer.mergeAll(commandsTestLayer, providerTestLayer)),
 );
 
 const response = Effect.fn("CommandTest.response")(function* (

@@ -237,7 +237,7 @@ export const streamLifecycleClientLayer = streamLifecycleClientLayerWithoutDepen
  * **Details**
  *
  * Crosses the same `IStreamLifecycleClient` interface as the HTTP client without a Durable Object
- * hop. Provider tokens, event publication, and the digest stay visible for each test to select.
+ * hop. The digest stays visible for each test to select.
  */
 export const streamLifecycleClientTestLayer = Layer.effect(
   StreamLifecycleClient,

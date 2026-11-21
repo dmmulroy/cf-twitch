@@ -22,6 +22,7 @@ import {
 import {
   TwitchAnalytics,
   type TwitchAnalyticsSagaLifecycleMetric,
+  twitchAnalyticsTestLayer,
 } from "../../runtime/twitch-analytics.ts";
 import { WorkflowStepFailure, WorkflowStepHalt, type WorkflowStepPolicy } from "./workflow-step.ts";
 
@@ -714,7 +715,7 @@ export const workflowJournalLayer = workflowJournalLayerWithoutDependencies.pipe
   Layer.provide([durableObjectSqliteLayer, workflowAlarmLayer]),
 );
 
-/** Journal Layer over the in-memory alarm; the test selects the SQL database and analytics recorder. */
+/** Journal Layer over the in-memory alarm and analytics recorder; the test selects the SQL database. */
 export const workflowJournalTestLayer = workflowJournalLayerWithoutDependencies.pipe(
-  Layer.provide(workflowAlarmTestLayer),
+  Layer.provide([workflowAlarmTestLayer, twitchAnalyticsTestLayer]),
 );

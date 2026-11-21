@@ -38,6 +38,7 @@ import {
   decodeProviderResponse,
   executeProviderRequest,
 } from "./provider-http.ts";
+import { twitchConfigurationTestLayer } from "../../runtime/twitch-configuration.ts";
 
 /**
  * Twitch Helix capability that distinguishes confirmed delivery from unknown mutation outcomes.
@@ -471,8 +472,13 @@ export const twitchServiceLayer = twitchServiceLayerWithoutDependencies.pipe(
  *
  * **Details**
  *
- * Leaves `HttpClient.HttpClient` and `TwitchConfiguration` required so tests supply a controlled Helix transport that cannot reach the network.
+ * Uses the synthetic test configuration. Leaves `HttpClient.HttpClient` required so tests supply a
+ * controlled Helix transport that cannot reach the network.
  */
 export const twitchServiceTestLayer = twitchServiceLayerWithoutDependencies.pipe(
-  Layer.provide([providerAccessTokensTestLayer, providerTokenExchangeTestLayer]),
+  Layer.provide([
+    providerAccessTokensTestLayer,
+    providerTokenExchangeTestLayer,
+    twitchConfigurationTestLayer,
+  ]),
 );

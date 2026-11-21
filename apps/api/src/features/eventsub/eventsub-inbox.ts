@@ -29,6 +29,9 @@ import {
 } from "../workflows/workflow-alarm.ts";
 import { EventSubDispatchChatResponse, EventSubDispatch } from "./eventsub-dispatch.ts";
 import { parseEventSubMessage } from "./eventsub-message.ts";
+import { eventSubDispatchTestLayer } from "./eventsub-dispatch.ts";
+import { twitchServiceTestLayer } from "../providers/twitch-service.ts";
+import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 
 const StoredReceipt = Schema.Struct({
   receipt: AcceptedEventSubReceipt,
@@ -538,7 +541,15 @@ export const eventSubInboxLayer = eventSubInboxLayerWithoutDependencies.pipe(
   Layer.provide([durableObjectSqliteLayer, workflowAlarmLayer]),
 );
 
-/** Inbox Layer over an in-memory alarm; the test selects SQL, dispatch, the Twitch provider, and analytics. */
+/**
+ * Inbox Layer over an in-memory alarm, dispatch, Twitch service, and analytics recorder; the test
+ * selects SQL and platform services.
+ */
 export const eventSubInboxTestLayer = eventSubInboxLayerWithoutDependencies.pipe(
-  Layer.provide(workflowAlarmTestLayer),
+  Layer.provide([
+    workflowAlarmTestLayer,
+    eventSubDispatchTestLayer,
+    twitchServiceTestLayer,
+    twitchAnalyticsTestLayer,
+  ]),
 );

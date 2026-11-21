@@ -31,6 +31,12 @@ import {
   type WorkflowStepOperation,
   type WorkflowStepPolicy,
 } from "./workflow-step.ts";
+import { eventPublisherTestLayer } from "../events/event-publisher.ts";
+import { raffleTestLayer } from "../raffle/raffle-service.ts";
+import { songQueueTestLayer } from "../song-queue/song-queue.ts";
+import { spotifyServiceTestLayer } from "../providers/spotify-service.ts";
+import { twitchServiceTestLayer } from "../providers/twitch-service.ts";
+import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 
 const readPolicy: WorkflowStepPolicy = {
   attempts: 3,
@@ -717,7 +723,18 @@ export const workflowExecutionLayer = workflowExecutionLayerWithoutDependencies.
   Layer.provide(workflowJournalLayer),
 );
 
-/** Execution Layer over the journal with an in-memory alarm; the test selects SQL, providers, dependency clients, digest, and analytics. */
+/**
+ * Execution Layer over the journal with an in-memory alarm and the test Layers of every provider,
+ * dependency client, and analytics; the test selects SQL and platform services.
+ */
 export const workflowExecutionTestLayer = workflowExecutionLayerWithoutDependencies.pipe(
-  Layer.provide(workflowJournalTestLayer),
+  Layer.provide([
+    workflowJournalTestLayer,
+    eventPublisherTestLayer,
+    raffleTestLayer,
+    songQueueTestLayer,
+    spotifyServiceTestLayer,
+    twitchServiceTestLayer,
+    twitchAnalyticsTestLayer,
+  ]),
 );

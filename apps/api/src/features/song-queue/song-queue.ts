@@ -297,8 +297,8 @@ export const songQueueLayer = songQueueLayerWithoutDependencies.pipe(
  *
  * **Details**
  *
- * Crosses the same `ISongQueue` interface as the HTTP client without a Durable Object hop. The
- * Spotify provider stays a visible requirement so each test selects a controlled provider.
+ * Crosses the same `ISongQueue` interface as the HTTP client without a Durable Object hop.
+ * `HttpClient` and `SecureRandom` stay visible for the Spotify service test Layer.
  */
 export const songQueueTestLayer = Layer.effect(
   SongQueue,

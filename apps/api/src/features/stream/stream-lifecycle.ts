@@ -27,6 +27,8 @@ import {
   type StreamTransitionEffect,
 } from "./stream-state.ts";
 import { StreamViewerProvider, streamViewerProviderTestLayer } from "./stream-viewer-provider.ts";
+import { providerAccessTokensTestLayer } from "../providers/provider-access-tokens.ts";
+import { eventPublisherTestLayer } from "../events/event-publisher.ts";
 
 const VIEWER_POLL_INTERVAL_MS = 60_000;
 
@@ -477,9 +479,15 @@ export const streamLifecycleLayer = streamLifecycleLayerWithoutDependencies.pipe
  *
  * **Details**
  *
- * Provider tokens, event publication, and the digest stay visible so each test selects controlled
- * implementations.
+ * Uses in-memory provider tokens and event publication. The digest stays visible so each test
+ * selects the platform implementation.
  */
 export const streamLifecycleTestLayer = streamLifecycleLayerWithoutDependencies.pipe(
-  Layer.provide([streamDatabaseTestLayer, streamAlarmTestLayer, streamViewerProviderTestLayer]),
+  Layer.provide([
+    streamDatabaseTestLayer,
+    streamAlarmTestLayer,
+    streamViewerProviderTestLayer,
+    providerAccessTokensTestLayer,
+    eventPublisherTestLayer,
+  ]),
 );

@@ -26,6 +26,7 @@ import {
   oauthStateClientLayer,
   oauthStateClientTestLayer,
 } from "./oauth-state-client.ts";
+import { twitchConfigurationTestLayer } from "../../runtime/twitch-configuration.ts";
 
 /** Provider scopes requested by OAuth authorization, preserving every baseline playback, redemption, chat and shoutout permission. */
 export const oauthAuthorizationScopes = {
@@ -178,12 +179,14 @@ export const oauthAuthorizationLayer = oauthAuthorizationLayerWithoutDependencie
  *
  * **Details**
  *
- * Leaves `TwitchConfiguration` and `SecureRandom` required so tests choose the client IDs and state values.
+ * Uses the synthetic test configuration. Leaves `SecureRandom` required so tests choose the state
+ * values.
  */
 export const oauthAuthorizationTestLayer = oauthAuthorizationLayerWithoutDependencies.pipe(
   Layer.provide([
     oauthStateClientTestLayer,
     providerAccessTokensTestLayer,
     providerTokenExchangeTestLayer,
+    twitchConfigurationTestLayer,
   ]),
 );

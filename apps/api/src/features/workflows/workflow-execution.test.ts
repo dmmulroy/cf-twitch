@@ -23,7 +23,11 @@ import { Raffle } from "../raffle/raffle-service.ts";
 import { SongQueue } from "../song-queue/song-queue.ts";
 import { SpotifyService } from "../providers/spotify-service.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
-import { WorkflowExecution, workflowExecutionTestLayer } from "./workflow-execution.ts";
+import {
+  WorkflowExecution,
+  workflowExecutionLayerWithoutDependencies,
+} from "./workflow-execution.ts";
+import { workflowJournalTestLayer } from "./workflow-journal.ts";
 
 const songRedemption = Schema.decodeUnknownSync(ChannelPointRedemption)({
   id: "redemption-1",
@@ -156,7 +160,10 @@ const recordingServices = Effect.gen(function* () {
     twitchAnalyticsTestLayer,
   );
 
-  const executionLayer = workflowExecutionTestLayer.pipe(Layer.provide(dependencies));
+  const executionLayer = workflowExecutionLayerWithoutDependencies.pipe(
+    Layer.provide(workflowJournalTestLayer),
+    Layer.provide(dependencies),
+  );
 
   const use = <A, E, R>(effect: Effect.Effect<A, E, R | WorkflowExecution>) =>
     effect.pipe(Effect.provide(executionLayer, { local: true }));

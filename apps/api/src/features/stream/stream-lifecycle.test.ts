@@ -6,7 +6,11 @@ import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/cont
 import { EventPublisher } from "../events/event-publisher.ts";
 import { ProviderAccessTokens } from "../providers/provider-access-tokens.ts";
 import { StreamAlarm, streamAlarmTestLayer } from "./stream-alarm.ts";
-import { StreamDatabase, type IStreamDatabase } from "./stream-database.ts";
+import {
+  StreamDatabase,
+  type IStreamDatabase,
+  streamDatabaseTestLayer,
+} from "./stream-database.ts";
 import { StreamLifecycle, streamLifecycleLayerWithoutDependencies } from "./stream-lifecycle.ts";
 import {
   StreamLifecycleClient,
@@ -253,13 +257,24 @@ describe("Stream Lifecycle", () => {
   );
 
   it.effect(
-    "client test Layer completes an online transition and records viewer peaks in memory",
+    "client over the in-memory lifecycle completes an online transition and records viewer peaks",
     () =>
       Effect.gen(function* () {
         const tokenCalls = yield* Ref.make<ReadonlyArray<string>>([]);
         const published = yield* Ref.make<ReadonlyArray<string>>([]);
 
-        const controlledLayer = streamLifecycleClientTestLayer.pipe(
+        const controlledLayer = Layer.effect(
+          StreamLifecycleClient,
+          Effect.gen(function* () {
+            return StreamLifecycleClient.of(yield* StreamLifecycle);
+          }),
+        ).pipe(
+          Layer.provide(streamLifecycleLayerWithoutDependencies),
+          Layer.provide([
+            streamDatabaseTestLayer,
+            streamAlarmTestLayer,
+            streamViewerProviderTestLayer,
+          ]),
           Layer.provide(
             Layer.succeed(
               ProviderAccessTokens,

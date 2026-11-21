@@ -20,6 +20,7 @@ import {
   decodeProviderResponse,
   executeProviderRequest,
 } from "./provider-http.ts";
+import { twitchConfigurationTestLayer } from "../../runtime/twitch-configuration.ts";
 
 /** Spotify queue observation, authoritative only after successful provider response decoding. */
 export interface SpotifyServiceQueueSnapshot {
@@ -495,8 +496,9 @@ export const spotifyServiceLayer = spotifyServiceLayerWithoutDependencies.pipe(
  *
  * **Details**
  *
- * Leaves `HttpClient.HttpClient`, `TwitchConfiguration` and `SecureRandom` required so tests supply a controlled Spotify transport that cannot reach the network.
+ * Uses the synthetic test configuration. Leaves `HttpClient.HttpClient` and `SecureRandom` required
+ * so tests supply a controlled Spotify transport that cannot reach the network.
  */
 export const spotifyServiceTestLayer = spotifyServiceLayerWithoutDependencies.pipe(
-  Layer.provide(providerAccessTokensTestLayer),
+  Layer.provide([providerAccessTokensTestLayer, twitchConfigurationTestLayer]),
 );

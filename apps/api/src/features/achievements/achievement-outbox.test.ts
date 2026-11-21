@@ -28,7 +28,7 @@ import { Achievements, achievementsLayer, achievementsTestLayer } from "./achiev
 import {
   AchievementOutbox,
   achievementOutboxLayerWithoutDependencies,
-  achievementOutboxTestLayer,
+  achievementOutboxInMemoryLayerWithoutDependencies,
 } from "./achievement-outbox.ts";
 
 const outboxTestLayer = (mode: ControlledTwitchProviderMode) =>
@@ -253,7 +253,8 @@ describe("Achievement application outbox with real SQL and production Twitch HTT
 });
 
 const inMemoryOutboxTestLayer = (mode: ControlledTwitchProviderMode) =>
-  Layer.mergeAll(achievementOutboxTestLayer, achievementsTestLayer).pipe(
+  achievementOutboxInMemoryLayerWithoutDependencies.pipe(
+    Layer.provideMerge(achievementsTestLayer),
     Layer.provideMerge(
       Layer.mergeAll(
         controlledTwitchServiceLayer(mode),
@@ -263,7 +264,7 @@ const inMemoryOutboxTestLayer = (mode: ControlledTwitchProviderMode) =>
     ),
   );
 
-describe("achievementOutboxTestLayer over achievementsTestLayer and controlled Twitch HTTP", () => {
+describe("in-memory achievement outbox over achievementsTestLayer and controlled Twitch HTTP", () => {
   it.effect(
     "concurrent flushes announce and record each unlock once, then nothing is pending",
     () =>

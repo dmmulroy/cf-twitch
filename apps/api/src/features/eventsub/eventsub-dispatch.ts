@@ -19,6 +19,9 @@ import {
   chatCommandExecutorLayer,
 } from "../commands/chat-command-executor.ts";
 import { parseEventSubMessage } from "./eventsub-message.ts";
+import { streamLifecycleClientTestLayer } from "../stream/stream-lifecycle-client.ts";
+import { chatCommandExecutorTestLayer } from "../commands/chat-command-executor.ts";
+import { twitchConfigurationTestLayer } from "../../runtime/twitch-configuration.ts";
 
 /** Schema for a prepared Chat Command reply, persisted before delivery; preparation never sends to Twitch. */
 export const EventSubDispatchChatResponse = Schema.Struct({
@@ -185,7 +188,15 @@ export const eventSubDispatchLayer = eventSubDispatchLayerWithoutDependencies.pi
   Layer.provide([workflowStartersLayer, streamLifecycleClientLayer, chatCommandExecutorLayer]),
 );
 
-/** Dispatch Layer over in-memory workflow starters; the test selects reward configuration, the stream lifecycle, and the Chat Command executor. */
+/**
+ * Dispatch Layer over in-memory workflow starters, Stream Lifecycle, and Chat Command executor with
+ * the synthetic test configuration; platform services stay visible for the test to select.
+ */
 export const eventSubDispatchTestLayer = eventSubDispatchLayerWithoutDependencies.pipe(
-  Layer.provide(workflowStartersTestLayer),
+  Layer.provide([
+    workflowStartersTestLayer,
+    streamLifecycleClientTestLayer,
+    chatCommandExecutorTestLayer,
+    twitchConfigurationTestLayer,
+  ]),
 );

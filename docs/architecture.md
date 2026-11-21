@@ -15,7 +15,7 @@ Each service whose implementation the application builds lives in a file named f
 3. `make<Capability>`: the constructor Effect.
 4. `<capability>LayerWithoutDependencies`: the Layer that leaves application dependencies in its requirement channel.
 5. `<capability>Layer`: the production Layer. With no production dependencies it is `<capability>Layer = <capability>LayerWithoutDependencies`.
-6. `<capability>TestLayer`: a complete, behaviorally honest in-memory or controlled implementation that crosses the same interface, exported from the same file.
+6. `<capability>TestLayer`: a complete, behaviorally honest in-memory or controlled implementation that crosses the same interface, exported from the same file. It provides every application service it depends on with that service's own `…TestLayer` and leaves only platform services (`HttpClient`, `SqlClient`, `Digest`, `SecureRandom`) and the token Durable Object identity for the test to select. [Runtime Layer type tests](../apps/api/src/runtime/twitch-layer-types.test.ts) enforce this. A test that needs controlled or failing dependencies builds from `<capability>LayerWithoutDependencies` instead.
 
 Every exported symbol in the module includes the capability name. Services that are an Alchemy or Workers-runtime binding, Alchemy resource declarations, Workers, and Durable Object classes are exempt. A test control surface that a test Layer also provides, such as `TwitchAnalyticsRecording` beside `twitchAnalyticsTestLayer`, lives in the same file.
 

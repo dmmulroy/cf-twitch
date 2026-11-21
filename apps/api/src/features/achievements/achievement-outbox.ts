@@ -14,6 +14,8 @@ import { TwitchService } from "../providers/twitch-service.ts";
 import { TwitchAnalytics } from "../../runtime/twitch-analytics.ts";
 import { Achievements, achievementsLayer, achievementsTestLayer } from "./achievements-service.ts";
 import { decideAchievementAnnouncement } from "./achievement-announcement.ts";
+import { twitchServiceTestLayer } from "../providers/twitch-service.ts";
+import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 
 /** Unlock delivery that owns atomic metric and announcement claims and durable retry state, not achievement progression. */
 export interface IAchievementOutbox {
@@ -423,16 +425,32 @@ const makeInMemoryAchievementOutbox = Effect.gen(function* () {
 });
 
 /**
+ * Layer that provides the in-memory unlock outbox, leaving the achievement authority, Twitch service
+ * and analytics required.
+ *
+ * **When to use**
+ *
+ * Use when a test selects a controlled Twitch provider mode for the in-memory outbox.
+ *
+ * **Details**
+ *
+ * Because the in-memory authority keeps every unlock pending announcement, sent unlocks remain
+ * listed by `getUnannounced`; the outbox tracks their delivery itself.
+ */
+export const achievementOutboxInMemoryLayerWithoutDependencies = Layer.effect(
+  AchievementOutbox,
+  makeInMemoryAchievementOutbox,
+);
+
+/**
  * Test Layer that provides an in-memory unlock outbox over the in-memory achievement authority.
  *
  * **Details**
  *
- * `TwitchService` and `TwitchAnalytics` stay required so each test selects its controlled provider and
- * analytics recorder. Merge this Layer with `achievementsTestLayer` to share one authority. Because the
- * in-memory authority keeps every unlock pending announcement, sent unlocks remain listed by
- * `getUnannounced`; the outbox tracks their delivery itself.
+ * Uses the Twitch service and analytics test Layers; `HttpClient` stays visible so each test
+ * selects a controlled Helix transport. Merge this Layer with `achievementsTestLayer` to share one
+ * authority.
  */
-export const achievementOutboxTestLayer = Layer.effect(
-  AchievementOutbox,
-  makeInMemoryAchievementOutbox,
-).pipe(Layer.provide(achievementsTestLayer));
+export const achievementOutboxTestLayer = achievementOutboxInMemoryLayerWithoutDependencies.pipe(
+  Layer.provide([achievementsTestLayer, twitchServiceTestLayer, twitchAnalyticsTestLayer]),
+);

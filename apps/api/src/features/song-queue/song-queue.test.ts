@@ -14,7 +14,13 @@ import {
 } from "@cf-twitch/contracts/song-queue";
 import type { SpotifyPlayback, SpotifyTrack } from "@cf-twitch/contracts/spotify-track";
 import { SpotifyService } from "../providers/spotify-service.ts";
-import { SongQueue, songQueueTestLayer } from "./song-queue.ts";
+import { SongQueue } from "./song-queue.ts";
+import { songQueueAlarmTestLayer } from "./song-queue-alarm.ts";
+import {
+  SongQueueCoordinator,
+  songQueueCoordinatorLayerWithoutDependencies,
+} from "./song-queue-coordinator.ts";
+import { songQueueDatabaseTestLayer } from "./song-queue-database.ts";
 
 const requestedTrack: SpotifyTrack = {
   id: SpotifyTrackId.make("requested"),
@@ -60,7 +66,23 @@ const controlledSpotify = (playback: Ref.Ref<SpotifyPlayback>) =>
     }),
   );
 
-describe("Song queue test Layer", () => {
+// The in-memory coordinator over controlled Spotify playback, crossing the ISongQueue interface as songQueueTestLayer does.
+const controlledSongQueue = (playback: Ref.Ref<SpotifyPlayback>) =>
+  Layer.effect(
+    SongQueue,
+    Effect.gen(function* () {
+      return SongQueue.of(yield* SongQueueCoordinator);
+    }),
+  ).pipe(
+    Layer.provide(songQueueCoordinatorLayerWithoutDependencies),
+    Layer.provide([
+      songQueueDatabaseTestLayer,
+      songQueueAlarmTestLayer,
+      controlledSpotify(playback),
+    ]),
+  );
+
+describe("Song queue over the in-memory coordinator", () => {
   it.effect(
     "attributes a persisted Song Request and records it as played through the ISongQueue interface",
     () =>
@@ -101,9 +123,7 @@ describe("Song queue test Layer", () => {
 
           expect(history.requests.map((item) => item.eventId)).toEqual([request.eventId]);
           expect(yield* queue.getUserRequestCount({ userId: request.requesterUserId })).toBe(1);
-        }).pipe(
-          Effect.provide(songQueueTestLayer.pipe(Layer.provide(controlledSpotify(playback)))),
-        );
+        }).pipe(Effect.provide(controlledSongQueue(playback)));
       }),
   );
 });

@@ -13,7 +13,6 @@ import {
   OAuthAuthorization,
   oauthAuthorizationLayerWithoutDependencies,
   oauthAuthorizationScopes,
-  oauthAuthorizationTestLayer,
 } from "./oauth-authorization.ts";
 import { oauthStateClientTestLayer } from "./oauth-state-client.ts";
 
@@ -41,8 +40,14 @@ const sequentialSecureRandomLayer = Layer.effect(
   }),
 );
 
-const oauthLayer = oauthAuthorizationTestLayer.pipe(
-  Layer.provide([providerLocalConfigurationLayer, sequentialSecureRandomLayer]),
+const oauthLayer = oauthAuthorizationLayerWithoutDependencies.pipe(
+  Layer.provide([
+    oauthStateClientTestLayer,
+    providerAccessTokensTestLayer,
+    providerTokenExchangeTestLayer,
+    providerLocalConfigurationLayer,
+    sequentialSecureRandomLayer,
+  ]),
 );
 
 it.prop(

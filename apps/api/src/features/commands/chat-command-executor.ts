@@ -17,6 +17,7 @@ import {
 } from "./computed-chat-commands.ts";
 import { commandsClientLayer } from "./commands-client.ts";
 import { hasCommandPermission } from "./command-permissions.ts";
+import { twitchAnalyticsTestLayer } from "../../runtime/twitch-analytics.ts";
 
 /** Chat command preparation: parse, authorize, and render a response without sending it. */
 export interface IChatCommandExecutor {
@@ -218,9 +219,9 @@ export const chatCommandExecutorLayer = chatCommandExecutorLayerWithoutDependenc
  *
  * **Gotchas**
  *
- * Analytics, song queue, achievement, and raffle requirements stay visible until those
- * capabilities export their own test Layers; tests provide controlled implementations of them.
+ * Records analytics in memory. `HttpClient` and `SecureRandom` stay visible for the song queue's
+ * Spotify test Layer.
  */
 export const chatCommandExecutorTestLayer = chatCommandExecutorLayerWithoutDependencies.pipe(
-  Layer.provide([computedChatCommandsTestLayer, commandsTestLayer]),
+  Layer.provide([computedChatCommandsTestLayer, commandsTestLayer, twitchAnalyticsTestLayer]),
 );

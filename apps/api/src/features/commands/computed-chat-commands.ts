@@ -19,6 +19,9 @@ import { Achievements } from "../achievements/achievements-service.ts";
 import { achievementsClientLayer } from "../achievements/achievements-client.ts";
 import { Raffle } from "../raffle/raffle-service.ts";
 import { raffleClientLayer } from "../raffle/raffle-client.ts";
+import { songQueueTestLayer } from "../song-queue/song-queue.ts";
+import { achievementsTestLayer } from "../achievements/achievements-service.ts";
+import { raffleTestLayer } from "../raffle/raffle-service.ts";
 
 /** Invocation a computed command renders a response for. */
 export interface ComputedChatCommandContext {
@@ -414,9 +417,9 @@ export const computedChatCommandsLayer = computedChatCommandsLayerWithoutDepende
  *
  * **Gotchas**
  *
- * Song queue, achievement, and raffle requirements stay visible until those capabilities export
- * their own test Layers; tests provide controlled implementations of them.
+ * Uses the song queue, achievements, and raffle test Layers. `HttpClient` and `SecureRandom` stay
+ * visible for the song queue's Spotify test Layer.
  */
 export const computedChatCommandsTestLayer = computedChatCommandsLayerWithoutDependencies.pipe(
-  Layer.provide(commandsTestLayer),
+  Layer.provide([commandsTestLayer, songQueueTestLayer, achievementsTestLayer, raffleTestLayer]),
 );
