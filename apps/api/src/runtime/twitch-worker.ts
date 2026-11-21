@@ -185,4 +185,5 @@ export const twitchApiWorkerLayer = TwitchApiWorker.make(
   Layer.provideMerge(twitchHttpTelemetrySafetyLayer),
 );
 
+/** Default export: the production Twitch API Worker Layer, discovered by Alchemy. */
 export default twitchApiWorkerLayer;

@@ -36,4 +36,5 @@ export type CfTwitchApiStackOutput = Effect.Success<typeof CfTwitchApiStack>["ou
 /** Resolved deployment output, which contains only the public endpoint and never credentials. */
 export type CfTwitchApiStackDeployment = Input.Resolve<CfTwitchApiStackOutput>;
 
+/** Default export: the CF Twitch API Stack, discovered by Alchemy. */
 export default CfTwitchApiStack;

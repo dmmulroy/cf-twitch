@@ -97,26 +97,46 @@ export interface IEventBusDatabase {
     readonly now: IsoTimestamp;
     readonly firstRetryAt: IsoTimestamp;
   }) => Effect.Effect<EventAcceptance, EventBusError>;
-  /** Returns pending rows due at or before `now`, oldest due first. */
+  /**
+   * Returns pending rows due at or before `now`, oldest due first.
+   *
+   * @returns Pending rows due at or before `now`, oldest due first, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly listDue: (
     now: IsoTimestamp,
   ) => Effect.Effect<ReadonlyArray<PendingEventRow>, EventBusError>;
-  /** Returns one pending row, or `Option.none()` when the event is not pending. */
+  /**
+   * Returns one pending row, or `Option.none()` when the event is not pending.
+   *
+   * @returns One pending row, or `Option.none()` when the event is not pending, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly findPending: (
     eventId: EventId,
   ) => Effect.Effect<Option.Option<PendingEventRow>, EventBusError>;
-  /** Sets a pending row's attempt count and next retry time. */
+  /**
+   * Sets a pending row's attempt count and next retry time.
+   *
+   * @returns Nothing on success, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly reschedule: (input: {
     readonly eventId: EventId;
     readonly attempts: NonNegativeInt;
     readonly nextRetryAt: IsoTimestamp;
   }) => Effect.Effect<void, EventBusError>;
-  /** Records a delivery receipt and removes pending and dead-letter copies in one transaction. */
+  /**
+   * Records a delivery receipt and removes pending and dead-letter copies in one transaction.
+   *
+   * @returns Nothing on success, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly recordDelivered: (input: {
     readonly eventId: EventId;
     readonly deliveredAt: IsoTimestamp;
   }) => Effect.Effect<void, EventBusError>;
-  /** Moves a pending row to the dead-letter queue in one transaction, keeping its original creation time. */
+  /**
+   * Moves a pending row to the dead-letter queue in one transaction, keeping its original creation time.
+   *
+   * @returns Nothing on success, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly moveToDeadLetter: (input: {
     readonly pending: PendingEventRow;
     readonly error: string;
@@ -124,29 +144,57 @@ export interface IEventBusDatabase {
     readonly failedAt: IsoTimestamp;
     readonly expiresAt: IsoTimestamp;
   }) => Effect.Effect<void, EventBusError>;
-  /** Returns a page of pending rows, newest first. */
+  /**
+   * Returns a page of pending rows, newest first.
+   *
+   * @returns A page of pending rows, newest first, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly listPending: (
     input: EventBusPageInput,
   ) => Effect.Effect<EventBusRowPage<PendingEventRow>, EventBusError>;
-  /** Returns a page of dead-letter rows, most recently failed first. */
+  /**
+   * Returns a page of dead-letter rows, most recently failed first.
+   *
+   * @returns A page of dead-letter rows, most recently failed first, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly listDeadLetters: (
     input: EventBusPageInput,
   ) => Effect.Effect<EventBusRowPage<DeadLetterRow>, EventBusError>;
-  /** Returns one dead-letter row, or `Option.none()` when the event is not dead-lettered. */
+  /**
+   * Returns one dead-letter row, or `Option.none()` when the event is not dead-lettered.
+   *
+   * @returns One dead-letter row, or `Option.none()` when the event is not dead-lettered, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly findDeadLetter: (
     eventId: EventId,
   ) => Effect.Effect<Option.Option<DeadLetterRow>, EventBusError>;
-  /** Records a failed manual replay on a dead-letter row. */
+  /**
+   * Records a failed manual replay on a dead-letter row.
+   *
+   * @returns Nothing on success, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly recordDeadLetterReplayFailure: (input: {
     readonly eventId: EventId;
     readonly error: string;
     readonly failedAt: IsoTimestamp;
   }) => Effect.Effect<void, EventBusError>;
-  /** Deletes one dead-letter row and returns whether it existed. */
+  /**
+   * Deletes one dead-letter row and returns whether it existed.
+   *
+   * @returns Whether the row existed, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly deleteDeadLetter: (eventId: EventId) => Effect.Effect<boolean, EventBusError>;
-  /** Deletes dead-letter rows expiring at or before `now` and returns how many were deleted. */
+  /**
+   * Deletes dead-letter rows expiring at or before `now` and returns how many were deleted.
+   *
+   * @returns The number of deleted rows, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly purgeExpiredDeadLetters: (now: IsoTimestamp) => Effect.Effect<number, EventBusError>;
-  /** Returns pending, dead-letter, delivered, and subscription row counts. */
+  /**
+   * Returns pending, dead-letter, delivered, and subscription row counts.
+   *
+   * @returns Pending, dead-letter, delivered, and subscription row counts, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly counts: () => Effect.Effect<
     {
       readonly pendingCount: number;
@@ -156,28 +204,56 @@ export interface IEventBusDatabase {
     },
     EventBusError
   >;
-  /** Returns the earliest retry or dead-letter expiry time, or `Option.none()` when nothing is scheduled. */
+  /**
+   * Returns the earliest retry or dead-letter expiry time, or `Option.none()` when nothing is scheduled.
+   *
+   * @returns The earliest retry or dead-letter expiry time, or `Option.none()` when nothing is scheduled, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly earliestWakeAt: () => Effect.Effect<Option.Option<IsoTimestamp>, EventBusError>;
-  /** Returns the earliest pending retry time, or `Option.none()` when nothing is pending. */
+  /**
+   * Returns the earliest pending retry time, or `Option.none()` when nothing is pending.
+   *
+   * @returns The earliest pending retry time, or `Option.none()` when nothing is pending, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly earliestRetryAt: () => Effect.Effect<Option.Option<IsoTimestamp>, EventBusError>;
-  /** Returns the earliest dead-letter expiry time, or `Option.none()` when the queue is empty. */
+  /**
+   * Returns the earliest dead-letter expiry time, or `Option.none()` when the queue is empty.
+   *
+   * @returns The earliest dead-letter expiry time, or `Option.none()` when the queue is empty, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly earliestDeadLetterExpiryAt: () => Effect.Effect<
     Option.Option<IsoTimestamp>,
     EventBusError
   >;
-  /** Returns every subscription row, ordered by subscriber and event type. */
+  /**
+   * Returns every subscription row, ordered by subscriber and event type.
+   *
+   * @returns Every subscription row, ordered by subscriber and event type, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly listSubscriptions: () => Effect.Effect<ReadonlyArray<SubscriptionRow>, EventBusError>;
-  /** Adds missing subscriptions for a subscriber and returns all of its rows, ordered by event type. */
+  /**
+   * Adds missing subscriptions for a subscriber and returns all of its rows, ordered by event type.
+   *
+   * @returns The subscriber's rows, ordered by event type, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly registerSubscriptions: (input: {
     readonly subscriber: EventBusSubscriber;
     readonly eventTypes: ReadonlyArray<DomainEventType>;
     readonly createdAt: IsoTimestamp;
   }) => Effect.Effect<ReadonlyArray<SubscriptionRow>, EventBusError>;
-  /** Deletes one subscription row and returns whether it existed. */
+  /**
+   * Deletes one subscription row and returns whether it existed.
+   *
+   * @returns Whether the row existed, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly unregisterSubscription: (
     id: EventBusSubscriptionId,
   ) => Effect.Effect<boolean, EventBusError>;
-  /** Deletes pending, dead-letter, and delivered rows in one transaction; subscriptions remain. */
+  /**
+   * Deletes pending, dead-letter, and delivered rows in one transaction; subscriptions remain.
+   *
+   * @returns Nothing on success, or fails with `EventBusError` reason `persistence_unavailable` when storage fails or `stored_row_invalid` when a stored row does not match its schema.
+   */
   readonly reset: () => Effect.Effect<void, EventBusError>;
 }
 

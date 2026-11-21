@@ -57,4 +57,5 @@ export const commandsServerLayerWithoutDependencies =
 /** Ready `CommandsDO` server Layer selected by `commandsClientLayer`. */
 const commandsServerLayer = commandsServerLayerWithoutDependencies;
 
+/** Default export: the production `CommandsDO` server Layer, discovered by Alchemy. */
 export default commandsServerLayer;

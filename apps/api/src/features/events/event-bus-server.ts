@@ -84,4 +84,5 @@ export const eventBusServerLayer = eventBusServerLayerWithoutDependencies.pipe(
   Layer.provide(twitchConfigurationLayer),
 );
 
+/** Default export: the production `EventBusDO` server Layer, discovered by Alchemy. */
 export default eventBusServerLayer;
