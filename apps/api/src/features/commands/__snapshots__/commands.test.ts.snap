@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Commands SQL authority > bootstraps all 38 exact defaults, alias and shared topic source 1`] = `
+exports[`Commands SQL authority > bootstraps all 39 exact defaults, alias and shared topic source 1`] = `
 {
   "commands": [
     {
@@ -354,6 +354,33 @@ exports[`Commands SQL authority > bootstraps all 38 exact defaults, alias and sh
         "_id": "Option",
         "_tag": "Some",
         "value": "Rex: https://www.superlogical.com/",
+      },
+    },
+    {
+      "command": {
+        "aliases": [],
+        "category": "info",
+        "counterSourceName": null,
+        "createdAt": "<bootstrap instant>",
+        "description": "Shows pi-claude link",
+        "emptyResponse": "pi-claude info is not available.",
+        "enabled": true,
+        "handlerKey": null,
+        "name": "pi-claude",
+        "outputTemplate": "{value}",
+        "permission": "everyone",
+        "responseType": "static",
+        "valueSourceName": "pi-claude",
+        "writePermission": null,
+      },
+      "counter": {
+        "_id": "Option",
+        "_tag": "None",
+      },
+      "value": {
+        "_id": "Option",
+        "_tag": "Some",
+        "value": "pi-claude: https://github.com/dmmulroy/pi-claude-cli",
       },
     },
     {
@@ -1057,9 +1084,9 @@ exports[`Commands SQL authority > bootstraps all 38 exact defaults, alias and sh
   "totals": {
     "computed": 9,
     "dynamic": 3,
-    "enabled": 38,
-    "static": 26,
-    "total": 38,
+    "enabled": 39,
+    "static": 27,
+    "total": 39,
   },
 }
 `;

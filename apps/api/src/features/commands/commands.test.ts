@@ -306,8 +306,8 @@ describe.each([
               command.name === "update",
           ),
         ).toBe(false);
-        expect((yield* commands.getEnabledCommandsWithValues()).length).toBe(37);
-        expect((yield* commands.getAllCommands()).length).toBe(38);
+        expect((yield* commands.getEnabledCommandsWithValues()).length).toBe(38);
+        expect((yield* commands.getAllCommands()).length).toBe(39);
       }).pipe(Effect.provide(registryLayer)),
   );
 
@@ -381,7 +381,7 @@ describe.each([
 });
 
 describe("Commands SQL authority", () => {
-  it.effect("bootstraps all 38 exact defaults, alias and shared topic source", () =>
+  it.effect("bootstraps all 39 exact defaults, alias and shared topic source", () =>
     Effect.gen(function* () {
       const commands = yield* Commands;
       expect((yield* commands.getAllCommands()).map((command) => command.name)).toEqual([
@@ -398,6 +398,7 @@ describe("Commands SQL authority", () => {
         "herdr",
         "hex",
         "rex",
+        "pi-claude",
         "achievements",
         "stats",
         "raffle-leaderboard",
@@ -432,6 +433,9 @@ describe("Commands SQL authority", () => {
       expect(yield* commands.getCommandValue({ name: name("rex") })).toEqual(
         Option.some("Rex: https://www.superlogical.com/"),
       );
+      expect(yield* commands.getCommandValue({ name: name("pi-claude") })).toEqual(
+        Option.some("pi-claude: https://github.com/dmmulroy/pi-claude-cli"),
+      );
       expect(yield* commands.getCommandValue({ name: name("herdr") })).toEqual(
         Option.some("Herdr: https://herdr.dev/"),
       );
@@ -439,7 +443,7 @@ describe("Commands SQL authority", () => {
       expect(yield* commands.getDebugSnapshot()).toMatchObject({
         revision: 1,
         initialized: true,
-        totals: { total: 38, enabled: 38 },
+        totals: { total: 39, enabled: 39 },
       });
       const defaults = yield* commands.getDebugSnapshot();
       expect({
@@ -509,6 +513,7 @@ describe("Commands SQL authority", () => {
           "plan",
           "hex",
           "rex",
+          "pi-claude",
         ]);
         expect(yield* commands.getDebugSnapshot()).toMatchObject({ revision: 45 });
       });

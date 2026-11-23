@@ -183,11 +183,11 @@ Metrics and chat have separate durable states. Interrupted sending becomes uncer
 
 ## Chat Commands
 
-The historical catalog has 38 canonical names:
+The historical catalog has 39 canonical names:
 
-`keyboard`, `socials`, `github`, `twitter`, `schedule`, `font`, `dotfiles`, `today`, `project`, `plan`, `herdr`, `hex`, `rex`, `achievements`, `stats`, `raffle-leaderboard`, `commands`, `update`, `song`, `queue`, `functor`, `location`, `ocaml`, `lurk`, `youtube`, `unlurk`, `errors`, `vibes`, `neovim`, `dict`, `beam`, `linux`, `time`, `leak`, `skillissue`, `truth`, `job`, `browser`.
+`keyboard`, `socials`, `github`, `twitter`, `schedule`, `font`, `dotfiles`, `today`, `project`, `plan`, `herdr`, `hex`, `rex`, `pi-claude`, `achievements`, `stats`, `raffle-leaderboard`, `commands`, `update`, `song`, `queue`, `functor`, `location`, `ocaml`, `lurk`, `youtube`, `unlurk`, `errors`, `vibes`, `neovim`, `dict`, `beam`, `linux`, `time`, `leak`, `skillissue`, `truth`, `job`, `browser`.
 
-Preserve baseline text, metadata, permissions, response types, handlers, enabled state and migration behavior. `df` aliases `dotfiles`; `project` shares `today`'s value. Applied migrations for `plan`, `herdr`, `hex`, `rex`, and `df` remain non-destructive.
+Preserve baseline text, metadata, permissions, response types, handlers, enabled state and migration behavior. `df` aliases `dotfiles`; `project` shares `today`'s value. Applied migrations for `plan`, `herdr`, `hex`, `rex`, `pi-claude`, and `df` remain non-destructive.
 
 Permission order is broadcaster > moderator > VIP > everyone; subscription badges add no privilege. Non-command, unknown, disabled and permission-denied invocations send nothing. Dynamic writes recheck durable permission transactionally (`today`: moderator; `leak`: VIP). Same EventSub operation fingerprint replays the original result; conflicting input rejects. The historical dedupe guarantee is bounded to the latest 5,000 receipts.
 

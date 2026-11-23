@@ -52,6 +52,18 @@ function createRexCommandInput(now: string): typeof CreateChatCommandInput.Encod
   };
 }
 
+function createPiClaudeCommandInput(now: string): typeof CreateChatCommandInput.Encoded {
+  return {
+    name: "pi-claude",
+    description: "Shows pi-claude link",
+    category: "info",
+    responseType: "static",
+    permission: "everyone",
+    initialValue: "pi-claude: https://github.com/dmmulroy/pi-claude-cli",
+    createdAt: now,
+  };
+}
+
 /**
  * Additive default migrations, each applied exactly once by ID without overriding runtime edits.
  *
@@ -87,12 +99,17 @@ export const defaultCommandMigrations = [
     kind: "create",
     createInput: createRexCommandInput,
   },
+  {
+    id: "2026-11-23-add-pi-claude-command",
+    kind: "create",
+    createInput: createPiClaudeCommandInput,
+  },
 ] as const;
 
 /** Migration IDs a freshly bootstrapped registry records as already applied, retained from the baseline registry. */
 export const defaultCommandMigrationIds = defaultCommandMigrations.map((migration) => migration.id);
 
-/** Returns all 38 historical default command inputs in original presentation order; they are parsed before persistence. */
+/** Returns all 39 historical default command inputs in original presentation order; they are parsed before persistence. */
 export function createDefaultCommandInputs(
   now: string,
 ): readonly (typeof CreateChatCommandInput.Encoded)[] {
@@ -191,6 +208,7 @@ export function createDefaultCommandInputs(
     createHerdrCommandInput(now),
     createHexCommandInput(now),
     createRexCommandInput(now),
+    createPiClaudeCommandInput(now),
     {
       name: "achievements",
       description: "Shows user's unlocked achievements",
