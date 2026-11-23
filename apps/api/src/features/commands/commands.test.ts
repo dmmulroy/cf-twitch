@@ -306,8 +306,8 @@ describe.each([
               command.name === "update",
           ),
         ).toBe(false);
-        expect((yield* commands.getEnabledCommandsWithValues()).length).toBe(36);
-        expect((yield* commands.getAllCommands()).length).toBe(37);
+        expect((yield* commands.getEnabledCommandsWithValues()).length).toBe(37);
+        expect((yield* commands.getAllCommands()).length).toBe(38);
       }).pipe(Effect.provide(registryLayer)),
   );
 
@@ -381,7 +381,7 @@ describe.each([
 });
 
 describe("Commands SQL authority", () => {
-  it.effect("bootstraps all 37 exact defaults, alias and shared topic source", () =>
+  it.effect("bootstraps all 38 exact defaults, alias and shared topic source", () =>
     Effect.gen(function* () {
       const commands = yield* Commands;
       expect((yield* commands.getAllCommands()).map((command) => command.name)).toEqual([
@@ -397,6 +397,7 @@ describe("Commands SQL authority", () => {
         "plan",
         "herdr",
         "hex",
+        "rex",
         "achievements",
         "stats",
         "raffle-leaderboard",
@@ -428,6 +429,9 @@ describe("Commands SQL authority", () => {
       expect(yield* commands.getCommandValue({ name: name("hex") })).toEqual(
         Option.some("I am using Hex by Kit Langton: https://hex.kitlangton.com/"),
       );
+      expect(yield* commands.getCommandValue({ name: name("rex") })).toEqual(
+        Option.some("Rex: https://www.superlogical.com/"),
+      );
       expect(yield* commands.getCommandValue({ name: name("herdr") })).toEqual(
         Option.some("Herdr: https://herdr.dev/"),
       );
@@ -435,7 +439,7 @@ describe("Commands SQL authority", () => {
       expect(yield* commands.getDebugSnapshot()).toMatchObject({
         revision: 1,
         initialized: true,
-        totals: { total: 37, enabled: 37 },
+        totals: { total: 38, enabled: 38 },
       });
       const defaults = yield* commands.getDebugSnapshot();
       expect({
@@ -504,6 +508,7 @@ describe("Commands SQL authority", () => {
           "herdr",
           "plan",
           "hex",
+          "rex",
         ]);
         expect(yield* commands.getDebugSnapshot()).toMatchObject({ revision: 45 });
       });

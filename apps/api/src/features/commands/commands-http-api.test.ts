@@ -52,7 +52,7 @@ describe("Commands real HTTP API", () => {
             httpClient,
           });
 
-          expect((yield* client.commands.getAllCommands()).length).toBe(37);
+          expect((yield* client.commands.getAllCommands()).length).toBe(38);
           const today = ChatCommandName.make("today");
 
           const update = {

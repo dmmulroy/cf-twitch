@@ -40,6 +40,18 @@ function createHexCommandInput(now: string): typeof CreateChatCommandInput.Encod
   };
 }
 
+function createRexCommandInput(now: string): typeof CreateChatCommandInput.Encoded {
+  return {
+    name: "rex",
+    description: "Shows Rex link",
+    category: "info",
+    responseType: "static",
+    permission: "everyone",
+    initialValue: "Rex: https://www.superlogical.com/",
+    createdAt: now,
+  };
+}
+
 /**
  * Additive default migrations, each applied exactly once by ID without overriding runtime edits.
  *
@@ -70,12 +82,17 @@ export const defaultCommandMigrations = [
     kind: "create",
     createInput: createHexCommandInput,
   },
+  {
+    id: "2026-11-23-add-rex-command",
+    kind: "create",
+    createInput: createRexCommandInput,
+  },
 ] as const;
 
 /** Migration IDs a freshly bootstrapped registry records as already applied, retained from the baseline registry. */
 export const defaultCommandMigrationIds = defaultCommandMigrations.map((migration) => migration.id);
 
-/** Returns all 37 historical default command inputs in original presentation order; they are parsed before persistence. */
+/** Returns all 38 historical default command inputs in original presentation order; they are parsed before persistence. */
 export function createDefaultCommandInputs(
   now: string,
 ): readonly (typeof CreateChatCommandInput.Encoded)[] {
@@ -173,6 +190,7 @@ export function createDefaultCommandInputs(
     createPlanCommandInput(now),
     createHerdrCommandInput(now),
     createHexCommandInput(now),
+    createRexCommandInput(now),
     {
       name: "achievements",
       description: "Shows user's unlocked achievements",

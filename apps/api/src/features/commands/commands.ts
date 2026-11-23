@@ -515,7 +515,7 @@ const changed = <A>(result: A, next: CommandsSnapshot) => ({ result, next: Optio
  *
  * **Details**
  *
- * In one atomic change, imports existing or legacy state, installs the 37 defaults only when the
+ * In one atomic change, imports existing or legacy state, installs the 38 defaults only when the
  * registry was never initialized, and applies outstanding additive default migrations without
  * overwriting runtime names or aliases.
  *

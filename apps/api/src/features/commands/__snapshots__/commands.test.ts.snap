@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Commands SQL authority > bootstraps all 37 exact defaults, alias and shared topic source 1`] = `
+exports[`Commands SQL authority > bootstraps all 38 exact defaults, alias and shared topic source 1`] = `
 {
   "commands": [
     {
@@ -327,6 +327,33 @@ exports[`Commands SQL authority > bootstraps all 37 exact defaults, alias and sh
         "_id": "Option",
         "_tag": "Some",
         "value": "I am using Hex by Kit Langton: https://hex.kitlangton.com/",
+      },
+    },
+    {
+      "command": {
+        "aliases": [],
+        "category": "info",
+        "counterSourceName": null,
+        "createdAt": "<bootstrap instant>",
+        "description": "Shows Rex link",
+        "emptyResponse": "rex info is not available.",
+        "enabled": true,
+        "handlerKey": null,
+        "name": "rex",
+        "outputTemplate": "{value}",
+        "permission": "everyone",
+        "responseType": "static",
+        "valueSourceName": "rex",
+        "writePermission": null,
+      },
+      "counter": {
+        "_id": "Option",
+        "_tag": "None",
+      },
+      "value": {
+        "_id": "Option",
+        "_tag": "Some",
+        "value": "Rex: https://www.superlogical.com/",
       },
     },
     {
@@ -1030,9 +1057,9 @@ exports[`Commands SQL authority > bootstraps all 37 exact defaults, alias and sh
   "totals": {
     "computed": 9,
     "dynamic": 3,
-    "enabled": 37,
-    "static": 25,
-    "total": 37,
+    "enabled": 38,
+    "static": 26,
+    "total": 38,
   },
 }
 `;
