@@ -183,6 +183,15 @@ const StoredSession = Schema.Struct({
 
 const parseProgress = Schema.decodeUnknownEffect(Schema.Array(StoredProgress));
 
+/** Returns the start of the Stream Session that is online now; an ended session's retained start is excluded. */
+const onlineSessionStart = (
+  session: Option.Option<typeof StoredSession.Type>,
+): Option.Option<IsoTimestamp> =>
+  Option.flatMap(
+    Option.filter(session, (value) => value.status === "online"),
+    (value) => value.startedAt,
+  );
+
 const parseStreaks = Schema.decodeUnknownEffect(Schema.Array(StoredStreak));
 
 /** `COUNT(*)` always returns exactly one row. */
@@ -431,8 +440,9 @@ export const makeAchievements = Effect.gen(function* () {
     if (!acceptsAchievementTransition(session, event)) return;
     const online = event.type === "stream_online";
     const timestamp = online ? event.startedAt : event.endedAt;
+    // An offline transition keeps the ended session's start, which orders the next online evidence.
     yield* sql`INSERT INTO achievement_stream_session(singleton_id,status,stream_id,started_at,transition_at) VALUES (1,${online ? "online" : "offline"},${event.streamId},${online ? timestamp : null},${timestamp})
-   ON CONFLICT(singleton_id) DO UPDATE SET status=excluded.status,stream_id=excluded.stream_id,started_at=excluded.started_at,transition_at=excluded.transition_at`;
+   ON CONFLICT(singleton_id) DO UPDATE SET status=excluded.status,stream_id=excluded.stream_id,started_at=CASE WHEN excluded.status='offline' THEN achievement_stream_session.started_at ELSE excluded.started_at END,transition_at=excluded.transition_at`;
 
     if (!online) return;
     yield* sql`UPDATE user_achievements SET progress=0,unlocked_at=NULL,announcement_state='pending',event_id=NULL WHERE achievement_id IN (SELECT id FROM achievement_definitions WHERE scope='session')`;
@@ -461,7 +471,7 @@ export const makeAchievements = Effect.gen(function* () {
     );
 
     yield* sql`INSERT INTO user_streaks(user_id,user_display_name,session_streak,longest_streak,last_request_at,session_started_at)
-     VALUES (${event.userId},${event.userDisplayName},${nextStreak},${longestStreak},${timestamp},${Option.getOrNull(Option.flatMap(session, (value) => value.startedAt))})
+     VALUES (${event.userId},${event.userDisplayName},${nextStreak},${longestStreak},${timestamp},${Option.getOrNull(onlineSessionStart(session))})
      ON CONFLICT(user_id) DO UPDATE SET user_display_name=excluded.user_display_name,session_streak=excluded.session_streak,longest_streak=excluded.longest_streak,last_request_at=excluded.last_request_at`;
 
     const sessionStartedAt = achievementStreamOpenerStart(session, event);
@@ -969,7 +979,9 @@ const applyInMemoryAchievementTransition = (
   draft.session = Option.some({
     status: online ? "online" : "offline",
     streamId: Option.some(event.streamId),
-    startedAt: online ? Option.some(timestamp) : Option.none(),
+    startedAt: online
+      ? Option.some(timestamp)
+      : Option.flatMap(draft.session, (session) => session.startedAt),
     transitionAt: timestamp,
   });
 

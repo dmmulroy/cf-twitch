@@ -1,4 +1,4 @@
-import { Clock, Effect, Option, Result, Schema } from "effect";
+import { Clock, Effect, Option, Result, Schema, String } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpServerResponse } from "effect/http";
 import {
@@ -32,6 +32,30 @@ import {
 } from "./http-service-failures.ts";
 
 const decodeIsoTimestamp = Schema.decodeEffect(IsoTimestamp);
+
+/** Returns the transition durable state shows between two reads; a replaced session counts as going online. */
+const reconciliationAction = (
+  before: StreamLifecycleState,
+  after: StreamLifecycleState,
+): TwitchStreamReconciliationResponse["action"] => {
+  if (after.isLive)
+    return !before.isLive ||
+      !Option.makeEquivalence(String.Equivalence)(before.startedAt, after.startedAt)
+      ? "set_online"
+      : "noop";
+
+  return before.isLive ? "set_offline" : "noop";
+};
+
+/** Returns the transition requested from provider evidence, reported when the final state is unreadable. */
+const requestedReconciliationAction = (
+  before: StreamLifecycleState,
+  providerIsLive: boolean,
+): TwitchStreamReconciliationResponse["action"] => {
+  if (providerIsLive) return before.isLive ? "noop" : "set_online";
+
+  return before.isLive ? "set_offline" : "noop";
+};
 
 const debugSongQueueLimit = SongQueueLimit.make(5);
 
@@ -134,7 +158,6 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
               );
             const before = beforeResult.success;
             const provider = providerResult.success;
-            let action: TwitchStreamReconciliationResponse["action"] = "noop";
 
             if (Option.isSome(provider)) {
               yield* stream
@@ -144,8 +167,6 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                     Effect.fail(streamLifecycleHttpFailure(error, reconcileChange)),
                   ),
                 );
-
-              if (!before.isLive) action = "set_online";
             } else {
               const now = yield* Clock.currentTimeMillis;
 
@@ -161,9 +182,15 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
                     Effect.fail(streamLifecycleHttpFailure(error, reconcileChange)),
                   ),
                 );
-
-              if (before.isLive) action = "set_offline";
             }
+
+            const after = yield* stream.getState().pipe(Effect.result);
+
+            // The action reports the transition the durable state shows, not the one requested:
+            // stale provider evidence leaves the state, and its action, unchanged.
+            const action = Result.isSuccess(after)
+              ? reconciliationAction(before, after.success)
+              : requestedReconciliationAction(before, Option.isSome(provider));
 
             let queueWarmup: TwitchStreamReconciliationResponse["queueWarmup"] = "not_needed";
 
@@ -171,8 +198,6 @@ export const twitchDebugHandlersLayer = HttpApiBuilder.group(TwitchHttpApi, "deb
               const warmup = yield* queue.getCurrentlyPlaying().pipe(Effect.result);
               queueWarmup = Result.isSuccess(warmup) ? "ok" : "error";
             }
-
-            const after = yield* stream.getState().pipe(Effect.result);
 
             if (Result.isFailure(after))
               return yield* Effect.fail(

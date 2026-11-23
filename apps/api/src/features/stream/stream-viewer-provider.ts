@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Option } from "effect";
-import type { NonNegativeInt } from "@cf-twitch/contracts/identity";
+import type { TwitchStreamInfo } from "@cf-twitch/contracts/provider";
 import { StreamLifecycleError } from "@cf-twitch/contracts/stream";
 import {
   TwitchConfiguration,
@@ -7,15 +7,18 @@ import {
 } from "../../runtime/twitch-configuration.ts";
 import { TwitchService, twitchServiceLayer } from "../providers/twitch-service.ts";
 
-/** Viewer-count observation used by the Stream Lifecycle viewer polling alarm. */
+/** Live-stream observation used by the Stream Lifecycle viewer polling alarm. */
 export interface IStreamViewerProvider {
   /**
-   * Returns the broadcaster's current viewer count.
+   * Returns the broadcaster's current Twitch stream, including its identity, start, and viewers.
    *
-   * @returns The count, none when Twitch reports no live stream, or fails with
+   * @returns The stream, none when Twitch reports no live stream, or fails with
    *   `StreamLifecycleError` whose reason is `provider_unavailable` when Twitch cannot be read.
    */
-  readonly getViewerCount: () => Effect.Effect<Option.Option<NonNegativeInt>, StreamLifecycleError>;
+  readonly getLiveStream: () => Effect.Effect<
+    Option.Option<TwitchStreamInfo>,
+    StreamLifecycleError
+  >;
 }
 
 /** Service for the provider-backed viewer-count observation. */
@@ -27,7 +30,7 @@ export class StreamViewerProvider extends Context.Service<
 /**
  * Creates the viewer provider over the Twitch provider for the configured broadcaster.
  *
- * @returns The viewer provider; `getViewerCount` fails with `StreamLifecycleError` when the Twitch
+ * @returns The viewer provider; `getLiveStream` fails with `StreamLifecycleError` when the Twitch
  *   stream lookup fails.
  */
 export const makeStreamViewerProvider = Effect.gen(function* () {
@@ -35,9 +38,8 @@ export const makeStreamViewerProvider = Effect.gen(function* () {
   const configuration = yield* TwitchConfiguration;
 
   return StreamViewerProvider.of({
-    getViewerCount: Effect.fn("StreamViewerProvider.getViewerCount")(() =>
+    getLiveStream: Effect.fn("StreamViewerProvider.getLiveStream")(() =>
       twitch.getStreamInfo(configuration.twitch.broadcaster.displayName).pipe(
-        Effect.map((stream) => Option.map(stream, (value) => value.viewerCount)),
         Effect.catchTag("ProviderError", () =>
           Effect.fail(
             new StreamLifecycleError({
@@ -72,5 +74,5 @@ export const streamViewerProviderLayer = streamViewerProviderLayerWithoutDepende
 /** Layer that provides a controlled viewer provider observing no live stream. */
 export const streamViewerProviderTestLayer = Layer.succeed(
   StreamViewerProvider,
-  StreamViewerProvider.of({ getViewerCount: () => Effect.succeed(Option.none()) }),
+  StreamViewerProvider.of({ getLiveStream: () => Effect.succeed(Option.none()) }),
 );

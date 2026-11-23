@@ -1,8 +1,9 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Context, Effect, Layer, Option, Redacted, Ref, Schema } from "effect";
 import { HttpRouter } from "effect/http";
 import { HttpApi, HttpApiBuilder } from "effect/http-api";
+import { IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import { SongQueueError } from "@cf-twitch/contracts/song-queue";
 import { RaffleError, raffleErrorWithoutIdentifiers } from "@cf-twitch/contracts/raffle";
 import { TwitchHttpErrorBody, TwitchStatsApi } from "@cf-twitch/contracts/twitch-api";
@@ -14,7 +15,11 @@ import { Raffle } from "../raffle/raffle-service.ts";
 import { Achievements } from "../achievements/achievements-service.ts";
 import { Commands } from "../commands/commands.ts";
 import { EventBusAdministration } from "../events/event-bus-administration.ts";
-import { StreamLifecycleClient } from "../stream/stream-lifecycle-client.ts";
+import {
+  StreamLifecycleClient,
+  streamLifecycleClientTestLayer,
+} from "../stream/stream-lifecycle-client.ts";
+import type { TwitchStreamInfo } from "@cf-twitch/contracts/provider";
 import { OAuthAuthorization } from "../oauth/oauth-authorization.ts";
 import { TwitchService } from "../providers/twitch-service.ts";
 import { EventSubReceipts } from "../eventsub/eventsub-receipts.ts";
@@ -97,6 +102,78 @@ const request = (path: string, init?: RequestInit) =>
   new Request(`https://worker.test${path}`, init);
 
 describe("Worker HTTP compatibility boundary", () => {
+  it.effect(
+    "reconciliation starts a restarted broadcast the late offline notification ended, and reports noop for stale evidence",
+    () =>
+      Effect.gen(function* () {
+        const previousAt = IsoTimestamp.make("2026-11-23T11:05:36Z");
+        const restartedAt = IsoTimestamp.make("2026-11-23T13:07:21Z");
+        const lateOfflineAt = IsoTimestamp.make("2026-11-23T13:07:37.83537036Z");
+        const observed = yield* Ref.make<Option.Option<TwitchStreamInfo>>(Option.none());
+
+        const streamInfo = (id: string, startedAt: IsoTimestamp): TwitchStreamInfo => ({
+          id: StreamId.make(id),
+          viewerCount: NonNegativeInt.make(120),
+          startedAt,
+          gameName: "Software and Game Development",
+          title: "live",
+        });
+
+        const lifecycle = yield* Layer.build(
+          streamLifecycleClientTestLayer.pipe(Layer.provide(NodeCrypto.layer)),
+        );
+
+        const stream = Context.get(lifecycle, StreamLifecycleClient);
+        yield* stream.markOnline({ streamId: StreamId.make("previous"), startedAt: previousAt });
+        yield* stream.markOffline({ endedAt: lateOfflineAt });
+
+        const reconcile = (provider: TwitchStreamInfo) =>
+          Effect.gen(function* () {
+            yield* Ref.set(observed, Option.some(provider));
+
+            return yield* Effect.acquireUseRelease(
+              Effect.sync(() =>
+                HttpRouter.toWebHandler(
+                  twitchHttpApiLayer.pipe(
+                    Layer.provide(
+                      Layer.mergeAll(
+                        testLayers(),
+                        Layer.mock(TwitchService, { getStreamInfo: () => Ref.get(observed) }),
+                        Layer.succeedContext(lifecycle),
+                      ),
+                    ),
+                    Layer.provide(cloudflareHttpServerLayer),
+                    Layer.provide(NodeCrypto.layer),
+                  ),
+                  { disableLogger: true },
+                ),
+              ),
+              ({ handler }) =>
+                Effect.promise(() =>
+                  handler(
+                    request("/api/debug/reconcile-stream-state", {
+                      method: "POST",
+                      headers: adminHeaders,
+                    }),
+                  ).then((response) => response.json()),
+                ),
+              ({ dispose }) => Effect.promise(dispose),
+            );
+          });
+
+        expect(yield* reconcile(streamInfo("previous", previousAt))).toMatchObject({
+          action: "noop",
+          queueWarmup: "not_needed",
+          after: { isLive: false, startedAt: previousAt },
+        });
+        expect(yield* reconcile(streamInfo("restarted", restartedAt))).toMatchObject({
+          action: "set_online",
+          queueWarmup: "ok",
+          after: { isLive: true, startedAt: restartedAt, endedAt: null },
+        });
+      }).pipe(Effect.scoped),
+  );
+
   for (const [index, golden] of httpValidationGoldenCases.entries()) {
     it.effect(`preserves baseline validation JSON ${index}: ${golden.method} ${golden.path}`, () =>
       withHttp((fetch) =>

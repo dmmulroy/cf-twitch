@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer, Option, Ref, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Match, Option, Ref, Schema } from "effect";
+import type { DomainEvent } from "@cf-twitch/contracts/domain-event";
 import { EventBusError } from "@cf-twitch/contracts/event-bus";
 import { EventId, IsoTimestamp, NonNegativeInt, StreamId } from "@cf-twitch/contracts/identity";
 import { EventPublisher } from "../events/event-publisher.ts";
@@ -17,11 +18,24 @@ import {
   streamLifecycleClientTestLayer,
 } from "./stream-lifecycle-client.ts";
 import { initialStreamState } from "./stream-state.ts";
-import { streamViewerProviderTestLayer } from "./stream-viewer-provider.ts";
+import { StreamViewerProvider, streamViewerProviderTestLayer } from "./stream-viewer-provider.ts";
+import type { TwitchStreamInfo } from "@cf-twitch/contracts/provider";
 
 const startedAt = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T11:55:00.000Z");
 
 const streamId = Schema.decodeUnknownSync(StreamId)("stream-123");
+
+/** Describes a published lifecycle event by type, stream, and transition time. */
+const describeLifecycleEvent = (event: DomainEvent): string =>
+  Match.value(event).pipe(
+    Match.when({ type: "stream_online" }, (online) =>
+      ["stream_online", online.streamId, online.startedAt].join(":"),
+    ),
+    Match.when({ type: "stream_offline" }, (offline) =>
+      ["stream_offline", offline.streamId, offline.endedAt].join(":"),
+    ),
+    Match.orElse((other) => other.type),
+  );
 
 describe("Stream Lifecycle", () => {
   it.effect("resumes the same transition event from partial durable checkpoints", () =>
@@ -323,6 +337,218 @@ describe("Stream Lifecycle", () => {
 
         expect(yield* Ref.get(tokenCalls)).toEqual(["online:spotify", "online:twitch"]);
         expect(yield* Ref.get(published)).toEqual(["stream_online"]);
+      }),
+  );
+
+  it.effect(
+    "ends a superseded session, starts the restarted stream, and ignores the late offline notification",
+    () =>
+      Effect.gen(function* () {
+        const published = yield* Ref.make<ReadonlyArray<string>>([]);
+        const tokenCalls = yield* Ref.make<ReadonlyArray<string>>([]);
+        const liveStream = yield* Ref.make<Option.Option<TwitchStreamInfo>>(Option.none());
+
+        const restartedId = Schema.decodeUnknownSync(StreamId)("stream-456");
+        const restartedAt = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T13:07:21Z");
+
+        const layer = streamLifecycleLayerWithoutDependencies.pipe(
+          Layer.provide([streamDatabaseTestLayer, streamAlarmTestLayer]),
+          Layer.provide(
+            Layer.succeed(
+              StreamViewerProvider,
+              StreamViewerProvider.of({ getLiveStream: () => Ref.get(liveStream) }),
+            ),
+          ),
+          Layer.provide(
+            Layer.succeed(
+              ProviderAccessTokens,
+              ProviderAccessTokens.of({
+                getValidAccessToken: () => Effect.die("not used"),
+                setTokens: () => Effect.die("not used"),
+                onStreamOnline: (provider) =>
+                  Ref.update(tokenCalls, (calls) => [...calls, `online:${provider}`]),
+                onStreamOffline: (provider) =>
+                  Ref.update(tokenCalls, (calls) => [...calls, `offline:${provider}`]),
+              }),
+            ),
+          ),
+          Layer.provide(
+            Layer.succeed(
+              EventPublisher,
+              EventPublisher.of({
+                publish: (event) =>
+                  Ref.update(published, (events) => [...events, describeLifecycleEvent(event)]),
+              }),
+            ),
+          ),
+          Layer.provide(NodeCrypto.layer),
+        );
+
+        yield* Effect.gen(function* () {
+          const stream = yield* StreamLifecycle;
+          yield* stream.markOnline({ streamId, startedAt });
+          yield* stream.markOnline({ streamId: restartedId, startedAt: restartedAt });
+
+          expect(yield* stream.getState()).toMatchObject({
+            isLive: true,
+            startedAt: Option.some(restartedAt),
+          });
+
+          yield* stream.markOffline({
+            endedAt: Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T13:07:37.83537036Z"),
+          });
+
+          expect(yield* stream.getState()).toMatchObject({
+            isLive: true,
+            startedAt: Option.some(restartedAt),
+          });
+
+          yield* stream.markOnline({ streamId: restartedId, startedAt: restartedAt });
+
+          const endedAt = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T15:00:00Z");
+          yield* stream.markOffline({ endedAt });
+
+          expect(yield* stream.getState()).toMatchObject({
+            isLive: false,
+            startedAt: Option.some(restartedAt),
+            endedAt: Option.some(endedAt),
+          });
+        }).pipe(Effect.provide(layer));
+
+        expect(yield* Ref.get(published)).toEqual([
+          `stream_online:${streamId}:${startedAt}`,
+          `stream_offline:${streamId}:${restartedAt}`,
+          `stream_online:${restartedId}:${restartedAt}`,
+          `stream_offline:${restartedId}:2026-01-30T15:00:00Z`,
+        ]);
+        expect(yield* Ref.get(tokenCalls)).toEqual([
+          "online:spotify",
+          "online:twitch",
+          "offline:spotify",
+          "offline:twitch",
+          "online:spotify",
+          "online:twitch",
+          "offline:spotify",
+          "offline:twitch",
+        ]);
+      }),
+  );
+
+  it.effect("viewer polling replaces a live session when Twitch reports a newer stream", () =>
+    Effect.gen(function* () {
+      const restarted: TwitchStreamInfo = {
+        id: Schema.decodeUnknownSync(StreamId)("stream-456"),
+        startedAt: Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T13:07:21Z"),
+        viewerCount: NonNegativeInt.make(120),
+        gameName: "Software and Game Development",
+        title: "restarted",
+      };
+
+      const layer = streamLifecycleLayerWithoutDependencies.pipe(
+        Layer.provide([streamDatabaseTestLayer, streamAlarmTestLayer]),
+        Layer.provide(
+          Layer.succeed(
+            StreamViewerProvider,
+            StreamViewerProvider.of({
+              getLiveStream: () => Effect.succeed(Option.some(restarted)),
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.succeed(
+            ProviderAccessTokens,
+            ProviderAccessTokens.of({
+              getValidAccessToken: () => Effect.die("not used"),
+              setTokens: () => Effect.die("not used"),
+              onStreamOnline: () => Effect.void,
+              onStreamOffline: () => Effect.void,
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.succeed(EventPublisher, EventPublisher.of({ publish: () => Effect.void })),
+        ),
+        Layer.provide(NodeCrypto.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        const stream = yield* StreamLifecycle;
+        yield* stream.markOnline({ streamId, startedAt });
+        yield* stream.processAlarm();
+
+        expect(yield* stream.getState()).toMatchObject({
+          isLive: true,
+          startedAt: Option.some(restarted.startedAt),
+          peakViewerCount: 120,
+        });
+        expect((yield* stream.getDebugState()).activeStreamId).toEqual(Option.some(restarted.id));
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect(
+    "recovers a restarted stream from Twitch when the offline notification won the race",
+    () =>
+      Effect.gen(function* () {
+        const restartedId = Schema.decodeUnknownSync(StreamId)("stream-456");
+        const restartedAt = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T13:07:21Z");
+
+        const layer = streamLifecycleLayerWithoutDependencies.pipe(
+          Layer.provide([
+            streamDatabaseTestLayer,
+            streamAlarmTestLayer,
+            streamViewerProviderTestLayer,
+          ]),
+          Layer.provide(
+            Layer.succeed(
+              ProviderAccessTokens,
+              ProviderAccessTokens.of({
+                getValidAccessToken: () => Effect.die("not used"),
+                setTokens: () => Effect.die("not used"),
+                onStreamOnline: () => Effect.void,
+                onStreamOffline: () => Effect.void,
+              }),
+            ),
+          ),
+          Layer.provide(
+            Layer.succeed(EventPublisher, EventPublisher.of({ publish: () => Effect.void })),
+          ),
+          Layer.provide(NodeCrypto.layer),
+        );
+
+        yield* Effect.gen(function* () {
+          const stream = yield* StreamLifecycle;
+          yield* stream.markOnline({ streamId, startedAt });
+          yield* stream.markOffline({
+            endedAt: Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T13:07:37.83537036Z"),
+          });
+
+          const observedAt = Schema.decodeUnknownSync(IsoTimestamp)("2026-01-30T13:50:00Z");
+
+          const restarted = yield* stream.reconcile({
+            stream: Option.some({
+              id: restartedId,
+              startedAt: restartedAt,
+              viewerCount: NonNegativeInt.make(120),
+            }),
+            observedAt,
+          });
+
+          expect(restarted).toMatchObject({
+            action: "marked_online",
+            after: { isLive: true, startedAt: Option.some(restartedAt) },
+          });
+
+          const stale = yield* stream.reconcile({
+            stream: Option.some({ id: streamId, startedAt, viewerCount: NonNegativeInt.make(1) }),
+            observedAt,
+          });
+
+          expect(stale).toMatchObject({
+            action: "noop",
+            after: { isLive: true, startedAt: Option.some(restartedAt) },
+          });
+        }).pipe(Effect.provide(layer));
       }),
   );
 });

@@ -19,9 +19,11 @@ import type { IStreamLifecycleClient } from "./stream-lifecycle-client.ts";
 import {
   acceptOfflineTransition,
   acceptOnlineTransition,
+  acceptSupersedingSession,
   clearCompletedTransition,
   completeTransitionEffect,
   deriveStreamLifecycleEventId,
+  isSupersedingStream,
   toStreamLifecycleState,
   type PersistedStreamState,
   type StreamTransitionEffect,
@@ -259,10 +261,30 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     return toStreamLifecycleState(yield* database.getState());
   });
 
+  // A newer stream while live means Twitch already ended the live broadcast; its offline transition
+  // and effects complete first, so the next online acceptance sees an ordinary ended session.
+  const endSupersededSessionWithoutPermit = Effect.fn(
+    "StreamLifecycle.endSupersededSessionWithoutPermit",
+  )(function* (input: MarkStreamOnlineInput) {
+    const current = yield* database.getState();
+
+    if (!Predicate.isTagged("LiveStream")(current) || !isSupersedingStream(current, input)) return;
+
+    const eventId = yield* deriveStreamLifecycleEventId({
+      transition: "offline",
+      streamId: current.streamId,
+      transitionAt: input.startedAt,
+    }).pipe(Effect.provideService(Digest.Digest, digestService));
+
+    yield* database.saveState(acceptSupersedingSession(current, { ...input, eventId }));
+    yield* resumeTransitionEffectsWithoutPermit();
+  });
+
   const markOnlineWithoutPermit = Effect.fn("StreamLifecycle.markOnlineWithoutPermit")(function* (
     input: MarkStreamOnlineInput,
   ) {
     yield* resumeTransitionEffectsWithoutPermit();
+    yield* endSupersededSessionWithoutPermit(input);
     const current = yield* database.getState();
 
     const eventId = yield* deriveStreamLifecycleEventId({
@@ -321,20 +343,22 @@ export const makeStreamLifecycle = Effect.gen(function* () {
     let action: StreamReconciliationAction = "noop";
 
     if (Option.isSome(input.stream)) {
+      const observed = input.stream.value;
+      yield* markOnlineWithoutPermit({ streamId: observed.id, startedAt: observed.startedAt });
       const state = yield* database.getState();
 
-      if (Predicate.isTagged("OfflineStream")(state)) {
-        yield* markOnlineWithoutPermit({
-          streamId: input.stream.value.id,
-          startedAt: input.stream.value.startedAt,
-        });
-        action = "marked_online";
-      } else {
-        yield* recordViewerCountWithoutPermit({
-          count: input.stream.value.viewerCount,
-          recordedAt: input.observedAt,
-        });
-        action = "recorded_viewer_count";
+      if (Predicate.isTagged("LiveStream")(state) && state.streamId === observed.id) {
+        const startedNewSession = !Option.contains(before.startedAt, state.startedAt);
+
+        if (startedNewSession || !before.isLive) {
+          action = "marked_online";
+        } else {
+          yield* recordViewerCountWithoutPermit({
+            count: observed.viewerCount,
+            recordedAt: input.observedAt,
+          });
+          action = "recorded_viewer_count";
+        }
       }
     } else {
       const state = yield* database.getState();
@@ -386,11 +410,23 @@ export const makeStreamLifecycle = Effect.gen(function* () {
       return;
     }
 
-    const count = yield* viewerProvider.getViewerCount();
+    const observed = yield* viewerProvider.getLiveStream();
 
-    if (Option.isSome(count)) {
+    if (Option.isSome(observed)) {
+      const stream = { streamId: observed.value.id, startedAt: observed.value.startedAt };
+
+      // Polling also recovers a missed online notification for a broadcast that replaced this one.
+      if (isSupersedingStream(state, stream)) {
+        yield* markOnlineWithoutPermit(stream);
+        state = yield* database.getState();
+      }
+
       const recordedAt = yield* nextAlarmTimestamp(0);
-      state = yield* database.recordViewerCount({ state, count: count.value, recordedAt });
+      state = yield* database.recordViewerCount({
+        state,
+        count: observed.value.viewerCount,
+        recordedAt,
+      });
     }
 
     const dueAt = yield* nextAlarmTimestamp(VIEWER_POLL_INTERVAL_MS);

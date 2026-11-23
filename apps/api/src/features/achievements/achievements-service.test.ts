@@ -291,6 +291,36 @@ for (const [authority, layer] of achievementAuthorities)
         }).pipe(Effect.provide(layer)),
     );
     it.effect(
+      "starts a restarted broadcast whose start precedes the previous offline notification time",
+      () =>
+        Effect.gen(function* () {
+          const service = yield* Achievements;
+          yield* service.handleEvent(online(100, 0, "first"));
+
+          for (let index = 1; index <= 3; index++) yield* service.handleEvent(request(index));
+          yield* service.handleEvent(offline(101, 40, "first"));
+          yield* service.handleEvent(online(102, 30, "first"));
+          expect(
+            (yield* service.getUnlockedAchievements({ userDisplayName: "Viewer" })).map(
+              (row) => row.id,
+            ),
+          ).toContain("streak_3");
+          yield* service.handleEvent(online(103, 30, "restarted"));
+          expect(
+            (yield* service.getUnlockedAchievements({ userDisplayName: "Viewer" })).map(
+              (row) => row.id,
+            ),
+          ).toEqual(["first_request"]);
+          yield* service.handleEvent(offline(104, 30, "first"));
+          yield* service.handleEvent(request(4, 31));
+          expect(
+            (yield* service.getUnlockedAchievements({ userDisplayName: "Viewer" })).map(
+              (row) => row.id,
+            ),
+          ).toContain("stream_opener");
+        }).pipe(Effect.provide(layer)),
+    );
+    it.effect(
       "all thirteen achievements unlock through domain events, including streak set semantics",
       () =>
         Effect.gen(function* () {

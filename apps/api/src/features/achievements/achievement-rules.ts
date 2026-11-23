@@ -208,7 +208,10 @@ export function achievementTriggersForEvent(input: {
 export interface AchievementSession {
   readonly status: "online" | "offline";
   readonly streamId: Option.Option<StreamId>;
-  /** Source start time of the online Stream Session; `None` while offline. */
+  /**
+   * Source start time of the most recent Stream Session, retained after it ends; `None` before the
+   * first session and in offline rows written before the start was retained.
+   */
   readonly startedAt: Option.Option<IsoTimestamp>;
   /** Source time of the accepted transition, used to reject stale transitions. */
   readonly transitionAt: IsoTimestamp;
@@ -230,7 +233,15 @@ export function achievementStreamOpenerStart(
   return session.value.startedAt;
 }
 
-/** Returns whether a stream transition is newer than the watermark and matches the current Stream Session. */
+/**
+ * Returns whether a stream transition is newer than the watermark and matches the current Stream Session.
+ *
+ * **Details**
+ *
+ * After a session ends, online evidence is ordered by that session's start rather than its offline
+ * time: a restarted broadcast can start before the previous broadcast's offline notification time.
+ * Online evidence for the most recent session's own stream is never a new session.
+ */
 export function acceptsAchievementTransition(
   session: Option.Option<AchievementSession>,
   event: Extract<DomainEvent, { type: "stream_online" | "stream_offline" }>,
@@ -238,11 +249,17 @@ export function acceptsAchievementTransition(
   if (Option.isNone(session)) return true;
   const current = session.value;
 
-  if (event.type === "stream_online")
+  if (event.type === "stream_online") {
+    const watermark =
+      current.status === "offline"
+        ? Option.getOrElse(current.startedAt, () => current.transitionAt)
+        : current.transitionAt;
+
     return (
-      Date.parse(event.startedAt) > Date.parse(current.transitionAt) &&
-      !(current.status === "online" && Option.contains(current.streamId, event.streamId))
+      Date.parse(event.startedAt) > Date.parse(watermark) &&
+      !Option.contains(current.streamId, event.streamId)
     );
+  }
 
   return current.status === "offline"
     ? Date.parse(event.endedAt) > Date.parse(current.transitionAt)

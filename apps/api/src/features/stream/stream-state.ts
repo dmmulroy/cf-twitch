@@ -40,6 +40,11 @@ export const OfflineStreamState = Schema.TaggedStruct("OfflineStream", {
   peakViewerCount: NonNegativeInt,
   /** Checkpoint of an accepted offline transition whose effects are incomplete. */
   transitionCheckpoint: Schema.OptionFromNullOr(StreamTransitionCheckpointRecord),
+  /**
+   * Stream whose newer start ended the most recent Stream Session, or `Option.none()` when an
+   * offline notification or reconciliation ended it. Absent in rows written before supersession.
+   */
+  supersedingStreamId: Schema.OptionFromOptionalKey(StreamId),
 });
 
 /** Schema for persisted Stream Lifecycle state while one Stream Session is active. */
@@ -51,6 +56,11 @@ export const LiveStreamState = Schema.TaggedStruct("LiveStream", {
   viewerPollScheduleId: Schema.OptionFromNullOr(Schema.NonEmptyString),
   /** Checkpoint of an accepted online transition whose effects are incomplete. */
   transitionCheckpoint: Schema.OptionFromNullOr(StreamTransitionCheckpointRecord),
+  /**
+   * Start of the Stream Session this one superseded while that session's offline notification is
+   * still outstanding, or `Option.none()`. Absent in rows written before supersession.
+   */
+  supersededStartedAt: Schema.OptionFromOptionalKey(IsoTimestamp),
 });
 
 /** Returns whether a checkpoint belongs to the tagged state it is stored on. */
@@ -154,12 +164,14 @@ const PersistedStreamStateFromLegacyTagged = Schema.toCodecJson(LegacyTaggedStre
             peakViewerCount: legacy.peakViewerCount,
             viewerPollScheduleId: Option.fromNullOr(legacy.viewerPollScheduleId),
             transitionCheckpoint: checkpointFromLegacyIntent(legacy.transitionIntent),
+            supersededStartedAt: Option.none(),
           })
         : OfflineStreamState.make({
             lastStartedAt: Option.fromNullOr(legacy.lastStartedAt),
             endedAt: Option.fromNullOr(legacy.endedAt),
             peakViewerCount: legacy.peakViewerCount,
             transitionCheckpoint: checkpointFromLegacyIntent(legacy.transitionIntent),
+            supersedingStreamId: Option.none(),
           }),
     ),
     encode: SchemaGetter.forbidden(legacyStreamStateEncodeForbidden),
@@ -176,6 +188,7 @@ const PersistedStreamStateFromLegacyBoolean = Schema.toCodecJson(LegacyBooleanSt
             endedAt: Option.fromNullOr(legacy.endedAt),
             peakViewerCount: legacy.peakViewerCount,
             transitionCheckpoint: Option.none(),
+            supersedingStreamId: Option.none(),
           }),
         );
 
@@ -197,6 +210,7 @@ const PersistedStreamStateFromLegacyBoolean = Schema.toCodecJson(LegacyBooleanSt
           peakViewerCount: legacy.peakViewerCount,
           viewerPollScheduleId: Option.fromNullOr(legacy.viewerPollScheduleId),
           transitionCheckpoint: Option.none(),
+          supersededStartedAt: Option.none(),
         }),
       );
     }),
@@ -231,6 +245,7 @@ export const initialStreamState = (): PersistedStreamState =>
     endedAt: Option.none(),
     peakViewerCount: 0,
     transitionCheckpoint: Option.none(),
+    supersedingStreamId: Option.none(),
   });
 
 /**
@@ -342,24 +357,39 @@ const compareStreamTimestampInstants: Order.Order<IsoTimestamp> = Order.combine(
 const streamTimestampIsBefore = (self: IsoTimestamp, that: IsoTimestamp): boolean =>
   compareStreamTimestampInstants(self, that) < 0;
 
-/** Returns the latest source timestamp, used to reject stale lifecycle evidence by instant. */
-const latestTransitionAt = (state: PersistedStreamState): Option.Option<IsoTimestamp> => {
+/**
+ * Window after a superseding Stream Session starts in which an offline notification is attributed
+ * to the superseded session, whose notification Twitch may deliver after the newer online one.
+ */
+const SUPERSEDED_OFFLINE_WINDOW_MS = 10 * 60_000;
+
+/**
+ * Returns the start of the most recent Stream Session, which orders online evidence.
+ *
+ * **Details**
+ *
+ * Twitch's online `started_at` is authoritative, while an offline time is only the signed
+ * notification time, which can follow the start of the next broadcast. Rows from before session
+ * starts were recorded fall back to the offline time.
+ */
+const latestSessionStart = (state: PersistedStreamState): Option.Option<IsoTimestamp> => {
   if (Predicate.isTagged("LiveStream")(state)) return Option.some(state.startedAt);
 
-  if (Option.isNone(state.lastStartedAt)) return state.endedAt;
-
-  if (Option.isNone(state.endedAt)) return state.lastStartedAt;
-
-  return streamTimestampIsBefore(state.lastStartedAt.value, state.endedAt.value)
-    ? state.endedAt
-    : state.lastStartedAt;
+  return Option.orElse(state.lastStartedAt, () => state.endedAt);
 };
 
 /**
- * Accepts online evidence newer than every recorded transition, creating its incomplete checkpoint.
+ * Accepts online evidence for a Stream Session newer than the most recent one, creating its
+ * incomplete checkpoint.
+ *
+ * **Details**
+ *
+ * When the most recent session was ended by this stream's supersession, the new live state records
+ * the superseded start so the superseded session's late offline notification is not applied.
  *
  * @returns The live state with all four effects incomplete, or the same state object when the
- *   evidence is stale, a duplicate, or the stream is already live.
+ *   evidence is stale, a duplicate, or the stream is already live. A newer stream arriving while
+ *   live is handled by `acceptSupersedingSession`.
  */
 export const acceptOnlineTransition = (
   state: PersistedStreamState,
@@ -369,13 +399,12 @@ export const acceptOnlineTransition = (
     readonly startedAt: IsoTimestamp;
   },
 ): PersistedStreamState => {
-  const latest = latestTransitionAt(state);
+  if (Predicate.isTagged("LiveStream")(state)) return state;
+  const latest = latestSessionStart(state);
 
   if (Option.isSome(latest) && compareStreamTimestampInstants(input.startedAt, latest.value) <= 0) {
     return state;
   }
-
-  if (Predicate.isTagged("LiveStream")(state)) return state;
 
   return LiveStreamState.make({
     streamId: input.streamId,
@@ -393,41 +422,109 @@ export const acceptOnlineTransition = (
       lifecycleEventPublished: false,
       viewerPollingUpdated: false,
     }),
+    supersededStartedAt: Option.contains(state.supersedingStreamId, input.streamId)
+      ? state.lastStartedAt
+      : Option.none(),
   });
 };
 
-/**
- * Accepts offline evidence not older than every recorded transition, creating its checkpoint.
- *
- * @returns The offline state with all four effects incomplete, or the same state object when the
- *   evidence is stale or the stream is already offline.
- */
-export const acceptOfflineTransition = (
-  state: PersistedStreamState,
+/** Returns the offline state that ends a live session, with all four effects of its checkpoint incomplete. */
+const offlineFromLiveSession = (
+  live: typeof LiveStreamState.Type,
   input: { readonly eventId: EventId; readonly endedAt: IsoTimestamp },
-): PersistedStreamState => {
-  const latest = latestTransitionAt(state);
-
-  if (Option.isSome(latest) && streamTimestampIsBefore(input.endedAt, latest.value)) return state;
-
-  if (Predicate.isTagged("OfflineStream")(state)) return state;
-
-  return OfflineStreamState.make({
-    lastStartedAt: Option.some(state.startedAt),
+  supersedingStreamId: Option.Option<StreamId>,
+): PersistedStreamState =>
+  OfflineStreamState.make({
+    lastStartedAt: Option.some(live.startedAt),
     endedAt: Option.some(input.endedAt),
-    peakViewerCount: state.peakViewerCount,
+    peakViewerCount: live.peakViewerCount,
     transitionCheckpoint: Option.some({
       eventId: input.eventId,
-      streamId: state.streamId,
+      streamId: live.streamId,
       transition: "offline",
       transitionAt: input.endedAt,
-      viewerPollScheduleId: state.viewerPollScheduleId,
+      viewerPollScheduleId: live.viewerPollScheduleId,
       spotifyTokenNotified: false,
       twitchTokenNotified: false,
       lifecycleEventPublished: false,
       viewerPollingUpdated: false,
     }),
+    supersedingStreamId,
   });
+
+/** Returns whether a live state should be ended by a different stream that started after it. */
+export const isSupersedingStream = (
+  state: PersistedStreamState,
+  stream: { readonly streamId: StreamId; readonly startedAt: IsoTimestamp },
+): boolean =>
+  Predicate.isTagged("LiveStream")(state) &&
+  state.streamId !== stream.streamId &&
+  streamTimestampIsBefore(state.startedAt, stream.startedAt);
+
+/**
+ * Ends the live Stream Session because a different, newer stream started, creating its offline
+ * checkpoint.
+ *
+ * **Details**
+ *
+ * Twitch ended the previous broadcast no later than the newer stream's start, so that start is the
+ * offline time. The offline state names the superseding stream, so accepting its online evidence
+ * next still ignores the superseded session's late offline notification after a restart.
+ *
+ * @returns The offline state with all four effects incomplete, or the same state object when the
+ *   stream does not supersede the live session.
+ */
+export const acceptSupersedingSession = (
+  state: PersistedStreamState,
+  input: {
+    readonly eventId: EventId;
+    readonly streamId: StreamId;
+    readonly startedAt: IsoTimestamp;
+  },
+): PersistedStreamState =>
+  Predicate.isTagged("LiveStream")(state) && isSupersedingStream(state, input)
+    ? offlineFromLiveSession(
+        state,
+        { eventId: input.eventId, endedAt: input.startedAt },
+        Option.some(input.streamId),
+      )
+    : state;
+
+/** Returns whether an offline notification belongs to the session the live one superseded. */
+const isSupersededSessionOffline = (
+  live: typeof LiveStreamState.Type,
+  endedAt: IsoTimestamp,
+): boolean =>
+  Option.isSome(live.supersededStartedAt) &&
+  DateTime.toEpochMillis(streamTimestampInstant(endedAt)) <=
+    DateTime.toEpochMillis(streamTimestampInstant(live.startedAt)) + SUPERSEDED_OFFLINE_WINDOW_MS;
+
+/**
+ * Accepts offline evidence not older than the live Stream Session, creating its checkpoint.
+ *
+ * **Details**
+ *
+ * Twitch offline notifications do not name their stream. When the live session superseded another
+ * whose notification is outstanding, the first offline notification no later than ten minutes after
+ * the live start is attributed to the superseded session: it clears the marker and leaves the live
+ * session running.
+ *
+ * @returns The offline state with all four effects incomplete, the live state without its
+ *   superseded marker, or the same state object when the evidence is stale or the stream is already
+ *   offline.
+ */
+export const acceptOfflineTransition = (
+  state: PersistedStreamState,
+  input: { readonly eventId: EventId; readonly endedAt: IsoTimestamp },
+): PersistedStreamState => {
+  if (Predicate.isTagged("OfflineStream")(state)) return state;
+
+  if (isSupersededSessionOffline(state, input.endedAt))
+    return { ...state, supersededStartedAt: Option.none() };
+
+  if (streamTimestampIsBefore(input.endedAt, state.startedAt)) return state;
+
+  return offlineFromLiveSession(state, input, Option.none());
 };
 
 /** Durable transition effect whose completion is recorded on the transition checkpoint. */

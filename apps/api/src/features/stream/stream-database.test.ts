@@ -225,6 +225,7 @@ const liveState = LiveStreamState.make({
   peakViewerCount: 5,
   viewerPollScheduleId: Option.none(),
   transitionCheckpoint: Option.none(),
+  supersededStartedAt: Option.none(),
 });
 
 // The in-memory test Layer must stay observably equivalent to SQLite for every shared behavior.

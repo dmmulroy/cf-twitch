@@ -19,6 +19,35 @@ const definition = (threshold: number) =>
     scope: "cumulative",
   });
 
+describe("Achievement stream watermark", () => {
+  const restarted = (startedAt: string, streamId = "restarted") =>
+    StreamOnlineEvent.make({
+      id: EventId.make("00000000-0000-4000-8000-000000000002"),
+      type: "stream_online",
+      source: "StreamLifecycleDO",
+      v: 1,
+      timestamp: IsoTimestamp.make(startedAt),
+      startedAt: IsoTimestamp.make(startedAt),
+      streamId: StreamId.make(streamId),
+      correlationId: Option.none(),
+    });
+
+  const ended = Option.some({
+    status: "offline" as const,
+    streamId: Option.some(StreamId.make("previous")),
+    startedAt: Option.some(IsoTimestamp.make("2026-11-23T11:05:36Z")),
+    transitionAt: IsoTimestamp.make("2026-11-23T13:07:37.835Z"),
+  });
+
+  it("orders online evidence after an ended session by that session's start", () => {
+    expect(acceptsAchievementTransition(ended, restarted("2026-11-23T13:07:21Z"))).toBe(true);
+    expect(acceptsAchievementTransition(ended, restarted("2026-11-23T11:05:36Z"))).toBe(false);
+    expect(acceptsAchievementTransition(ended, restarted("2026-11-23T13:07:21Z", "previous"))).toBe(
+      false,
+    );
+  });
+});
+
 describe("Achievement rule properties", () => {
   it.prop(
     "threshold progress unlocks exactly at the threshold and never changes an existing unlock",
